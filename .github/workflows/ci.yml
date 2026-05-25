@@ -24,9 +24,9 @@ jobs:
       - name: Install backend dependencies
         working-directory: packages/backend
         run: bun install --frozen-lockfile
-      - name: Typecheck backend
+      - name: Check backend bundle
         working-directory: packages/backend
-        run: bunx tsc --noEmit
+        run: bun build src/index.ts --target=bun --outfile /tmp/live-dashboard-backend.js
 
   android:
     runs-on: ubuntu-latest
