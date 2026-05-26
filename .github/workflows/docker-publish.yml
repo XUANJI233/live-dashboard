@@ -44,8 +44,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          outputs: type=image,push=true,oci-mediatypes=false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max

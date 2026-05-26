@@ -12,6 +12,31 @@ export interface DeviceState {
   extra?: {
     battery_percent?: number;
     battery_charging?: boolean;
+    device?: {
+      network_connected?: boolean;
+      vpn_active?: boolean;
+      vpn_name?: string;
+      capability_mode?: "normal" | "root" | "lsposed";
+      last_sample_at?: string;
+      relay_mode?: string;
+      energy_policy?: string;
+      min_interval_ms?: number;
+    };
+    foreground?: {
+      package_name?: string;
+      app_name?: string;
+      activity?: string;
+      source?: string;
+      confidence?: number;
+    };
+    media?: {
+      playing?: boolean;
+      title?: string;
+      artist?: string;
+      app?: string;
+      state?: string;
+      source?: string;
+    };
     music?: {
       title?: string;
       artist?: string;
@@ -144,4 +169,12 @@ export async function fetchHealthData(date: string, signal?: AbortSignal, device
   const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+export function getRealtimeUrl(viewerId?: string): string {
+  const base = API_BASE || (typeof window !== "undefined" ? window.location.origin : "");
+  const url = new URL("/api/ws?role=viewer", base || "http://localhost");
+  if (viewerId) url.searchParams.set("viewer_id", viewerId);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
 }
