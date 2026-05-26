@@ -14,8 +14,9 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write      # 如果要将 tar 上传到 Release 需要 write，仅 artifact 则不需要
       packages: write
+      actions: read        # 用于 gha 缓存
 
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +41,7 @@ jobs:
             type=semver,pattern=v{{major}}.{{minor}}
             type=sha
 
-      - name: Build and push
+      - name: Build, push and export archives
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -49,3 +50,29 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          outputs: |
+            type=registry,push=true
+            type=docker,dest=/tmp/image-docker.tar
+            type=oci,dest=/tmp/image-oci.tar
+
+      - name: Upload Docker format artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-docker-format
+          path: /tmp/image-docker.tar
+          if-no-files-found: error
+
+      - name: Upload OCI format artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-oci-format
+          path: /tmp/image-oci.tar
+          if-no-files-found: error
+
+      - name: Attach tar archives to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            /tmp/image-docker.tar
+            /tmp/image-oci.tar
