@@ -66,7 +66,7 @@ jobs:
         run: sdkmanager "platforms;android-36" "build-tools;35.0.0"
       - name: Build Android debug APKs
         working-directory: agents/android-app
-        run: ./gradlew assembleNormalDebug assemblePrivilegedDebug --stacktrace
+        run: chmod +x ./gradlew && ./gradlew assembleNormalDebug assemblePrivilegedDebug --stacktrace
       - name: Upload Android debug APK
         uses: actions/upload-artifact@v6
         with:
