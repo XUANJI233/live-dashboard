@@ -41,14 +41,13 @@
       },
       "platforms": [
         { "st": "r", "dw": 480 },
-        { "st": "s", "dw": 390 },
-        { "st": "b", "dw": 480 }
+        { "st": "s", "dw": 390 }
       ]
     }
   },
   "i18n": {
-    "en-US": { "name": "Live Dashboard" },
-    "zh-CN": { "name": "Live Dashboard" }
+    "en-US": { "appName": "Live Dashboard", "name": "Live Dashboard" },
+    "zh-CN": { "appName": "Live Dashboard", "name": "Live Dashboard" }
   },
   "defaultLanguage": "zh-CN"
 }
