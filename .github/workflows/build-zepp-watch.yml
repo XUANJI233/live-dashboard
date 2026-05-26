@@ -29,6 +29,13 @@ jobs:
         run: npm install
       - name: Install Zepp OS CLI
         run: npm install --global @zeppos/zeus-cli
+      - name: Validate Zepp project layout
+        working-directory: agents/zepp-watch
+        run: |
+          pwd
+          find . -maxdepth 4 -type f | sort
+          file icon.png assets/common/icon.png
+          node -e "const fs=require('fs'); for (const p of ['app.json','icon.png','assets/common/icon.png']) console.log(p, fs.existsSync(p), fs.statSync(p).size)"
       - name: Build Zepp watch package
         working-directory: agents/zepp-watch
         run: zeus build
