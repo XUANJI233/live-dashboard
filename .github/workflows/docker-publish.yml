@@ -2,7 +2,9 @@ name: Publish Docker image
 
 on:
   push:
-    branches: [main]
+    branches: 
+      - main
+      - codex/mobile-watch-realtime
   release:
     types: [published]
 
@@ -35,7 +37,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
             type=semver,pattern=v{{version}}
             type=semver,pattern=v{{major}}.{{minor}}
             type=sha

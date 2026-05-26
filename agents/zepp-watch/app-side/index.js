@@ -64,6 +64,10 @@ AppSideService(
       log('Live Dashboard side service init')
     },
 
+    onSettingsChange({ key, newValue, oldValue }) {
+      log(`Settings changed: ${key} = ${newValue}`)
+    },
+
     onRequest(req, res) {
       if (req.method !== 'watch.snapshot') {
         res('unsupported method')

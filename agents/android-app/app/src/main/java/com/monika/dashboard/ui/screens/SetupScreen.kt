@@ -175,7 +175,7 @@ fun SetupScreen(settings: SettingsStore) {
         OptionalSwitch(
             checked = highFrequencyInput,
             title = "高频上报",
-            body = "允许 5 秒级心跳；更实时但更耗电"
+            body = "每5秒上传一次状态,但更加耗电"
         ) {
             highFrequencyInput = it
             scope.launch {

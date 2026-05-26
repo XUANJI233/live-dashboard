@@ -136,11 +136,15 @@ object MessageSocketManager {
     }
 
     private fun buildWsUrl(serverUrl: String): String {
-        val uri = URI(serverUrl.trimEnd('/'))
-        val scheme = if (uri.scheme == "https") "wss" else "ws"
-        val port = if (uri.port >= 0) ":${uri.port}" else ""
-        val path = uri.path?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: ""
-        return "$scheme://${uri.host}$port$path/api/ws?role=device"
+        val base = serverUrl.trimEnd('/')
+        val wsBase = if (base.startsWith("https", ignoreCase = true)) {
+            base.replace(Regex("^https://", RegexOption.IGNORE_CASE), "wss://")
+        } else if (base.startsWith("http", ignoreCase = true)) {
+            base.replace(Regex("^http://", RegexOption.IGNORE_CASE), "ws://")
+        } else {
+            "wss://$base"
+        }
+        return "$wsBase/api/ws?role=device"
     }
 
     private fun createChannel(context: Context) {
