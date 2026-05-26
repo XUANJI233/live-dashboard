@@ -113,6 +113,11 @@ function HomeInner() {
     };
   }, [timeline, selectedDevice]);
 
+  const hasTimelineData = useMemo(() => {
+    const segs = filteredTimeline?.segments ?? [];
+    return segs.some((seg) => seg.duration_minutes >= 5 && !isLauncherSegment(seg.app_name, seg.app_id));
+  }, [filteredTimeline?.segments]);
+
   useEffect(() => {
     document.body.classList.toggle("night-mode", allOffline);
     return () => { document.body.classList.remove("night-mode"); };
@@ -149,33 +154,25 @@ function HomeInner() {
 
       {current && (
         <>
-          {/* Current status - prominent VN dialog */}
-          <CurrentStatus device={selectedDevice} />
+          {selectedDevice && <CurrentStatus device={selectedDevice} />}
 
-          <div className="flex flex-col lg:flex-row gap-6">
+          <div className="grid gap-6 lg:grid-cols-[14rem_minmax(0,1fr)_20rem]">
             {/* Left: device cards (narrow) */}
-            <div className="lg:w-56 flex-shrink-0 space-y-2">
-              <h2 className="text-xs font-bold text-[var(--color-text-muted)] uppercase tracking-wider mb-2">
-                Devices
-              </h2>
-              {devices.length === 0 ? (
-                <div className="text-center py-4">
-                  <p className="text-lg mb-1">( -ω-) zzZ</p>
-                  <p className="text-xs text-[var(--color-text-muted)] italic">
-                    还没有设备连接呢~
-                  </p>
-                </div>
-              ) : (
-                devices.map((d) => (
+            {devices.length > 0 && (
+              <div className="space-y-2">
+                <h2 className="text-xs font-bold text-[var(--color-text-muted)] uppercase tracking-wider mb-2">
+                  Devices
+                </h2>
+                {devices.map((d) => (
                   <DeviceCard
                     key={d.device_id}
                     device={d}
                     selected={selectedDevice?.device_id === d.device_id}
                     onSelect={() => setSelectedDeviceId(d.device_id)}
                   />
-                ))
-              )}
-            </div>
+                ))}
+              </div>
+            )}
 
             {/* Right: timeline + health (wide) */}
             <div className="flex-1 min-w-0">
@@ -215,7 +212,6 @@ function HomeInner() {
                 <DeviceOverview devices={devices} />
               )}
 
-              <VisitorMessages device={selectedDevice} />
               <ExposurePanel device={selectedDevice} />
 
               {/* Tab content */}
@@ -229,7 +225,7 @@ function HomeInner() {
                         currentAppByDevice={currentAppByDevice}
                       />
                     </div>
-                  ) : filteredTimeline ? (
+                  ) : filteredTimeline && hasTimelineData ? (
                     <Timeline
                       segments={filteredTimeline.segments}
                       summary={filteredTimeline.summary}
@@ -241,6 +237,12 @@ function HomeInner() {
                 <HealthData selectedDate={selectedDate} deviceId={selectedDevice?.device_id} />
               )}
             </div>
+
+            {selectedDevice && (
+              <aside className="min-w-0">
+                <VisitorMessages device={selectedDevice} />
+              </aside>
+            )}
           </div>
         </>
       )}
@@ -255,39 +257,40 @@ function HomeInner() {
   );
 }
 
-function boolText(value: boolean | undefined) {
-  if (value === undefined) return "未知";
-  return value ? "是" : "否";
+function valueText(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "boolean") return value ? "是" : "否";
+  return String(value);
 }
 
 function ExposurePanel({ device }: { device: DeviceState | undefined }) {
   if (!device) return null;
   const extra = device.extra || {};
-  const rows: Array<[string, string | undefined]> = [
-    ["设备 ID", device.device_id],
-    ["设备名", device.device_name],
-    ["平台", device.platform],
-    ["应用 ID", device.app_id],
-    ["应用名", device.app_name],
+  const appValue = device.app_name && device.app_name !== "idle" && device.app_name !== "android"
+    ? device.app_name
+    : undefined;
+  const rows = [
+    ["应用", appValue],
     ["页面标题", device.display_title || device.window_title],
-    ["最后上报", device.last_seen_at],
     ["采集模式", extra.device?.capability_mode],
-    ["网络连接", boolText(extra.device?.network_connected)],
-    ["VPN", extra.device?.vpn_active ? (extra.device.vpn_name || "开启") : boolText(extra.device?.vpn_active)],
+    ["网络", extra.device?.network_type || valueText(extra.device?.network_connected)],
+    ["蜂窝网络", extra.device?.cellular_generation],
+    ["VPN", extra.device?.vpn_active ? (extra.device.vpn_name || "开启") : valueText(extra.device?.vpn_active)],
     ["前台包名", extra.foreground?.package_name],
-    ["前台应用", extra.foreground?.app_name],
     ["前台 Activity", extra.foreground?.activity],
     ["前台来源", extra.foreground?.source],
     ["媒体标题", extra.media?.title],
     ["媒体作者", extra.media?.artist],
     ["媒体应用", extra.media?.app],
     ["媒体状态", extra.media?.state],
-    ["正在输入", boolText(extra.input?.is_typing)],
+    ["正在输入", valueText(extra.input?.is_typing)],
     ["位置", extra.location?.latitude !== undefined && extra.location?.longitude !== undefined
       ? `${extra.location.latitude}, ${extra.location.longitude}${extra.location.accuracy_m ? ` ±${extra.location.accuracy_m}m` : ""}`
       : undefined],
     ["位置来源", extra.location?.provider],
-  ];
+  ].filter(([, value]) => valueText(value));
+
+  if (rows.length === 0) return null;
 
   return (
     <section className="vn-bubble mt-4">
@@ -301,7 +304,7 @@ function ExposurePanel({ device }: { device: DeviceState | undefined }) {
         {rows.map(([label, value]) => (
           <div key={label} className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 min-w-0">
             <div className="text-[10px] text-[var(--color-text-muted)]">{label}</div>
-            <div className="truncate" title={value || "未上报"}>{value || "未上报"}</div>
+            <div className="truncate" title={valueText(value)}>{valueText(value)}</div>
           </div>
         ))}
       </div>
@@ -334,4 +337,13 @@ function DeviceOverview({ devices }: { devices: DeviceState[] }) {
       })}
     </div>
   );
+}
+
+function isLauncherSegment(appName: string, appId: string) {
+  const text = `${appName} ${appId}`.toLowerCase();
+  return text.includes("launcher") ||
+    text.includes("systemui") ||
+    text.includes("桌面") ||
+    text.includes("主屏幕") ||
+    text.includes("home screen");
 }

@@ -18,6 +18,7 @@ import { createWidget, widget, align, text_style, prop } from '@zos/ui'
 import { log } from '@zos/utils'
 import { BasePage } from '@zeppos/zml/base-page'
 
+const logger = log.getLogger('LiveDashboardPage')
 const { width: DEVICE_WIDTH, height: DEVICE_HEIGHT } = getDeviceInfo()
 const heartRate = new HeartRate()
 const storage = new LocalStorage()
@@ -325,7 +326,7 @@ Page(
           this.persistDisplay()
           this.updateDisplay()
           this.state.syncing = false
-          log(`Sync error: ${error}`)
+          logger.log(`Sync error: ${error}`)
         })
     },
   })

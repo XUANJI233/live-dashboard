@@ -1,14 +1,16 @@
 import { log } from '@zos/utils'
 import { BaseApp } from '@zeppos/zml/base-app'
 
+const logger = log.getLogger('LiveDashboard')
+
 App(
   BaseApp({
     globalData: {},
     onCreate() {
-      log('Live Dashboard watch app created')
+      logger.log('Live Dashboard watch app created')
     },
     onDestroy() {
-      log('Live Dashboard watch app destroyed')
+      logger.log('Live Dashboard watch app destroyed')
     },
   })
 )

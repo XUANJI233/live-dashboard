@@ -1,4 +1,3 @@
-import { log } from '@zos/utils'
 import { BaseSideService } from '@zeppos/zml/base-side'
 
 const DEFAULT_MIN_INTERVAL_MS = 5 * 60 * 1000
@@ -61,11 +60,11 @@ AppSideService(
 
     onInit() {
       this.state.lastSyncAt = asNumber(readSetting(this.settings, 'lastSyncAt', 0), 0)
-      log('Live Dashboard side service init')
+      this.log('Live Dashboard side service init')
     },
 
     onSettingsChange({ key, newValue, oldValue }) {
-      log(`Settings changed: ${key} = ${newValue}`)
+      this.log(`Settings changed: ${key} = ${newValue}`)
     },
 
     onRequest(req, res) {
@@ -77,7 +76,7 @@ AppSideService(
       this.handleSnapshot(req.params || {})
         .then((result) => res(null, result))
         .catch((error) => {
-          log(`Sync error: ${error}`)
+          this.log(`Sync error: ${error}`)
           res(error?.message || 'sync failed')
         })
     },

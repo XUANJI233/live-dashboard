@@ -213,7 +213,7 @@ class SettingsStore(private val context: Context) {
 
         fun sanitizeCapabilityMode(mode: String): String =
             when (mode) {
-                "root", "lsposed" -> if (BuildConfig.PRIVILEGED_FEATURES) mode else "normal"
+                "root", "lsposed" -> if (BuildConfig.PRIVILEGED_FEATURES) "lsposed" else "normal"
                 else -> "normal"
             }
     }

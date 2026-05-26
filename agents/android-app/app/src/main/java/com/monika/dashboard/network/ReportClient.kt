@@ -48,6 +48,8 @@ class ReportClient(
         batteryPercent: Int? = null,
         batteryCharging: Boolean? = null,
         networkConnected: Boolean? = null,
+        networkType: String? = null,
+        cellularGeneration: String? = null,
         vpnActive: Boolean? = null,
         vpnName: String? = null,
         location: LocationSnapshot? = null,
@@ -66,6 +68,8 @@ class ReportClient(
             batteryCharging?.let { extra.put("battery_charging", it) }
             val device = JSONObject()
             networkConnected?.let { device.put("network_connected", it) }
+            networkType?.takeIf { it.isNotBlank() }?.let { device.put("network_type", it.take(64)) }
+            cellularGeneration?.takeIf { it.isNotBlank() }?.let { device.put("cellular_generation", it.take(64)) }
             vpnActive?.let { device.put("vpn_active", it) }
             vpnName?.let { device.put("vpn_name", it.take(64)) }
             snapshot?.let {

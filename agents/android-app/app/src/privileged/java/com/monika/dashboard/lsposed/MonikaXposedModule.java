@@ -66,7 +66,6 @@ public final class MonikaXposedModule extends XposedModule {
             intent.putExtra("package_name", findPackageName(owner));
             intent.putExtra("activity", findActivityName(owner));
             intent.putExtra("input_active", false);
-            intent.putExtra("media_playing", false);
             Context context = getSystemContext();
             if (context != null) context.sendBroadcast(intent);
         } catch (Throwable t) {

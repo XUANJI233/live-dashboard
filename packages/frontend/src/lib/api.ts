@@ -15,6 +15,8 @@ export interface DeviceState {
     battery_charging?: boolean;
     device?: {
       network_connected?: boolean;
+      network_type?: string;
+      cellular_generation?: string;
       vpn_active?: boolean;
       vpn_name?: string;
       capability_mode?: "normal" | "root" | "lsposed";

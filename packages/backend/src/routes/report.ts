@@ -107,6 +107,10 @@ export async function handleReport(req: Request): Promise<Response> {
       const deviceBody = rawDevice as Record<string, unknown>;
       const deviceExtra: Record<string, unknown> = {};
       if (typeof deviceBody.network_connected === "boolean") deviceExtra.network_connected = deviceBody.network_connected;
+      const networkType = cleanString(deviceBody.network_type, MAX_SHORT_LENGTH);
+      if (networkType) deviceExtra.network_type = networkType;
+      const cellularGeneration = cleanString(deviceBody.cellular_generation, MAX_SHORT_LENGTH);
+      if (cellularGeneration) deviceExtra.cellular_generation = cellularGeneration;
       if (typeof deviceBody.vpn_active === "boolean") deviceExtra.vpn_active = deviceBody.vpn_active;
       const vpnName = cleanString(deviceBody.vpn_name, MAX_SHORT_LENGTH);
       if (vpnName) deviceExtra.vpn_name = vpnName;
