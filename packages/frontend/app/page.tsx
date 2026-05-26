@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useDashboard } from "@/hooks/useDashboard";
 import { useConfig, useConfigLoader, ConfigContext } from "@/hooks/useConfig";
-import type { DeviceState } from "@/lib/api";
+import type { DeviceState, HealthRecord } from "@/lib/api";
 import { fetchHealthData } from "@/lib/api";
 import Header from "@/components/Header";
 import CurrentStatus from "@/components/CurrentStatus";
@@ -37,6 +37,7 @@ function HomeInner() {
 
   // Check if health data exists for the selected date
   const [hasHealthData, setHasHealthData] = useState(false);
+  const [healthRecords, setHealthRecords] = useState<HealthRecord[]>([]);
 
   // Reset tab to activity if health data disappears
   useEffect(() => {
@@ -84,14 +85,17 @@ function HomeInner() {
     // Don't fetch until we have both a date and a resolved device
     if (!selectedDate || !selectedDeviceIdResolved) {
       setHasHealthData(false);
+      setHealthRecords([]);
       return;
     }
     setHasHealthData(false); // reset immediately on device/date change
+    setHealthRecords([]);
     const controller = new AbortController();
     fetchHealthData(selectedDate, controller.signal, selectedDeviceIdResolved)
       .then((d) => {
         if (!controller.signal.aborted) {
           setHasHealthData(d.records.length > 0);
+          setHealthRecords(d.records);
         }
       })
       .catch(() => {
@@ -115,7 +119,7 @@ function HomeInner() {
 
   const hasTimelineData = useMemo(() => {
     const segs = filteredTimeline?.segments ?? [];
-    return segs.some((seg) => seg.duration_minutes >= 5 && !isLauncherSegment(seg.app_name, seg.app_id));
+    return segs.length > 0;
   }, [filteredTimeline?.segments]);
 
   useEffect(() => {
@@ -154,6 +158,7 @@ function HomeInner() {
 
       {current && (
         <>
+          <BodySnapshot device={selectedDevice} records={healthRecords} />
           {selectedDevice && <CurrentStatus device={selectedDevice} />}
 
           <div className="grid gap-6 lg:grid-cols-[14rem_minmax(0,1fr)_20rem]">
@@ -212,8 +217,6 @@ function HomeInner() {
                 <DeviceOverview devices={devices} />
               )}
 
-              <ExposurePanel device={selectedDevice} />
-
               {/* Tab content */}
               {tab === "activity" ? (
                 <>
@@ -257,67 +260,6 @@ function HomeInner() {
   );
 }
 
-function valueText(value: unknown): string | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  if (typeof value === "boolean") return value ? "是" : "否";
-  return String(value);
-}
-
-function ExposurePanel({ device }: { device: DeviceState | undefined }) {
-  if (!device) return null;
-  const extra = device.extra || {};
-  const appValue = device.app_name && device.app_name !== "idle" && device.app_name !== "android"
-    ? device.app_name
-    : undefined;
-  const rows = [
-    ["应用", appValue],
-    ["页面标题", device.display_title || device.window_title],
-    ["采集模式", extra.device?.capability_mode],
-    ["网络", extra.device?.network_type || valueText(extra.device?.network_connected)],
-    ["蜂窝网络", extra.device?.cellular_generation],
-    ["VPN", extra.device?.vpn_active ? (extra.device.vpn_name || "开启") : valueText(extra.device?.vpn_active)],
-    ["前台包名", extra.foreground?.package_name],
-    ["前台 Activity", extra.foreground?.activity],
-    ["前台来源", extra.foreground?.source],
-    ["媒体标题", extra.media?.title],
-    ["媒体作者", extra.media?.artist],
-    ["媒体应用", extra.media?.app],
-    ["媒体状态", extra.media?.state],
-    ["正在输入", valueText(extra.input?.is_typing)],
-    ["位置", extra.location?.latitude !== undefined && extra.location?.longitude !== undefined
-      ? `${extra.location.latitude}, ${extra.location.longitude}${extra.location.accuracy_m ? ` ±${extra.location.accuracy_m}m` : ""}`
-      : undefined],
-    ["位置来源", extra.location?.provider],
-  ].filter(([, value]) => valueText(value));
-
-  if (rows.length === 0) return null;
-
-  return (
-    <section className="vn-bubble mt-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="text-xs font-bold text-[var(--color-text-muted)] uppercase tracking-wider">
-          当前暴露状态
-        </h2>
-        <span className="text-[10px] text-[var(--color-text-muted)]">尽量展示已收到的数据</span>
-      </div>
-      <div className="grid sm:grid-cols-2 gap-2 text-xs">
-        {rows.map(([label, value]) => (
-          <div key={label} className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 min-w-0">
-            <div className="text-[10px] text-[var(--color-text-muted)]">{label}</div>
-            <div className="truncate" title={valueText(value)}>{valueText(value)}</div>
-          </div>
-        ))}
-      </div>
-      <details className="mt-3 text-xs">
-        <summary className="cursor-pointer text-[var(--color-text-muted)]">原始 extra JSON</summary>
-        <pre className="mt-2 max-h-56 overflow-auto rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-2 text-[10px] whitespace-pre-wrap">
-          {JSON.stringify(extra, null, 2)}
-        </pre>
-      </details>
-    </section>
-  );
-}
-
 const platformIcons: Record<string, string> = {
   windows: "\u{1F5A5}",
   android: "\u{1F4F1}",
@@ -339,11 +281,48 @@ function DeviceOverview({ devices }: { devices: DeviceState[] }) {
   );
 }
 
-function isLauncherSegment(appName: string, appId: string) {
-  const text = `${appName} ${appId}`.toLowerCase();
-  return text.includes("launcher") ||
-    text.includes("systemui") ||
-    text.includes("桌面") ||
-    text.includes("主屏幕") ||
-    text.includes("home screen");
+function BodySnapshot({ device, records }: { device: DeviceState | undefined; records: HealthRecord[] }) {
+  type BodyMetric = { label: string; value: string; unit: string; at?: string };
+  const latest = new Map<string, HealthRecord>();
+  for (const record of records) {
+    const prev = latest.get(record.type);
+    if (!prev || record.recorded_at > prev.recorded_at) latest.set(record.type, record);
+  }
+  const extra = device?.extra || {};
+  const items = ([
+    metric("心率", latest.get("heart_rate"), "bpm"),
+    metric("血氧", latest.get("oxygen_saturation"), "%"),
+    metric("体温", latest.get("body_temperature"), "℃"),
+    metric("压力", latest.get("stress"), ""),
+    metric("步数", latest.get("steps"), "步"),
+    metric("站立", latest.get("stand_hours"), "小时"),
+    typeof extra.battery_percent === "number"
+      ? { label: "电量", value: String(extra.battery_percent), unit: "%", at: device?.last_seen_at }
+      : null,
+    extra.device?.network_type
+      ? { label: "网络", value: extra.device.network_type, unit: extra.device.cellular_generation || "", at: device?.last_seen_at }
+      : null,
+  ].filter(Boolean) as BodyMetric[]);
+
+  if (items.length === 0) return null;
+
+  return (
+    <section className="mb-4 flex flex-wrap gap-2">
+      {items.map((item) => (
+        <div key={item.label} className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 min-w-[5.5rem]">
+          <div className="text-[10px] text-[var(--color-text-muted)]">{item.label}</div>
+          <div className="font-mono text-sm text-[var(--color-primary)]">
+            {item.value}
+            {item.unit && <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">{item.unit}</span>}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function metric(label: string, record: HealthRecord | undefined, fallbackUnit: string) {
+  if (!record) return null;
+  const value = Number.isInteger(record.value) ? String(record.value) : record.value.toFixed(1);
+  return { label, value, unit: record.unit || fallbackUnit, at: record.recorded_at };
 }

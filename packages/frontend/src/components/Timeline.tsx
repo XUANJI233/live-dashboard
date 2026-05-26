@@ -45,7 +45,7 @@ interface Props {
 export default function Timeline({ segments, summary, currentAppByDevice }: Props) {
   const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
   const colorMap = new Map<string, string>();
-  const visibleSegments = segments.filter((seg) => shouldShowSegment(seg));
+  const visibleSegments = segments.filter((seg) => !isLauncherSegment(seg));
 
   if (visibleSegments.length === 0) return null;
 
@@ -206,13 +206,13 @@ export default function Timeline({ segments, summary, currentAppByDevice }: Prop
   );
 }
 
-function shouldShowSegment(seg: TimelineSegment) {
-  if (seg.duration_minutes < 5) return false;
+function isLauncherSegment(seg: TimelineSegment) {
   const app = `${seg.app_name} ${seg.app_id}`.toLowerCase();
-  if (!app.trim()) return false;
-  if (app.includes("launcher") || app.includes("systemui")) return false;
-  if (app.includes("桌面") || app.includes("主屏幕") || app.includes("home screen")) return false;
-  return true;
+  return app.includes("launcher") ||
+    app.includes("systemui") ||
+    app.includes("桌面") ||
+    app.includes("主屏幕") ||
+    app.includes("home screen");
 }
 
 function formatClock(value: string) {
