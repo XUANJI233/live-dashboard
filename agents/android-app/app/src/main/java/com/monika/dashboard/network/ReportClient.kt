@@ -232,6 +232,7 @@ class ReportClient(
                                 id = item.optString("id"),
                                 viewerId = item.optString("viewer_id"),
                                 viewerName = item.optString("viewer_name"),
+                                viewerRemark = item.optString("viewer_remark"),
                                 kind = item.optString("kind", "private"),
                                 direction = item.optString("direction", "viewer"),
                                 text = item.optString("text"),
@@ -262,6 +263,21 @@ class ReportClient(
             put("viewer_id", viewerId.take(120))
         }
         return post("${serverUrl.trimEnd('/')}/api/messages/block", body)
+    }
+
+    fun deleteMessage(messageId: String): Result<Unit> {
+        val body = JSONObject().apply {
+            put("message_id", messageId.take(120))
+        }
+        return post("${serverUrl.trimEnd('/')}/api/messages/delete", body)
+    }
+
+    fun setViewerRemark(viewerId: String, remark: String): Result<Unit> {
+        val body = JSONObject().apply {
+            put("viewer_id", viewerId.take(120))
+            put("remark", remark.take(500))
+        }
+        return post("${serverUrl.trimEnd('/')}/api/messages/remark", body)
     }
 
     private fun post(url: String, body: JSONObject): Result<Unit> {

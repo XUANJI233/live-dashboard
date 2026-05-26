@@ -1,6 +1,7 @@
 package com.monika.dashboard.ui.screens
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MessagesScreen(settings: SettingsStore) {
     val context = LocalContext.current
@@ -27,6 +29,9 @@ fun MessagesScreen(settings: SettingsStore) {
     var tick by remember { mutableIntStateOf(0) }
     var selectedViewer by remember { mutableStateOf<String?>(null) }
     var replyText by remember { mutableStateOf("") }
+    var detailViewerId by remember { mutableStateOf<String?>(null) }
+    var remarkText by remember { mutableStateOf("") }
+    var detailMessage by remember { mutableStateOf<com.monika.dashboard.data.VisitorMessage?>(null) }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -69,14 +74,23 @@ fun MessagesScreen(settings: SettingsStore) {
             groups.forEach { (viewerId, messages) ->
                 val latest = messages.lastOrNull()
                 val name = messages.lastOrNull { it.viewerName.isNotBlank() }?.viewerName ?: "游客"
+                val remark = messages.lastOrNull { it.viewerRemark.isNotBlank() }?.viewerRemark.orEmpty()
                 Surface(
                     shape = RoundedCornerShape(8.dp),
                     color = if (viewerId == activeViewer) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.fillMaxWidth().clickable { selectedViewer = viewerId }
+                    modifier = Modifier.fillMaxWidth().combinedClickable(
+                        onClick = { selectedViewer = viewerId },
+                        onLongClick = {
+                            detailViewerId = viewerId
+                            remarkText = remark
+                        }
+                    )
                 ) {
                     Column(modifier = Modifier.padding(10.dp)) {
-                        Text(name, style = MaterialTheme.typography.labelLarge)
-                        Text(viewerId, style = MaterialTheme.typography.labelSmall)
+                        Text(remark.ifBlank { name }, style = MaterialTheme.typography.labelLarge)
+                        if (remark.isNotBlank() && name != "游客") {
+                            Text(name, style = MaterialTheme.typography.labelSmall)
+                        }
                         Text(latest?.text.orEmpty(), style = MaterialTheme.typography.bodySmall, maxLines = 2)
                     }
                 }
@@ -97,7 +111,10 @@ fun MessagesScreen(settings: SettingsStore) {
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = if (mine) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().combinedClickable(
+                            onClick = {},
+                            onLongClick = { detailMessage = message }
+                        )
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
                             Text(
@@ -147,9 +164,72 @@ fun MessagesScreen(settings: SettingsStore) {
             ) { Text("拉黑此访客") }
         }
     }
+
+    detailViewerId?.let { viewerId ->
+        val messages = groups.firstOrNull { it.first == viewerId }?.second.orEmpty()
+        val name = messages.lastOrNull { it.viewerName.isNotBlank() }?.viewerName ?: "游客"
+        AlertDialog(
+            onDismissRequest = { detailViewerId = null },
+            title = { Text("访客详情") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("ID: $viewerId", style = MaterialTheme.typography.bodySmall)
+                    Text("名称: $name", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = remarkText,
+                        onValueChange = { remarkText = it.take(500) },
+                        label = { Text("云同步备注") },
+                        singleLine = false,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val cleaned = remarkText.trim()
+                    MessageInboxStore.setRemark(context, viewerId, cleaned)
+                    scope.launch(Dispatchers.IO) {
+                        syncMessageAction(settings) { client -> client.setViewerRemark(viewerId, cleaned) }
+                    }
+                    tick++
+                    detailViewerId = null
+                }) { Text("保存备注") }
+            },
+            dismissButton = {
+                TextButton(onClick = { detailViewerId = null }) { Text("关闭") }
+            }
+        )
+    }
+
+    detailMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { detailMessage = null },
+            title = { Text("消息详情") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("消息 ID: ${message.id}", style = MaterialTheme.typography.bodySmall)
+                    Text("访客 ID: ${message.viewerId}", style = MaterialTheme.typography.bodySmall)
+                    Text("类型: ${message.kind} / ${message.direction}", style = MaterialTheme.typography.bodySmall)
+                    Text(message.text, style = MaterialTheme.typography.bodyMedium)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    MessageInboxStore.delete(context, message.id)
+                    scope.launch(Dispatchers.IO) {
+                        syncMessageAction(settings) { client -> client.deleteMessage(message.id) }
+                    }
+                    tick++
+                    detailMessage = null
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { detailMessage = null }) { Text("关闭") }
+            }
+        )
+    }
 }
 
-private suspend fun syncMessageAction(
+suspend fun syncMessageAction(
     settings: SettingsStore,
     action: (ReportClient) -> Result<Unit>,
 ) {

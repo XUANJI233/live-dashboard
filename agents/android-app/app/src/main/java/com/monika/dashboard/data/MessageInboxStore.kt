@@ -8,6 +8,7 @@ data class VisitorMessage(
     val id: String,
     val viewerId: String,
     val viewerName: String,
+    val viewerRemark: String,
     val kind: String,
     val direction: String,
     val text: String,
@@ -25,6 +26,7 @@ object MessageInboxStore {
         viewerId: String,
         text: String,
         viewerName: String = "",
+        viewerRemark: String = "",
         kind: String = "private",
         direction: String = "viewer",
         at: Long = System.currentTimeMillis(),
@@ -35,6 +37,7 @@ object MessageInboxStore {
                 id = id.ifBlank { "${viewerId}_${System.currentTimeMillis()}" },
                 viewerId = viewerId,
                 viewerName = viewerName,
+                viewerRemark = viewerRemark,
                 kind = kind,
                 direction = direction,
                 text = text.take(500),
@@ -52,6 +55,19 @@ object MessageInboxStore {
         save(context, merged)
     }
 
+    fun delete(context: Context, messageId: String) {
+        if (messageId.isBlank()) return
+        save(context, recent(context).filterNot { it.id == messageId })
+    }
+
+    fun setRemark(context: Context, viewerId: String, remark: String) {
+        if (viewerId.isBlank()) return
+        val cleaned = remark.trim().take(500)
+        save(context, recent(context).map {
+            if (it.viewerId == viewerId) it.copy(viewerRemark = cleaned) else it
+        })
+    }
+
     fun recent(context: Context): List<VisitorMessage> {
         val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_RECENT, "[]")
         return runCatching {
@@ -64,6 +80,7 @@ object MessageInboxStore {
                             id = item.optString("id"),
                             viewerId = item.optString("viewer_id"),
                             viewerName = item.optString("viewer_name"),
+                            viewerRemark = item.optString("viewer_remark"),
                             kind = item.optString("kind", "private"),
                             direction = item.optString("direction", "viewer"),
                             text = item.optString("text"),
@@ -95,6 +112,7 @@ object MessageInboxStore {
                     .put("id", message.id)
                     .put("viewer_id", message.viewerId)
                     .put("viewer_name", message.viewerName)
+                    .put("viewer_remark", message.viewerRemark)
                     .put("kind", message.kind)
                     .put("direction", message.direction)
                     .put("text", message.text)
