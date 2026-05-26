@@ -20,27 +20,27 @@ AppSettingsPage({
           {},
           [
             TextInput({
-              label: 'Server URL',
+              label: '服务器地址',
               value: serverUrl,
               placeholder: 'https://your-dashboard.example.com',
               onChange: (value) => this.setItem(props, 'serverUrl', value.trim()),
             }),
             TextInput({
-              label: 'Device token',
+              label: '设备令牌',
               value: token,
               placeholder: 'Live Dashboard token',
               onChange: (value) => this.setItem(props, 'token', value.trim()),
             }),
             Select({
-              label: 'Relay mode',
+              label: '中继模式',
               value: relayMode,
               options: [
-                { name: 'Phone side, low power', value: 'phone-side' },
+                { name: '手机端，低功耗', value: 'phone-side' },
               ],
               onChange: (value) => this.setItem(props, 'relayMode', value),
             }),
             TextInput({
-              label: 'Minimum interval (ms)',
+              label: '最小间隔 (毫秒)',
               value: minIntervalMs,
               placeholder: '300000',
               onChange: (value) => {

@@ -9,7 +9,5 @@
   "scripts": {
     "build": "zeus build"
   },
-  "dependencies": {
-    "@zeppos/zml": "^0.0.41"
-  }
+  "dependencies": {}
 }

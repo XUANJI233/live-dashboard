@@ -48,7 +48,7 @@
   },
   "i18n": {
     "en-US": { "appName": "Live Dashboard", "name": "Live Dashboard" },
-    "zh-CN": { "appName": "Live Dashboard", "name": "Live Dashboard" }
+    "zh-CN": { "appName": "活动仪表板", "name": "活动仪表板" }
   },
   "defaultLanguage": "zh-CN"
 }

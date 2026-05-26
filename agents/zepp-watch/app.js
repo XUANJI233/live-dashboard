@@ -1,13 +1,11 @@
-import { BaseApp } from '@zeppos/zml/base-app'
+import { log } from '@zos/utils'
 
-App(
-  BaseApp({
-    globalData: {},
-    onCreate() {
-      this.log('Live Dashboard watch app created')
-    },
-    onDestroy() {
-      this.log('Live Dashboard watch app destroyed')
-    },
-  }),
-)
+App({
+  globalData: {},
+  onCreate() {
+    log('Live Dashboard watch app created')
+  },
+  onDestroy() {
+    log('Live Dashboard watch app destroyed')
+  },
+})
