@@ -18,7 +18,7 @@ for (const [key, value] of Object.entries(appNamesData.macos)) {
 
 export function resolveAppName(
   appId: string,
-  platform: "windows" | "android" | "macos"
+  platform: "windows" | "android" | "macos" | "zepp"
 ): string {
   if (!appId || typeof appId !== "string") return "Unknown";
   const lower = appId.toLowerCase();
@@ -38,6 +38,11 @@ export function resolveAppName(
       const last = parts[parts.length - 1];
       return last.charAt(0).toUpperCase() + last.slice(1);
     }
+    return appId;
+  }
+
+  if (platform === "zepp") {
+    if (lower === "zepp_watch") return "Zepp Watch";
     return appId;
   }
 

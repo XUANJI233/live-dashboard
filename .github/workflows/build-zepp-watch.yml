@@ -1,0 +1,60 @@
+name: Build Zepp Watch
+
+on:
+  push:
+    branches: ["codex/**", "main"]
+    paths:
+      - "agents/zepp-watch/**"
+      - ".github/workflows/build-zepp-watch.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "agents/zepp-watch/**"
+      - ".github/workflows/build-zepp-watch.yml"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  zepp-watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Install Zepp dependencies
+        working-directory: agents/zepp-watch
+        run: npm install
+      - name: Install Zepp OS CLI
+        run: npm install --global @zeppos/zeus-cli
+      - name: Validate Zepp project layout
+        working-directory: agents/zepp-watch
+        run: |
+          pwd
+          find . -maxdepth 4 -type f | sort
+          ls -la assets/common.r/icon.png assets/common.s/icon.png
+          node -e "const fs=require('fs'); for (const p of ['app.json','assets/common.r/icon.png','assets/common.s/icon.png']) console.log(p, fs.existsSync(p), fs.statSync(p).size)"
+      - name: Inspect Zepp CLI icon validation
+        run: |
+          node - <<'NODE'
+          const cp = require('child_process')
+          const fs = require('fs')
+          const path = require('path')
+          const root = cp.execSync('npm root -g').toString().trim()
+          const file = path.join(root, '@zeppos/zeus-cli/node_modules/@zeppos/zpm/lib/node.js')
+          const src = fs.readFileSync(file, 'utf8')
+          const idx = src.indexOf('The icon in app.json')
+          console.log(src.slice(Math.max(0, idx - 800), idx + 800))
+          NODE
+      - name: Build Zepp watch package
+        working-directory: agents/zepp-watch
+        run: zeus build
+      - name: Upload Zepp watch package
+        uses: actions/upload-artifact@v6
+        with:
+          name: zepp-watch-dist
+          path: agents/zepp-watch/dist/**
+          if-no-files-found: error
+          retention-days: 14

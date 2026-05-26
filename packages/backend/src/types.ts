@@ -1,7 +1,7 @@
 export interface DeviceInfo {
   device_id: string;
   device_name: string;
-  platform: "windows" | "android" | "macos";
+  platform: "windows" | "android" | "macos" | "zepp";
 }
 
 export interface ReportPayload {
@@ -11,6 +11,43 @@ export interface ReportPayload {
   extra?: {
     battery_percent?: number;
     battery_charging?: boolean;
+    device?: {
+      network_connected?: boolean;
+      vpn_active?: boolean;
+      vpn_name?: string;
+      capability_mode?: "normal" | "root" | "lsposed";
+      last_sample_at?: string;
+      relay_mode?: string;
+      energy_policy?: string;
+      min_interval_ms?: number;
+    };
+    location?: {
+      latitude?: number;
+      longitude?: number;
+      accuracy_m?: number;
+      provider?: string;
+      recorded_at?: string;
+    };
+    foreground?: {
+      package_name?: string;
+      app_name?: string;
+      activity?: string;
+      source?: "normal" | "root" | "lsposed" | "accessibility" | "notification";
+      confidence?: number;
+    };
+    input?: {
+      input_active?: boolean;
+      is_typing?: boolean;
+      source?: "normal" | "root" | "lsposed" | "accessibility" | "notification";
+    };
+    media?: {
+      playing?: boolean;
+      title?: string;
+      artist?: string;
+      app?: string;
+      state?: string;
+      source?: "normal" | "root" | "lsposed" | "accessibility" | "notification";
+    };
   };
 }
 
@@ -58,4 +95,13 @@ export interface HealthRecord {
   unit: string;
   recorded_at: string;
   end_time: string;
+}
+
+export interface LocationRecord {
+  device_id: string;
+  latitude: number;
+  longitude: number;
+  accuracy_m: number | null;
+  provider: string;
+  recorded_at: string;
 }

@@ -8,6 +8,19 @@ import { handleHealth } from "./routes/health";
 import { handleHealthData, handleHealthDataQuery } from "./routes/health-data";
 import { handleHealthWebhook } from "./routes/health-webhook";
 import { handleConfig } from "./routes/config";
+import { handleLocationQuery } from "./routes/location";
+import { handleViewerTokenIssue } from "./routes/viewer-token";
+import {
+  getWsInfo,
+  handleBlockViewer,
+  handleDeviceMessageHistory,
+  handleDeviceMessages,
+  handleDeviceMessageReply,
+  handlePublicMessages,
+  realtimeWebSocket,
+  type WsData,
+} from "./services/realtime";
+import { withCdnHeaders } from "./services/cdn";
 import { injectSiteConfig } from "./services/site-config";
 
 // Start scheduled cleanup tasks (import triggers setInterval registration)
@@ -42,7 +55,7 @@ async function serveStaticFile(realFile: string): Promise<Response> {
   return new Response(Bun.file(realFile));
 }
 
-const server = Bun.serve({
+const server = Bun.serve<WsData>({
   port: LISTEN_PORT,
   async fetch(req) {
     const url = new URL(req.url);
@@ -64,15 +77,23 @@ const server = Bun.serve({
     let response: Response;
 
     try {
-      if (pathname === "/api/report" && req.method === "POST") {
+      const clientIp =
+        req.headers.get("x-real-ip") ||
+        req.headers.get("cf-connecting-ip") ||
+        server.requestIP(req)?.address ||
+        "";
+      if (pathname === "/api/ws") {
+        const wsInfo = getWsInfo(req);
+        if (wsInfo instanceof Response) return wsInfo;
+        if (server.upgrade(req, { data: wsInfo })) {
+          return undefined;
+        }
+        return Response.json({ error: "WebSocket upgrade failed" }, { status: 400 });
+      } else if (pathname === "/api/report" && req.method === "POST") {
         response = await handleReport(req);
       } else if (pathname === "/api/current" && req.method === "GET") {
-        const clientIp =
-          req.headers.get("x-real-ip") ||
-          req.headers.get("cf-connecting-ip") ||
-          server.requestIP(req)?.address ||
-          "";
         response = handleCurrent(clientIp, req.headers.get("user-agent") || undefined);
+        response = withCdnHeaders(response, ["current"], 5);
       } else if (pathname === "/api/timeline" && req.method === "GET") {
         response = handleTimeline(url);
       } else if (pathname === "/api/health" && req.method === "GET") {
@@ -85,6 +106,20 @@ const server = Bun.serve({
         response = await handleHealthWebhook(req);
       } else if (pathname === "/api/config" && req.method === "GET") {
         response = handleConfig();
+      } else if (pathname === "/api/location" && req.method === "GET") {
+        response = handleLocationQuery(url);
+      } else if (pathname === "/api/messages" && req.method === "GET") {
+        response = handleDeviceMessages(req);
+      } else if (pathname === "/api/messages/history" && req.method === "GET") {
+        response = handleDeviceMessageHistory(req);
+      } else if (pathname === "/api/messages/reply" && req.method === "POST") {
+        response = await handleDeviceMessageReply(req);
+      } else if (pathname === "/api/messages/block" && req.method === "POST") {
+        response = await handleBlockViewer(req);
+      } else if (pathname === "/api/messages/public" && req.method === "GET") {
+        response = handlePublicMessages(req);
+      } else if (pathname === "/api/token/issue" && req.method === "POST") {
+        response = await handleViewerTokenIssue(req, clientIp);
       } else if (!pathname.startsWith("/api/")) {
         // Static file serving disabled if directory doesn't exist
         if (!staticEnabled) {
@@ -148,6 +183,7 @@ const server = Bun.serve({
 
     return response;
   },
+  websocket: realtimeWebSocket,
 });
 
 console.log(`[server] Live Dashboard backend running on http://localhost:${server.port}`);
