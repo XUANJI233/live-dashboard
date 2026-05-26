@@ -1,5 +1,7 @@
 import { db } from "../db";
 import { authenticateToken } from "../middleware/auth";
+import { currentHourWindow, purgeTags, withCdnHeaders } from "./cdn";
+import { verifyViewerToken, viewerTokenFromRequest } from "./viewer-auth";
 import type { DeviceInfo } from "../types";
 import type { ServerWebSocket } from "bun";
 
@@ -14,11 +16,13 @@ export interface WsData {
 const MAX_TEXT_LENGTH = 500;
 const MESSAGE_TTL_MINUTES = 30;
 const VIEWER_RATE_LIMIT = 10;
+const VIEWER_API_RATE_LIMIT = 60;
 const RATE_WINDOW_MS = 60_000;
 
 const deviceSockets = new Map<string, ServerWebSocket<WsData>>();
 const viewerSockets = new Map<string, ServerWebSocket<WsData>>();
 const viewerRate = new Map<string, { count: number; resetAt: number }>();
+const viewerApiRate = new Map<string, { count: number; resetAt: number }>();
 
 const insertQueuedMessage = db.prepare(`
   INSERT INTO device_messages (id, device_id, viewer_id, text, expires_at)
@@ -26,12 +30,15 @@ const insertQueuedMessage = db.prepare(`
 `);
 
 const getPendingMessages = db.prepare(`
-  SELECT id, viewer_id, text, created_at
-  FROM device_messages
-  WHERE device_id = ?
-    AND delivered_at = ''
-    AND datetime(expires_at) >= datetime('now')
-  ORDER BY created_at ASC
+  SELECT dm.id, dm.viewer_id, dm.text, dm.created_at,
+    COALESCE(vm.viewer_name, '') AS viewer_name,
+    COALESCE(vm.kind, 'private') AS kind
+  FROM device_messages dm
+  LEFT JOIN visitor_messages vm ON vm.id = dm.id
+  WHERE dm.device_id = ?
+    AND dm.delivered_at = ''
+    AND datetime(dm.expires_at) >= datetime('now')
+  ORDER BY dm.created_at ASC
   LIMIT 20
 `);
 
@@ -64,6 +71,31 @@ const blockViewerStmt = db.prepare(`
   ON CONFLICT(device_id, viewer_id) DO UPDATE SET blocked_at = datetime('now')
 `);
 
+const insertVisitorMessage = db.prepare(`
+  INSERT INTO visitor_messages (id, device_id, viewer_id, viewer_name, kind, direction, text, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO NOTHING
+`);
+
+const getDeviceMessageHistory = db.prepare(`
+  SELECT id, device_id, viewer_id, viewer_name, kind, direction, text, created_at
+  FROM visitor_messages
+  WHERE device_id = ?
+    AND (? = '' OR datetime(created_at) > datetime(?))
+  ORDER BY created_at ASC
+  LIMIT 500
+`);
+
+const getPublicMessagesByWindow = db.prepare(`
+  SELECT id, device_id, viewer_id, viewer_name, text, created_at
+  FROM visitor_messages
+  WHERE kind = 'public'
+    AND created_at >= ?
+    AND created_at < ?
+  ORDER BY created_at ASC
+  LIMIT 200
+`);
+
 function send(ws: ServerWebSocket<WsData>, payload: unknown) {
   ws.send(JSON.stringify(payload));
 }
@@ -93,6 +125,18 @@ function rateLimit(viewerId: string): boolean {
   return true;
 }
 
+function apiRateLimit(viewerId: string): boolean {
+  const now = Date.now();
+  const current = viewerApiRate.get(viewerId);
+  if (!current || current.resetAt <= now) {
+    viewerApiRate.set(viewerId, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return true;
+  }
+  if (current.count >= VIEWER_API_RATE_LIMIT) return false;
+  current.count += 1;
+  return true;
+}
+
 function cleanViewerId(value: unknown): string {
   if (typeof value !== "string") return "";
   return /^[a-zA-Z0-9_-]{3,120}$/.test(value) ? value : "";
@@ -105,6 +149,31 @@ function cleanDeviceId(value: unknown): string {
 
 function isViewerBlocked(deviceId: string, viewerId: string): boolean {
   return Boolean(isViewerBlockedStmt.get(deviceId, viewerId));
+}
+
+function cleanViewerName(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 32);
+}
+
+function cleanKind(value: unknown): "public" | "private" {
+  return value === "public" ? "public" : "private";
+}
+
+function recordMessage(
+  id: string,
+  deviceId: string,
+  viewerId: string,
+  viewerName: string,
+  kind: "public" | "private" | "reply",
+  direction: "viewer" | "device",
+  text: string,
+  createdAt = new Date().toISOString(),
+) {
+  insertVisitorMessage.run(id, deviceId, viewerId, viewerName, kind, direction, text, createdAt);
+  if (kind === "public") {
+    purgeTags(["public-messages", `public-messages-${currentHourWindow(new Date(createdAt))}`]);
+  }
 }
 
 function queueMessage(deviceId: string, viewerId: string, text: string, messageId: string) {
@@ -125,6 +194,8 @@ function deliverQueuedMessages(deviceId: string, ws: ServerWebSocket<WsData>) {
   const rows = getPendingMessages.all(deviceId) as {
     id: string;
     viewer_id: string;
+    viewer_name: string;
+    kind: string;
     text: string;
     created_at: string;
   }[];
@@ -135,6 +206,8 @@ function deliverQueuedMessages(deviceId: string, ws: ServerWebSocket<WsData>) {
       type: "viewer_message",
       message_id: row.id,
       viewer_id: row.viewer_id,
+      viewer_name: row.viewer_name,
+      kind: row.kind,
       text: row.text,
       created_at: row.created_at,
       queued: true,
@@ -153,9 +226,9 @@ export function getWsInfo(req: Request): WsData | Response {
   }
 
   if (role === "viewer") {
-    const rawViewerId = url.searchParams.get("viewer_id") || "";
-    const viewerId = /^[a-zA-Z0-9_-]{8,80}$/.test(rawViewerId) ? rawViewerId : crypto.randomUUID();
-    return { role: "viewer", id: viewerId };
+    const viewer = verifyViewerToken(viewerTokenFromRequest(req));
+    if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
+    return { role: "viewer", id: viewer.viewerId };
   }
 
   return Response.json({ error: "role must be viewer or device" }, { status: 400 });
@@ -188,6 +261,8 @@ export const realtimeWebSocket = {
 
       const targetDeviceId = cleanDeviceId(data.target_device_id);
       const text = cleanText(data.text);
+      const kind = cleanKind(data.kind);
+      const viewerName = cleanViewerName(data.viewer_name);
       const messageId = typeof data.message_id === "string" && data.message_id
         ? data.message_id.slice(0, 80)
         : crypto.randomUUID();
@@ -195,10 +270,13 @@ export const realtimeWebSocket = {
         send(ws, { type: "error", message_id: messageId, error: "target_device_id and text required" });
         return;
       }
+
       if (isViewerBlocked(targetDeviceId, ws.data.id)) {
         send(ws, { type: "error", message_id: messageId, error: "blocked_by_device" });
         return;
       }
+      const createdAt = new Date().toISOString();
+      recordMessage(messageId, targetDeviceId, ws.data.id, viewerName, kind, "viewer", text, createdAt);
 
       const deviceWs = deviceSockets.get(targetDeviceId);
       if (deviceWs) {
@@ -206,8 +284,10 @@ export const realtimeWebSocket = {
           type: "viewer_message",
           message_id: messageId,
           viewer_id: ws.data.id,
+          viewer_name: viewerName,
+          kind,
           text,
-          created_at: new Date().toISOString(),
+          created_at: createdAt,
         });
         send(ws, { type: "ack", message_id: messageId, status: "sent" });
       } else {
@@ -221,16 +301,21 @@ export const realtimeWebSocket = {
       const targetViewerId = typeof data.target_viewer_id === "string" ? data.target_viewer_id : "";
       const text = cleanText(data.text);
       const messageId = typeof data.message_id === "string" ? data.message_id.slice(0, 80) : "";
+      const replyId = typeof data.reply_id === "string" && data.reply_id
+        ? data.reply_id.slice(0, 80)
+        : crypto.randomUUID();
       if (!targetViewerId || !text) {
         send(ws, { type: "error", message_id: messageId, error: "target_viewer_id and text required" });
         return;
       }
       if (messageId) markMessageReplied.run(messageId);
+      recordMessage(replyId, ws.data.id, targetViewerId, "", "reply", "device", text);
       const viewerWs = viewerSockets.get(targetViewerId);
       if (viewerWs) {
         send(viewerWs, {
           type: "device_reply",
-          message_id: messageId,
+          message_id: replyId,
+          in_reply_to: messageId,
           device_id: ws.data.id,
           text,
           created_at: new Date().toISOString(),
@@ -264,12 +349,25 @@ export function handleDeviceMessages(req: Request): Response {
   const rows = getPendingMessages.all(device.device_id) as {
     id: string;
     viewer_id: string;
+    viewer_name: string;
+    kind: string;
     text: string;
     created_at: string;
   }[];
   if (rows.length > 0) {
     markMessagesDelivered(device.device_id, rows.map((r) => r.id));
   }
+  return Response.json({ messages: rows });
+}
+
+export function handleDeviceMessageHistory(req: Request): Response {
+  const device = authenticateToken(req.headers.get("authorization"));
+  if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
+
+  const url = new URL(req.url);
+  const since = url.searchParams.get("since") || "";
+  const safeSince = since && !isNaN(new Date(since).getTime()) ? new Date(since).toISOString() : "";
+  const rows = getDeviceMessageHistory.all(device.device_id, safeSince, safeSince);
   return Response.json({ messages: rows });
 }
 
@@ -292,11 +390,16 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
   }
 
   if (messageId) markMessageReplied.run(messageId);
+  const replyId = typeof body.reply_id === "string" && body.reply_id
+    ? body.reply_id.slice(0, 80)
+    : crypto.randomUUID();
+  recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text);
   const viewerWs = viewerSockets.get(viewerId);
   if (viewerWs) {
     send(viewerWs, {
       type: "device_reply",
-      message_id: messageId,
+      message_id: replyId,
+      in_reply_to: messageId,
       device_id: device.device_id,
       text,
       created_at: new Date().toISOString(),
@@ -304,6 +407,35 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
   }
 
   return Response.json({ ok: true, delivered: Boolean(viewerWs) });
+}
+
+export function handlePublicMessages(req: Request): Response {
+  const viewer = verifyViewerToken(viewerTokenFromRequest(req));
+  if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
+  if (!apiRateLimit(viewer.viewerId)) {
+    return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
+
+  const url = new URL(req.url);
+  const windowParam = url.searchParams.get("window") || currentHourWindow();
+  if (!/^\d{10}$/.test(windowParam)) {
+    return Response.json({ error: "window must be YYYYMMDDHH" }, { status: 400 });
+  }
+
+  const year = Number(windowParam.slice(0, 4));
+  const month = Number(windowParam.slice(4, 6)) - 1;
+  const day = Number(windowParam.slice(6, 8));
+  const hour = Number(windowParam.slice(8, 10));
+  const start = new Date(Date.UTC(year, month, day, hour));
+  if (isNaN(start.getTime())) return Response.json({ error: "invalid window" }, { status: 400 });
+  const end = new Date(start.getTime() + 60 * 60_000);
+  const rows = getPublicMessagesByWindow.all(start.toISOString(), end.toISOString());
+  const currentWindow = windowParam === currentHourWindow();
+  return withCdnHeaders(
+    Response.json({ window: windowParam, messages: rows }),
+    ["public-messages", `public-messages-${windowParam}`],
+    currentWindow ? 15 : 60 * 60 * 24 * 30,
+  );
 }
 
 export async function handleBlockViewer(req: Request): Promise<Response> {

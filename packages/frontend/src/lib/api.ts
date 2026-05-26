@@ -171,10 +171,10 @@ export async function fetchHealthData(date: string, signal?: AbortSignal, device
   return res.json();
 }
 
-export function getRealtimeUrl(viewerId?: string): string {
+export function getRealtimeUrl(viewerToken?: string): string {
   const base = API_BASE || (typeof window !== "undefined" ? window.location.origin : "");
   const url = new URL("/api/ws?role=viewer", base || "http://localhost");
-  if (viewerId) url.searchParams.set("viewer_id", viewerId);
+  if (viewerToken) url.searchParams.set("viewer_token", viewerToken);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
 }

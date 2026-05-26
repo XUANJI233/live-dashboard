@@ -22,19 +22,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.repeatOnLifecycle
 import com.monika.dashboard.data.DebugLog
-import com.monika.dashboard.data.MessageInboxStore
-import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.data.UploadItem
 import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.health.BackgroundReadAvailability
 import com.monika.dashboard.health.HealthConnectManager
-import com.monika.dashboard.network.ReportClient
-import com.monika.dashboard.realtime.MessageSocketManager
 import com.monika.dashboard.ui.theme.Border
 import com.monika.dashboard.ui.theme.TextMuted
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 import java.util.Locale
@@ -44,8 +38,6 @@ fun StatusScreen() {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
     val lifecycleOwner = LocalLifecycleOwner.current
-    val scope = rememberCoroutineScope()
-    val settings = remember(context) { SettingsStore(context.applicationContext) }
 
     var healthAvailable by remember { mutableStateOf(false) }
     var backgroundReadAvailability by remember { mutableStateOf<BackgroundReadAvailability?>(null) }
@@ -345,69 +337,6 @@ fun StatusScreen() {
 
         Divider(color = Border, thickness = 1.dp)
 
-        Text(text = "访客消息", style = MaterialTheme.typography.titleMedium)
-        val visitorMessages = remember(tick) { MessageInboxStore.recent(context) }
-        if (visitorMessages.isEmpty()) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant
-            ) {
-                Text(
-                    text = "暂无网页消息",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextMuted,
-                    modifier = Modifier.padding(12.dp)
-                )
-            }
-        } else {
-            visitorMessages.take(5).forEach { message ->
-                val blocked = remember(tick) { MessageSocketManager.isViewerBlocked(context, message.viewerId) }
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (blocked) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            text = "${formatDebugTime(message.at)} · ${message.viewerId}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextMuted
-                        )
-                        Text(text = message.text, style = MaterialTheme.typography.bodyMedium)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(
-                                enabled = !blocked,
-                                onClick = {
-                                    MessageSocketManager.blockViewer(context, message.viewerId)
-                                    scope.launch(Dispatchers.IO) {
-                                        syncMessageAction(settings) { client ->
-                                            client.blockViewer(message.viewerId)
-                                        }
-                                    }
-                                }
-                            ) {
-                                Text(if (blocked) "已拉黑" else "拉黑")
-                            }
-                            TextButton(
-                                onClick = {
-                                    scope.launch(Dispatchers.IO) {
-                                        syncMessageAction(settings) { client ->
-                                            client.replyToMessage(message.id, message.viewerId, "手机已收到消息")
-                                        }
-                                    }
-                                }
-                            ) {
-                                Text("回复收到")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Divider(color = Border, thickness = 1.dp)
-
         Text(text = "上传状态", style = MaterialTheme.typography.titleMedium)
         UploadItem.entries.forEach { item ->
             val status = remember(tick) { UploadStatusStore.read(context, item) }
@@ -520,21 +449,6 @@ private fun isAccessibilityEnabled(context: android.content.Context): Boolean {
     val services = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
     return !services.isNullOrBlank() && services.split(':').any {
         it.contains(context.packageName, ignoreCase = true)
-    }
-}
-
-private suspend fun syncMessageAction(
-    settings: SettingsStore,
-    action: (ReportClient) -> Result<Unit>,
-) {
-    val url = settings.serverUrl.first()
-    val token = settings.getToken()
-    if (url.isBlank() || token.isNullOrBlank()) return
-    val client = ReportClient(url, token)
-    try {
-        action(client)
-    } finally {
-        client.shutdown()
     }
 }
 

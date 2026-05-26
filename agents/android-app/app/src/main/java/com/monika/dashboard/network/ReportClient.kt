@@ -9,6 +9,7 @@ import org.json.JSONObject
 import java.io.IOException
 import android.content.Context
 import com.monika.dashboard.data.UploadStatusStore
+import com.monika.dashboard.data.VisitorMessage
 import java.net.URI
 import java.time.Instant
 import java.util.concurrent.TimeUnit
@@ -188,7 +189,53 @@ class ReportClient(
                             DeviceMessage(
                                 id = item.optString("id"),
                                 viewerId = item.optString("viewer_id"),
+                                viewerName = item.optString("viewer_name"),
+                                kind = item.optString("kind", "private"),
                                 text = item.optString("text"),
+                            )
+                        )
+                    }
+                }
+                Result.success(messages)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun fetchMessageHistory(since: String? = null): Result<List<VisitorMessage>> {
+        val suffix = if (!since.isNullOrBlank()) {
+            "?since=${java.net.URLEncoder.encode(since, "UTF-8")}"
+        } else {
+            ""
+        }
+        val request = Request.Builder()
+            .url("${serverUrl.trimEnd('/')}/api/messages/history$suffix")
+            .addHeader("Authorization", "Bearer $token")
+            .get()
+            .build()
+
+        return try {
+            val response = client.newCall(request).execute()
+            response.use {
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}"))
+                val body = it.body?.string().orEmpty()
+                val arr = JSONObject(body).optJSONArray("messages") ?: JSONArray()
+                val messages = buildList {
+                    for (i in 0 until arr.length()) {
+                        val item = arr.optJSONObject(i) ?: continue
+                        val createdAt = item.optString("created_at")
+                        val at = runCatching { Instant.parse(createdAt).toEpochMilli() }
+                            .getOrDefault(System.currentTimeMillis())
+                        add(
+                            VisitorMessage(
+                                id = item.optString("id"),
+                                viewerId = item.optString("viewer_id"),
+                                viewerName = item.optString("viewer_name"),
+                                kind = item.optString("kind", "private"),
+                                direction = item.optString("direction", "viewer"),
+                                text = item.optString("text"),
+                                at = at,
                             )
                         )
                     }
@@ -203,6 +250,7 @@ class ReportClient(
     fun replyToMessage(messageId: String, viewerId: String, text: String): Result<Unit> {
         val body = JSONObject().apply {
             put("message_id", messageId)
+            put("reply_id", java.util.UUID.randomUUID().toString())
             put("target_viewer_id", viewerId)
             put("text", text.take(500))
         }
@@ -251,6 +299,8 @@ class ReportClient(
     data class DeviceMessage(
         val id: String,
         val viewerId: String,
+        val viewerName: String = "",
+        val kind: String = "private",
         val text: String,
     )
 }

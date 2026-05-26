@@ -13,6 +13,7 @@ import android.util.Log
 import androidx.work.*
 import com.monika.dashboard.BuildConfig
 import com.monika.dashboard.data.DebugLog
+import com.monika.dashboard.data.MessageInboxStore
 import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.data.UploadItem
 import com.monika.dashboard.data.UploadStatusStore
@@ -146,6 +147,7 @@ class HeartbeatWorker(
             Log.e(TAG, "Heartbeat error", e)
         } finally {
             MessageSocketManager.ensureStarted(applicationContext)
+            runCatching { syncMessageHistory(client) }
             runCatching { pollMessages(client) }
             runCatching { client?.shutdown() }
         }
@@ -291,7 +293,14 @@ class HeartbeatWorker(
                 DebugLog.log("消息", "已忽略拉黑访客队列消息: ${message.viewerId}")
                 continue
             }
-            MessageSocketManager.notifyIncoming(applicationContext, message.text, message.viewerId, message.id)
+            MessageSocketManager.notifyIncoming(
+                applicationContext,
+                message.text,
+                message.viewerId,
+                message.id,
+                message.viewerName,
+                message.kind,
+            )
             safeClient.replyToMessage(
                 messageId = message.id,
                 viewerId = message.viewerId,
@@ -303,6 +312,17 @@ class HeartbeatWorker(
     private fun syncBlockedViewers(client: ReportClient) {
         for (viewerId in MessageSocketManager.blockedViewers(applicationContext)) {
             client.blockViewer(viewerId)
+        }
+    }
+
+    private fun syncMessageHistory(client: ReportClient?) {
+        val safeClient = client ?: return
+        val latest = MessageInboxStore.latestServerTimestamp(applicationContext)
+        val since = latest.takeIf { it.isNotBlank() }
+        val messages = safeClient.fetchMessageHistory(since).getOrNull().orEmpty()
+        if (messages.isNotEmpty()) {
+            MessageInboxStore.upsertAll(applicationContext, messages)
+            DebugLog.log("消息", "已同步 ${messages.size} 条消息")
         }
     }
 }

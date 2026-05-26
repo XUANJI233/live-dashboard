@@ -159,12 +159,58 @@ db.run(`
 `);
 
 db.run(`
+  CREATE TABLE IF NOT EXISTS conversation_messages (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    viewer_id TEXT NOT NULL,
+    viewer_name TEXT DEFAULT '',
+    direction TEXT NOT NULL,
+    visibility TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_conversation_messages_device_created
+  ON conversation_messages(device_id, created_at)
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_conversation_messages_visibility_created
+  ON conversation_messages(visibility, created_at)
+`);
+
+db.run(`
   CREATE TABLE IF NOT EXISTS blocked_viewers (
     device_id TEXT NOT NULL,
     viewer_id TEXT NOT NULL,
     blocked_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY(device_id, viewer_id)
   )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS visitor_messages (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    viewer_id TEXT NOT NULL,
+    viewer_name TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_visitor_messages_device_created
+  ON visitor_messages(device_id, created_at)
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_visitor_messages_public_created
+  ON visitor_messages(kind, created_at)
 `);
 
 // ── HMAC hash secret validation ──

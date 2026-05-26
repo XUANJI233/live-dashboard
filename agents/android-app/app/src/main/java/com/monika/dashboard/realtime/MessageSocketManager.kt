@@ -98,9 +98,16 @@ object MessageSocketManager {
             .getStringSet("blocked_viewers", emptySet())
             .orEmpty()
 
-    fun notifyIncoming(context: Context, text: String, viewerId: String? = null, messageId: String = "") {
+    fun notifyIncoming(
+        context: Context,
+        text: String,
+        viewerId: String? = null,
+        messageId: String = "",
+        viewerName: String = "",
+        kind: String = "private",
+    ) {
         if (!viewerId.isNullOrBlank()) {
-            MessageInboxStore.add(context, messageId, viewerId, text)
+            MessageInboxStore.add(context, messageId, viewerId, text, viewerName, kind, "viewer")
         }
         createChannel(context)
         val intent = Intent(context, MainActivity::class.java)
@@ -116,6 +123,9 @@ object MessageSocketManager {
             .setContentText(text.take(120))
             .setStyle(NotificationCompat.BigTextStyle().bigText(text.take(500)))
             .setContentIntent(pending)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setAutoCancel(true)
         if (!viewerId.isNullOrBlank()) {
             val blockIntent = Intent(context, MessageActionReceiver::class.java).apply {
@@ -155,7 +165,7 @@ object MessageSocketManager {
             NotificationChannel(
                 CHANNEL_ID,
                 "网页游客消息",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
             )
         )
     }
@@ -176,11 +186,13 @@ object MessageSocketManager {
             val message = data.optString("text").take(500)
             val messageId = data.optString("message_id")
             val viewerId = data.optString("viewer_id")
+            val viewerName = data.optString("viewer_name")
+            val kind = data.optString("kind", "private")
             if (isViewerBlocked(context, viewerId)) {
                 DebugLog.log("消息", "已忽略拉黑访客消息: $viewerId")
                 return
             }
-            notifyIncoming(context, message, viewerId, messageId)
+            notifyIncoming(context, message, viewerId, messageId, viewerName, kind)
             if (viewerId.isNotBlank()) {
                 val reply = JSONObject().apply {
                     put("type", "device_reply")
