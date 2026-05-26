@@ -22,7 +22,10 @@ import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.health.HealthConnectManager
 import com.monika.dashboard.health.HealthSyncWorker
 import com.monika.dashboard.network.ReportClient
+import com.monika.dashboard.realtime.MessageSocketManager
+import com.monika.dashboard.ui.screens.BoardScreen
 import com.monika.dashboard.ui.screens.HealthScreen
+import com.monika.dashboard.ui.screens.MessagesScreen
 import com.monika.dashboard.ui.screens.SetupScreen
 import com.monika.dashboard.ui.screens.StatusScreen
 import com.monika.dashboard.ui.theme.DashboardTheme
@@ -40,6 +43,7 @@ class MainActivity : ComponentActivity() {
         settings = SettingsStore(applicationContext)
         enableEdgeToEdge()
         requestNotificationPermission()
+        MessageSocketManager.ensureStarted(applicationContext)
 
         setContent {
             DashboardTheme {
@@ -118,7 +122,7 @@ private fun DashboardTopBar(settings: SettingsStore) {
 @Composable
 private fun MainContent(settings: SettingsStore, modifier: Modifier = Modifier) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
-    val tabs = listOf("设置", "健康", "状态")
+    val tabs = listOf("消息", "留言", "健康", "设置", "诊断")
     val context = LocalContext.current
 
     // Trigger foreground health sync once on app open
@@ -132,25 +136,29 @@ private fun MainContent(settings: SettingsStore, modifier: Modifier = Modifier) 
         }
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
-        TabRow(
-            selectedTabIndex = selectedTab,
-            containerColor = MaterialTheme.colorScheme.surface,
-            contentColor = MaterialTheme.colorScheme.primary
-        ) {
-            tabs.forEachIndexed { index, title ->
-                Tab(
-                    selected = selectedTab == index,
-                    onClick = { selectedTab = index },
-                    text = { Text(title) }
-                )
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        bottomBar = {
+            NavigationBar {
+                tabs.forEachIndexed { index, title ->
+                    NavigationBarItem(
+                        selected = selectedTab == index,
+                        onClick = { selectedTab = index },
+                        icon = { Text(title.take(1), fontWeight = FontWeight.Bold) },
+                        label = { Text(title) },
+                    )
+                }
             }
         }
-
-        when (selectedTab) {
-            0 -> SetupScreen(settings)
-            1 -> HealthScreen(settings)
-            2 -> StatusScreen()
+    ) { innerPadding ->
+        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+            when (selectedTab) {
+                0 -> MessagesScreen(settings)
+                1 -> BoardScreen(settings)
+                2 -> HealthScreen(settings)
+                3 -> SetupScreen(settings)
+                4 -> StatusScreen()
+            }
         }
     }
 }

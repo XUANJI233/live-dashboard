@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Monika Now</string>
+    <string name="accessibility_service_description">读取当前应用窗口标题，用于上报正在使用的应用、页面标题或视频页面标题。</string>
 </resources>

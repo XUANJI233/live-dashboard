@@ -5,6 +5,8 @@ import android.util.Log
 import androidx.work.*
 import com.monika.dashboard.data.DebugLog
 import com.monika.dashboard.data.SettingsStore
+import com.monika.dashboard.data.UploadItem
+import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.network.ReportClient
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
@@ -140,8 +142,9 @@ class HealthSyncWorker(
         }
 
         val client = try {
-            ReportClient(url, token)
+            ReportClient(url, token, applicationContext)
         } catch (e: Exception) {
+            UploadStatusStore.mark(applicationContext, UploadItem.HEALTH, false, e.message ?: "invalid server URL")
             DebugLog.log("健康", "服务器连接失败: ${e.message}")
             Log.e(TAG, "Invalid server URL: ${e.message}")
             return Result.failure()
@@ -179,6 +182,7 @@ class HealthSyncWorker(
 
             if (records.isEmpty()) {
                 DebugLog.log("健康", "无新数据")
+                UploadStatusStore.mark(applicationContext, UploadItem.HEALTH, true, "无新数据")
                 Log.i(TAG, "No new records")
                 settings.setLastSyncTimestamp(until.toEpochMilli())
                 Result.success()
@@ -186,16 +190,20 @@ class HealthSyncWorker(
                 val result = client.reportHealthData(records)
                 if (result.isSuccess) {
                     settings.setLastSyncTimestamp(until.toEpochMilli())
+                    UploadStatusStore.mark(applicationContext, UploadItem.HEALTH, true, "已同步 ${records.size} 条")
                     DebugLog.log("健康", "已同步 ${records.size} 条记录")
                     Log.i(TAG, "Synced ${records.size} records")
                     Result.success()
                 } else {
-                    DebugLog.log("健康", "同步失败: ${result.exceptionOrNull()?.message}")
-                    Log.w(TAG, "Sync failed: ${result.exceptionOrNull()?.message}")
+                    val message = result.exceptionOrNull()?.message ?: "unknown"
+                    UploadStatusStore.mark(applicationContext, UploadItem.HEALTH, false, message)
+                    DebugLog.log("健康", "同步失败: $message")
+                    Log.w(TAG, "Sync failed: $message")
                     Result.retry()
                 }
             }
         } catch (e: Exception) {
+            UploadStatusStore.mark(applicationContext, UploadItem.HEALTH, false, e.message ?: "error")
             DebugLog.log("健康", "同步异常: ${e.message}")
             Log.e(TAG, "Sync error", e)
             Result.retry()

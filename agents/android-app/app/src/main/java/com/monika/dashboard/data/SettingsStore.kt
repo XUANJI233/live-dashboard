@@ -9,6 +9,7 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
 import android.net.Uri
 import android.util.Log
+import com.monika.dashboard.BuildConfig
 import com.monika.dashboard.service.HeartbeatWorker
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -26,6 +27,14 @@ class SettingsStore(private val context: Context) {
         val ENABLED_HEALTH_TYPES = stringSetPreferencesKey("enabled_health_types")
         val MONITORING_ENABLED = booleanPreferencesKey("monitoring_enabled")
         val LAST_SYNC_TIMESTAMP = longPreferencesKey("last_sync_timestamp")
+        val CAPABILITY_MODE = stringPreferencesKey("capability_mode")
+        val UPLOAD_LOCATION = booleanPreferencesKey("upload_location")
+        val UPLOAD_FOREGROUND = booleanPreferencesKey("upload_foreground")
+        val UPLOAD_MEDIA = booleanPreferencesKey("upload_media")
+        val UPLOAD_NETWORK = booleanPreferencesKey("upload_network")
+        val UPLOAD_VPN_STATUS = booleanPreferencesKey("upload_vpn_status")
+        val UPLOAD_INPUT_STATE = booleanPreferencesKey("upload_input_state")
+        val HIGH_FREQUENCY_REPORT = booleanPreferencesKey("high_frequency_report")
     }
 
     val serverUrl: Flow<String> = context.dataStore.data.map { prefs ->
@@ -47,6 +56,38 @@ class SettingsStore(private val context: Context) {
 
     val monitoringEnabled: Flow<Boolean> = context.dataStore.data.map { prefs ->
         prefs[Keys.MONITORING_ENABLED] ?: false
+    }
+
+    val capabilityMode: Flow<String> = context.dataStore.data.map { prefs ->
+        sanitizeCapabilityMode(prefs[Keys.CAPABILITY_MODE] ?: "normal")
+    }
+
+    val uploadLocation: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.UPLOAD_LOCATION] ?: false
+    }
+
+    val uploadForeground: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.UPLOAD_FOREGROUND] ?: true
+    }
+
+    val uploadMedia: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.UPLOAD_MEDIA] ?: true
+    }
+
+    val uploadNetwork: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.UPLOAD_NETWORK] ?: true
+    }
+
+    val uploadVpnStatus: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.UPLOAD_VPN_STATUS] ?: false
+    }
+
+    val uploadInputState: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.UPLOAD_INPUT_STATE] ?: false
+    }
+
+    val highFrequencyReport: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.HIGH_FREQUENCY_REPORT] ?: false
     }
 
     val lastSyncTimestamp: Flow<Long> = context.dataStore.data.map { prefs ->
@@ -77,6 +118,38 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setMonitoringEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.MONITORING_ENABLED] = enabled }
+    }
+
+    suspend fun setCapabilityMode(mode: String) {
+        context.dataStore.edit { it[Keys.CAPABILITY_MODE] = sanitizeCapabilityMode(mode) }
+    }
+
+    suspend fun setUploadLocation(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.UPLOAD_LOCATION] = enabled }
+    }
+
+    suspend fun setUploadForeground(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.UPLOAD_FOREGROUND] = enabled }
+    }
+
+    suspend fun setUploadMedia(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.UPLOAD_MEDIA] = enabled }
+    }
+
+    suspend fun setUploadNetwork(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.UPLOAD_NETWORK] = enabled }
+    }
+
+    suspend fun setUploadVpnStatus(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.UPLOAD_VPN_STATUS] = enabled }
+    }
+
+    suspend fun setUploadInputState(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.UPLOAD_INPUT_STATE] = enabled }
+    }
+
+    suspend fun setHighFrequencyReport(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.HIGH_FREQUENCY_REPORT] = enabled }
     }
 
     /** Update last sync timestamp with compare-and-set (only advances forward). */
@@ -137,5 +210,11 @@ class SettingsStore(private val context: Context) {
                 else -> false
             }
         }
+
+        fun sanitizeCapabilityMode(mode: String): String =
+            when (mode) {
+                "root", "lsposed" -> if (BuildConfig.PRIVILEGED_FEATURES) mode else "normal"
+                else -> "normal"
+            }
     }
 }

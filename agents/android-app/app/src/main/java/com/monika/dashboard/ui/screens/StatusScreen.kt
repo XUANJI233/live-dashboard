@@ -22,12 +22,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.repeatOnLifecycle
 import com.monika.dashboard.data.DebugLog
+import com.monika.dashboard.data.UploadItem
+import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.health.BackgroundReadAvailability
 import com.monika.dashboard.health.HealthConnectManager
 import com.monika.dashboard.ui.theme.Border
 import com.monika.dashboard.ui.theme.TextMuted
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 import java.util.Locale
@@ -159,6 +160,16 @@ fun StatusScreen() {
                     Toast.makeText(context, "无法打开通知设置", Toast.LENGTH_SHORT).show()
                 }
             }
+        }
+
+        val accessibilityEnabled = remember(tick) { isAccessibilityEnabled(context) }
+        ServiceStatusRow("辅助功能采集", accessibilityEnabled) {
+            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+
+        val notificationListenerEnabled = remember(tick) { isNotificationListenerEnabled(context) }
+        ServiceStatusRow("通知监听（音乐/视频）", notificationListenerEnabled) {
+            context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
 
         // Background health sync status
@@ -326,6 +337,52 @@ fun StatusScreen() {
 
         Divider(color = Border, thickness = 1.dp)
 
+        Text(text = "上传状态", style = MaterialTheme.typography.titleMedium)
+        UploadItem.entries.forEach { item ->
+            val status = remember(tick) { UploadStatusStore.read(context, item) }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                color = when {
+                    status == null -> MaterialTheme.colorScheme.surfaceVariant
+                    status.ok -> MaterialTheme.colorScheme.secondaryContainer
+                    else -> MaterialTheme.colorScheme.errorContainer
+                }
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = "${item.label}：${status?.let { if (it.ok) "上传成功" else "上传失败" } ?: "未上传"} ${status?.at?.let(::formatDebugTime) ?: ""}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    if (!status?.message.isNullOrBlank()) {
+                        Text(
+                            text = status?.message.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextMuted
+                        )
+                    }
+                }
+            }
+        }
+
+        val lastPayload = remember(tick) { UploadStatusStore.getLastPayload(context) }
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 80.dp, max = 260.dp)
+                .border(1.dp, Border, RoundedCornerShape(8.dp)),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Text(
+                text = lastPayload.ifBlank { "暂无上传 payload" },
+                style = MaterialTheme.typography.bodySmall,
+                color = TextMuted,
+                modifier = Modifier.padding(12.dp)
+            )
+        }
+
+        Divider(color = Border, thickness = 1.dp)
+
         // Debug log
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -375,6 +432,23 @@ fun StatusScreen() {
                 }
             }
         }
+    }
+}
+
+private fun formatDebugTime(millis: Long): String =
+    if (millis <= 0) "--" else java.text.SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(java.util.Date(millis))
+
+private fun isNotificationListenerEnabled(context: android.content.Context): Boolean {
+    val enabled = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
+    return enabled?.contains(context.packageName, ignoreCase = true) == true
+}
+
+private fun isAccessibilityEnabled(context: android.content.Context): Boolean {
+    val enabled = Settings.Secure.getInt(context.contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 0) == 1
+    if (!enabled) return false
+    val services = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+    return !services.isNullOrBlank() && services.split(':').any {
+        it.contains(context.packageName, ignoreCase = true)
     }
 }
 

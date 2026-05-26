@@ -11,15 +11,19 @@
 
 ```bash
 cd agents/android-app
-./gradlew assembleDebug
+./gradlew assembleNormalDebug
+./gradlew assemblePrivilegedDebug
 ```
 
-APK 输出路径: `app/build/outputs/apk/debug/app-debug.apk`
+APK 输出路径:
+
+- 普通版: `app/build/outputs/apk/normal/debug/app-normal-debug.apk`
+- Root/LSPosed 版: `app/build/outputs/apk/privileged/debug/app-privileged-debug.apk`
 
 ## 安装到手机
 
 ```bash
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/normal/debug/app-normal-debug.apk
 ```
 
 或直接将 APK 传到手机安装。
