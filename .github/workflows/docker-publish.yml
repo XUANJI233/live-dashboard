@@ -4,7 +4,15 @@ on:
   push:
     branches:
       - main
-      - codex/mobile-watch-realtime
+    paths:
+      - "Dockerfile"
+      - "docker-compose*.yml"
+      - "packages/backend/**"
+      - "packages/frontend/**"
+      - "deploy/**"
+      - ".env.example"
+      - "start.sh"
+      - ".github/workflows/docker-publish.yml"
   release:
     types: [published]
 
@@ -16,9 +24,8 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: write      # 如果要将 tar 上传到 Release 需要 write，仅 artifact 则不需要
+      contents: read
       packages: write
-      actions: read        # 用于 gha 缓存
 
     steps:
       - uses: actions/checkout@v4
@@ -43,40 +50,14 @@ jobs:
             type=semver,pattern=v{{major}}.{{minor}}
             type=sha
 
-      - name: Build, push and export archives
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
-          outputs: type=image,push=true,oci-mediatypes=false
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
           sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          outputs: |
-            type=registry,push=true
-            type=docker,dest=/tmp/image-docker.tar
-            type=oci,dest=/tmp/image-oci.tar
-
-      - name: Upload Docker format artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image-docker-format
-          path: /tmp/image-docker.tar
-          if-no-files-found: error
-
-      - name: Upload OCI format artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image-oci-format
-          path: /tmp/image-oci.tar
-          if-no-files-found: error
-
-      - name: Attach tar archives to release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            /tmp/image-docker.tar
-            /tmp/image-oci.tar
