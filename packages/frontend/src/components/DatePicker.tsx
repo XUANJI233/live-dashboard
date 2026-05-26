@@ -16,9 +16,9 @@ function offsetDate(dateStr: string, days: number): string {
 
 function formatDisplay(dateStr: string): string {
   const d = parseDate(dateStr);
-  const month = d.toLocaleDateString("en-US", { month: "short" });
+  const month = d.toLocaleDateString("zh-CN", { month: "short" });
   const day = d.getDate();
-  const weekday = d.toLocaleDateString("en-US", { weekday: "short" });
+  const weekday = d.toLocaleDateString("zh-CN", { weekday: "short" });
   return `${month} ${day} (${weekday})`;
 }
 
@@ -35,13 +35,13 @@ export default function DatePicker({ selectedDate, onChange }: Props) {
       {/* Calendar flip visual */}
       <div className="card-decorated rounded-md w-14 h-16 flex flex-col items-center justify-center flex-shrink-0">
         <span className="text-[10px] font-bold text-[var(--color-primary)] uppercase leading-none">
-          {new Date(selectedDate + "T00:00:00").toLocaleDateString("en-US", { month: "short" })}
+          {new Date(selectedDate + "T00:00:00").toLocaleDateString("zh-CN", { month: "short" })}
         </span>
         <span className="text-xl font-bold leading-tight">
           {new Date(selectedDate + "T00:00:00").getDate()}
         </span>
         <span className="text-[9px] text-[var(--color-text-muted)] leading-none">
-          {new Date(selectedDate + "T00:00:00").toLocaleDateString("en-US", { weekday: "short" })}
+          {new Date(selectedDate + "T00:00:00").toLocaleDateString("zh-CN", { weekday: "short" })}
         </span>
       </div>
 
@@ -50,18 +50,18 @@ export default function DatePicker({ selectedDate, onChange }: Props) {
         <button
           className="pill-btn text-xs px-2 py-1"
           onClick={() => onChange(offsetDate(selectedDate, -1))}
-          aria-label="Previous day"
+          aria-label="前一天"
         >
-          &larr; prev
+          &larr; 前一天
         </button>
         <button
           className="pill-btn text-xs px-2 py-1"
           onClick={() => onChange(offsetDate(selectedDate, 1))}
           disabled={isToday}
-          aria-label="Next day"
+          aria-label="后一天"
           style={isToday ? { opacity: 0.4, cursor: "default" } : undefined}
         >
-          next &rarr;
+          后一天 &rarr;
         </button>
       </div>
 
@@ -71,7 +71,7 @@ export default function DatePicker({ selectedDate, onChange }: Props) {
           className="pill-btn text-xs"
           onClick={() => onChange(todayStr())}
         >
-          today
+          回到今天
         </button>
       )}
     </div>

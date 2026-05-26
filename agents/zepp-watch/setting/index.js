@@ -11,9 +11,9 @@ const DEFAULTS = {
   sensorBodyTemp: '1',
   sensorStand: '1',
   sensorStress: '1',
-  sensorStep: '0',
-  sensorCalorie: '0',
-  sensorBarometer: '0',
+  sensorStep: '1',
+  sensorCalorie: '1',
+  sensorBarometer: '1',
 }
 
 function cleanInterval(value) {
@@ -78,7 +78,7 @@ AppSettingsPage({
       TextInput({
         label: '设备令牌',
         value: this.state.draft.token,
-        placeholder: 'Live Dashboard token',
+        placeholder: '这里填仪表板给的小令牌',
         onChange: (value) => this.setDraft('token', String(value || '').trim()),
       }),
       Select({
@@ -98,7 +98,7 @@ AppSettingsPage({
       this.boolSelect('心率', 'sensorHeartRate'),
       this.boolSelect('电量', 'sensorBattery'),
       this.boolSelect('佩戴状态', 'sensorWear'),
-      this.boolSelect('睡眠状态', 'sensorSleep'),
+      this.boolSelect('睡眠和小睡', 'sensorSleep'),
       this.boolSelect('血氧', 'sensorSpo2'),
       this.boolSelect('体温', 'sensorBodyTemp'),
       this.boolSelect('站立', 'sensorStand'),

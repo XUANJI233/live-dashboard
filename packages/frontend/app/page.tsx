@@ -166,7 +166,7 @@ function HomeInner() {
             {devices.length > 0 && (
               <div className="space-y-2">
                 <h2 className="text-xs font-bold text-[var(--color-text-muted)] uppercase tracking-wider mb-2">
-                  Devices
+                  小设备们
                 </h2>
                 {devices.map((d) => (
                   <DeviceCard
@@ -253,7 +253,7 @@ function HomeInner() {
       {/* Footer */}
       <footer className="mt-12 pt-4 separator-dashed text-center">
         <p className="text-[10px] text-[var(--color-text-muted)]">
-          {displayName} Now &middot; 每 10 秒自动刷新 &middot; (◕ᴗ◕)
+          {displayName} 现在在做什么 &middot; 每 10 秒悄悄刷新一次 &middot; (◕ᴗ◕)
         </p>
       </footer>
     </>
@@ -273,7 +273,7 @@ function DeviceOverview({ devices }: { devices: DeviceState[] }) {
         const icon = platformIcons[d.platform] || "\u{1F4BB}";
         return (
           <span key={d.device_id} className={isOnline ? "" : "opacity-40"}>
-            {icon} {d.device_name} · {isOnline ? (d.app_name === "idle" ? "暂时离开" : d.app_name || "idle") : "offline"}
+            {icon} {d.device_name} · {isOnline ? (d.app_name === "idle" ? "暂时离开喵" : d.app_name || "不知道在忙什么") : "睡过去了"}
           </span>
         );
       })}
@@ -302,6 +302,8 @@ function BodySnapshot({ device, records }: { device: DeviceState | undefined; re
 
   const sleepStatus = latest.get("sleep_status");
   const sleepDuration = latest.get("sleep_duration");
+  const wearStatus = latest.get("wear_status");
+  const napDuration = latest.get("nap_duration");
 
   const items = ([
     metric("心率", latest.get("heart_rate"), "bpm"),
@@ -309,9 +311,15 @@ function BodySnapshot({ device, records }: { device: DeviceState | undefined; re
     metric("体温", latest.get("body_temperature"), "℃"),
     sleepStatus ? { label: "睡眠", value: sleepStatus.value > 0 ? "睡着了" : "醒着", unit: "", at: sleepStatus.recorded_at } : null,
     metric("睡眠时长", sleepDuration, "分钟"),
+    metric("小睡时长", napDuration, "分钟"),
+    wearStatus ? { label: "佩戴", value: wearStatus.value > 0 ? "戴着喵" : "没戴喵", unit: "", at: wearStatus.recorded_at } : null,
     metric("压力", latest.get("stress"), ""),
     metric("步数", latest.get("steps"), "步"),
+    metric("活动热量", latest.get("active_calories"), "kcal"),
     standMetric,
+    metric("气压", latest.get("air_pressure"), "hPa"),
+    metric("海拔", latest.get("altitude"), "m"),
+    metric("手表电量", latest.get("battery_percent"), "%"),
     typeof extra.battery_percent === "number"
       ? { label: "电量", value: String(extra.battery_percent), unit: "%", at: device?.last_seen_at }
       : null,
@@ -340,7 +348,15 @@ function BodySnapshot({ device, records }: { device: DeviceState | undefined; re
 function metric(label: string, record: HealthRecord | undefined, fallbackUnit: string) {
   if (!record) return null;
   const value = Number.isInteger(record.value) ? String(record.value) : record.value.toFixed(1);
-  return { label, value, unit: record.unit || fallbackUnit, at: record.recorded_at };
+  return { label, value, unit: friendlyUnit(record.unit || fallbackUnit), at: record.recorded_at };
+}
+
+function friendlyUnit(unit: string) {
+  if (unit === "minutes") return "分钟";
+  if (unit === "count") return "次";
+  if (unit === "celsius") return "℃";
+  if (unit === "status" || unit === "minute_of_day") return "";
+  return unit;
 }
 
 function latestHealthValue(records: HealthRecord[], type: string) {

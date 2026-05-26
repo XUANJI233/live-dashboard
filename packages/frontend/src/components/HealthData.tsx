@@ -8,6 +8,8 @@ import { fetchHealthData } from "@/lib/api";
 const TYPE_META: Record<string, { label: string; icon: string; priority: number }> = {
   heart_rate:             { label: "心率",     icon: "💓",  priority: 1 },
   oxygen_saturation:      { label: "血氧",     icon: "🩸", priority: 2 },
+  battery_percent:        { label: "手表电量",  icon: "▣", priority: 3 },
+  wear_status:            { label: "佩戴状态",  icon: "◌", priority: 4 },
   steps:                  { label: "步数",     icon: "🚶", priority: 3 },
   active_calories:        { label: "活动卡路里", icon: "🔥", priority: 4 },
   sleep:                  { label: "睡眠",     icon: "😴", priority: 5 },
@@ -23,6 +25,9 @@ const TYPE_META: Record<string, { label: string; icon: string; priority: number 
   body_temperature:       { label: "体温",     icon: "🌡",  priority: 7 },
   stand_count:            { label: "拒绝久坐喵!", icon: "▴", priority: 7 },
   stand_target:           { label: "站立目标",  icon: "◎", priority: 7 },
+  stress:                 { label: "压力",     icon: "◇", priority: 8 },
+  air_pressure:           { label: "气压",     icon: "▤", priority: 9 },
+  altitude:               { label: "海拔",     icon: "△", priority: 10 },
   blood_pressure:         { label: "血压",     icon: "🩺", priority: 8 },
   resting_heart_rate:     { label: "静息心率",  icon: "💚", priority: 9 },
   heart_rate_variability: { label: "心率变异性", icon: "💜", priority: 10 },
@@ -37,7 +42,7 @@ const TYPE_META: Record<string, { label: string; icon: string; priority: number 
 };
 
 // Core metrics shown as cards at top
-const CORE_TYPES = ["heart_rate", "oxygen_saturation", "stand_count", "steps", "active_calories"];
+const CORE_TYPES = ["heart_rate", "oxygen_saturation", "body_temperature", "stand_count", "battery_percent", "steps"];
 
 interface Props {
   selectedDate: string;
@@ -157,7 +162,7 @@ export default function HealthData({ selectedDate, deviceId }: Props) {
                     {formatValue(entry.latest.value, type)}
                   </span>
                   <span className="text-[10px] text-[var(--color-text-muted)]">
-                    {entry.latest.unit}
+                    {displayUnit(entry.latest.unit)}
                   </span>
                 </div>
               </div>
@@ -194,7 +199,7 @@ export default function HealthData({ selectedDate, deviceId }: Props) {
                       {formatValue(entry.latest.value, type)}
                     </span>
                     <span className="text-[10px] text-[var(--color-text-muted)]">
-                      {entry.latest.unit}
+                      {displayUnit(entry.latest.unit)}
                     </span>
                   </div>
                 </div>
@@ -211,9 +216,10 @@ function formatValue(value: number, type: string): string {
   if (type === "sleep" || type === "exercise" || type === "sleep_duration" || type === "nap_duration") {
     const h = Math.floor(value / 60);
     const m = Math.round(value % 60);
-    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    return h > 0 ? `${h} 小时 ${m} 分钟` : `${m} 分钟`;
   }
   if (type === "sleep_status") return value > 0 ? "睡着了" : "醒着";
+  if (type === "wear_status") return value > 0 ? "戴着喵" : "没戴喵";
   if (type === "sleep_start" || type === "sleep_end" || type === "nap_start" || type === "nap_end") {
     const minutes = Math.max(0, Math.round(value));
     const h = Math.floor(minutes / 60) % 24;
@@ -221,10 +227,18 @@ function formatValue(value: number, type: string): string {
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   }
   if (type === "steps") return value.toLocaleString();
-  if (type === "distance") return (value / 1000).toFixed(1) + "km";
+  if (type === "distance") return (value / 1000).toFixed(1) + " 公里";
   if (type === "hydration") return Math.round(value).toString();
   if (Number.isInteger(value)) return value.toString();
   return value.toFixed(1);
+}
+
+function displayUnit(unit: string): string {
+  if (unit === "status" || unit === "minute_of_day") return "";
+  if (unit === "count") return "次";
+  if (unit === "minutes") return "分钟";
+  if (unit === "celsius") return "℃";
+  return unit;
 }
 
 // Pure SVG heart rate chart — responsive full-width, with hover tooltip

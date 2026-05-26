@@ -405,7 +405,7 @@ Page(
           if (result && result.skipped) {
             const wait = result.wait_ms ? ` ${formatWait(result.wait_ms)}` : ''
             this.updateStatus(`已限流${wait}`)
-            this.state.lastSyncData = `跳过: ${result.reason || 'unknown'}`
+            this.state.lastSyncData = `先不传: ${result.reason || '还不知道原因'}`
           } else {
             this.updateStatus('已同步')
             this.state.lastSyncData = `心率 ${heart_rate || '--'} bpm`

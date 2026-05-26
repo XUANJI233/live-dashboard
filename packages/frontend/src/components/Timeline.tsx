@@ -19,11 +19,11 @@ function getAppColor(appName: string, colorMap: Map<string, string>): string {
 }
 
 function formatDuration(minutes: number): string {
-  if (minutes < 1) return "<1m";
-  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 1) return "不到 1 分钟";
+  if (minutes < 60) return `${minutes} 分钟`;
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  return m > 0 ? `${h} 小时 ${m} 分钟` : `${h} 小时`;
 }
 
 interface AggregatedApp {
@@ -117,7 +117,7 @@ export default function Timeline({ segments, summary, currentAppByDevice }: Prop
         return (
           <div key={deviceId}>
             <h3 className="text-xs font-semibold mb-2 text-[var(--color-text-muted)] uppercase tracking-wider">
-              {name}
+              {name} 的小时间线
             </h3>
 
             <div className="max-h-[400px] overflow-y-auto pr-1 timeline-scroll">
@@ -166,7 +166,7 @@ export default function Timeline({ segments, summary, currentAppByDevice }: Prop
                             {formatDuration(app.totalMinutes)}
                           </span>
                           <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">
-                            {isOpen ? "收起" : "展开"}
+                            {isOpen ? "藏起来" : "看看"}
                           </span>
                         </div>
                       </button>
@@ -188,7 +188,7 @@ export default function Timeline({ segments, summary, currentAppByDevice }: Prop
                                   </span>
                                 </div>
                                 <div className="mt-0.5 truncate text-[var(--color-text)]" title={session.display_title || session.app_id}>
-                                  {session.display_title || session.app_id}
+                                  {session.display_title || session.app_id || "悄悄路过的一小段"}
                                 </div>
                               </div>
                             ))}
