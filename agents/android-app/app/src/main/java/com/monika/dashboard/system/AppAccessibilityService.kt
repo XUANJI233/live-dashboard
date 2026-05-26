@@ -1,6 +1,7 @@
 package com.monika.dashboard.system
 
 import android.accessibilityservice.AccessibilityService
+import android.content.pm.PackageManager
 import android.view.accessibility.AccessibilityEvent
 import com.monika.dashboard.data.DebugLog
 
@@ -19,7 +20,7 @@ class AppAccessibilityService : AccessibilityService() {
         SystemSnapshotStore.updateFromAccessibility(
             ForegroundInfo(
                 packageName = packageName,
-                appName = packageName,
+                appName = packageName?.let(::resolveAppName) ?: packageName,
                 activity = title ?: className,
                 source = "accessibility",
                 confidence = 0.65,
@@ -29,5 +30,16 @@ class AppAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         DebugLog.log("辅助功能", "服务被中断")
+    }
+
+    private fun resolveAppName(packageName: String): String? {
+        return try {
+            val info = packageManager.getApplicationInfo(packageName, 0)
+            packageManager.getApplicationLabel(info).toString()
+        } catch (_: PackageManager.NameNotFoundException) {
+            null
+        } catch (_: Exception) {
+            null
+        }
     }
 }

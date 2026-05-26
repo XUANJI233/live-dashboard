@@ -80,14 +80,23 @@ class RootSystemCollector(private val context: Context) {
 
     private fun parseMedia(mediaDump: String): MediaInfo? {
         if (mediaDump.isBlank()) return null
-        val playing = mediaDump.contains("state=PlaybackState {state=3", ignoreCase = true) ||
-            mediaDump.contains("state=3,", ignoreCase = true) ||
-            mediaDump.contains("STATE_PLAYING", ignoreCase = true)
-        if (!playing) return MediaInfo(playing = false, source = "root")
+        val blocks = mediaDump
+            .split(Regex("""(?m)^\s*Sessions Stack|\n\s*Session\s+"""))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
 
-        val packageName = Regex("""package=([a-zA-Z0-9_.]+)""").find(mediaDump)?.groupValues?.getOrNull(1)
-        val title = Regex("""title=([^,\n}]+)""").find(mediaDump)?.groupValues?.getOrNull(1)?.trim()
-        val artist = Regex("""artist=([^,\n}]+)""").find(mediaDump)?.groupValues?.getOrNull(1)?.trim()
+        val candidate = blocks.firstOrNull { block ->
+            isPlayingMediaBlock(block) && !isIgnoredMediaPackage(extractPackage(block).orEmpty())
+        } ?: blocks.firstOrNull { isPlayingMediaBlock(it) }
+
+        if (candidate == null) return MediaInfo(playing = false, source = "root")
+
+        val packageName = extractPackage(candidate)
+        val title = extractMetadata(candidate, "title")
+            ?: extractMetadata(candidate, "android.media.metadata.TITLE")
+        val artist = extractMetadata(candidate, "artist")
+            ?: extractMetadata(candidate, "android.media.metadata.ARTIST")
+            ?: extractMetadata(candidate, "android.media.metadata.AUTHOR")
         return MediaInfo(
             playing = true,
             title = title,
@@ -96,6 +105,42 @@ class RootSystemCollector(private val context: Context) {
             state = "playing",
             source = "root",
         )
+    }
+
+    private fun isPlayingMediaBlock(block: String): Boolean {
+        return block.contains("state=PlaybackState {state=3", ignoreCase = true) ||
+            block.contains("state=3,", ignoreCase = true) ||
+            block.contains("STATE_PLAYING", ignoreCase = true) ||
+            block.contains("PlaybackState {state=3", ignoreCase = true)
+    }
+
+    private fun extractPackage(block: String): String? {
+        val patterns = listOf(
+            Regex("""package=([a-zA-Z0-9_.]+)"""),
+            Regex("""packageName=([a-zA-Z0-9_.]+)"""),
+            Regex("""ownerPackageName=([a-zA-Z0-9_.]+)"""),
+        )
+        return patterns.firstNotNullOfOrNull { pattern ->
+            pattern.find(block)?.groupValues?.getOrNull(1)
+        }
+    }
+
+    private fun extractMetadata(block: String, key: String): String? {
+        val escaped = Regex.escape(key)
+        val patterns = listOf(
+            Regex("""$escaped=([^,\n}]+)""", RegexOption.IGNORE_CASE),
+            Regex("""$escaped:\s*([^,\n}]+)""", RegexOption.IGNORE_CASE),
+        )
+        return patterns.firstNotNullOfOrNull { pattern ->
+            pattern.find(block)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() && it != "null" }
+        }
+    }
+
+    private fun isIgnoredMediaPackage(packageName: String): Boolean {
+        return packageName == "android" ||
+            packageName == "com.android.systemui" ||
+            packageName == "com.milink.service" ||
+            packageName == "com.miui.misound"
     }
 
     private fun resolveAppName(packageName: String): String? {

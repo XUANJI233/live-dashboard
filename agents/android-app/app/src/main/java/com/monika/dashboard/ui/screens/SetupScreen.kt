@@ -147,17 +147,9 @@ fun SetupScreen(settings: SettingsStore) {
             }
             if (BuildConfig.PRIVILEGED_FEATURES) {
                 CapabilityOption(
-                    selected = modeInput == "root",
-                    title = "root",
-                    body = "显式开启后低频读取系统状态，失败会自动降级"
-                ) {
-                    modeInput = "root"
-                    scope.launch { settings.setCapabilityMode("root"); notifySaved() }
-                }
-                CapabilityOption(
                     selected = modeInput == "lsposed",
-                    title = "lsposed",
-                    body = "使用 LSPosed system scope 事件，减少轮询和耗电"
+                    title = "Root / LSPosed",
+                    body = "优先使用 LSPosed 系统事件；模块未激活时自动使用 root dumpsys"
                 ) {
                     modeInput = "lsposed"
                     scope.launch { settings.setCapabilityMode("lsposed"); notifySaved() }
@@ -188,7 +180,11 @@ fun SetupScreen(settings: SettingsStore) {
             item = UploadItem.FOREGROUND,
             checked = foregroundInput,
             title = "当前应用/页面",
-            body = "需要辅助功能权限；可上传应用名和窗口/网页/视频页面标题"
+            body = if (BuildConfig.PRIVILEGED_FEATURES) {
+                "高级模式优先用 LSPosed/root；普通模式使用辅助功能兜底"
+            } else {
+                "普通模式使用辅助功能采集应用名和窗口/网页/视频页面标题"
+            }
         ) {
             foregroundInput = it
             scope.launch { settings.setUploadForeground(it); notifySaved() }
@@ -197,7 +193,11 @@ fun SetupScreen(settings: SettingsStore) {
             item = UploadItem.MEDIA,
             checked = mediaInput,
             title = "视频/音乐",
-            body = "需要通知监听权限；可上传音乐标题、视频通知标题"
+            body = if (BuildConfig.PRIVILEGED_FEATURES) {
+                "高级模式优先解析系统媒体会话；普通模式使用媒体通知兜底"
+            } else {
+                "普通模式使用媒体通知兜底，尽量只采集播放类通知"
+            }
         ) {
             mediaInput = it
             scope.launch { settings.setUploadMedia(it); notifySaved() }

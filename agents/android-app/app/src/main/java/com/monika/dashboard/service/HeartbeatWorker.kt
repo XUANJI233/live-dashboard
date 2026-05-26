@@ -9,6 +9,7 @@ import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
+import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.work.*
 import com.monika.dashboard.BuildConfig
@@ -114,18 +115,20 @@ class HeartbeatWorker(
             val uploadMedia = settings.uploadMedia.first()
             val uploadNetwork = settings.uploadNetwork.first()
             val snapshot = collectSystemSnapshot(capabilityMode, uploadInputState, uploadForeground, uploadMedia)
-            val appId = snapshot.foreground?.packageName ?: "android"
-            val windowTitle = snapshot.foreground?.activity ?: appId
+            val appId = snapshot.foreground?.packageName ?: "idle"
+            val windowTitle = snapshot.foreground?.activity ?: ""
             val vpnState = if (uploadVpnStatus) getVpnState() else null
             val location = if (uploadLocation) getLowPowerLocation() else null
-            val networkConnected = if (uploadNetwork) isNetworkConnected() else null
+            val networkState = if (uploadNetwork) getNetworkState() else null
 
             val result = client.reportApp(
                 appId = appId,
                 windowTitle = windowTitle,
                 batteryPercent = battery?.first,
                 batteryCharging = battery?.second,
-                networkConnected = networkConnected,
+                networkConnected = networkState?.connected,
+                networkType = networkState?.type,
+                cellularGeneration = networkState?.cellularGeneration,
                 vpnActive = vpnState?.first,
                 vpnName = vpnState?.second,
                 location = location,
@@ -190,13 +193,11 @@ class HeartbeatWorker(
         }
         if (mode == "lsposed") {
             val latest = SystemSnapshotStore.latestLsposedFresh()
-            if (latest != null) return latest.copy(
+            if (latest != null && latest.hasUsefulPrivilegedData()) return latest.copy(
                 foreground = latest.foreground.takeIf { includeForeground } ?: normal.foreground,
                 input = latest.input.takeIf { includeInput },
                 media = latest.media.takeIf { includeMedia } ?: normal.media,
             )
-        }
-        if (mode == "root") {
             val rootSnapshot = RootSystemCollector(applicationContext).collect()
             if (rootSnapshot != null) return rootSnapshot.copy(
                 foreground = rootSnapshot.foreground.takeIf { includeForeground } ?: normal.foreground,
@@ -205,6 +206,14 @@ class HeartbeatWorker(
             )
         }
         return normal.copy(capabilityMode = mode)
+    }
+
+    private fun SystemSnapshot.hasUsefulPrivilegedData(): Boolean {
+        return foreground?.packageName?.isNotBlank() == true ||
+            foreground?.activity?.isNotBlank() == true ||
+            input?.inputActive != null ||
+            media?.title?.isNotBlank() == true ||
+            media?.playing == true
     }
 
     private fun markUploadStatuses(
@@ -225,12 +234,61 @@ class HeartbeatWorker(
         if (input) UploadStatusStore.mark(applicationContext, UploadItem.INPUT, ok, message)
     }
 
-    private fun isNetworkConnected(): Boolean? {
+    private data class NetworkState(
+        val connected: Boolean,
+        val type: String,
+        val cellularGeneration: String? = null,
+    )
+
+    private fun getNetworkState(): NetworkState? {
         return try {
             val cm = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            val network = cm?.activeNetwork ?: return false
-            val caps = cm.getNetworkCapabilities(network) ?: return false
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            val network = cm?.activeNetwork ?: return NetworkState(false, "offline")
+            val caps = cm.getNetworkCapabilities(network) ?: return NetworkState(false, "offline")
+            val connected = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            val cellularGeneration = if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                detectCellularGeneration()
+            } else {
+                null
+            }
+            val type = when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> cellularGeneration ?: "Cellular"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH) -> "Bluetooth"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
+                else -> if (connected) "Online" else "offline"
+            }
+            NetworkState(connected, type, cellularGeneration)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun detectCellularGeneration(): String? {
+        return try {
+            val tm = applicationContext.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+                ?: return null
+            when (tm.dataNetworkType) {
+                TelephonyManager.NETWORK_TYPE_NR -> "5G"
+                TelephonyManager.NETWORK_TYPE_LTE,
+                TelephonyManager.NETWORK_TYPE_IWLAN -> "4G"
+                TelephonyManager.NETWORK_TYPE_HSPAP,
+                TelephonyManager.NETWORK_TYPE_HSPA,
+                TelephonyManager.NETWORK_TYPE_HSDPA,
+                TelephonyManager.NETWORK_TYPE_HSUPA,
+                TelephonyManager.NETWORK_TYPE_UMTS,
+                TelephonyManager.NETWORK_TYPE_EVDO_0,
+                TelephonyManager.NETWORK_TYPE_EVDO_A,
+                TelephonyManager.NETWORK_TYPE_EVDO_B,
+                TelephonyManager.NETWORK_TYPE_EHRPD -> "3G"
+                TelephonyManager.NETWORK_TYPE_EDGE,
+                TelephonyManager.NETWORK_TYPE_GPRS,
+                TelephonyManager.NETWORK_TYPE_CDMA,
+                TelephonyManager.NETWORK_TYPE_1xRTT,
+                TelephonyManager.NETWORK_TYPE_IDEN -> "2G"
+                else -> "Cellular"
+            }
         } catch (_: Exception) {
             null
         }
