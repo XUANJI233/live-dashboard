@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { authenticateToken } from "../middleware/auth";
-import { currentHourWindow, purgeTags, withCdnHeaders } from "./cdn";
+import { currentHourWindow, withCdnHeaders } from "./cdn";
 import { verifyViewerToken, viewerTokenFromRequest } from "./viewer-auth";
 import type { DeviceInfo } from "../types";
 import type { ServerWebSocket } from "bun";
@@ -171,9 +171,6 @@ function recordMessage(
   createdAt = new Date().toISOString(),
 ) {
   insertVisitorMessage.run(id, deviceId, viewerId, viewerName, kind, direction, text, createdAt);
-  if (kind === "public") {
-    purgeTags(["public-messages", `public-messages-${currentHourWindow(new Date(createdAt))}`]);
-  }
 }
 
 function queueMessage(deviceId: string, viewerId: string, text: string, messageId: string) {
