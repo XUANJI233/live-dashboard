@@ -8,8 +8,10 @@ import com.monika.dashboard.data.DebugLog
 class LsposedBridgeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_STATUS) return
+        val packageName = intent.getStringExtra(EXTRA_PACKAGE)
+            ?.takeIf { it.isNotBlank() && it != "android" && it != "com.android.systemui" }
         val foreground = ForegroundInfo(
-            packageName = intent.getStringExtra(EXTRA_PACKAGE),
+            packageName = packageName,
             appName = intent.getStringExtra(EXTRA_APP_NAME),
             activity = intent.getStringExtra(EXTRA_ACTIVITY),
             source = "lsposed",
@@ -27,7 +29,8 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
                 ?.getBooleanExtra(EXTRA_MEDIA_PLAYING, false),
             title = intent.getStringExtra(EXTRA_MEDIA_TITLE),
             artist = intent.getStringExtra(EXTRA_MEDIA_ARTIST),
-            app = intent.getStringExtra(EXTRA_MEDIA_APP),
+            app = intent.getStringExtra(EXTRA_MEDIA_APP)
+                ?.takeIf { it.isNotBlank() && it != "android" && it != "com.milink.service" },
             state = intent.getStringExtra(EXTRA_MEDIA_STATE),
             source = "lsposed",
         )
