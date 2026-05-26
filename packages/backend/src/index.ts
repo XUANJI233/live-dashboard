@@ -16,6 +16,8 @@ import {
   handleDeviceMessageHistory,
   handleDeviceMessages,
   handleDeviceMessageReply,
+  handleDeleteMessage,
+  handleSetRemark,
   handlePublicMessages,
   realtimeWebSocket,
   type WsData,
@@ -114,6 +116,10 @@ const server = Bun.serve<WsData>({
         response = handleDeviceMessageHistory(req);
       } else if (pathname === "/api/messages/reply" && req.method === "POST") {
         response = await handleDeviceMessageReply(req);
+      } else if (pathname === "/api/messages/delete" && req.method === "POST") {
+        response = await handleDeleteMessage(req);
+      } else if (pathname === "/api/messages/remark" && req.method === "POST") {
+        response = await handleSetRemark(req);
       } else if (pathname === "/api/messages/block" && req.method === "POST") {
         response = await handleBlockViewer(req);
       } else if (pathname === "/api/messages/public" && req.method === "GET") {

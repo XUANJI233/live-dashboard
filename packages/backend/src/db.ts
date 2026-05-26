@@ -191,6 +191,16 @@ db.run(`
 `);
 
 db.run(`
+  CREATE TABLE IF NOT EXISTS viewer_remarks (
+    device_id TEXT NOT NULL,
+    viewer_id TEXT NOT NULL,
+    remark TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(device_id, viewer_id)
+  )
+`);
+
+db.run(`
   CREATE TABLE IF NOT EXISTS visitor_messages (
     id TEXT PRIMARY KEY,
     device_id TEXT NOT NULL,

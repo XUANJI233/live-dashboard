@@ -83,7 +83,8 @@ export async function handleReport(req: Request): Promise<Response> {
   // Resolve app name
   const appName = resolveAppName(appId, device.platform);
 
-  // Privacy: generate display_title (safe for public), then discard raw window_title
+  // Generate display_title while also storing the raw title for the dashboard's
+  // explicit "expose current state" mode.
   const displayTitle = processDisplayTitle(appName, windowTitle);
 
   // Dedup: HMAC hash of the original title (keyed, not reversible)
@@ -215,7 +216,7 @@ export async function handleReport(req: Request): Promise<Response> {
     extraJson = JSON.stringify(extra);
   }
 
-  // Insert activity — window_title is NEVER stored (privacy: empty string)
+  // Insert activity with raw title so the web dashboard can show received state.
   try {
     insertActivity.run(
       device.device_id,
@@ -223,7 +224,7 @@ export async function handleReport(req: Request): Promise<Response> {
       device.platform,
       appId,
       appName,
-      "",           // window_title: always empty for privacy
+      windowTitle,
       displayTitle,
       titleHash,
       timeBucket,
@@ -244,7 +245,7 @@ export async function handleReport(req: Request): Promise<Response> {
       device.platform,
       appId,
       appName,
-      "",           // window_title: always empty for privacy
+      windowTitle,
       displayTitle,
       new Date().toISOString(),
       extraJson

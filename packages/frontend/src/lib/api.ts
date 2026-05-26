@@ -6,6 +6,7 @@ export interface DeviceState {
   platform: string;
   app_id: string;
   app_name: string;
+  window_title?: string;
   display_title?: string;
   last_seen_at: string;
   is_online: number;
@@ -42,6 +43,18 @@ export interface DeviceState {
       artist?: string;
       app?: string;
     };
+    location?: {
+      latitude?: number;
+      longitude?: number;
+      accuracy_m?: number;
+      provider?: string;
+      recorded_at?: string;
+    };
+    input?: {
+      input_active?: boolean;
+      is_typing?: boolean;
+      source?: string;
+    };
   };
 }
 
@@ -52,6 +65,7 @@ export interface ActivityRecord {
   platform: string;
   app_id: string;
   app_name: string;
+  window_title?: string;
   display_title?: string;
   started_at: string;
 }

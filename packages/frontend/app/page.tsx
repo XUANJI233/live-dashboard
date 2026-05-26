@@ -216,6 +216,7 @@ function HomeInner() {
               )}
 
               <VisitorMessages device={selectedDevice} />
+              <ExposurePanel device={selectedDevice} />
 
               {/* Tab content */}
               {tab === "activity" ? (
@@ -251,6 +252,66 @@ function HomeInner() {
         </p>
       </footer>
     </>
+  );
+}
+
+function boolText(value: boolean | undefined) {
+  if (value === undefined) return "未知";
+  return value ? "是" : "否";
+}
+
+function ExposurePanel({ device }: { device: DeviceState | undefined }) {
+  if (!device) return null;
+  const extra = device.extra || {};
+  const rows: Array<[string, string | undefined]> = [
+    ["设备 ID", device.device_id],
+    ["设备名", device.device_name],
+    ["平台", device.platform],
+    ["应用 ID", device.app_id],
+    ["应用名", device.app_name],
+    ["页面标题", device.display_title || device.window_title],
+    ["最后上报", device.last_seen_at],
+    ["采集模式", extra.device?.capability_mode],
+    ["网络连接", boolText(extra.device?.network_connected)],
+    ["VPN", extra.device?.vpn_active ? (extra.device.vpn_name || "开启") : boolText(extra.device?.vpn_active)],
+    ["前台包名", extra.foreground?.package_name],
+    ["前台应用", extra.foreground?.app_name],
+    ["前台 Activity", extra.foreground?.activity],
+    ["前台来源", extra.foreground?.source],
+    ["媒体标题", extra.media?.title],
+    ["媒体作者", extra.media?.artist],
+    ["媒体应用", extra.media?.app],
+    ["媒体状态", extra.media?.state],
+    ["正在输入", boolText(extra.input?.is_typing)],
+    ["位置", extra.location?.latitude !== undefined && extra.location?.longitude !== undefined
+      ? `${extra.location.latitude}, ${extra.location.longitude}${extra.location.accuracy_m ? ` ±${extra.location.accuracy_m}m` : ""}`
+      : undefined],
+    ["位置来源", extra.location?.provider],
+  ];
+
+  return (
+    <section className="vn-bubble mt-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-xs font-bold text-[var(--color-text-muted)] uppercase tracking-wider">
+          当前暴露状态
+        </h2>
+        <span className="text-[10px] text-[var(--color-text-muted)]">尽量展示已收到的数据</span>
+      </div>
+      <div className="grid sm:grid-cols-2 gap-2 text-xs">
+        {rows.map(([label, value]) => (
+          <div key={label} className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 min-w-0">
+            <div className="text-[10px] text-[var(--color-text-muted)]">{label}</div>
+            <div className="truncate" title={value || "未上报"}>{value || "未上报"}</div>
+          </div>
+        ))}
+      </div>
+      <details className="mt-3 text-xs">
+        <summary className="cursor-pointer text-[var(--color-text-muted)]">原始 extra JSON</summary>
+        <pre className="mt-2 max-h-56 overflow-auto rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-2 text-[10px] whitespace-pre-wrap">
+          {JSON.stringify(extra, null, 2)}
+        </pre>
+      </details>
+    </section>
   );
 }
 
