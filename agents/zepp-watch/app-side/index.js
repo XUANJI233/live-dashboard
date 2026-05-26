@@ -1,7 +1,11 @@
 import { BaseSideService } from '@zeppos/zml/base-side'
 
-const DEFAULT_MIN_INTERVAL_MS = 15 * 60 * 1000
+const DEFAULT_MIN_INTERVAL_MS = 5 * 60 * 1000
+const MIN_AUTO_INTERVAL_MS = 2 * 60 * 1000
+const MAX_AUTO_INTERVAL_MS = 60 * 60 * 1000
+const MIN_FORCE_INTERVAL_MS = 30 * 1000
 const MAX_RECORDS_PER_SYNC = 10
+const DEFAULT_RELAY_MODE = 'phone-side'
 
 function readSetting(settings, key, fallback = '') {
   const value = settings.getItem(key)
@@ -17,6 +21,10 @@ function asNumber(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max)
+}
+
 AppSideService(
   BaseSideService({
     state: {
@@ -24,6 +32,7 @@ AppSideService(
     },
 
     onInit() {
+      this.state.lastSyncAt = asNumber(readSetting(this.settings, 'lastSyncAt', 0), 0)
       this.log('Live Dashboard side service init')
     },
 
@@ -40,14 +49,29 @@ AppSideService(
 
     async handleSnapshot(snapshot) {
       const now = Date.now()
-      const minInterval = asNumber(
-        readSetting(this.settings, 'minIntervalMs', DEFAULT_MIN_INTERVAL_MS),
-        DEFAULT_MIN_INTERVAL_MS,
-      )
-      const force = snapshot.force === true
+      const relayMode = readSetting(this.settings, 'relayMode', DEFAULT_RELAY_MODE)
+      if (relayMode !== DEFAULT_RELAY_MODE) {
+        return { ok: false, skipped: true, reason: 'unsupported_relay_mode' }
+      }
 
-      if (!force && now - this.state.lastSyncAt < minInterval) {
-        return { ok: true, skipped: true, reason: 'rate_limited' }
+      const configuredInterval = asNumber(
+        readSetting(this.settings, 'minIntervalMs', DEFAULT_MIN_INTERVAL_MS),
+        DEFAULT_MIN_INTERVAL_MS
+      )
+      const minInterval = clamp(configuredInterval, MIN_AUTO_INTERVAL_MS, MAX_AUTO_INTERVAL_MS)
+      const force = snapshot.force === true
+      const elapsed = now - this.state.lastSyncAt
+      const effectiveInterval = force ? MIN_FORCE_INTERVAL_MS : minInterval
+
+      if (this.state.lastSyncAt > 0 && elapsed < effectiveInterval) {
+        const waitMs = effectiveInterval - elapsed
+        return {
+          ok: true,
+          skipped: true,
+          reason: 'rate_limited',
+          wait_ms: waitMs,
+          next_allowed_at: now + waitMs,
+        }
       }
 
       const serverUrl = trimServerUrl(readSetting(this.settings, 'serverUrl'))
@@ -63,6 +87,9 @@ AppSideService(
         extra: {
           device: {
             capability_mode: 'normal',
+            relay_mode: relayMode,
+            energy_policy: 'balanced',
+            min_interval_ms: minInterval,
             last_sample_at: new Date(now).toISOString(),
           },
         },

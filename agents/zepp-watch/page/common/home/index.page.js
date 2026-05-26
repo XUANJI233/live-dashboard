@@ -4,6 +4,14 @@ import { createWidget, widget, align, text_style, prop } from '@zos/ui'
 
 const heartRate = new HeartRate()
 
+function formatWait(waitMs) {
+  const seconds = Math.ceil((waitMs || 0) / 1000)
+  if (seconds < 60) {
+    return `${seconds}s`
+  }
+  return `${Math.ceil(seconds / 60)}m`
+}
+
 Page(
   BasePage({
     name: 'live-dashboard.home',
@@ -63,13 +71,15 @@ Page(
         method: 'watch.snapshot',
         params: {
           force,
+          relay_mode: 'phone-side',
           heart_rate,
           recorded_at: Date.now(),
         },
       })
         .then((result) => {
           if (result?.skipped) {
-            this.updateStatus('Skipped to save battery')
+            const wait = result.wait_ms ? ` ${formatWait(result.wait_ms)}` : ''
+            this.updateStatus(`Rate limited${wait}`)
           } else {
             this.updateStatus(`Synced HR ${heart_rate || '--'}`)
           }

@@ -1,0 +1,41 @@
+name: Build Zepp Watch
+
+on:
+  push:
+    branches: ["codex/**", "main"]
+    paths:
+      - "agents/zepp-watch/**"
+      - ".github/workflows/build-zepp-watch.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "agents/zepp-watch/**"
+      - ".github/workflows/build-zepp-watch.yml"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  zepp-watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Install Zepp dependencies
+        working-directory: agents/zepp-watch
+        run: npm install
+      - name: Install Zepp OS CLI
+        run: npm install --global @zeppos/zeus-cli
+      - name: Build Zepp watch package
+        working-directory: agents/zepp-watch
+        run: zeus build
+      - name: Upload Zepp watch package
+        uses: actions/upload-artifact@v6
+        with:
+          name: zepp-watch-dist
+          path: agents/zepp-watch/dist/**
+          if-no-files-found: error
+          retention-days: 14
