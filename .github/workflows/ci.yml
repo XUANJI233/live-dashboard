@@ -30,14 +30,23 @@ jobs:
       - name: Install backend dependencies
         working-directory: packages/backend
         run: bun install --frozen-lockfile
-      - name: Check backend bundle
+      - name: Build backend bundle
         working-directory: packages/backend
         run: mkdir -p dist && bun build src/index.ts --target=bun --outfile dist/live-dashboard-backend.js
+      - name: Copy data files to dist
+        working-directory: packages/backend
+        run: |
+          mkdir -p dist/data
+          cp src/data/*.json dist/data/
+      - name: Create backend bundle ZIP
+        working-directory: packages/backend
+        run: |
+          zip -r dist/backend-bundle.zip dist/live-dashboard-backend.js dist/data
       - name: Upload backend CI bundle
         uses: actions/upload-artifact@v6
         with:
           name: backend-bundle
-          path: packages/backend/dist/live-dashboard-backend.js
+          path: packages/backend/dist/backend-bundle.zip
           retention-days: 14
 
   android:

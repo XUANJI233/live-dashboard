@@ -6,19 +6,27 @@ RUN bun install --frozen-lockfile
 COPY packages/frontend/ ./
 RUN bun run build
 
-# Stage 2: Run backend + serve static files
+# Stage 2: Build backend
+FROM oven/bun:1-alpine AS backend-build
+WORKDIR /build
+COPY packages/backend/package.json packages/backend/bun.lock* ./
+RUN bun install --frozen-lockfile
+COPY packages/backend/ ./
+RUN mkdir -p dist && bun build src/index.ts --target=bun --outfile dist/live-dashboard-backend.js
+RUN mkdir -p dist/data && cp src/data/*.json dist/data/
+
+# Stage 3: Run backend + serve static files
 FROM oven/bun:1-alpine
 WORKDIR /app
 
 # Non-root user with writable home
 RUN addgroup -S dashboard && adduser -S dashboard -G dashboard -h /home/dashboard
 
-# Copy backend
-COPY packages/backend/package.json packages/backend/bun.lock* ./
-RUN bun install --frozen-lockfile
-COPY packages/backend/ ./
+# Copy compiled backend
+COPY --from=backend-build /build/dist/live-dashboard-backend.js ./
+COPY --from=backend-build /build/dist/data ./data
 
-# Copy frontend build output into backend's public dir
+# Copy frontend build output
 COPY --from=frontend-build /build/out ./public
 
 # Data directory for SQLite (owned by non-root user)
@@ -32,4 +40,4 @@ ENV HOME=/home/dashboard
 
 USER dashboard
 EXPOSE 3000
-CMD ["bun", "run", "src/index.ts"]
+CMD ["bun", "live-dashboard-backend.js"]
