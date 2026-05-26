@@ -13,8 +13,10 @@ on:
       - ".env.example"
       - "start.sh"
       - ".github/workflows/docker-publish.yml"
+  workflow_dispatch:
   release:
     types: [published]
+    
 
 env:
   REGISTRY: ghcr.io
