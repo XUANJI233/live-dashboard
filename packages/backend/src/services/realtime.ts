@@ -77,12 +77,27 @@ const insertVisitorMessage = db.prepare(`
   ON CONFLICT(id) DO NOTHING
 `);
 
+const deleteVisitorMessage = db.prepare(`
+  DELETE FROM visitor_messages
+  WHERE id = ? AND device_id = ?
+`);
+
+const upsertViewerRemark = db.prepare(`
+  INSERT INTO viewer_remarks (device_id, viewer_id, remark)
+  VALUES (?, ?, ?)
+  ON CONFLICT(device_id, viewer_id) DO UPDATE SET
+    remark = excluded.remark,
+    updated_at = datetime('now')
+`);
+
 const getDeviceMessageHistory = db.prepare(`
-  SELECT id, device_id, viewer_id, viewer_name, kind, direction, text, created_at
-  FROM visitor_messages
-  WHERE device_id = ?
-    AND (? = '' OR datetime(created_at) > datetime(?))
-  ORDER BY created_at ASC
+  SELECT m.id, m.device_id, m.viewer_id, m.viewer_name, m.kind, m.direction, m.text, m.created_at,
+         COALESCE(r.remark, '') as viewer_remark
+  FROM visitor_messages m
+  LEFT JOIN viewer_remarks r ON m.device_id = r.device_id AND m.viewer_id = r.viewer_id
+  WHERE m.device_id = ?
+    AND (? = '' OR datetime(m.created_at) > datetime(?))
+  ORDER BY m.created_at ASC
   LIMIT 500
 `);
 
@@ -452,5 +467,47 @@ export async function handleBlockViewer(req: Request): Promise<Response> {
   }
 
   blockViewerStmt.run(device.device_id, viewerId);
+  return Response.json({ ok: true });
+}
+
+export async function handleDeleteMessage(req: Request): Promise<Response> {
+  const device = authenticateToken(req.headers.get("authorization"));
+  if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
+
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const messageId = typeof body.message_id === "string" ? body.message_id : "";
+  if (!messageId) {
+    return Response.json({ error: "message_id required" }, { status: 400 });
+  }
+
+  deleteVisitorMessage.run(messageId, device.device_id);
+  return Response.json({ ok: true });
+}
+
+export async function handleSetRemark(req: Request): Promise<Response> {
+  const device = authenticateToken(req.headers.get("authorization"));
+  if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
+
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const viewerId = cleanViewerId(body.viewer_id);
+  const remark = cleanText(body.remark); // Use cleanText to prevent huge inputs
+
+  if (!viewerId) {
+    return Response.json({ error: "viewer_id required" }, { status: 400 });
+  }
+
+  upsertViewerRemark.run(device.device_id, viewerId, remark);
   return Response.json({ ok: true });
 }
