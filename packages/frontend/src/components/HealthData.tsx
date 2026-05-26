@@ -114,7 +114,7 @@ export default function HealthData({ selectedDate, deviceId }: Props) {
   if (error) {
     return (
       <div className="text-center py-8">
-        <p className="text-xs text-[var(--color-text-muted)]">健康数据加载失败</p>
+        <p className="text-xs text-[var(--color-text-muted)]">健康数据暂时收起喵~</p>
       </div>
     );
   }
@@ -122,8 +122,8 @@ export default function HealthData({ selectedDate, deviceId }: Props) {
   if (!data || data.records.length === 0) {
     return (
       <div className="text-center py-8">
-        <p className="text-lg mb-1">(´-ω-`)</p>
-        <p className="text-xs text-[var(--color-text-muted)]">今天还没有健康数据呢~</p>
+        <p className="text-lg mb-1">(·˘ω˘·)</p>
+        <p className="text-xs text-[var(--color-text-muted)]">今天安静喵~</p>
       </div>
     );
   }
@@ -219,7 +219,7 @@ function formatValue(value: number, type: string): string {
     return h > 0 ? `${h} 小时 ${m} 分钟` : `${m} 分钟`;
   }
   if (type === "sleep_status") return value > 0 ? "睡着了" : "醒着";
-  if (type === "wear_status") return value > 0 ? "戴着喵" : "没戴喵";
+  if (type === "wear_status") return value > 0 ? "佩戴中" : "未佩戴";
   if (type === "sleep_start" || type === "sleep_end" || type === "nap_start" || type === "nap_end") {
     const minutes = Math.max(0, Math.round(value));
     const h = Math.floor(minutes / 60) % 24;

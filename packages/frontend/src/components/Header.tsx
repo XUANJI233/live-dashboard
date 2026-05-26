@@ -2,11 +2,11 @@ import { useConfig } from "@/hooks/useConfig";
 
 function getGreeting(): { kaomoji: string; text: string } {
   const hour = new Date().getHours();
-  if (hour >= 5 && hour < 9) return { kaomoji: "(* ^ ω ^)", text: "早上好呀~" };
-  if (hour >= 9 && hour < 12) return { kaomoji: "(o´▽`o)", text: "上午好呀~" };
-  if (hour >= 12 && hour < 14) return { kaomoji: "(´～`)", text: "午饭时间~" };
-  if (hour >= 14 && hour < 18) return { kaomoji: "(◕‿◕)", text: "下午好呀~" };
-  if (hour >= 18 && hour < 22) return { kaomoji: "(✿╹◡╹)", text: "晚上好呀~" };
+  if (hour >= 5 && hour < 9) return { kaomoji: "(* ^ ω ^)", text: "早上好喵~" };
+  if (hour >= 9 && hour < 12) return { kaomoji: "(o´▽`o)", text: "上午好喵~" };
+  if (hour >= 12 && hour < 14) return { kaomoji: "(´～`)", text: "午安喵~" };
+  if (hour >= 14 && hour < 18) return { kaomoji: "(◕‿◕)", text: "下午好喵~" };
+  if (hour >= 18 && hour < 22) return { kaomoji: "(✿╹◡╹)", text: "晚上好喵~" };
   return { kaomoji: "(￣o￣) . z Z", text: "夜深了喵~" };
 }
 
@@ -44,7 +44,7 @@ export default function Header({ serverTime, viewerCount = 0 }: HeaderProps) {
         <div className="text-right flex flex-col items-end gap-0.5">
           {viewerCount > 0 && (
             <p className="text-xs text-[var(--color-primary)] font-medium">
-              {viewerCount} 人在看喵~
+              {viewerCount} 人在悄悄看
             </p>
           )}
           <p className="text-sm font-mono font-medium text-[var(--color-secondary)]">

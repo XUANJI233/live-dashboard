@@ -135,10 +135,10 @@ function HomeInner() {
       {error && (
         <div className="vn-bubble mb-4 border-[var(--color-primary)]">
           <p className="text-sm text-[var(--color-primary)]">
-            (&gt;_&lt;) 连接失败了喵...
+            (>-<) 连接暂时中断了…
           </p>
           <p className="text-xs text-[var(--color-text-muted)] mt-1">
-            别担心，会自动重试的~
+            系统会自动重试，请稍候。
           </p>
         </div>
       )}
@@ -146,19 +146,25 @@ function HomeInner() {
       {/* Loading state */}
       {loading && !current && (
         <div className="flex flex-col items-center justify-center py-16 gap-3">
-          <p className="text-2xl">(=^-ω-^=)</p>
+          <p className="text-2xl">(·˘ω˘·)</p>
           <div className="loading-dots">
             <span />
             <span />
             <span />
           </div>
-          <p className="text-xs text-[var(--color-text-muted)]">正在加载喵~</p>
+          <p className="text-xs text-[var(--color-text-muted)]">正在加载喵!</p>
         </div>
       )}
 
       {current && (
         <>
           <BodySnapshot device={selectedDevice} records={healthRecords} />
+
+          {/* 将健康数据也展示在页面顶部，突出身体信息而不是仅放在设备侧栏 */}
+          <div className="w-full">
+            <HealthData selectedDate={selectedDate} deviceId={selectedDevice?.device_id} />
+          </div>
+
           {selectedDevice && <CurrentStatus device={selectedDevice} sleepStatus={latestHealthValue(healthRecords, "sleep_status")} />}
 
           <div className="grid gap-6 lg:grid-cols-[14rem_minmax(0,1fr)_20rem]">
@@ -166,7 +172,7 @@ function HomeInner() {
             {devices.length > 0 && (
               <div className="space-y-2">
                 <h2 className="text-xs font-bold text-[var(--color-text-muted)] uppercase tracking-wider mb-2">
-                  小设备们
+                  设备列表
                 </h2>
                 {devices.map((d) => (
                   <DeviceCard
@@ -252,8 +258,8 @@ function HomeInner() {
 
       {/* Footer */}
       <footer className="mt-12 pt-4 separator-dashed text-center">
-        <p className="text-[10px] text-[var(--color-text-muted)]">
-          {displayName} 现在在做什么 &middot; 每 10 秒悄悄刷新一次 &middot; (◕ᴗ◕)
+            <p className="text-[10px] text-[var(--color-text-muted)]">
+          {displayName} 现在在做什么 · 每 10 秒自动刷新一次 · 喵~
         </p>
       </footer>
     </>
@@ -273,7 +279,7 @@ function DeviceOverview({ devices }: { devices: DeviceState[] }) {
         const icon = platformIcons[d.platform] || "\u{1F4BB}";
         return (
           <span key={d.device_id} className={isOnline ? "" : "opacity-40"}>
-            {icon} {d.device_name} · {isOnline ? (d.app_name === "idle" ? "暂时离开喵" : d.app_name || "不知道在忙什么") : "睡过去了"}
+            {icon} {d.device_name} · {isOnline ? (d.app_name === "idle" ? "暂时离开" : d.app_name || "不知道在忙什么") : "离线"}
           </span>
         );
       })}
@@ -293,7 +299,7 @@ function BodySnapshot({ device, records }: { device: DeviceState | undefined; re
   const standTarget = latest.get("stand_target");
   const standMetric = standCount
     ? {
-        label: "拒绝久坐喵!",
+        label: "站立提醒",
         value: standTarget ? `${Math.round(standCount.value)}/${Math.round(standTarget.value)}` : String(Math.round(standCount.value)),
         unit: "次",
         at: standCount.recorded_at,
@@ -312,7 +318,7 @@ function BodySnapshot({ device, records }: { device: DeviceState | undefined; re
     sleepStatus ? { label: "睡眠", value: sleepStatus.value > 0 ? "睡着了" : "醒着", unit: "", at: sleepStatus.recorded_at } : null,
     metric("睡眠时长", sleepDuration, "分钟"),
     metric("小睡时长", napDuration, "分钟"),
-    wearStatus ? { label: "佩戴", value: wearStatus.value > 0 ? "戴着喵" : "没戴喵", unit: "", at: wearStatus.recorded_at } : null,
+    wearStatus ? { label: "佩戴", value: wearStatus.value > 0 ? "佩戴中" : "未佩戴", unit: "", at: wearStatus.recorded_at } : null,
     metric("压力", latest.get("stress"), ""),
     metric("步数", latest.get("steps"), "步"),
     metric("活动热量", latest.get("active_calories"), "kcal"),

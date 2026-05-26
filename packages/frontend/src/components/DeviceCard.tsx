@@ -51,11 +51,11 @@ export default function DeviceCard({ device, selected, onSelect }: DeviceCardPro
           )}
         </div>
         <span className="text-[10px] text-[var(--color-text-muted)]">
-          {isOnline ? timeAgo(device.last_seen_at) : "睡过去了"}
+          {isOnline ? timeAgo(device.last_seen_at) : "休息中喵"}
         </span>
       </div>
-      <span className="text-xs flex-shrink-0" title={isOnline ? "在线喵" : "离线喵"}>
-        {isOnline ? "(=^-\u03C9-^=)" : "(-.-)zzZ"}
+      <span className="text-xs flex-shrink-0" title={isOnline ? "在线喵!" : "离线喵~"}>
+        {isOnline ? "(・ω・)" : "(-.-)"}
       </span>
     </div>
   );

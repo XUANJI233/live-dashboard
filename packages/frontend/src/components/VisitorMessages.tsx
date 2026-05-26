@@ -60,12 +60,12 @@ function saveHistory(deviceId: string | undefined, lines: ChatLine[]) {
 function messageStatusText(status?: string) {
   if (!status) return "";
   const map: Record<string, string> = {
-    sending: "送信中",
-    sent: "送到啦",
-    delivered: "送到啦",
-    queued: "先放在小盒子里",
-    failed: "没送到",
-    blocked: "被拦住了",
+    sending: "发送中",
+    sent: "已发送",
+    delivered: "已送达",
+    queued: "已排队",
+    failed: "发送失败",
+    blocked: "已阻止",
   };
   return map[status] || status;
 }
@@ -83,7 +83,7 @@ async function ensureViewerToken(): Promise<{ token: string; viewerId: string }>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ fingerprint: fingerprint() }),
   });
-  if (!res.ok) throw new Error("访客小牌牌领取失败了");
+  if (!res.ok) throw new Error("访客令牌领取失败");
   const data = await res.json();
   localStorage.setItem("live-dashboard-viewer-token", data.token);
   localStorage.setItem("live-dashboard-viewer-id", data.viewer_id);
@@ -160,7 +160,7 @@ export default function VisitorMessages({ device }: Props) {
               setLines((prev) => [...prev, {
                 id: crypto.randomUUID(),
                 from: "system",
-                text: typeof data.error === "string" ? data.error : "消息没送到，轻轻再试一次喵",
+                text: typeof data.error === "string" ? data.error : "消息未送达，请稍后重试。",
               }]);
             }
           } catch {
@@ -168,7 +168,7 @@ export default function VisitorMessages({ device }: Props) {
           }
         };
       } catch (e) {
-        setError(e instanceof Error ? e.message : "暂时拿不到访客小牌牌");
+        setError(e instanceof Error ? e.message : "暂时无法获取访客令牌");
         if (!closed) retry = setTimeout(connect, 5000);
       }
     };
@@ -204,9 +204,9 @@ export default function VisitorMessages({ device }: Props) {
   }, []);
 
   const statusText = useMemo(() => {
-    if (!device) return "还没选要悄悄找谁";
-    if (!connected) return "正在牵小线...";
-    return device.is_online === 1 ? "可以轻轻发过去啦" : "对方睡着了，会先帮你放一会儿";
+    if (!device) return "尚未选择目标设备";
+    if (!connected) return "连接中...";
+    return device.is_online === 1 ? "可以发送消息了" : "对方离线，消息将稍后送达";
   }, [connected, device]);
 
   const updateName = (value: string) => {
@@ -228,7 +228,7 @@ export default function VisitorMessages({ device }: Props) {
       viewer_name: displayName.trim(),
       text: cleaned,
     }));
-    const line = { id, from: "viewer" as const, text: cleaned, status: "送信中", at: new Date().toISOString() };
+    const line = { id, from: "viewer" as const, text: cleaned, status: "发送中", at: new Date().toISOString() };
     if (kind === "private") {
       setLines((prev) => {
         const next = [...prev, line];
@@ -261,9 +261,9 @@ export default function VisitorMessages({ device }: Props) {
           value={displayName}
           onChange={(e) => updateName(e.target.value)}
           className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm outline-none"
-          placeholder="想怎么称呼你呢（只留在这个浏览器里）"
+          placeholder="怎么称呼喵？"
         />
-        {viewerId && <div className="text-[10px] text-[var(--color-text-muted)]">你的访客小牌牌：{viewerId}</div>}
+        {viewerId && <div className="text-[10px] text-[var(--color-text-muted)]">你的访客牌：{viewerId}</div>}
         {error && <div className="text-[10px] text-red-400">{error}</div>}
       </div>
 
@@ -277,7 +277,7 @@ export default function VisitorMessages({ device }: Props) {
               <div>{line.text}</div>
             </div>
           ))}
-          {publicLines.length === 0 && <div className="text-[var(--color-text-muted)]">这里还空空的，第一句话在等你喵~</div>}
+          {publicLines.length === 0 && <div className="text-[var(--color-text-muted)]">这里还空着喵~</div>}
         </div>
         <div className="flex gap-2">
           <input
@@ -286,10 +286,10 @@ export default function VisitorMessages({ device }: Props) {
             onKeyDown={(e) => { if (e.key === "Enter") send("public"); }}
             disabled={!device || !connected}
             className="flex-1 min-w-0 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm outline-none"
-            placeholder="写一句大家都能看的小纸条"
+            placeholder="写条留言喵~"
           />
           <button onClick={() => send("public")} disabled={!device || !connected || !publicText.trim()} className="pill-btn px-3 py-2 text-xs disabled:opacity-40">
-            贴上去
+            发布喵!
           </button>
         </div>
       </div>
@@ -315,10 +315,10 @@ export default function VisitorMessages({ device }: Props) {
             onKeyDown={(e) => { if (e.key === "Enter") send("private"); }}
             disabled={!device || !connected}
             className="flex-1 min-w-0 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm outline-none"
-            placeholder={device ? "只给管理员看的悄悄话" : "先选一个小设备喵"}
+            placeholder={device ? "悄悄对我说喵~" : "先选一个设备"}
           />
           <button onClick={() => send("private")} disabled={!device || !connected || !privateText.trim()} className="pill-btn px-3 py-2 text-xs disabled:opacity-40">
-            轻轻发送
+            发送喵!
           </button>
         </div>
       </div>

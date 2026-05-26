@@ -136,7 +136,7 @@ export interface SiteConfig {
 const defaultConfig: SiteConfig = {
   displayName: "Monika",
   siteTitle: "Monika 现在在做什么",
-  siteDescription: "轻轻看一眼 Monika 此刻的小动态喵",
+  siteDescription: "轻轻看一眼 Monika 此刻的动态",
   siteFavicon: "/favicon.ico",
 };
 
