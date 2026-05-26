@@ -2,7 +2,7 @@ name: Build Zepp Watch
 
 on:
   push:
-    branches: ["codex/**", "main"]
+    branches: ["codex/mobile-watch-realtime"]
     paths:
       - "agents/zepp-watch/**"
       - ".github/workflows/build-zepp-watch.yml"
@@ -12,9 +12,6 @@ on:
       - "agents/zepp-watch/**"
       - ".github/workflows/build-zepp-watch.yml"
   workflow_dispatch:
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   zepp-watch:
