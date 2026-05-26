@@ -48,7 +48,14 @@ object SystemSnapshotStore {
     private var latestNotification: SystemSnapshot? = null
 
     fun updateFromLsposed(snapshot: SystemSnapshot) {
-        latestLsposed = snapshot.copy(capabilityMode = "lsposed", sampledAt = System.currentTimeMillis())
+        val previous = latestLsposedFresh(maxAgeMs = 10 * 60_000L)
+        latestLsposed = SystemSnapshot(
+            capabilityMode = "lsposed",
+            foreground = snapshot.foreground ?: previous?.foreground,
+            input = snapshot.input ?: previous?.input,
+            media = snapshot.media ?: previous?.media,
+            sampledAt = System.currentTimeMillis(),
+        )
     }
 
     fun latestLsposedFresh(maxAgeMs: Long = 2 * 60_000L): SystemSnapshot? {

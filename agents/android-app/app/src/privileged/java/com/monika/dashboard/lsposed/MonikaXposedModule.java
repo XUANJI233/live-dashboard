@@ -5,6 +5,8 @@ import android.content.Context;
 import android.content.ComponentName;
 import android.media.MediaMetadata;
 import android.media.session.PlaybackState;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -22,61 +24,112 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String TAG = "MonikaLSP";
     private static final String TARGET_PACKAGE = BuildConfig.APPLICATION_ID;
     private static final String ACTION_STATUS = "com.monika.dashboard.LSPOSED_STATUS";
+    private static final long FOREGROUND_POLL_MS = 5000L;
+    private static final long BROADCAST_DEBOUNCE_MS = 1500L;
+    private volatile boolean samplerStarted = false;
+    private volatile String lastForegroundKey = "";
+    private volatile long lastForegroundBroadcastAt = 0L;
+    private volatile long lastMediaBroadcastAt = 0L;
 
     @Override
     public void onSystemServerStarting(@NonNull XposedModuleInterface.SystemServerStartingParam param) {
         ClassLoader cl = param.getClassLoader();
-        installHooks(cl, "com.android.server.wm.ActivityTaskSupervisor",
-                "resumeTopActivity", "setResumedActivity");
-        installHooks(cl, "com.android.server.wm.RootWindowContainer",
-                "resumeFocusedTasksTopActivities", "ensureActivitiesVisible");
-        installHooks(cl, "com.android.server.wm.WindowManagerService",
-                "updateFocusedWindow", "setFocusedApp");
-        installHooks(cl, "com.android.server.media.MediaSessionService",
-                "onSessionPlaystateChanged", "updateMediaButtonSession");
-        installHooks(cl, "com.android.server.media.MediaSessionRecord",
-                "setPlaybackState", "setMetadata", "updatePlaybackState", "updateMetadata");
+        installForegroundSampler(cl);
+        installMediaHooks(cl);
     }
 
-    private void installHooks(ClassLoader cl, String className, String... nameHints) {
+    private void installForegroundSampler(ClassLoader cl) {
         try {
-            Class<?> clazz = Class.forName(className, false, cl);
-            for (Method method : clazz.getDeclaredMethods()) {
-                if (!matches(method.getName(), nameHints)) continue;
-                hook(method)
-                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                        .intercept(chain -> {
-                            Object result = chain.proceed();
-                            Object owner = chain.getThisObject();
-                            if (owner != null && owner.getClass().getName().contains("MediaSession")) {
-                                broadcastMediaSnapshot(owner);
-                            } else {
-                                broadcastSnapshot(owner);
-                            }
-                            return result;
-                        });
-                log(Log.INFO, TAG, "hooked " + className + "#" + method.getName());
+            Class<?> clazz = Class.forName("com.android.server.wm.ActivityTaskManagerService", false, cl);
+            Method method = findMethod(clazz, "systemReady");
+            if (method == null) {
+                startForegroundSampler();
+                return;
             }
+            hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        startForegroundSampler();
+                        return result;
+                    });
+            log(Log.INFO, TAG, "hooked ActivityTaskManagerService#systemReady");
         } catch (Throwable t) {
-            log(Log.WARN, TAG, "skip " + className + ": " + t.getClass().getSimpleName());
+            log(Log.WARN, TAG, "foreground sampler hook skipped: " + t.getClass().getSimpleName());
+            startForegroundSampler();
         }
     }
 
-    private boolean matches(String name, String[] hints) {
-        for (String hint : hints) {
-            if (name.contains(hint)) return true;
-        }
-        return false;
-    }
-
-    private void broadcastSnapshot(Object owner) {
+    private void startForegroundSampler() {
+        if (samplerStarted) return;
         try {
+            Handler handler = new Handler(Looper.getMainLooper());
+            samplerStarted = true;
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        broadcastSnapshot();
+                    } catch (Throwable t) {
+                        log(Log.WARN, TAG, "foreground sample failed: " + t.getClass().getSimpleName());
+                    } finally {
+                        handler.postDelayed(this, FOREGROUND_POLL_MS);
+                    }
+                }
+            }, 15000L);
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "foreground sampler failed: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void installMediaHooks(ClassLoader cl) {
+        try {
+            Class<?> clazz = Class.forName("com.android.server.media.MediaSessionRecord", false, cl);
+            hookMediaMethod(clazz, "setPlaybackState");
+            hookMediaMethod(clazz, "setMetadata");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "media hooks skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void hookMediaMethod(Class<?> clazz, String name) {
+        Method method = findMethod(clazz, name);
+        if (method == null) return;
+        try {
+            hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        broadcastMediaSnapshot(chain.getThisObject());
+                        return result;
+                    });
+            log(Log.INFO, TAG, "hooked MediaSessionRecord#" + name);
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "media hook failed " + name + ": " + t.getClass().getSimpleName());
+        }
+    }
+
+    private Method findMethod(Class<?> clazz, String name) {
+        for (Method method : clazz.getDeclaredMethods()) {
+            if (name.equals(method.getName())) return method;
+        }
+        return null;
+    }
+
+    private void broadcastSnapshot() {
+        try {
+            ComponentName top = getTopActivityComponentName();
+            if (top == null || isIgnoredPackage(top.getPackageName())) return;
+            String packageName = top.getPackageName();
+            String activityName = top.getClassName();
+            String key = packageName + "/" + activityName;
+            long now = System.currentTimeMillis();
+            if (key.equals(lastForegroundKey) && now - lastForegroundBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
+            lastForegroundKey = key;
+            lastForegroundBroadcastAt = now;
+
             Intent intent = new Intent(ACTION_STATUS);
             intent.setPackage(TARGET_PACKAGE);
-            ComponentName top = getTopActivityComponentName();
-            String packageName = top != null ? top.getPackageName() : findPackageName(owner);
-            String activityName = top != null ? top.getClassName() : findActivityName(owner);
-            if (packageName == null && activityName == null) return;
             intent.putExtra("package_name", packageName);
             intent.putExtra("app_name", resolveAppLabel(packageName));
             intent.putExtra("activity", activityName);
@@ -90,6 +143,9 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void broadcastMediaSnapshot(Object record) {
         try {
+            long now = System.currentTimeMillis();
+            if (now - lastMediaBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
+            lastMediaBroadcastAt = now;
             Context context = getSystemContext();
             if (context == null) return;
             Object playback = callAny(record, "getPlaybackState");
@@ -119,8 +175,7 @@ public final class MonikaXposedModule extends XposedModule {
 
     private ComponentName getTopActivityComponentName() {
         try {
-            Class<?> atm = Class.forName("android.app.ActivityTaskManager");
-            Object service = atm.getDeclaredMethod("getService").invoke(null);
+            Object service = getActivityTaskManagerService();
             if (service == null) return null;
             Object info = callAny(service, "getFocusedRootTaskInfo");
             if (info == null) info = callAny(service, "getFocusedStackInfo");
@@ -132,41 +187,24 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
-    private String findPackageName(Object owner) {
-        String text = findInterestingObject(owner);
-        if (text == null) return null;
-        int slash = text.indexOf('/');
-        if (slash <= 0) return null;
-        String before = text.substring(0, slash);
-        int space = before.lastIndexOf(' ');
-        return (space >= 0 ? before.substring(space + 1) : before).trim();
-    }
-
-    private String findActivityName(Object owner) {
-        String text = findInterestingObject(owner);
-        if (text == null) return null;
-        int slash = text.indexOf('/');
-        if (slash < 0 || slash + 1 >= text.length()) return null;
-        return text.substring(slash + 1).split("[ }]", 2)[0];
-    }
-
-    private String findInterestingObject(Object owner) {
-        if (owner == null) return null;
-        String direct = owner.toString();
-        if (direct.contains("/")) return direct;
-        for (Field field : owner.getClass().getDeclaredFields()) {
-            String name = field.getName().toLowerCase();
-            if (!name.contains("resumed") && !name.contains("focus") && !name.contains("top")) {
-                continue;
-            }
-            try {
-                field.setAccessible(true);
-                Object value = field.get(owner);
-                if (value != null && value.toString().contains("/")) return value.toString();
-            } catch (Throwable ignored) {
-            }
+    private Object getActivityTaskManagerService() {
+        try {
+            Class<?> atm = Class.forName("android.app.ActivityTaskManager");
+            Object service = atm.getDeclaredMethod("getService").invoke(null);
+            if (service != null) return service;
+        } catch (Throwable ignored) {
         }
-        return null;
+        try {
+            Class<?> serviceManager = Class.forName("android.os.ServiceManager");
+            Object binder = serviceManager.getDeclaredMethod("getService", String.class)
+                    .invoke(null, "activity_task");
+            if (binder == null) return null;
+            Class<?> stub = Class.forName("android.app.IActivityTaskManager$Stub");
+            return stub.getDeclaredMethod("asInterface", android.os.IBinder.class)
+                    .invoke(null, binder);
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private Context getSystemContext() {

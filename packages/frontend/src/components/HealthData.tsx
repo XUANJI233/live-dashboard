@@ -11,8 +11,18 @@ const TYPE_META: Record<string, { label: string; icon: string; priority: number 
   steps:                  { label: "步数",     icon: "🚶", priority: 3 },
   active_calories:        { label: "活动卡路里", icon: "🔥", priority: 4 },
   sleep:                  { label: "睡眠",     icon: "😴", priority: 5 },
+  sleep_status:           { label: "睡眠状态",  icon: "😴", priority: 5 },
+  sleep_start:            { label: "入睡时间",  icon: "☾", priority: 5 },
+  sleep_end:              { label: "起床时间",  icon: "☀", priority: 5 },
+  sleep_duration:         { label: "睡眠时长",  icon: "⏱", priority: 5 },
+  sleep_stage_count:      { label: "睡眠阶段",  icon: "▦", priority: 5 },
+  nap_start:              { label: "小睡开始",  icon: "☾", priority: 5 },
+  nap_end:                { label: "小睡结束",  icon: "☀", priority: 5 },
+  nap_duration:           { label: "小睡时长",  icon: "⏱", priority: 5 },
   weight:                 { label: "体重",     icon: "⚖",  priority: 6 },
   body_temperature:       { label: "体温",     icon: "🌡",  priority: 7 },
+  stand_count:            { label: "拒绝久坐喵!", icon: "▴", priority: 7 },
+  stand_target:           { label: "站立目标",  icon: "◎", priority: 7 },
   blood_pressure:         { label: "血压",     icon: "🩺", priority: 8 },
   resting_heart_rate:     { label: "静息心率",  icon: "💚", priority: 9 },
   heart_rate_variability: { label: "心率变异性", icon: "💜", priority: 10 },
@@ -27,7 +37,7 @@ const TYPE_META: Record<string, { label: string; icon: string; priority: number 
 };
 
 // Core metrics shown as cards at top
-const CORE_TYPES = ["heart_rate", "oxygen_saturation", "steps", "active_calories"];
+const CORE_TYPES = ["heart_rate", "oxygen_saturation", "stand_count", "steps", "active_calories"];
 
 interface Props {
   selectedDate: string;
@@ -198,10 +208,17 @@ export default function HealthData({ selectedDate, deviceId }: Props) {
 }
 
 function formatValue(value: number, type: string): string {
-  if (type === "sleep" || type === "exercise") {
+  if (type === "sleep" || type === "exercise" || type === "sleep_duration" || type === "nap_duration") {
     const h = Math.floor(value / 60);
     const m = Math.round(value % 60);
     return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  }
+  if (type === "sleep_status") return value > 0 ? "睡着了" : "醒着";
+  if (type === "sleep_start" || type === "sleep_end" || type === "nap_start" || type === "nap_end") {
+    const minutes = Math.max(0, Math.round(value));
+    const h = Math.floor(minutes / 60) % 24;
+    const m = minutes % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   }
   if (type === "steps") return value.toLocaleString();
   if (type === "distance") return (value / 1000).toFixed(1) + "km";

@@ -159,7 +159,7 @@ function HomeInner() {
       {current && (
         <>
           <BodySnapshot device={selectedDevice} records={healthRecords} />
-          {selectedDevice && <CurrentStatus device={selectedDevice} />}
+          {selectedDevice && <CurrentStatus device={selectedDevice} sleepStatus={latestHealthValue(healthRecords, "sleep_status")} />}
 
           <div className="grid gap-6 lg:grid-cols-[14rem_minmax(0,1fr)_20rem]">
             {/* Left: device cards (narrow) */}
@@ -289,13 +289,29 @@ function BodySnapshot({ device, records }: { device: DeviceState | undefined; re
     if (!prev || record.recorded_at > prev.recorded_at) latest.set(record.type, record);
   }
   const extra = device?.extra || {};
+  const standCount = latest.get("stand_count");
+  const standTarget = latest.get("stand_target");
+  const standMetric = standCount
+    ? {
+        label: "拒绝久坐喵!",
+        value: standTarget ? `${Math.round(standCount.value)}/${Math.round(standTarget.value)}` : String(Math.round(standCount.value)),
+        unit: "次",
+        at: standCount.recorded_at,
+      }
+    : metric("站立", latest.get("stand_hours"), "小时");
+
+  const sleepStatus = latest.get("sleep_status");
+  const sleepDuration = latest.get("sleep_duration");
+
   const items = ([
     metric("心率", latest.get("heart_rate"), "bpm"),
     metric("血氧", latest.get("oxygen_saturation"), "%"),
     metric("体温", latest.get("body_temperature"), "℃"),
+    sleepStatus ? { label: "睡眠", value: sleepStatus.value > 0 ? "睡着了" : "醒着", unit: "", at: sleepStatus.recorded_at } : null,
+    metric("睡眠时长", sleepDuration, "分钟"),
     metric("压力", latest.get("stress"), ""),
     metric("步数", latest.get("steps"), "步"),
-    metric("站立", latest.get("stand_hours"), "小时"),
+    standMetric,
     typeof extra.battery_percent === "number"
       ? { label: "电量", value: String(extra.battery_percent), unit: "%", at: device?.last_seen_at }
       : null,
@@ -325,4 +341,13 @@ function metric(label: string, record: HealthRecord | undefined, fallbackUnit: s
   if (!record) return null;
   const value = Number.isInteger(record.value) ? String(record.value) : record.value.toFixed(1);
   return { label, value, unit: record.unit || fallbackUnit, at: record.recorded_at };
+}
+
+function latestHealthValue(records: HealthRecord[], type: string) {
+  let latest: HealthRecord | undefined;
+  for (const record of records) {
+    if (record.type !== type) continue;
+    if (!latest || record.recorded_at > latest.recorded_at) latest = record;
+  }
+  return latest?.value;
 }

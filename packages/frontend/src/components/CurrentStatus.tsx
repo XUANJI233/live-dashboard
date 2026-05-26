@@ -4,9 +4,10 @@ import { useConfig } from "@/hooks/useConfig";
 
 interface Props {
   device: DeviceState | undefined;
+  sleepStatus?: number;
 }
 
-export default function CurrentStatus({ device }: Props) {
+export default function CurrentStatus({ device, sleepStatus }: Props) {
   const { displayName } = useConfig();
   const active = device?.is_online === 1 ? device : undefined;
 
@@ -26,6 +27,9 @@ export default function CurrentStatus({ device }: Props) {
       ? `${music.artist} - ${music.title}`
       : music.title
     : null;
+  const sleeping = typeof sleepStatus === "number" && sleepStatus > 0;
+  const inactiveText = sleeping ? "睡着了喵~" : "不知道在干什么喵~";
+  const inactiveFace = sleeping ? "(-.-)zzZ" : "(・_・?)";
 
   return (
     <div className="status-bubble mb-6">
@@ -60,9 +64,9 @@ export default function CurrentStatus({ device }: Props) {
           </>
         ) : (
           <div className="py-1">
-            <p className="text-xl mb-1">(-.-)zzZ</p>
+            <p className="text-xl mb-1">{inactiveFace}</p>
             <p className="text-sm text-[var(--color-text-muted)]">
-              {displayName} 不在电脑前喵~
+              {displayName} {inactiveText}
             </p>
           </div>
         )}

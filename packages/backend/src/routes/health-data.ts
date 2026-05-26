@@ -10,7 +10,9 @@ const VALID_TYPES = new Set([
   "blood_pressure", "blood_glucose",
   "weight", "height",
   "active_calories", "total_calories",
-  "battery_percent", "wear_status", "sleep_status", "stand_hours",
+  "battery_percent", "wear_status", "sleep_status", "sleep_start", "sleep_end",
+  "sleep_duration", "sleep_stage_count", "nap_start", "nap_end", "nap_duration",
+  "stand_hours", "stand_count", "stand_target",
   "stress", "air_pressure", "altitude",
   "hydration", "nutrition",
 ]);
