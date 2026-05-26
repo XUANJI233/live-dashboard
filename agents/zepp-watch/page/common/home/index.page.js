@@ -139,7 +139,7 @@ Page(
         radius: 27,
         normal_color: 0x2f7dd1,
         press_color: 0x1f5fa8,
-        text: '🔄 立即同步',
+        text: '立即同步',
         text_size: 18,
         click_func: () => this.syncOnce(true),
       })
