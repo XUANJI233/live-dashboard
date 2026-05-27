@@ -65,12 +65,31 @@ const server = Bun.serve<WsData>({
     const url = new URL(req.url);
     const { pathname } = url;
 
-    // CORS headers for development
-    const corsHeaders: Record<string, string> = {
-      "Access-Control-Allow-Origin": "*",
+    // CORS headers: public endpoints allow wildcard, sensitive endpoints require explicit origins
+    const isPublicEndpoint = pathname === "/api/current" ||
+      pathname === "/api/timeline" ||
+      pathname === "/api/health" ||
+      pathname === "/api/daily-summary" ||
+      pathname === "/api/config" ||
+      pathname === "/api/location" ||
+      pathname === "/api/messages/public";
+    
+    const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS?.split(",").map(s => s.trim()).filter(Boolean) || [];
+    const requestOrigin = req.headers.get("origin");
+    
+    let corsHeaders: Record<string, string> = {
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
     };
+    
+    if (isPublicEndpoint) {
+      corsHeaders["Access-Control-Allow-Origin"] = "*";
+    } else if (allowedOrigins.length > 0 && requestOrigin && allowedOrigins.includes(requestOrigin)) {
+      corsHeaders["Access-Control-Allow-Origin"] = requestOrigin;
+    } else if (allowedOrigins.length === 0) {
+      // If no allowlist configured, allow same-origin only
+      corsHeaders["Access-Control-Allow-Origin"] = requestOrigin || "";
+    }
 
     // Preflight
     if (req.method === "OPTIONS") {
