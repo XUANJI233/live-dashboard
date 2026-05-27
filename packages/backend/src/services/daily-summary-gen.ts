@@ -71,6 +71,10 @@ export async function generateDailySummary(): Promise<void> {
   const userPrompt = buildUserPrompt(rows);
 
   try {
+    // Add timeout to prevent hanging on slow AI APIs
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30_000); // 30 second timeout
+
     const res = await fetch(AI_API_URL, {
       method: "POST",
       headers: {
@@ -86,7 +90,10 @@ export async function generateDailySummary(): Promise<void> {
         max_tokens: 200,
         temperature: 0.7,
       }),
+      signal: controller.signal,
     });
+
+    clearTimeout(timeoutId);
 
     if (!res.ok) {
       console.error(`[ai-summary] API returned ${res.status}: ${await res.text()}`);
