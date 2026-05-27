@@ -108,7 +108,7 @@ Page(
         return
       }
       this.request({
-        method: 'startSync',
+        method: 'START',
         params: {
           serverUrl: this.state.serverUrl,
           token: this.state.token,
@@ -119,7 +119,7 @@ Page(
     },
 
     onStopClick() {
-      this.request({ method: 'stopSync' })
+      this.request({ method: 'STOP' })
       this.setStatus('同步已停止', 0x999999)
     },
 

@@ -12,7 +12,9 @@
     "device:os.alarm",
     "device:os.timer",
     "device:os.ble",
-    "device:os.network"
+    "device:os.network",
+    "data:user.hd.heart_rate",
+    "data:user.hd.step"
   ],
   "targetApi": {
     "apiVersion": 4
@@ -22,6 +24,11 @@
     "8716545": { "designWidth": 480 },
     "8716547": { "designWidth": 480 },
     "default": { "designWidth": 480 }
+  },
+  "module": {
+    "app-service": {
+      "services": ["app-service/live-watch"]
+    }
   },
   "sideService": {
     "path": "side-service"
