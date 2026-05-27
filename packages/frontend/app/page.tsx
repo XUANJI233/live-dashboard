@@ -204,7 +204,7 @@ function HomeInner() {
             </div>
           )}
 
-          {selectedDevice && <CurrentStatus device={selectedDevice} sleepStatus={latestHealthValue(activeHealthRecords, "sleep_status")} />}
+          {devices.length > 0 && <CurrentStatus devices={devices} />}
 
           <div className="grid gap-6 lg:grid-cols-[14rem_minmax(0,1fr)]">
             {/* Left: device cards (narrow) */}
