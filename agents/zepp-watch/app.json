@@ -4,13 +4,10 @@
     "appId": 10001,
     "appName": "Live Watch",
     "appType": "app",
-    "version": {
-      "code": 1,
-      "name": "0.1.0"
-    },
+    "version": { "code": 1, "name": "0.1.0" },
     "icon": "icon.png",
     "vender": "zepp",
-    "description": "Watch health data sync agent for Live Dashboard"
+    "description": "Live Dashboard watch sync agent"
   },
   "permissions": [
     "device:os.alarm",
@@ -28,25 +25,7 @@
     }
   },
   "targets": {
-    "10551552": {
-      "module": {
-        "page": { "pages": ["page/index"] },
-        "app-service": { "services": ["app-service/live-watch"] },
-        "app-side": { "path": "side-service" }
-      },
-      "platforms": [{ "st": "r", "dw": 480 }],
-      "designWidth": 480
-    },
-    "10551553": {
-      "module": {
-        "page": { "pages": ["page/index"] },
-        "app-service": { "services": ["app-service/live-watch"] },
-        "app-side": { "path": "side-service" }
-      },
-      "platforms": [{ "st": "r", "dw": 480 }],
-      "designWidth": 480
-    },
-    "10551555": {
+    "common": {
       "module": {
         "page": { "pages": ["page/index"] },
         "app-service": { "services": ["app-service/live-watch"] },
@@ -57,12 +36,8 @@
     }
   },
   "i18n": {
-    "en-US": {
-      "appName": "Live Watch"
-    },
-    "zh-CN": {
-      "appName": "Live 手表"
-    }
+    "en-US": { "appName": "Live Watch" },
+    "zh-CN": { "appName": "Live 手表" }
   },
   "defaultLanguage": "zh-CN"
 }
