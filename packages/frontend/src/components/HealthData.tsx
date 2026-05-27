@@ -22,7 +22,7 @@ const TYPE_META: Record<string, { label: string; icon: string; priority: number 
   nap_end:                { label: "小睡结束",  icon: "☀", priority: 5 },
   nap_duration:           { label: "小睡时长",  icon: "⏱", priority: 5 },
   weight:                 { label: "体重",     icon: "⚖",  priority: 6 },
-  body_temperature:       { label: "体温",     icon: "🌡",  priority: 7 },
+  body_temperature:       { label: "体表温度", icon: "🌡",  priority: 7 },
   stand_count:            { label: "拒绝久坐喵!", icon: "▴", priority: 7 },
   stand_target:           { label: "站立目标",  icon: "◎", priority: 7 },
   stress:                 { label: "压力",     icon: "◇", priority: 8 },

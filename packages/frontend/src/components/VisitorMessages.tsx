@@ -255,7 +255,7 @@ export default function VisitorMessages({ device }: Props) {
   };
 
   return (
-    <section className="vn-bubble mt-4">
+    <section className="vn-bubble">
       <div className="flex items-center justify-between gap-3 mb-3">
         <h2 className="text-xs font-bold text-[var(--color-text-muted)] uppercase tracking-wider">
           留言小窗

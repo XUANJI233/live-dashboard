@@ -32,6 +32,9 @@ function HomeInner() {
   // Selected device for CurrentStatus bubble
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
 
+  // Sidebar state for the visitor message panel
+  const [messagesCollapsed, setMessagesCollapsed] = useState(false);
+
   // Tab state (lifted from RightPanelTabs for conditional rendering)
   const [tab, setTab] = useState<"activity" | "health">("activity");
 
@@ -81,6 +84,18 @@ function HomeInner() {
     }
     return devices.find((d) => d.is_online === 1) || devices[0];
   }, [devices, selectedDeviceId]);
+
+  const activeHealthRecords = useMemo(() => {
+    if (!selectedDevice) return healthRecords;
+    if (watchDevice && selectedDevice.device_id === watchDevice.device_id) {
+      return watchHealthRecords;
+    }
+    return healthRecords;
+  }, [healthRecords, selectedDevice, watchDevice, watchHealthRecords]);
+
+  const hasSeparateWatchHealth = Boolean(
+    watchDevice && selectedDevice?.device_id !== watchDevice.device_id && watchHealthRecords.length > 0,
+  );
 
   // Check if health data exists for the selected date + device
   const selectedDeviceIdResolved = selectedDevice?.device_id;
@@ -178,12 +193,18 @@ function HomeInner() {
       {current && (
         <>
           <BodySnapshot
-            device={watchDevice || selectedDevice}
-            records={watchHealthRecords.length > 0 ? watchHealthRecords : healthRecords}
-            title={watchDevice ? "手表健康" : "身体状态"}
+            device={selectedDevice}
+            records={activeHealthRecords}
+            title="身体信息"
           />
 
-          {selectedDevice && <CurrentStatus device={selectedDevice} sleepStatus={latestHealthValue(watchHealthRecords.length > 0 ? watchHealthRecords : healthRecords, "sleep_status")} />}
+          {hasSeparateWatchHealth && watchDevice && (
+            <div className="mb-4">
+              <BodySnapshot device={watchDevice} records={watchHealthRecords} title="手表健康" />
+            </div>
+          )}
+
+          {selectedDevice && <CurrentStatus device={selectedDevice} sleepStatus={latestHealthValue(activeHealthRecords, "sleep_status")} />}
 
           <div className="grid gap-6 lg:grid-cols-[14rem_minmax(0,1fr)]">
             {/* Left: device cards (narrow) */}
@@ -340,7 +361,7 @@ function BodySnapshot({ device, records, title = "身体状态" }: { device: Dev
   const items = ([
     metric("心率", latest.get("heart_rate"), "bpm"),
     metric("血氧", latest.get("oxygen_saturation"), "%"),
-    metric("体温", latest.get("body_temperature"), "℃"),
+    metric("体表温度", latest.get("body_temperature"), "℃"),
     sleepStatus ? { label: "睡眠", value: sleepStatus.value > 0 ? "睡着了" : "醒着", unit: "", at: sleepStatus.recorded_at } : null,
     metric("睡眠时长", sleepDuration, "分钟"),
     metric("小睡时长", napDuration, "分钟"),
@@ -364,18 +385,25 @@ function BodySnapshot({ device, records, title = "身体状态" }: { device: Dev
   const preview = items.slice(0, 5);
 
   return (
-    <section className="mb-4 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <div className="text-xs font-semibold text-[var(--color-text-muted)]">{title}</div>
-        {device && (
-          <div className="truncate text-[10px] text-[var(--color-text-muted)]">
-            {device.device_name} · {device.is_online === 1 ? "在线" : "手表离线"}
-          </div>
+    <section className="mb-4 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-semibold text-[var(--color-text-muted)]">{title}</div>
+          {device && (
+            <div className="truncate text-[10px] text-[var(--color-text-muted)]">
+              {device.device_name} · {device.is_online === 1 ? "在线" : "手表离线"}
+            </div>
+          )}
+        </div>
+        {items.length > preview.length && (
+          <button type="button" className="pill-btn px-3 py-1 text-xs" onClick={() => setExpanded((v) => !v)}>
+            {expanded ? "收起" : "详情"}
+          </button>
         )}
       </div>
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
         {preview.map((item) => (
-          <div key={item.label} className="min-w-[5.5rem]">
+          <div key={item.label} className="rounded border border-dashed border-[var(--color-border)] px-3 py-2">
             <div className="text-[10px] text-[var(--color-text-muted)]">{item.label}</div>
             <div className="font-mono text-sm text-[var(--color-primary)]">
               {item.value}
@@ -383,11 +411,6 @@ function BodySnapshot({ device, records, title = "身体状态" }: { device: Dev
             </div>
           </div>
         ))}
-        {items.length > preview.length && (
-          <button type="button" className="pill-btn ml-auto px-3 py-1 text-xs" onClick={() => setExpanded((v) => !v)}>
-            {expanded ? "收起" : "详情"}
-          </button>
-        )}
       </div>
       {expanded && (
         <>
