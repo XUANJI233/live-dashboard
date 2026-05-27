@@ -32,10 +32,36 @@ let lastHrSyncIndex = -1
 let lastHrSyncDate = ''
 let sleepSkipCounter = 0 // 睡眠状态下跳过传输的计数器
 
+// ── Persist sleepSkipCounter (survives alarm wakeups) ──
+function readSleepSkipCounter() {
+  try {
+    const fs = require('@zos/fs')
+    const data = fs.readFileSync('data://livewatch_skip.json')
+    if (data) {
+      const parsed = JSON.parse(data)
+      return parsed.counter || 0
+    }
+  } catch (e) {}
+  return 0
+}
+
+function writeSleepSkipCounter(value) {
+  try {
+    const fs = require('@zos/fs')
+    fs.writeFileSync('data://livewatch_skip.json', JSON.stringify({ counter: value }))
+  } catch (e) {
+    console.warn('[LiveWatch:device] Failed to persist sleepSkipCounter: ' + e.message)
+  }
+}
+
 // ── AppService entry (single-execution mode) ──
 AppService({
   onInit(options) {
     console.log('[LiveWatch:device] AppService init (single-execution)')
+
+    // Restore sleepSkipCounter from file
+    sleepSkipCounter = readSleepSkipCounter()
+    console.log('[LiveWatch:device] sleepSkipCounter restored: ' + sleepSkipCounter)
 
     // Read config
     restoreConfig()
@@ -104,14 +130,21 @@ function collectAndUpload() {
   // 2. 智能传输策略：睡眠状态下每6次才传输1次（节省80%传输+传感器功耗）
   if (isSleeping) {
     sleepSkipCounter++
+    writeSleepSkipCounter(sleepSkipCounter)
+    console.log('[LiveWatch:device] sleepSkipCounter incremented to ' + sleepSkipCounter)
     if (sleepSkipCounter < 6) {
       console.log('[LiveWatch:device] Sleeping, skip all (' + sleepSkipCounter + '/6)')
       return // 直接退出，不获取任何传感器数据
     }
     sleepSkipCounter = 0 // 重置计数器
+    writeSleepSkipCounter(sleepSkipCounter)
     console.log('[LiveWatch:device] Sleeping but uploading (6th cycle)')
   } else {
-    sleepSkipCounter = 0 // 清醒时重置计数器
+    if (sleepSkipCounter !== 0) {
+      sleepSkipCounter = 0 // 清醒时重置计数器
+      writeSleepSkipCounter(sleepSkipCounter)
+      console.log('[LiveWatch:device] sleepSkipCounter reset (awake)')
+    }
   }
 
   // 3. 清醒状态（或睡眠第6次）才获取传感器数据
