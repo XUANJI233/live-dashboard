@@ -87,6 +87,7 @@ export interface TimelineSegment {
   display_title: string;
   started_at: string;
   ended_at: string | null;
+  duration_seconds: number;
   duration_minutes: number;
   device_id: string;
   device_name: string;

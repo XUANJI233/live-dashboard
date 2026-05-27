@@ -93,6 +93,14 @@ object MessageSocketManager {
         DebugLog.log("消息", "已拉黑访客: $viewerId")
     }
 
+    fun unblockViewer(context: Context, viewerId: String) {
+        if (viewerId.isBlank()) return
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val current = prefs.getStringSet("blocked_viewers", emptySet()).orEmpty()
+        prefs.edit().putStringSet("blocked_viewers", current - viewerId).apply()
+        DebugLog.log("消息", "已解除拉黑访客: $viewerId")
+    }
+
     fun blockedViewers(context: Context): Set<String> =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getStringSet("blocked_viewers", emptySet())
@@ -193,15 +201,6 @@ object MessageSocketManager {
                 return
             }
             notifyIncoming(context, message, viewerId, messageId, viewerName, kind)
-            if (viewerId.isNotBlank()) {
-                val reply = JSONObject().apply {
-                    put("type", "device_reply")
-                    put("message_id", messageId)
-                    put("target_viewer_id", viewerId)
-                    put("text", "手机已收到消息")
-                }
-                webSocket.send(reply.toString())
-            }
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {

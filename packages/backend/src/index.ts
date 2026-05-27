@@ -13,6 +13,7 @@ import { handleViewerTokenIssue } from "./routes/viewer-token";
 import {
   getWsInfo,
   handleBlockViewer,
+  handleUnblockViewer,
   handleDeviceMessageHistory,
   handleDeviceMessages,
   handleDeviceMessageReply,
@@ -122,6 +123,8 @@ const server = Bun.serve<WsData>({
         response = await handleSetRemark(req);
       } else if (pathname === "/api/messages/block" && req.method === "POST") {
         response = await handleBlockViewer(req);
+      } else if (pathname === "/api/messages/unblock" && req.method === "POST") {
+        response = await handleUnblockViewer(req);
       } else if (pathname === "/api/messages/public" && req.method === "GET") {
         response = handlePublicMessages(req);
       } else if (pathname === "/api/token/issue" && req.method === "POST") {

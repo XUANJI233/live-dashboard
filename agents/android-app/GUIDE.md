@@ -25,7 +25,7 @@
 ### 心跳流程（可选）
 1. 用户在 SetupScreen 点击「开始监听」→ `HeartbeatWorker.schedule(context, interval)`
 2. HeartbeatWorker 延迟触发 → 读取电量信息
-3. `ReportClient.reportApp()` POST 到 `/api/report`，包含当前能力模式、电量、网络状态；root/LSPosed 模式下可包含前台应用、输入布尔值和媒体状态
+3. `ReportClient.reportApp()` POST 到 `/api/report`，包含当前能力模式、电量、网络状态；root/LSPosed 模式下可包含前台应用、输入布尔值和媒体状态，空闲态会显式上报为 `idle`
 4. Worker 自调度下一个 OneTimeWorkRequest
 5. 通过 AlarmManager 存活于小米进程冻结
 

@@ -262,6 +262,20 @@ public final class MonikaXposedModule extends XposedModule {
                         }
                         return result;
                     });
+            Method focusChanged = activity.getDeclaredMethod("onWindowFocusChanged", boolean.class);
+            hook(focusChanged)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        List<Object> args = chain.getArgs();
+                        boolean hasFocus = args.size() > 0 && Boolean.TRUE.equals(args.get(0));
+                        Object owner = chain.getThisObject();
+                        if (hasFocus && owner instanceof Activity) {
+                            CharSequence title = ((Activity) owner).getTitle();
+                            if (title != null) broadcastActivityTitle((Activity) owner, packageName, title.toString());
+                        }
+                        return result;
+                    });
             log(Log.INFO, TAG, "hooked Activity#setTitle for " + packageName);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "activity title hook failed for " + packageName + ": " + t.getClass().getSimpleName());
@@ -300,25 +314,39 @@ public final class MonikaXposedModule extends XposedModule {
     private void broadcastSnapshot() {
         try {
             ComponentName top = getTopActivityComponentName();
-            if (top == null || isIgnoredPackage(top.getPackageName())) return;
-            String packageName = top.getPackageName();
-            String activityName = top.getClassName();
-            String key = packageName + "/" + activityName;
             long now = System.currentTimeMillis();
-            if (key.equals(lastForegroundKey) && now - lastForegroundBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
-            lastForegroundKey = key;
-            lastForegroundBroadcastAt = now;
-            foregroundPackage = packageName;
-            foregroundApp = safeString(resolveAppLabel(packageName));
-            foregroundActivity = activityName;
-            if (!isBrowserPackage(packageName)) foregroundTitle = "";
+            boolean idle = top == null || isIgnoredPackage(top.getPackageName());
+            if (idle) {
+                if ("idle".equals(lastForegroundKey) && now - lastForegroundBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
+                lastForegroundKey = "idle";
+                lastForegroundBroadcastAt = now;
+                foregroundPackage = "";
+                foregroundApp = "";
+                foregroundActivity = "";
+                foregroundTitle = "";
+            } else {
+                String packageName = top.getPackageName();
+                String activityName = top.getClassName();
+                String key = packageName + "/" + activityName;
+                if (key.equals(lastForegroundKey) && now - lastForegroundBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
+                lastForegroundKey = key;
+                lastForegroundBroadcastAt = now;
+                foregroundPackage = packageName;
+                foregroundApp = safeString(resolveAppLabel(packageName));
+                foregroundActivity = activityName;
+                if (!isBrowserPackage(packageName)) foregroundTitle = "";
+            }
 
             Intent intent = new Intent(ACTION_STATUS);
             intent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
-            intent.putExtra("package_name", packageName);
-            intent.putExtra("app_name", foregroundApp);
-            intent.putExtra("activity", activityName);
-            intent.putExtra("input_active", false);
+            if (idle) {
+                intent.putExtra("idle", true);
+            } else {
+                intent.putExtra("package_name", foregroundPackage);
+                intent.putExtra("app_name", foregroundApp);
+                intent.putExtra("activity", foregroundActivity);
+                intent.putExtra("input_active", false);
+            }
             Context context = getSystemContext();
             if (context != null) context.sendBroadcast(intent);
             maybeDirectUpload(false);
@@ -492,7 +520,7 @@ public final class MonikaXposedModule extends XposedModule {
         try {
             String appId = directUploadForeground ? safeString(foregroundPackage) : "";
             if (appId.length() == 0 && directUploadMedia && mediaPackage.length() > 0) appId = mediaPackage;
-            if (appId.length() == 0) return null;
+            if (appId.length() == 0) appId = "idle";
             String windowTitle = primaryDisplayTitle();
             JSONObject extra = new JSONObject();
             JSONObject device = new JSONObject();
@@ -607,9 +635,26 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private String mediaText(Object metadata, String key) {
-        if (!(metadata instanceof MediaMetadata)) return null;
-        CharSequence value = ((MediaMetadata) metadata).getText(key);
-        return value == null ? null : value.toString();
+        if (metadata == null) return null;
+        try {
+            if (metadata instanceof MediaMetadata) {
+                CharSequence value = ((MediaMetadata) metadata).getText(key);
+                return value == null ? null : value.toString();
+            }
+            Method getText = metadata.getClass().getDeclaredMethod("getText", String.class);
+            getText.setAccessible(true);
+            Object value = getText.invoke(metadata, key);
+            if (value != null) return value.toString();
+        } catch (Throwable ignored) {
+        }
+        try {
+            Method getString = metadata.getClass().getDeclaredMethod("getString", String.class);
+            getString.setAccessible(true);
+            Object value = getString.invoke(metadata, key);
+            return value == null ? null : value.toString();
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private boolean isPlaying(Object playback) {
@@ -679,7 +724,17 @@ public final class MonikaXposedModule extends XposedModule {
         return packageName == null ||
                 "android".equals(packageName) ||
                 "com.android.systemui".equals(packageName) ||
-                "com.milink.service".equals(packageName);
+                "com.milink.service".equals(packageName) ||
+                "com.miui.home".equals(packageName) ||
+                "com.android.launcher".equals(packageName) ||
+                "com.android.launcher2".equals(packageName) ||
+                "com.android.launcher3".equals(packageName) ||
+                "com.google.android.apps.nexuslauncher".equals(packageName) ||
+                "com.sec.android.app.launcher".equals(packageName) ||
+                "com.huawei.android.launcher".equals(packageName) ||
+                "com.oppo.launcher".equals(packageName) ||
+                "com.bbk.launcher2".equals(packageName) ||
+                "net.oneplus.launcher".equals(packageName);
     }
 
     private boolean isBrowserPackage(String packageName) {

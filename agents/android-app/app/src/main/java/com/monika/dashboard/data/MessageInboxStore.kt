@@ -60,6 +60,11 @@ object MessageInboxStore {
         save(context, recent(context).filterNot { it.id == messageId })
     }
 
+    fun deleteViewer(context: Context, viewerId: String) {
+        if (viewerId.isBlank()) return
+        save(context, recent(context).filterNot { it.viewerId == viewerId })
+    }
+
     fun setRemark(context: Context, viewerId: String, remark: String) {
         if (viewerId.isBlank()) return
         val cleaned = remark.trim().take(500)

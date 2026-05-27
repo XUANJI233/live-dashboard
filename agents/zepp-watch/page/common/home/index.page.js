@@ -74,6 +74,16 @@ function latestNumberFromList(list, keys) {
   return undefined
 }
 
+function normalizeTodayHeartRate(list) {
+  if (!Array.isArray(list)) return []
+  const values = []
+  for (let i = 0; i < list.length; i += 1) {
+    const value = firstNumber(list[i], ['heartRate', 'heart_rate', 'bpm', 'value'])
+    values.push(value > 0 ? Math.round(value) : 0)
+  }
+  return values
+}
+
 function sensorEnabled(settings, key) {
   return !settings || !settings.sensors || settings.sensors[key] !== false
 }
@@ -102,6 +112,11 @@ function readBloodOxygen(settings) {
     const lastDay = sensor.getLastDay && latestNumberFromList(sensor.getLastDay(), ['spo2', 'value'])
     return lastDay > 0 ? lastDay : undefined
   })
+}
+
+function readHeartRateToday(settings) {
+  if (!sensorEnabled(settings, 'sensorHeartRate')) return []
+  return readSensor(HeartRate, (sensor) => normalizeTodayHeartRate(sensor.getToday && sensor.getToday())) || []
 }
 
 function normalizeBodyTemperature(value) {
@@ -435,7 +450,10 @@ Page(
           force,
           relay_mode: this.remoteSettings.relay_mode || 'phone-side',
           heart_rate,
-          watch_metrics: readWatchMetrics(heart_rate, this.remoteSettings),
+          watch_metrics: {
+            ...readWatchMetrics(heart_rate, this.remoteSettings),
+            heart_rate_today: readHeartRateToday(this.remoteSettings),
+          },
           recorded_at: now,
         },
       })

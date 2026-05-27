@@ -56,6 +56,7 @@ fun MessagesScreen(settings: SettingsStore) {
     }
 
     val groups = remember(tick) { MessageInboxStore.groupedByViewer(context) }
+    val blockedViewers = remember(tick) { MessageSocketManager.blockedViewers(context).toList().sorted() }
     val activeViewer = selectedViewer ?: groups.firstOrNull()?.first
     val activeMessages = groups.firstOrNull { it.first == activeViewer }?.second.orEmpty()
 
@@ -92,6 +93,31 @@ fun MessagesScreen(settings: SettingsStore) {
                             Text(name, style = MaterialTheme.typography.labelSmall)
                         }
                         Text(latest?.text.orEmpty(), style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                    }
+                }
+            }
+            if (blockedViewers.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("黑名单", style = MaterialTheme.typography.titleSmall)
+                blockedViewers.forEach { viewerId ->
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(viewerId, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                            TextButton(onClick = {
+                                MessageSocketManager.unblockViewer(context, viewerId)
+                                scope.launch(Dispatchers.IO) {
+                                    syncMessageAction(settings) { client -> client.unblockViewer(viewerId) }
+                                }
+                                tick++
+                            }) { Text("解除") }
+                        }
                     }
                 }
             }
@@ -195,7 +221,15 @@ fun MessagesScreen(settings: SettingsStore) {
                 }) { Text("保存备注") }
             },
             dismissButton = {
-                TextButton(onClick = { detailViewerId = null }) { Text("关闭") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        MessageInboxStore.deleteViewer(context, viewerId)
+                        if (selectedViewer == viewerId) selectedViewer = null
+                        tick++
+                        detailViewerId = null
+                    }) { Text("删除会话") }
+                    TextButton(onClick = { detailViewerId = null }) { Text("关闭") }
+                }
             }
         )
     }

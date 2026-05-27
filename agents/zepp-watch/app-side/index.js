@@ -4,7 +4,7 @@ const DEFAULT_MIN_INTERVAL_MS = 5 * 60 * 1000
 const MIN_AUTO_INTERVAL_MS = 2 * 60 * 1000
 const MAX_AUTO_INTERVAL_MS = 60 * 60 * 1000
 const MIN_FORCE_INTERVAL_MS = 30 * 1000
-const MAX_RECORDS_PER_SYNC = 20
+const MAX_RECORDS_PER_SYNC = 450
 const DEFAULT_RELAY_MODE = 'phone-side'
 const SENSOR_KEYS = [
   'sensorHeartRate',
@@ -79,6 +79,25 @@ function addMetricRecord(records, settings, key, type, value, unit, timestamp) {
   if (!enabled(settings, key, true)) return
   if (typeof value !== 'number' || !Number.isFinite(value)) return
   records.push({ type, value, unit, timestamp })
+}
+
+function addTodayHeartRateRecords(records, settings, values, now) {
+  if (!enabled(settings, 'sensorHeartRate', true)) return
+  if (!Array.isArray(values) || values.length === 0) return
+  const dayStart = new Date(now)
+  dayStart.setHours(0, 0, 0, 0)
+  const startMs = dayStart.getTime()
+  const max = Math.min(values.length, 60 * 24)
+  for (let i = 0; i < max; i += 1) {
+    const value = Number(values[i])
+    if (!Number.isFinite(value) || value <= 0) continue
+    records.push({
+      type: 'heart_rate',
+      value,
+      unit: 'bpm',
+      timestamp: new Date(startMs + i * 60_000).toISOString(),
+    })
+  }
 }
 
 AppSideService(
@@ -181,6 +200,7 @@ AppSideService(
         : {}
 
       addMetricRecord(records, this.settings, 'sensorHeartRate', 'heart_rate', metrics.heart_rate || snapshot.heart_rate, 'bpm', recordedAt)
+      addTodayHeartRateRecords(records, this.settings, metrics.heart_rate_today, snapshot.recorded_at || now)
       addMetricRecord(records, this.settings, 'sensorBattery', 'battery_percent', metrics.battery_percent, '%', recordedAt)
       addMetricRecord(records, this.settings, 'sensorWear', 'wear_status', metrics.wear_status, 'status', recordedAt)
       addMetricRecord(records, this.settings, 'sensorSleep', 'sleep_status', metrics.sleep_status, 'status', recordedAt)
@@ -202,9 +222,11 @@ AppSideService(
       addMetricRecord(records, this.settings, 'sensorBarometer', 'altitude', metrics.altitude, 'm', recordedAt)
 
       if (records.length > 0) {
-        await this.postJson(serverUrl, token, '/api/health-data', {
-          records: records.slice(0, MAX_RECORDS_PER_SYNC),
-        })
+        for (let i = 0; i < records.length; i += MAX_RECORDS_PER_SYNC) {
+          await this.postJson(serverUrl, token, '/api/health-data', {
+            records: records.slice(i, i + MAX_RECORDS_PER_SYNC),
+          })
+        }
       }
 
       this.state.lastSyncAt = now
