@@ -102,6 +102,7 @@ class RootSystemCollector(private val context: Context) {
             title = title,
             artist = artist,
             app = packageName?.let(::resolveAppName) ?: packageName,
+            packageName = packageName,
             state = "playing",
             source = "root",
         )

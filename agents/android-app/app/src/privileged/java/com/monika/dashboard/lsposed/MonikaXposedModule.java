@@ -1,5 +1,6 @@
 package com.monika.dashboard.lsposed;
 
+import android.app.Activity;
 import android.content.Intent;
 import android.content.Context;
 import android.content.ComponentName;
@@ -15,6 +16,7 @@ import com.monika.dashboard.BuildConfig;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.List;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
@@ -26,6 +28,50 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String ACTION_STATUS = "com.monika.dashboard.LSPOSED_STATUS";
     private static final long FOREGROUND_POLL_MS = 5000L;
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
+    private static final String[] BROWSER_PACKAGES = new String[] {
+            "com.android.browser",
+            "com.android.chrome",
+            "com.chrome.beta",
+            "com.chrome.dev",
+            "com.chrome.canary",
+            "org.chromium.chrome",
+            "org.chromium.webview_shell",
+            "org.mozilla.firefox",
+            "org.mozilla.firefox_beta",
+            "org.mozilla.fenix",
+            "org.mozilla.fennec_aurora",
+            "org.mozilla.focus",
+            "org.mozilla.klar",
+            "org.mozilla.reference.browser",
+            "org.torproject.torbrowser",
+            "io.github.forkmaintainers.iceraven",
+            "com.microsoft.emmx",
+            "com.microsoft.emmx.beta",
+            "com.microsoft.emmx.dev",
+            "com.microsoft.emmx.canary",
+            "com.brave.browser",
+            "com.brave.browser_beta",
+            "com.brave.browser_nightly",
+            "com.vivaldi.browser",
+            "com.vivaldi.browser.snapshot",
+            "com.opera.browser",
+            "com.opera.browser.beta",
+            "com.opera.mini.native",
+            "com.duckduckgo.mobile.android",
+            "com.kiwibrowser.browser",
+            "mark.via.gp",
+            "com.UCMobile.intl",
+            "com.sec.android.app.sbrowser",
+            "com.sec.android.app.sbrowser.beta",
+            "com.yandex.browser",
+            "com.yandex.browser.beta",
+            "com.qwant.liberty",
+            "com.ecosia.android",
+            "com.arc.browser",
+            "app.vanadium.browser",
+            "us.spotco.fennec_dos",
+            "com.cromite"
+    };
     private volatile boolean samplerStarted = false;
     private volatile String lastForegroundKey = "";
     private volatile long lastForegroundBroadcastAt = 0L;
@@ -36,6 +82,13 @@ public final class MonikaXposedModule extends XposedModule {
         ClassLoader cl = param.getClassLoader();
         installForegroundSampler(cl);
         installMediaHooks(cl);
+    }
+
+    @Override
+    public void onPackageReady(@NonNull XposedModuleInterface.PackageReadyParam param) {
+        String packageName = param.getPackageName();
+        if (!isBrowserPackage(packageName)) return;
+        installActivityTitleHooks(param.getClassLoader(), packageName);
     }
 
     private void installForegroundSampler(ClassLoader cl) {
@@ -90,6 +143,15 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable t) {
             log(Log.WARN, TAG, "media hooks skipped: " + t.getClass().getSimpleName());
         }
+        try {
+            Class<?> service = Class.forName("com.android.server.media.MediaSessionService", false, cl);
+            hookMediaServiceMethod(service, "onSessionPlaystateChanged");
+            hookMediaServiceMethod(service, "onSessionPlaybackStateChanged");
+            hookMediaServiceMethod(service, "onSessionMetadataChanged");
+            hookMediaServiceMethod(service, "updateMediaButtonSession");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "media service hooks skipped: " + t.getClass().getSimpleName());
+        }
     }
 
     private void hookMediaMethod(Class<?> clazz, String name) {
@@ -113,6 +175,71 @@ public final class MonikaXposedModule extends XposedModule {
         for (Method method : clazz.getDeclaredMethods()) {
             if (name.equals(method.getName())) return method;
         }
+        return null;
+    }
+
+    private void installActivityTitleHooks(ClassLoader cl, String packageName) {
+        try {
+            Class<?> activity = Class.forName("android.app.Activity", false, cl);
+            Method setTitleText = activity.getDeclaredMethod("setTitle", CharSequence.class);
+            hook(setTitleText)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        Object owner = chain.getThisObject();
+                        List<Object> args = chain.getArgs();
+                        CharSequence title = args.size() > 0 && args.get(0) instanceof CharSequence
+                                ? (CharSequence) args.get(0)
+                                : owner instanceof Activity ? ((Activity) owner).getTitle() : null;
+                        if (owner instanceof Activity && title != null) {
+                            broadcastActivityTitle((Activity) owner, packageName, title.toString());
+                        }
+                        return result;
+                    });
+            Method setTitleRes = activity.getDeclaredMethod("setTitle", int.class);
+            hook(setTitleRes)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        Object owner = chain.getThisObject();
+                        if (owner instanceof Activity) {
+                            CharSequence title = ((Activity) owner).getTitle();
+                            if (title != null) broadcastActivityTitle((Activity) owner, packageName, title.toString());
+                        }
+                        return result;
+                    });
+            log(Log.INFO, TAG, "hooked Activity#setTitle for " + packageName);
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "activity title hook failed for " + packageName + ": " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void hookMediaServiceMethod(Class<?> clazz, String name) {
+        for (Method method : clazz.getDeclaredMethods()) {
+            if (!name.equals(method.getName())) continue;
+            try {
+                hook(method)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            Object record = findMediaSessionRecord(chain.getThisObject(), chain.getArgs());
+                            if (record != null) broadcastMediaSnapshot(record);
+                            return result;
+                        });
+                log(Log.INFO, TAG, "hooked MediaSessionService#" + name);
+            } catch (Throwable t) {
+                log(Log.WARN, TAG, "media service hook failed " + name + ": " + t.getClass().getSimpleName());
+            }
+        }
+    }
+
+    private Object findMediaSessionRecord(Object owner, List<Object> args) {
+        if (args != null) {
+            for (Object arg : args) {
+                if (arg != null && arg.getClass().getName().contains("MediaSessionRecord")) return arg;
+            }
+        }
+        if (owner != null && owner.getClass().getName().contains("MediaSessionRecord")) return owner;
         return null;
     }
 
@@ -159,6 +286,7 @@ public final class MonikaXposedModule extends XposedModule {
             Intent intent = new Intent(ACTION_STATUS);
             intent.setPackage(TARGET_PACKAGE);
             intent.putExtra("media_playing", isPlaying(playback));
+            putIfNotNull(intent, "media_package", packageName);
             putIfNotNull(intent, "media_title", mediaText(metadata, MediaMetadata.METADATA_KEY_TITLE));
             putIfNotNull(intent, "media_artist", firstNonBlank(
                     mediaText(metadata, MediaMetadata.METADATA_KEY_ARTIST),
@@ -170,6 +298,22 @@ public final class MonikaXposedModule extends XposedModule {
             context.sendBroadcast(intent);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "media broadcast failed: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void broadcastActivityTitle(Activity activity, String packageName, String title) {
+        try {
+            String cleanTitle = cleanTitle(title);
+            if (cleanTitle == null || isIgnoredPackage(packageName)) return;
+            Intent intent = new Intent(ACTION_STATUS);
+            intent.setPackage(TARGET_PACKAGE);
+            intent.putExtra("package_name", packageName);
+            intent.putExtra("app_name", resolveAppLabel(activity, packageName));
+            intent.putExtra("activity", activity.getClass().getName());
+            intent.putExtra("title", cleanTitle);
+            activity.sendBroadcast(intent);
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "activity title broadcast failed: " + t.getClass().getSimpleName());
         }
     }
 
@@ -287,6 +431,17 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
+    private String resolveAppLabel(Context context, String packageName) {
+        if (context == null || packageName == null || packageName.length() == 0) return packageName;
+        try {
+            return context.getPackageManager()
+                    .getApplicationLabel(context.getPackageManager().getApplicationInfo(packageName, 0))
+                    .toString();
+        } catch (Throwable ignored) {
+            return packageName;
+        }
+    }
+
     private void putIfNotNull(Intent intent, String key, String value) {
         if (value != null && value.length() > 0 && !"null".equals(value)) {
             intent.putExtra(key, value);
@@ -309,5 +464,21 @@ public final class MonikaXposedModule extends XposedModule {
                 "android".equals(packageName) ||
                 "com.android.systemui".equals(packageName) ||
                 "com.milink.service".equals(packageName);
+    }
+
+    private boolean isBrowserPackage(String packageName) {
+        if (packageName == null) return false;
+        for (String browser : BROWSER_PACKAGES) {
+            if (browser.equals(packageName)) return true;
+        }
+        return false;
+    }
+
+    private String cleanTitle(String title) {
+        if (title == null) return null;
+        String cleaned = title.replace('\n', ' ').replace('\r', ' ').trim();
+        if (cleaned.length() == 0 || "null".equals(cleaned)) return null;
+        if (cleaned.length() > 256) return cleaned.substring(0, 256);
+        return cleaned;
     }
 }

@@ -25,6 +25,7 @@ class MediaNotificationService : NotificationListenerService() {
                 title = title,
                 artist = text,
                 app = resolveAppName(pkg) ?: pkg,
+                packageName = pkg,
                 state = "notification",
                 source = "notification",
             )

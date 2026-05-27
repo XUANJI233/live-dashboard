@@ -116,7 +116,7 @@ class HeartbeatWorker(
             val uploadNetwork = settings.uploadNetwork.first()
             val snapshot = collectSystemSnapshot(capabilityMode, uploadInputState, uploadForeground, uploadMedia)
             val appId = snapshot.foreground?.packageName ?: "idle"
-            val windowTitle = snapshot.foreground?.activity ?: ""
+            val windowTitle = snapshot.primaryDisplayTitle()
             val vpnState = if (uploadVpnStatus) getVpnState() else null
             val location = if (uploadLocation) getLowPowerLocation() else null
             val networkState = if (uploadNetwork) getNetworkState() else null
@@ -210,10 +210,29 @@ class HeartbeatWorker(
 
     private fun SystemSnapshot.hasUsefulPrivilegedData(): Boolean {
         return foreground?.packageName?.isNotBlank() == true ||
+            foreground?.appName?.isNotBlank() == true ||
+            foreground?.title?.isNotBlank() == true ||
             foreground?.activity?.isNotBlank() == true ||
             input?.inputActive != null ||
             media?.title?.isNotBlank() == true ||
             media?.playing == true
+    }
+
+    private fun SystemSnapshot.primaryDisplayTitle(): String {
+        val appName = foreground?.appName?.takeIf { it.isNotBlank() }
+        val foregroundTitle = foreground?.title?.takeIf { it.isNotBlank() }
+        val mediaTitle = media?.title?.takeIf { media.playing == true && it.isNotBlank() }
+        val mediaApp = media?.app?.takeIf { it.isNotBlank() }
+        return when {
+            appName != null && mediaTitle != null && mediaApp != null && mediaApp != appName ->
+                "正在用${appName}，后台${mediaApp}正在播放${mediaTitle}"
+            appName != null && mediaTitle != null ->
+                "正在用${appName}播放${mediaTitle}"
+            appName != null && foregroundTitle != null ->
+                "正在用${appName}看${foregroundTitle}"
+            appName != null -> "正在用${appName}"
+            else -> ""
+        }
     }
 
     private fun markUploadStatuses(

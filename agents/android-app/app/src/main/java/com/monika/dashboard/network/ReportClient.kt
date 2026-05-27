@@ -93,6 +93,7 @@ class ReportClient(
                 fg.packageName?.let { foreground.put("package_name", it.take(64)) }
                 fg.appName?.let { foreground.put("app_name", it.take(64)) }
                 fg.activity?.let { foreground.put("activity", it.take(256)) }
+                fg.title?.let { foreground.put("title", it.take(256)) }
                 foreground.put("source", fg.source)
                 foreground.put("confidence", fg.confidence.coerceIn(0.0, 1.0))
                 if (foreground.length() > 0) extra.put("foreground", foreground)
@@ -112,6 +113,7 @@ class ReportClient(
                 mediaInfo.title?.let { media.put("title", it.take(256)) }
                 mediaInfo.artist?.let { media.put("artist", it.take(256)) }
                 mediaInfo.app?.let { media.put("app", it.take(64)) }
+                mediaInfo.packageName?.let { media.put("package_name", it.take(64)) }
                 mediaInfo.state?.let { media.put("state", it.take(64)) }
                 media.put("source", mediaInfo.source)
                 if (media.length() > 0) extra.put("media", media)
