@@ -144,9 +144,10 @@ export default function VisitorMessages({ device }: Props) {
           try {
             const data = JSON.parse(event.data);
             if (data.type === "ack" && data.message_id) {
+              const rawStatus = typeof data.status === "string" ? data.status : "unknown";
               setLines((prev) => {
                 const next = prev.map((line) =>
-                  line.id === data.message_id ? { ...line, status: messageStatusText(data.status) } : line
+                  line.id === data.message_id ? { ...line, status: rawStatus } : line
                 );
                 saveHistory(device?.device_id, next);
                 return next;

@@ -102,7 +102,7 @@ export default function Timeline({ segments, currentAppByDevice }: Props) {
                                 {formatTimeRange(child.started_at, child.ended_at, false)}
                               </span>
                               <span className="font-mono text-[10px] text-[var(--color-accent)]">
-                                {formatTimeRange(child.started_at, child.ended_at, false)}
+                                {formatDuration(child.started_at, child.ended_at)}
                               </span>
                             </div>
                             <div className="mt-0.5 truncate text-[var(--color-text)]" title={describeChild(child)}>
@@ -288,6 +288,19 @@ function formatTimeRange(startValue: string, endValue: string | null, allowCurre
   if (start === "--:--") return start;
   const end = endValue ? formatClock(endValue) : allowCurrentEnd ? formatClock(new Date().toISOString()) : "现在";
   return `${start}-${end}`;
+}
+
+function formatDuration(startValue: string, endValue: string | null) {
+  const startMs = new Date(startValue).getTime();
+  if (Number.isNaN(startMs)) return "";
+  const endMs = endValue ? new Date(endValue).getTime() : Date.now();
+  if (Number.isNaN(endMs)) return "";
+  const diffMs = Math.max(0, endMs - startMs);
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 60) return `${mins}分钟`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}小时${mins % 60}分钟`;
+  return `${Math.floor(hours / 24)}天${hours % 24}小时`;
 }
 
 function formatClock(value: string) {

@@ -378,7 +378,13 @@ export const realtimeWebSocket = {
       devicePongTimes.set(ws.data.id, Date.now());
       // If payload present, process as full report (WebSocket上报通道)
       if (data.payload && ws.data.device) {
-        processReportPayload(data.payload, ws.data.device);
+        try {
+          processReportPayload(data.payload, ws.data.device);
+        } catch (e: any) {
+          console.error("[ws] device_status processing error:", e.message);
+          send(ws, { type: "error", error: "status_processing_failed" });
+          return;
+        }
       }
       send(ws, { type: "ack", status: "status_received" });
       return;
