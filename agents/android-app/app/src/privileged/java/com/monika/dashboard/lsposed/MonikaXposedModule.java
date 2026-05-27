@@ -354,6 +354,9 @@ public final class MonikaXposedModule extends XposedModule {
                 String packageName = top.getPackageName();
                 String activityName = top.getClassName();
                 String key = packageName + "/" + activityName;
+                if (!key.equals(lastForegroundKey)) {
+                    log(Log.INFO, TAG, "foreground: " + key + " title=" + (taskDescription != null ? taskDescription : ""));
+                }
                 if (key.equals(lastForegroundKey) && now - lastForegroundBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
                 lastForegroundKey = key;
                 lastForegroundBroadcastAt = now;
@@ -663,6 +666,12 @@ public final class MonikaXposedModule extends XposedModule {
         final String body = buildDirectReportBody(now);
         if (body == null) return;
 
+        // Diagnostic log: show what we're about to upload
+        try {
+            org.json.JSONObject diag = new org.json.JSONObject(body);
+            log(Log.INFO, TAG, "upload: app_id=" + diag.optString("app_id") + " title=" + diag.optString("window_title"));
+        } catch (Throwable ignored) {}
+
         // CRITICAL: never do network I/O on the system_server main looper.
         // ensureWsConnected() performs TCP+TLS+WS handshake (up to 8s) — do it off-thread.
         final String url = directServerUrl;
@@ -676,7 +685,9 @@ public final class MonikaXposedModule extends XposedModule {
                             .put("type", "device_status")
                             .put("payload", new org.json.JSONObject(body))
                             .toString();
-                    if (!client.sendText(msg)) {
+                    if (client.sendText(msg)) {
+                        log(Log.DEBUG, TAG, "ws upload OK");
+                    } else {
                         postDirectReportFallback(body);
                     }
                 } catch (Throwable t) {
@@ -685,6 +696,7 @@ public final class MonikaXposedModule extends XposedModule {
                 }
             } else {
                 postDirectReportFallback(body);
+                log(Log.INFO, TAG, "http fallback upload attempted");
             }
         }, "MonikaLspUpload").start();
     }
@@ -761,7 +773,11 @@ public final class MonikaXposedModule extends XposedModule {
             connection.setFixedLengthStreamingMode(bytes.length);
             connection.getOutputStream().write(bytes);
             int code = connection.getResponseCode();
-            if (code < 200 || code >= 300) log(Log.WARN, TAG, "http fallback upload HTTP " + code);
+            if (code >= 200 && code < 300) {
+                log(Log.DEBUG, TAG, "http upload OK");
+            } else {
+                log(Log.WARN, TAG, "http upload HTTP " + code);
+            }
         } catch (Throwable t) {
             log(Log.WARN, TAG, "http fallback upload failed: " + t.getClass().getSimpleName());
         } finally {
