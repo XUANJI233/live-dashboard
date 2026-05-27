@@ -80,8 +80,19 @@ export async function handleReport(req: Request): Promise<Response> {
     return Response.json({ ok: true });
   }
 
-  // Resolve app name
-  const appName = resolveAppName(appId, device.platform);
+  const rawForegroundForName = body.extra && typeof body.extra === "object" && !Array.isArray(body.extra)
+    ? body.extra.foreground
+    : null;
+  const reportedAppName = rawForegroundForName && typeof rawForegroundForName === "object" && !Array.isArray(rawForegroundForName)
+    ? cleanString((rawForegroundForName as Record<string, unknown>).app_name, MAX_SHORT_LENGTH)
+    : undefined;
+
+  // Resolve app name. Android privileged collectors can provide the localized
+  // application label directly; prefer it so the public UI shows software names
+  // instead of package names or Activity class names.
+  const appName = device.platform === "android" && reportedAppName
+    ? reportedAppName
+    : resolveAppName(appId, device.platform);
 
   // Generate display_title while also storing the raw title for the dashboard's
   // explicit "expose current state" mode.
@@ -167,10 +178,12 @@ export async function handleReport(req: Request): Promise<Response> {
       const packageName = cleanString(foregroundBody.package_name, MAX_SHORT_LENGTH);
       const appNameExtra = cleanString(foregroundBody.app_name, MAX_SHORT_LENGTH);
       const activity = cleanString(foregroundBody.activity, MAX_MEDIUM_LENGTH);
+      const title = cleanString(foregroundBody.title, MAX_MEDIUM_LENGTH);
       const source = cleanSource(foregroundBody.source);
       if (packageName) foreground.package_name = packageName;
       if (appNameExtra) foreground.app_name = appNameExtra;
       if (activity) foreground.activity = activity;
+      if (title) foreground.title = title;
       if (source) foreground.source = source;
       if (typeof foregroundBody.confidence === "number" && Number.isFinite(foregroundBody.confidence)) {
         foreground.confidence = Math.max(0, Math.min(1, foregroundBody.confidence));
@@ -208,11 +221,13 @@ export async function handleReport(req: Request): Promise<Response> {
       const title = cleanString(mediaBody.title, MAX_MEDIUM_LENGTH);
       const artist = cleanString(mediaBody.artist, MAX_MEDIUM_LENGTH);
       const mediaApp = cleanString(mediaBody.app, MAX_SHORT_LENGTH);
+      const mediaPackage = cleanString(mediaBody.package_name, MAX_SHORT_LENGTH);
       const state = cleanString(mediaBody.state, MAX_SHORT_LENGTH);
       const source = cleanSource(mediaBody.source);
       if (title) media.title = title;
       if (artist) media.artist = artist;
       if (mediaApp) media.app = mediaApp;
+      if (mediaPackage) media.package_name = mediaPackage;
       if (state) media.state = state;
       if (source) media.source = source;
       if (Object.keys(media).length > 0) extra.media = media;

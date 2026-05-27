@@ -29,6 +29,7 @@ export interface DeviceState {
       package_name?: string;
       app_name?: string;
       activity?: string;
+      title?: string;
       source?: string;
       confidence?: number;
     };
@@ -37,6 +38,7 @@ export interface DeviceState {
       title?: string;
       artist?: string;
       app?: string;
+      package_name?: string;
       state?: string;
       source?: string;
     };

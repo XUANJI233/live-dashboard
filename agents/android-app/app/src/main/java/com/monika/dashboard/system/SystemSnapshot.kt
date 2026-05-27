@@ -4,6 +4,7 @@ data class ForegroundInfo(
     val packageName: String? = null,
     val appName: String? = null,
     val activity: String? = null,
+    val title: String? = null,
     val source: String = "normal",
     val confidence: Double = 0.0,
 )
@@ -19,6 +20,7 @@ data class MediaInfo(
     val title: String? = null,
     val artist: String? = null,
     val app: String? = null,
+    val packageName: String? = null,
     val state: String? = null,
     val source: String = "normal",
 )
@@ -51,10 +53,37 @@ object SystemSnapshotStore {
         val previous = latestLsposedFresh(maxAgeMs = 10 * 60_000L)
         latestLsposed = SystemSnapshot(
             capabilityMode = "lsposed",
-            foreground = snapshot.foreground ?: previous?.foreground,
+            foreground = mergeForeground(previous?.foreground, snapshot.foreground),
             input = snapshot.input ?: previous?.input,
-            media = snapshot.media ?: previous?.media,
+            media = mergeMedia(previous?.media, snapshot.media),
             sampledAt = System.currentTimeMillis(),
+        )
+    }
+
+    private fun mergeForeground(previous: ForegroundInfo?, next: ForegroundInfo?): ForegroundInfo? {
+        if (previous == null) return next
+        if (next == null) return previous
+        return ForegroundInfo(
+            packageName = next.packageName ?: previous.packageName,
+            appName = next.appName ?: previous.appName,
+            activity = next.activity ?: previous.activity,
+            title = next.title ?: previous.title,
+            source = next.source,
+            confidence = maxOf(next.confidence, previous.confidence),
+        )
+    }
+
+    private fun mergeMedia(previous: MediaInfo?, next: MediaInfo?): MediaInfo? {
+        if (previous == null) return next
+        if (next == null) return previous
+        return MediaInfo(
+            playing = next.playing ?: previous.playing,
+            title = next.title ?: previous.title,
+            artist = next.artist ?: previous.artist,
+            app = next.app ?: previous.app,
+            packageName = next.packageName ?: previous.packageName,
+            state = next.state ?: previous.state,
+            source = next.source,
         )
     }
 

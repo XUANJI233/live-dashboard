@@ -36,6 +36,13 @@ interface AggregatedApp {
   sessions: TimelineSegment[];
 }
 
+interface DetailSession {
+  title: string;
+  totalMinutes: number;
+  startedAt: string;
+  endedAt: string | null;
+}
+
 interface Props {
   segments: TimelineSegment[];
   summary: Record<string, Record<string, number>>;
@@ -126,11 +133,15 @@ export default function Timeline({ segments, summary, currentAppByDevice }: Prop
                   const color = getAppColor(app.appName, colorMap);
                   const openKey = `${deviceId}:${app.appName}`;
                   const isOpen = !!openKeys[openKey];
+                  const details = aggregateMeaningfulDetails(app);
+                  const canOpen = details.length > 0;
                   return (
                     <div key={app.appName} className={app.isCurrent ? "timeline-active rounded" : ""}>
                       <button
                         type="button"
-                        onClick={() => setOpenKeys((prev) => ({ ...prev, [openKey]: !prev[openKey] }))}
+                        onClick={() => {
+                          if (canOpen) setOpenKeys((prev) => ({ ...prev, [openKey]: !prev[openKey] }));
+                        }}
                         className="timeline-bar flex w-full items-center text-left"
                       >
                         {/* Current indicator or color dot */}
@@ -152,9 +163,9 @@ export default function Timeline({ segments, summary, currentAppByDevice }: Prop
                           style={{ backgroundColor: app.isCurrent ? `${color}30` : `${color}15` }}
                         >
                           <span className="text-xs font-medium truncate block">
-                            {getAppDescription(app.appName, app.displayTitle)}
+                            {getAppDescription(app.appName)}
                           </span>
-                          {app.displayTitle && (
+                          {canOpen && app.displayTitle && (
                             <span className="text-[10px] text-[var(--color-text-muted)] truncate block">
                               {app.displayTitle}
                             </span>
@@ -165,30 +176,29 @@ export default function Timeline({ segments, summary, currentAppByDevice }: Prop
                           <span className="text-[10px] font-mono text-[var(--color-accent)] font-medium">
                             {formatDuration(app.totalMinutes)}
                           </span>
-                          <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">
-                            {isOpen ? "藏起来" : "看看"}
-                          </span>
+                          {canOpen && (
+                            <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">
+                              {isOpen ? "藏起来" : "看看"}
+                            </span>
+                          )}
                         </div>
                       </button>
 
-                      {isOpen && (
+                      {canOpen && isOpen && (
                         <div className="ml-16 border-l border-[var(--color-border)] pl-3 py-2 space-y-2">
-                          {app.sessions
-                            .slice()
-                            .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
-                            .map((session, index) => (
-                              <div key={`${session.started_at}-${index}`} className="text-xs">
+                          {details.map((session, index) => (
+                              <div key={`${session.startedAt}-${index}`} className="text-xs">
                                 <div className="flex items-center justify-between gap-3">
                                   <span className="font-mono text-[10px] text-[var(--color-text-muted)]">
-                                    {formatClock(session.started_at)}
-                                    {session.ended_at ? ` - ${formatClock(session.ended_at)}` : ""}
+                                    {formatClock(session.startedAt)}
+                                    {session.endedAt ? ` - ${formatClock(session.endedAt)}` : ""}
                                   </span>
                                   <span className="font-mono text-[10px] text-[var(--color-accent)]">
-                                    {formatDuration(session.duration_minutes)}
+                                    {formatDuration(session.totalMinutes)}
                                   </span>
                                 </div>
-                                <div className="mt-0.5 truncate text-[var(--color-text)]" title={session.display_title || session.app_id}>
-                                  {session.display_title || session.app_id || "悄悄路过的一小段"}
+                                <div className="mt-0.5 truncate text-[var(--color-text)]" title={session.title}>
+                                  {session.title}
                                 </div>
                               </div>
                             ))}
@@ -204,6 +214,43 @@ export default function Timeline({ segments, summary, currentAppByDevice }: Prop
       })}
     </div>
   );
+}
+
+function aggregateMeaningfulDetails(app: AggregatedApp): DetailSession[] {
+  const details = new Map<string, DetailSession>();
+  for (const session of app.sessions) {
+    const title = meaningfulDetailTitle(app.appName, session.display_title);
+    if (!title) continue;
+    const existing = details.get(title);
+    if (existing) {
+      existing.totalMinutes += session.duration_minutes;
+      if (session.started_at < existing.startedAt) existing.startedAt = session.started_at;
+      if (!existing.endedAt || (session.ended_at && session.ended_at > existing.endedAt)) {
+        existing.endedAt = session.ended_at;
+      }
+    } else {
+      details.set(title, {
+        title,
+        totalMinutes: session.duration_minutes,
+        startedAt: session.started_at,
+        endedAt: session.ended_at,
+      });
+    }
+  }
+  return Array.from(details.values()).sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+}
+
+function meaningfulDetailTitle(appName: string, rawTitle?: string) {
+  const title = (rawTitle || "").trim();
+  if (!title) return "";
+  const normalized = title.toLowerCase();
+  const app = appName.toLowerCase();
+  if (normalized === app || normalized === "android" || normalized.endsWith("activity")) return "";
+  if (title === `正在用${appName}`) return "";
+  if (title.startsWith(`正在用${appName}看`)) return title.replace(`正在用${appName}看`, "").trim();
+  if (title.startsWith(`正在用${appName}播放`)) return title.replace(`正在用${appName}播放`, "正在播放 ").trim();
+  if (title.includes("后台") && title.includes("正在播放")) return title;
+  return "";
 }
 
 function isLauncherSegment(seg: TimelineSegment) {

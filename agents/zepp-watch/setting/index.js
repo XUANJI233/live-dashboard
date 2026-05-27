@@ -21,19 +21,36 @@ function cleanInterval(value) {
   return cleaned || DEFAULTS.minIntervalMs
 }
 
+function getStorage(props) {
+  return props && props.settingsStorage && typeof props.settingsStorage.getItem === 'function'
+    ? props.settingsStorage
+    : null
+}
+
 AppSettingsPage({
   state: {
     draft: {},
+    dirty: false,
     saved: false,
   },
 
   loadDraft(props) {
-    const storage = props.settingsStorage
+    const storage = getStorage(props)
     const draft = {}
     Object.keys(DEFAULTS).forEach((key) => {
-      draft[key] = storage.getItem(key) || DEFAULTS[key]
+      if (!storage) {
+        draft[key] = DEFAULTS[key]
+        return
+      }
+      try {
+        const value = storage.getItem(key)
+        draft[key] = value === undefined || value === null || value === '' ? DEFAULTS[key] : String(value)
+      } catch (_) {
+        draft[key] = DEFAULTS[key]
+      }
     })
     this.state.draft = draft
+    this.state.dirty = false
   },
 
   setDraft(key, value) {
@@ -41,15 +58,18 @@ AppSettingsPage({
       ...this.state.draft,
       [key]: String(value || ''),
     }
+    this.state.dirty = true
     this.state.saved = false
   },
 
   save(props) {
-    const storage = props.settingsStorage
+    const storage = getStorage(props)
+    if (!storage) return
     const draft = this.state.draft
     Object.keys(DEFAULTS).forEach((key) => {
       storage.setItem(key, key === 'minIntervalMs' ? cleanInterval(draft[key]) : String(draft[key] || DEFAULTS[key]))
     })
+    this.loadDraft(props)
     this.state.saved = true
   },
 
@@ -66,7 +86,7 @@ AppSettingsPage({
   },
 
   build(props) {
-    if (!this.state.draft.serverUrl) this.loadDraft(props)
+    if (!this.state.dirty) this.loadDraft(props)
 
     return Section({}, [
       TextInput({

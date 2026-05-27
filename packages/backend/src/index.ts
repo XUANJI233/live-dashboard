@@ -22,7 +22,7 @@ import {
   realtimeWebSocket,
   type WsData,
 } from "./services/realtime";
-import { withCdnHeaders } from "./services/cdn";
+import { currentHourWindow, withCdnHeaders } from "./services/cdn";
 import { injectSiteConfig } from "./services/site-config";
 
 // Start scheduled cleanup tasks (import triggers setInterval registration)
@@ -95,7 +95,7 @@ const server = Bun.serve<WsData>({
         response = await handleReport(req);
       } else if (pathname === "/api/current" && req.method === "GET") {
         response = handleCurrent(clientIp, req.headers.get("user-agent") || undefined);
-        response = withCdnHeaders(response, ["current"], 5);
+        response = withCdnHeaders(response, ["current", `current-${currentHourWindow()}`], 5);
       } else if (pathname === "/api/timeline" && req.method === "GET") {
         response = handleTimeline(url);
       } else if (pathname === "/api/health" && req.method === "GET") {

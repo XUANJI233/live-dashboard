@@ -14,6 +14,7 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
             packageName = packageName,
             appName = intent.getStringExtra(EXTRA_APP_NAME),
             activity = intent.getStringExtra(EXTRA_ACTIVITY),
+            title = intent.getStringExtra(EXTRA_TITLE),
             source = "lsposed",
             confidence = 0.95,
         )
@@ -31,13 +32,15 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
             artist = intent.getStringExtra(EXTRA_MEDIA_ARTIST),
             app = intent.getStringExtra(EXTRA_MEDIA_APP)
                 ?.takeIf { it.isNotBlank() && it != "android" && it != "com.milink.service" },
+            packageName = intent.getStringExtra(EXTRA_MEDIA_PACKAGE)
+                ?.takeIf { it.isNotBlank() && it != "android" && it != "com.milink.service" },
             state = intent.getStringExtra(EXTRA_MEDIA_STATE),
             source = "lsposed",
         )
         SystemSnapshotStore.updateFromLsposed(
             SystemSnapshot(
                 capabilityMode = "lsposed",
-                foreground = foreground.takeIf { it.packageName != null || it.activity != null },
+                foreground = foreground.takeIf { it.packageName != null || it.activity != null || it.title != null },
                 input = input.takeIf { it.inputActive != null },
                 media = media.takeIf { it.playing != null || it.title != null || it.app != null },
             )
@@ -50,8 +53,10 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
         const val EXTRA_PACKAGE = "package_name"
         const val EXTRA_APP_NAME = "app_name"
         const val EXTRA_ACTIVITY = "activity"
+        const val EXTRA_TITLE = "title"
         const val EXTRA_INPUT_ACTIVE = "input_active"
         const val EXTRA_MEDIA_PLAYING = "media_playing"
+        const val EXTRA_MEDIA_PACKAGE = "media_package"
         const val EXTRA_MEDIA_TITLE = "media_title"
         const val EXTRA_MEDIA_ARTIST = "media_artist"
         const val EXTRA_MEDIA_APP = "media_app"

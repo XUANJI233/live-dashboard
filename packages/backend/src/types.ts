@@ -34,6 +34,7 @@ export interface ReportPayload {
       package_name?: string;
       app_name?: string;
       activity?: string;
+      title?: string;
       source?: "normal" | "root" | "lsposed" | "accessibility" | "notification";
       confidence?: number;
     };
@@ -47,6 +48,7 @@ export interface ReportPayload {
       title?: string;
       artist?: string;
       app?: string;
+      package_name?: string;
       state?: string;
       source?: "normal" | "root" | "lsposed" | "accessibility" | "notification";
     };

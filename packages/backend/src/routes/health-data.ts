@@ -1,6 +1,7 @@
 import { authenticateToken } from "../middleware/auth";
 import { db } from "../db";
 import type { HealthRecord } from "../types";
+import { withCdnHeaders } from "../services/cdn";
 
 const MAX_RECORDS_PER_REQUEST = 500;
 const VALID_TYPES = new Set([
@@ -135,7 +136,7 @@ export function handleHealthDataQuery(url: URL): Response {
         `).all(date) as HealthRecord[];
       }
 
-      return Response.json({ date, records });
+      return healthQueryResponse(date, deviceId, records, tzOffsetMinutes);
     }
 
     // No timezone offset — use UTC (backwards compatible)
@@ -164,9 +165,23 @@ export function handleHealthDataQuery(url: URL): Response {
       `).all(startOfDay, startOfNextDay) as HealthRecord[];
     }
 
-    return Response.json({ date, records });
+    return healthQueryResponse(date, deviceId, records, tzOffsetMinutes);
   } catch (e: any) {
     console.error("[health-data] Query error:", e.message);
     return Response.json({ error: "Internal error" }, { status: 500 });
   }
+}
+
+function healthQueryResponse(date: string, deviceId: string | null, records: HealthRecord[], tzOffsetMinutes: number): Response {
+  return withCdnHeaders(
+    Response.json({ date, records }),
+    ["health-data", `health-data-${date}`, ...(deviceId ? [`health-device-${deviceId}`] : [])],
+    isTodayForOffset(date, tzOffsetMinutes) ? 60 : 60 * 60 * 24 * 30,
+  );
+}
+
+function isTodayForOffset(date: string, tzOffsetMinutes: number): boolean {
+  const now = new Date(Date.now() - tzOffsetMinutes * 60_000);
+  const today = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
+  return date === today;
 }

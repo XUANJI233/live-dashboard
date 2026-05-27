@@ -135,7 +135,7 @@ function HomeInner() {
       {error && (
         <div className="vn-bubble mb-4 border-[var(--color-primary)]">
           <p className="text-sm text-[var(--color-primary)]">
-            (>-<) 连接暂时中断了…
+            {"(>-<) 连接暂时中断了…"}
           </p>
           <p className="text-xs text-[var(--color-text-muted)] mt-1">
             系统会自动重试，请稍候。
