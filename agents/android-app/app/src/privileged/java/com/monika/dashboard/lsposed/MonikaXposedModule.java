@@ -622,16 +622,18 @@ public final class MonikaXposedModule extends XposedModule {
         Context context = getSystemContext();
         if (context == null) return;
         try {
-            SharedPreferences prefs = context.createDeviceProtectedStorageContext()
-                    .getSharedPreferences("monika_lsp_direct_upload", Context.MODE_PRIVATE);
+            Context pkgContext = context.createPackageContext(TARGET_PACKAGE, Context.CONTEXT_IGNORE_SECURITY | Context.CONTEXT_INCLUDE_CODE);
+            Context dpContext = pkgContext.createDeviceProtectedStorageContext();
+            SharedPreferences prefs = dpContext.getSharedPreferences("monika_lsp_direct_upload", Context.MODE_PRIVATE);
             directUploadEnabled = prefs.getBoolean("enabled", false);
             directServerUrl = prefs.getString("server_url", "");
             directToken = prefs.getString("token", "");
             directIntervalMs = Math.max(MIN_DIRECT_UPLOAD_MS, prefs.getLong("interval_ms", 30000L));
             directUploadForeground = prefs.getBoolean("upload_foreground", true);
             directUploadMedia = prefs.getBoolean("upload_media", true);
+            log(Log.INFO, TAG, "config loaded: enabled=" + directUploadEnabled + " url=" + directServerUrl + " token=" + (directToken.length() > 0 ? "set" : "empty"));
         } catch (Throwable t) {
-            log(Log.WARN, TAG, "load config failed: " + t.getClass().getSimpleName());
+            log(Log.WARN, TAG, "load config failed: " + Log.getStackTraceString(t));
         }
     }
 
