@@ -20,12 +20,22 @@ import com.monika.dashboard.BuildConfig;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
+import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.text.SimpleDateFormat;
+import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.IOException;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
@@ -98,6 +108,7 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile boolean directUploadForeground = true;
     private volatile boolean directUploadMedia = true;
     private volatile long lastDirectUploadAt = 0L;
+    private volatile LspWebSocketClient wsClient = null;
     private volatile String foregroundPackage = "";
     private volatile String foregroundApp = "";
     private volatile String foregroundActivity = "";
@@ -491,6 +502,19 @@ public final class MonikaXposedModule extends XposedModule {
             int intervalSec = intent.getIntExtra("interval_sec", 30);
             boolean uploadForeground = intent.getBooleanExtra("upload_foreground", true);
             boolean uploadMedia = intent.getBooleanExtra("upload_media", true);
+
+            // Disconnect old WS before changing config (URL/token may have changed)
+            boolean configChanged = !serverUrl.equals(directServerUrl) || !token.equals(directToken) || enabled != directUploadEnabled;
+            if (configChanged && wsClient != null) {
+                try { wsClient.disconnect(); } catch (Throwable ignored) {}
+                wsClient = null;
+            }
+            // If disabled, disconnect and clear
+            if (!enabled && wsClient != null) {
+                try { wsClient.disconnect(); } catch (Throwable ignored) {}
+                wsClient = null;
+            }
+
             SharedPreferences prefs = context.createDeviceProtectedStorageContext()
                     .getSharedPreferences("monika_lsp_direct_upload", Context.MODE_PRIVATE);
             prefs.edit()
@@ -516,7 +540,29 @@ public final class MonikaXposedModule extends XposedModule {
         lastDirectUploadAt = now;
         final String body = buildDirectReportBody(now);
         if (body == null) return;
-        new Thread(() -> postDirectReport(body), "MonikaLspUpload").start();
+
+        // Try WebSocket first (persistent connection, no per-message TLS overhead)
+        ensureWsConnected(directServerUrl, directToken);
+        final LspWebSocketClient client = wsClient;
+        if (client != null && client.isConnected()) {
+            new Thread(() -> {
+                try {
+                    String msg = new org.json.JSONObject()
+                            .put("type", "device_status")
+                            .put("payload", new org.json.JSONObject(body))
+                            .toString();
+                    if (!client.sendText(msg)) {
+                        postDirectReportFallback(body);
+                    }
+                } catch (Throwable t) {
+                    log(Log.WARN, TAG, "ws send failed: " + t.getClass().getSimpleName());
+                    postDirectReportFallback(body);
+                }
+            }, "MonikaLspWs").start();
+        } else {
+            // WebSocket not connected, fall back to HTTP
+            new Thread(() -> postDirectReportFallback(body), "MonikaLspUpload").start();
+        }
     }
 
     private String buildDirectReportBody(long now) {
@@ -564,7 +610,7 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
-    private void postDirectReport(String body) {
+    private void postDirectReportFallback(String body) {
         HttpURLConnection connection = null;
         try {
             URL url = new URL(directServerUrl + "/api/report");
@@ -579,12 +625,41 @@ public final class MonikaXposedModule extends XposedModule {
             connection.setFixedLengthStreamingMode(bytes.length);
             connection.getOutputStream().write(bytes);
             int code = connection.getResponseCode();
-            if (code < 200 || code >= 300) log(Log.WARN, TAG, "direct upload HTTP " + code);
+            if (code < 200 || code >= 300) log(Log.WARN, TAG, "http fallback upload HTTP " + code);
         } catch (Throwable t) {
-            log(Log.WARN, TAG, "direct upload failed: " + t.getClass().getSimpleName());
+            log(Log.WARN, TAG, "http fallback upload failed: " + t.getClass().getSimpleName());
         } finally {
             if (connection != null) connection.disconnect();
         }
+    }
+
+    private void ensureWsConnected(String serverUrl, String token) {
+        if (wsClient != null && wsClient.isConnected()) return;
+        synchronized (this) {
+            if (wsClient != null && wsClient.isConnected()) return;
+            if (wsClient != null) {
+                try { wsClient.disconnect(); } catch (Throwable ignored) {}
+            }
+            try {
+                String wsUrl = buildLspWsUrl(serverUrl);
+                wsClient = new LspWebSocketClient(wsUrl, "Bearer " + token);
+                wsClient.connect();
+                log(Log.INFO, TAG, "LSP WS connected to " + wsUrl);
+            } catch (Throwable t) {
+                wsClient = null;
+                log(Log.WARN, TAG, "LSP WS connect failed: " + t.getClass().getSimpleName());
+            }
+        }
+    }
+
+    private String buildLspWsUrl(String serverUrl) {
+        String base = serverUrl.replaceAll("/+$", "");
+        if (base.toLowerCase().startsWith("https://")) {
+            return "wss://" + base.substring(8) + "/api/ws?role=device";
+        } else if (base.toLowerCase().startsWith("http://")) {
+            return "ws://" + base.substring(7) + "/api/ws?role=device";
+        }
+        return "wss://" + base + "/api/ws?role=device";
     }
 
     private String primaryDisplayTitle() {
@@ -755,5 +830,307 @@ public final class MonikaXposedModule extends XposedModule {
         if (cleaned.length() == 0 || "null".equals(cleaned)) return null;
         if (cleaned.length() > 256) return cleaned.substring(0, 256);
         return cleaned;
+    }
+
+    // ──────────────────────────────────────────────
+    //  Minimal WebSocket client for LSPosed data upload
+    //  Uses javax.net.ssl.SSLSocket — no external dependencies
+    // ──────────────────────────────────────────────
+    private class LspWebSocketClient {
+        private static final int OP_TEXT  = 0x1;
+        private static final int OP_CLOSE = 0x8;
+        private static final int OP_PING  = 0x9;
+        private static final int OP_PONG  = 0xA;
+        private static final String WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+        private static final int RECEIVE_BUF = 8192;
+
+        private final String wsUrl;
+        private final String authHeader;
+        private final SecureRandom secureRandom = new SecureRandom();
+        private SSLSocket socket;
+        private InputStream in;
+        private OutputStream out;
+        private Thread readerThread;
+        private volatile boolean connected;
+        private volatile boolean running;
+
+        LspWebSocketClient(String wsUrl, String authHeader) {
+            this.wsUrl = wsUrl;
+            this.authHeader = authHeader;
+        }
+
+        boolean isConnected() {
+            return connected && socket != null && socket.isConnected();
+        }
+
+        void connect() throws Exception {
+            URI uri = URI.create(wsUrl);
+            String host = uri.getHost();
+            int port = uri.getPort() > 0 ? uri.getPort() : 443;
+            String path = uri.getRawPath();
+            String query = uri.getRawQuery();
+            String resource = path + (query != null ? "?" + query : "");
+            if (resource.isEmpty()) resource = "/";
+
+            SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+            socket = (SSLSocket) factory.createSocket();
+            socket.setTcpNoDelay(true);
+            socket.setSoTimeout(0); // no read timeout — keepalive via ping/pong
+            socket.connect(new InetSocketAddress(host, port), 8000);
+
+            // TLS handshake
+            socket.startHandshake();
+            in = socket.getInputStream();
+            out = socket.getOutputStream();
+
+            // WebSocket handshake
+            byte[] keyBytes = new byte[16];
+            secureRandom.nextBytes(keyBytes);
+            String secKey = Base64.getEncoder().encodeToString(keyBytes);
+
+            StringBuilder req = new StringBuilder();
+            req.append("GET ").append(resource).append(" HTTP/1.1\r\n");
+            req.append("Host: ").append(host);
+            if (port != 443 && port != 80) req.append(":").append(port);
+            req.append("\r\n");
+            req.append("Upgrade: websocket\r\n");
+            req.append("Connection: Upgrade\r\n");
+            req.append("Sec-WebSocket-Key: ").append(secKey).append("\r\n");
+            req.append("Sec-WebSocket-Version: 13\r\n");
+            req.append("Authorization: ").append(authHeader).append("\r\n");
+            req.append("\r\n");
+
+            out.write(req.toString().getBytes(StandardCharsets.UTF_8));
+            out.flush();
+
+            // Read HTTP response
+            StringBuilder response = new StringBuilder();
+            int b;
+            while ((b = in.read()) != -1) {
+                response.append((char) b);
+                String s = response.toString();
+                if (s.endsWith("\r\n\r\n")) break;
+                if (s.length() > 8192) throw new IOException("response too large");
+            }
+
+            String respStr = response.toString();
+            if (!respStr.contains("101")) {
+                throw new IOException("handshake failed: " + respStr.split("\r\n")[0]);
+            }
+
+            // Verify Sec-WebSocket-Accept
+            MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+            sha1.update((secKey + WS_GUID).getBytes(StandardCharsets.UTF_8));
+            String expectedAccept = Base64.getEncoder().encodeToString(sha1.digest());
+            if (!respStr.contains(expectedAccept)) {
+                throw new IOException("Sec-WebSocket-Accept mismatch");
+            }
+
+            // Start reader thread
+            running = true;
+            connected = true;
+            readerThread = new Thread(this::readerLoop, "LspWsReader");
+            readerThread.setDaemon(true);
+            readerThread.start();
+        }
+
+        void disconnect() {
+            running = false;
+            connected = false;
+            try {
+                if (out != null) {
+                    sendCloseFrame(1000, "done");
+                }
+            } catch (Throwable ignored) {}
+            closeQuietly();
+        }
+
+        private void closeQuietly() {
+            try { if (in != null) in.close(); } catch (Throwable ignored) {}
+            try { if (out != null) out.close(); } catch (Throwable ignored) {}
+            try { if (socket != null) socket.close(); } catch (Throwable ignored) {}
+            in = null;
+            out = null;
+            socket = null;
+        }
+
+        boolean sendText(String text) {
+            if (!connected || out == null) return false;
+            try {
+                byte[] payload = text.getBytes(StandardCharsets.UTF_8);
+                synchronized (out) {
+                    sendFrame(OP_TEXT, payload, true);
+                    out.flush();
+                }
+                return true;
+            } catch (Throwable t) {
+                connected = false;
+                closeQuietly();
+                return false;
+            }
+        }
+
+        private void sendCloseFrame(int code, String reason) {
+            try {
+                byte[] reasonBytes = reason != null ? reason.getBytes(StandardCharsets.UTF_8) : new byte[0];
+                byte[] payload = new byte[2 + reasonBytes.length];
+                payload[0] = (byte) ((code >> 8) & 0xFF);
+                payload[1] = (byte) (code & 0xFF);
+                System.arraycopy(reasonBytes, 0, payload, 2, reasonBytes.length);
+                synchronized (out) {
+                    sendFrame(OP_CLOSE, payload, true);
+                    out.flush();
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        private void sendFrame(int opcode, byte[] payload, boolean mask) throws IOException {
+            int len = payload != null ? payload.length : 0;
+            // Byte 0: FIN(0x80) | opcode
+            out.write(0x80 | opcode);
+
+            // Byte 1 + extended length
+            int maskBit = mask ? 0x80 : 0x00;
+            if (len < 126) {
+                out.write(maskBit | len);
+            } else if (len <= 0xFFFF) {
+                out.write(maskBit | 126);
+                out.write((len >> 8) & 0xFF);
+                out.write(len & 0xFF);
+            } else {
+                out.write(maskBit | 127);
+                for (int i = 7; i >= 0; i--) {
+                    out.write((int) ((len >> (i * 8)) & 0xFF));
+                }
+            }
+
+            // Masking key (client MUST mask)
+            byte[] maskKey = null;
+            if (mask) {
+                maskKey = new byte[4];
+                secureRandom.nextBytes(maskKey);
+                out.write(maskKey);
+            }
+
+            // Payload (masked if client)
+            if (payload != null && len > 0) {
+                if (mask) {
+                    byte[] masked = new byte[len];
+                    for (int i = 0; i < len; i++) {
+                        masked[i] = (byte) (payload[i] ^ maskKey[i % 4]);
+                    }
+                    out.write(masked);
+                } else {
+                    out.write(payload);
+                }
+            }
+        }
+
+        private void readerLoop() {
+            byte[] buf = new byte[RECEIVE_BUF];
+            try {
+                while (running && connected) {
+                    byte[] frame = readFrame();
+                    if (frame == null) break;
+                    int opcode = frame[0] & 0x0F;
+                    int payloadLen = frame.length - 1;
+                    byte[] payload = payloadLen > 0 ? new byte[payloadLen] : new byte[0];
+                    if (payloadLen > 0) System.arraycopy(frame, 1, payload, 0, payloadLen);
+
+                    switch (opcode) {
+                        case OP_PING:
+                            // Respond with pong (echo the ping payload)
+                            try {
+                                synchronized (out) {
+                                    sendFrame(OP_PONG, payload, false);
+                                    out.flush();
+                                }
+                            } catch (Throwable t) {
+                                connected = false;
+                                return;
+                            }
+                            break;
+                        case OP_PONG:
+                            // Server responded to our ping — connection is alive
+                            break;
+                        case OP_CLOSE:
+                            // Server closed
+                            connected = false;
+                            running = false;
+                            closeQuietly();
+                            // Signal reconnect on next maybeDirectUpload
+                            MonikaXposedModule.this.wsClient = null;
+                            return;
+                        default:
+                            // Ignore other frame types (ack, messages, etc.)
+                            break;
+                    }
+                }
+            } catch (Throwable t) {
+                // Connection lost — signal reconnect
+                connected = false;
+            } finally {
+                connected = false;
+                closeQuietly();
+                MonikaXposedModule.this.wsClient = null;
+            }
+        }
+
+        private byte[] readFrame() throws IOException {
+            if (in == null) return null;
+
+            // Read first 2 bytes
+            int b0 = in.read();
+            if (b0 < 0) return null;
+            int opcode = b0 & 0x0F;
+            int b1 = in.read();
+            if (b1 < 0) return null;
+            boolean masked = (b1 & 0x80) != 0;
+            int len = b1 & 0x7F;
+
+            // Read extended length
+            if (len == 126) {
+                len = ((in.read() & 0xFF) << 8) | (in.read() & 0xFF);
+            } else if (len == 127) {
+                long longLen = 0;
+                for (int i = 0; i < 8; i++) {
+                    longLen = (longLen << 8) | (in.read() & 0xFF);
+                }
+                if (longLen > Integer.MAX_VALUE) throw new IOException("frame too large");
+                len = (int) longLen;
+            }
+
+            // Read mask key (server frames shouldn't be masked, but spec allows)
+            byte[] maskKey = null;
+            if (masked) {
+                maskKey = new byte[4];
+                for (int i = 0; i < 4; i++) {
+                    int mk = in.read();
+                    if (mk < 0) return null;
+                    maskKey[i] = (byte) mk;
+                }
+            }
+
+            // Read payload
+            byte[] result = new byte[1 + len];
+            result[0] = (byte) opcode;
+            if (len > 0) {
+                int offset = 1;
+                int remaining = len;
+                while (remaining > 0) {
+                    int read = in.read(buf, 0, Math.min(buf.length, remaining));
+                    if (read < 0) return null;
+                    if (masked) {
+                        for (int i = 0; i < read; i++) {
+                            buf[i] ^= maskKey[(offset - 1 + i) % 4];
+                        }
+                    }
+                    System.arraycopy(buf, 0, result, offset, read);
+                    offset += read;
+                    remaining -= read;
+                }
+            }
+            return result;
+        }
     }
 }

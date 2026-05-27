@@ -15,6 +15,7 @@ import com.monika.dashboard.data.SettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
@@ -30,6 +31,7 @@ object MessageSocketManager {
     private const val CHANNEL_ID = "visitor_messages"
     private const val NOTIFICATION_ID = 2001
     private const val PREFS = "message_controls"
+    private const val RECONNECT_DELAY_MS = 10_000L
     const val ACTION_BLOCK_VIEWER = "com.monika.dashboard.action.BLOCK_VIEWER"
     const val EXTRA_VIEWER_ID = "viewer_id"
 
@@ -44,6 +46,35 @@ object MessageSocketManager {
 
     @Volatile
     private var connecting = false
+
+    @Volatile
+    private var connected = false
+
+    fun isConnected(): Boolean = connected
+
+    /**
+     * Send a device_status message over the WebSocket.
+     * Returns true if the message was queued for sending, false if WS is not connected.
+     */
+    fun sendDeviceStatus(jsonPayload: String): Boolean {
+        val ws = socket
+        if (ws == null || !connected) {
+            DebugLog.log("消息", "WS未连接，跳过device_status发送")
+            return false
+        }
+        return try {
+            val msg = JSONObject().apply {
+                put("type", "device_status")
+                put("payload", JSONObject(jsonPayload))
+            }
+            ws.send(msg.toString())
+            DebugLog.log("消息", "WS发送device_status成功")
+            true
+        } catch (e: Exception) {
+            DebugLog.log("消息", "WS发送device_status失败: ${e.message}")
+            false
+        }
+    }
 
     fun ensureStarted(context: Context) {
         if (socket != null || connecting) return
@@ -76,6 +107,7 @@ object MessageSocketManager {
         socket?.close(1000, "disabled")
         socket = null
         connecting = false
+        connected = false
     }
 
     fun isViewerBlocked(context: Context, viewerId: String): Boolean {
@@ -185,11 +217,14 @@ object MessageSocketManager {
     ) : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             connecting = false
+            connected = true
             DebugLog.log("消息", "WebSocket已连接")
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            // Ignore ack pings at app level — keepalive is handled by WS protocol ping/pong
             val data = runCatching { JSONObject(text) }.getOrNull() ?: return
+            if (data.optString("type") == "ack") return
             if (data.optString("type") != "viewer_message") return
             val message = data.optString("text").take(500)
             val messageId = data.optString("message_id")
@@ -206,13 +241,38 @@ object MessageSocketManager {
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             socket = null
             connecting = false
-            DebugLog.log("消息", "WebSocket已断开")
+            connected = false
+            DebugLog.log("消息", "WebSocket已断开 (code=$code)")
+            scheduleReconnect()
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             socket = null
             connecting = false
+            connected = false
             DebugLog.log("消息", "WebSocket失败: ${t.message}")
+            scheduleReconnect()
+        }
+
+        private fun scheduleReconnect() {
+            scope.launch {
+                delay(RECONNECT_DELAY_MS)
+                if (socket != null || connecting) return@launch
+                DebugLog.log("消息", "WebSocket尝试重连...")
+                connecting = true
+                runCatching {
+                    val wsUrl = buildWsUrl(serverUrl)
+                    val request = Request.Builder()
+                        .url(wsUrl)
+                        .addHeader("Authorization", "Bearer $token")
+                        .build()
+                    socket = client.newWebSocket(request, this@Listener)
+                }.onFailure {
+                    connecting = false
+                    DebugLog.log("消息", "WebSocket重连失败: ${it.message}")
+                    scheduleReconnect() // retry
+                }
+            }
         }
     }
 }
