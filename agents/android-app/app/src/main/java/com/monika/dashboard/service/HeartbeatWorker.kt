@@ -155,6 +155,21 @@ class HeartbeatWorker(
             DebugLog.log("心跳Worker", "WS上报成功: $appId ${windowTitle.take(80)}")
             markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, true, "OK(ws)")
             Log.i(TAG, "WS heartbeat sent: $appId")
+            
+            // Sync messages even when WebSocket is used for status reporting
+            // Message operations still require HTTP client
+            var client: ReportClient? = null
+            try {
+                client = ReportClient(url, token, applicationContext)
+                syncBlockedViewers(client)
+                syncMessageHistory(client)
+                pollMessages(client)
+            } catch (e: Exception) {
+                DebugLog.log("心跳Worker", "WS消息同步失败: ${e.message}")
+                Log.e(TAG, "Message sync failed after WS heartbeat", e)
+            } finally {
+                runCatching { client?.shutdown() }
+            }
         } else {
             // Fallback to HTTP for backward compatibility
             var client: ReportClient? = null
