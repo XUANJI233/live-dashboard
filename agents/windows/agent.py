@@ -22,6 +22,13 @@ from pathlib import Path
 import psutil
 import requests
 
+try:
+    import websocket as _ws_lib
+    HAS_WEBSOCKET = True
+except ImportError:
+    _ws_lib = None
+    HAS_WEBSOCKET = False
+
 if getattr(sys, "frozen", False):
     base_dir = Path(sys.executable).parent
 else:
@@ -665,6 +672,305 @@ class Reporter:
 
 
 # ---------------------------------------------------------------------------
+# WebSocket Client — real-time bidirectional communication
+# ---------------------------------------------------------------------------
+class WsClient:
+    """WebSocket device client with auto-reconnect."""
+
+    INITIAL_BACKOFF = 2
+    MAX_BACKOFF = 60
+
+    def __init__(self, server_url: str, token: str, on_viewer_message=None):
+        self._server_url = server_url.rstrip("/")
+        self._token = token
+        self._on_viewer_message = on_viewer_message
+        self._ws = None
+        self._stop = False
+        self._connected = False
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._backoff = self.INITIAL_BACKOFF
+
+    # -- public API ----------------------------------------------------------
+
+    def start(self):
+        if not HAS_WEBSOCKET:
+            log.warning("websocket-client 未安装, WebSocket 功能禁用")
+            return
+        self._stop = False
+        self._thread = threading.Thread(target=self._run, daemon=True, name="ws-client")
+        self._thread.start()
+
+    def stop(self):
+        self._stop = True
+        ws = self._ws
+        if ws:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    def send_status(self, payload: dict) -> bool:
+        """Send device_status frame. Returns True if sent."""
+        return self._send({"type": "device_status", "payload": payload})
+
+    def send_reply(self, target_viewer_id: str, text: str,
+                   message_id: str | None = None) -> bool:
+        """Send device_reply frame. Returns True if sent."""
+        frame: dict = {
+            "type": "device_reply",
+            "target_viewer_id": target_viewer_id,
+            "text": text,
+        }
+        if message_id:
+            frame["message_id"] = message_id
+        return self._send(frame)
+
+    # -- internals -----------------------------------------------------------
+
+    def _build_ws_url(self) -> str:
+        u = self._server_url
+        if u.startswith("https://"):
+            u = "wss://" + u[8:]
+        elif u.startswith("http://"):
+            u = "ws://" + u[7:]
+        elif not u.startswith("ws"):
+            u = "wss://" + u
+        return u + "/api/ws?role=device"
+
+    def _send(self, frame: dict) -> bool:
+        with self._lock:
+            ws = self._ws
+            if not ws or not self._connected:
+                return False
+            try:
+                ws.send(json.dumps(frame, ensure_ascii=False))
+                return True
+            except Exception:
+                return False
+
+    def _run(self):
+        while not self._stop:
+            try:
+                url = self._build_ws_url()
+                self._ws = _ws_lib.WebSocketApp(
+                    url,
+                    header={"Authorization": f"Bearer {self._token}"},
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close,
+                )
+                self._ws.run_forever(ping_interval=25, ping_timeout=35)
+            except Exception as exc:
+                log.debug("WS run_forever 异常: %s", exc)
+            if self._stop:
+                break
+            self._connected = False
+            log.info("WebSocket 断开, %d 秒后重连...", self._backoff)
+            time.sleep(self._backoff)
+            self._backoff = min(self._backoff * 2, self.MAX_BACKOFF)
+
+    def _on_open(self, ws):
+        self._connected = True
+        self._backoff = self.INITIAL_BACKOFF
+        log.info("WebSocket 已连接")
+
+    def _on_message(self, ws, raw):
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return
+        msg_type = data.get("type")
+        if msg_type == "ack":
+            log.info("WebSocket 握手确认: device_id=%s", data.get("device_id"))
+        elif msg_type == "viewer_message" and self._on_viewer_message:
+            self._on_viewer_message(data)
+
+    def _on_error(self, ws, error):
+        log.debug("WebSocket 错误: %s", error)
+
+    def _on_close(self, ws, code, msg):
+        self._connected = False
+        log.debug("WebSocket 关闭: code=%s msg=%s", code, msg)
+
+
+# ---------------------------------------------------------------------------
+# Message Client — REST + WS messaging (留言)
+# ---------------------------------------------------------------------------
+class MessageClient:
+    """REST + WebSocket messaging client with local cache."""
+
+    MAX_CACHED = 30
+
+    def __init__(self, server_url: str, token: str, ws_client: WsClient | None = None):
+        self._server_url = server_url.rstrip("/")
+        self._token = token
+        self._ws = ws_client
+        self._session = requests.Session()
+        self._session.headers.update({
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        })
+        self._cache: list[dict] = []
+        self._callbacks: list = []
+        self._lock = threading.Lock()
+
+    # -- callback registration -----------------------------------------------
+
+    def on_message(self, cb):
+        """Register callback fn(message_dict) for incoming messages."""
+        self._callbacks.append(cb)
+
+    def _notify(self, msg: dict):
+        for cb in self._callbacks:
+            try:
+                cb(msg)
+            except Exception as exc:
+                log.debug("留言回调异常: %s", exc)
+
+    # -- WS relay ------------------------------------------------------------
+
+    def on_ws_message(self, data: dict):
+        """Handle viewer_message from WS relay."""
+        msg = {
+            "message_id": data.get("message_id", ""),
+            "viewer_id": data.get("viewer_id", ""),
+            "viewer_name": data.get("viewer_name", ""),
+            "kind": data.get("kind", "text"),
+            "text": data.get("text", ""),
+            "created_at": data.get("created_at", ""),
+            "queued": data.get("queued", False),
+        }
+        with self._lock:
+            # deduplicate by message_id
+            if any(m.get("message_id") == msg["message_id"] for m in self._cache):
+                return
+            self._cache.insert(0, msg)
+            self._cache = self._cache[:self.MAX_CACHED]
+        self._notify(msg)
+
+    # -- REST API ------------------------------------------------------------
+
+    def fetch_pending(self) -> list[dict]:
+        """GET /api/messages — fetch pending messages (server marks delivered)."""
+        try:
+            r = self._session.get(f"{self._server_url}/api/messages", timeout=10)
+            if r.status_code != 200:
+                return []
+            msgs = r.json() if isinstance(r.json(), list) else []
+        except Exception as exc:
+            log.debug("获取待处理留言失败: %s", exc)
+            return []
+        with self._lock:
+            existing_ids = {m.get("message_id") for m in self._cache}
+            for m in msgs:
+                mid = m.get("message_id", "")
+                if mid and mid not in existing_ids:
+                    self._cache.insert(0, m)
+                    self._notify(m)
+            self._cache = self._cache[:self.MAX_CACHED]
+        return msgs
+
+    def fetch_history(self, since: str = "") -> list[dict]:
+        """GET /api/messages/history?since=ISO — up to 500 messages."""
+        params = {}
+        if since:
+            params["since"] = since
+        try:
+            r = self._session.get(
+                f"{self._server_url}/api/messages/history",
+                params=params, timeout=15,
+            )
+            if r.status_code == 200:
+                return r.json() if isinstance(r.json(), list) else []
+        except Exception as exc:
+            log.debug("获取留言历史失败: %s", exc)
+        return []
+
+    def reply(self, target_viewer_id: str, text: str,
+              message_id: str | None = None) -> bool:
+        """Send reply — WS first, then HTTP fallback."""
+        body: dict = {"target_viewer_id": target_viewer_id, "text": text}
+        if message_id:
+            body["message_id"] = message_id
+        # try WS
+        if self._ws and self._ws.send_reply(target_viewer_id, text, message_id):
+            return True
+        # HTTP fallback
+        try:
+            r = self._session.post(
+                f"{self._server_url}/api/messages/reply",
+                json=body, timeout=10,
+            )
+            return r.status_code == 200
+        except Exception as exc:
+            log.debug("回复留言失败: %s", exc)
+            return False
+
+    def delete(self, message_id: str) -> bool:
+        """POST /api/messages/delete — remove a message."""
+        try:
+            r = self._session.post(
+                f"{self._server_url}/api/messages/delete",
+                json={"message_id": message_id}, timeout=10,
+            )
+            if r.status_code == 200:
+                with self._lock:
+                    self._cache = [m for m in self._cache
+                                   if m.get("message_id") != message_id]
+                return True
+        except Exception as exc:
+            log.debug("删除留言失败: %s", exc)
+        return False
+
+    def remark(self, viewer_id: str, remark: str) -> bool:
+        """POST /api/messages/remark — set viewer remark."""
+        try:
+            r = self._session.post(
+                f"{self._server_url}/api/messages/remark",
+                json={"viewer_id": viewer_id, "remark": remark}, timeout=10,
+            )
+            return r.status_code == 200
+        except Exception as exc:
+            log.debug("设置备注失败: %s", exc)
+            return False
+
+    def block(self, viewer_id: str) -> bool:
+        """POST /api/messages/block."""
+        try:
+            r = self._session.post(
+                f"{self._server_url}/api/messages/block",
+                json={"viewer_id": viewer_id}, timeout=10,
+            )
+            return r.status_code == 200
+        except Exception as exc:
+            log.debug("屏蔽失败: %s", exc)
+            return False
+
+    def unblock(self, viewer_id: str) -> bool:
+        """POST /api/messages/unblock."""
+        try:
+            r = self._session.post(
+                f"{self._server_url}/api/messages/unblock",
+                json={"viewer_id": viewer_id}, timeout=10,
+            )
+            return r.status_code == 200
+        except Exception as exc:
+            log.debug("解除屏蔽失败: %s", exc)
+            return False
+
+    def get_recent(self, limit: int = 10) -> list[dict]:
+        """Return cached recent messages."""
+        with self._lock:
+            return list(self._cache[:limit])
+
+
+# ---------------------------------------------------------------------------
 # System Tray
 # ---------------------------------------------------------------------------
 shutdown_event = threading.Event()
@@ -693,15 +999,34 @@ class TrayAgent:
         self._current_target = ""
         self._icon: pystray.Icon | None = None
         self._settings_requested = False
+        self._msg_client: MessageClient | None = None
+        self._unread_count = 0
         self._icons = {
             "green": _make_tray_icon("green"),
             "orange": _make_tray_icon("orange"),
             "gray": _make_tray_icon("gray"),
         }
 
+    def set_message_client(self, mc: MessageClient):
+        self._msg_client = mc
+        mc.on_message(self._on_new_message)
+
+    def _on_new_message(self, msg: dict):
+        with self._lock:
+            self._unread_count += 1
+        if self._icon:
+            self._icon.update_menu()
+
+    def _get_unread_label(self) -> str:
+        with self._lock:
+            n = self._unread_count
+        if n > 0:
+            return f"查看留言 ({n})"
+        return "查看留言"
+
     def _build_menu(self):
         p = self._pystray
-        return p.Menu(
+        items = [
             p.MenuItem(lambda _: f"状态: {self._get_status()}", None, enabled=False),
             p.MenuItem(lambda _: f"当前: {self._get_current() or '无'}", None, enabled=False),
             p.Menu.SEPARATOR,
@@ -710,9 +1035,16 @@ class TrayAgent:
             p.MenuItem("开机自启", self._toggle_autostart,
                        checked=lambda _: is_autostart_enabled()),
             p.MenuItem("设置", self._open_settings),
-            p.Menu.SEPARATOR,
-            p.MenuItem("退出", self._quit),
-        )
+        ]
+        if self._msg_client is not None:
+            items.append(p.Menu.SEPARATOR)
+            items.append(p.MenuItem(
+                self._get_unread_label,
+                self._show_messages,
+            ))
+        items.append(p.Menu.SEPARATOR)
+        items.append(p.MenuItem("退出", self._quit))
+        return p.Menu(*items)
 
     def _get_status(self) -> str:
         with self._lock:
@@ -777,6 +1109,28 @@ class TrayAgent:
         if self._icon:
             self._icon.stop()
 
+    def _show_messages(self):
+        """Show recent messages in a dialog."""
+        if not self._msg_client:
+            return
+        with self._lock:
+            self._unread_count = 0
+        msgs = self._msg_client.get_recent(10)
+        if not msgs:
+            show_message("Live Dashboard", "暂无留言")
+            if self._icon:
+                self._icon.update_menu()
+            return
+        lines = []
+        for m in msgs:
+            name = m.get("viewer_name", "未知")
+            text = m.get("text", "")[:80]
+            t = m.get("created_at", "")[:16]
+            lines.append(f"[{t}] {name}: {text}")
+        show_message("Live Dashboard — 最近留言", "\n".join(lines))
+        if self._icon:
+            self._icon.update_menu()
+
     def _quit(self):
         shutdown_event.set()
         if self._icon:
@@ -809,7 +1163,9 @@ class TrayAgent:
 # ---------------------------------------------------------------------------
 # Monitor loop
 # ---------------------------------------------------------------------------
-def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None) -> None:
+def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
+                  ws_client: WsClient | None = None,
+                  msg_client: MessageClient | None = None) -> None:
     interval = cfg["interval_seconds"]
     heartbeat_interval = cfg["heartbeat_seconds"]
     idle_threshold = cfg["idle_threshold_seconds"]
@@ -817,16 +1173,40 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None) -> None
     prev_app: str | None = None
     prev_title: str | None = None
     last_report_time: float = 0
+    last_msg_fetch: float = 0
+    MSG_FETCH_INTERVAL = 30  # seconds
     was_idle = False
 
     log.info(
-        "Monitoring — interval=%ds, heartbeat=%ds, idle=%ds",
+        "Monitoring — interval=%ds, heartbeat=%ds, idle=%ds, ws=%s",
         interval, heartbeat_interval, idle_threshold,
+        "enabled" if ws_client else "disabled",
     )
+
+    def _send_report(app_id: str, title: str, extra: dict) -> bool:
+        """Send report via WS first, then HTTP fallback."""
+        if ws_client and ws_client.connected:
+            payload = {
+                "app_id": app_id,
+                "window_title": title,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "extra": extra,
+            }
+            if ws_client.send_status(payload):
+                return True
+        return reporter.send(app_id, title, extra)
 
     while not shutdown_event.is_set():
         try:
             now = time.time()
+
+            # Periodically fetch pending messages (REST)
+            if msg_client and (now - last_msg_fetch) >= MSG_FETCH_INTERVAL:
+                try:
+                    msg_client.fetch_pending()
+                except Exception as exc:
+                    log.debug("fetch_pending 异常: %s", exc)
+                last_msg_fetch = now
 
             idle_secs = get_idle_seconds()
             is_idle = (idle_secs >= idle_threshold
@@ -847,7 +1227,7 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None) -> None
                 if heartbeat_due:
                     extra = get_battery_extra()
                     idle_target = format_report_target("idle", "User is away")
-                    if reporter.send("idle", "User is away", extra):
+                    if _send_report("idle", "User is away", extra):
                         prev_app = "idle"
                         prev_title = "User is away"
                         last_report_time = now
@@ -879,7 +1259,7 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None) -> None
                 if music:
                     extra["music"] = music
                 reported_target = format_report_target(app_id, title)
-                success = reporter.send(app_id, title, extra)
+                success = _send_report(app_id, title, extra)
                 if success:
                     prev_app = app_id
                     prev_title = title
@@ -933,22 +1313,44 @@ def main() -> None:
 
         reporter = Reporter(cfg["server_url"], cfg["token"])
 
+        # Initialize WebSocket client
+        ws_client: WsClient | None = None
+        msg_client: MessageClient | None = None
+        if HAS_WEBSOCKET:
+            ws_client = WsClient(cfg["server_url"], cfg["token"])
+            msg_client = MessageClient(cfg["server_url"], cfg["token"], ws_client)
+            ws_client.start()
+            log.info("WebSocket 客户端已启动")
+        else:
+            log.info("websocket-client 未安装, 仅使用 HTTP 上报")
+            msg_client = MessageClient(cfg["server_url"], cfg["token"])
+
         tray: TrayAgent | None = None
         try:
             tray = TrayAgent()
+            if msg_client:
+                tray.set_message_client(msg_client)
         except ImportError:
             log.warning("pystray/Pillow not installed, running without tray")
         except Exception as e:
             log.warning("Tray init failed: %s", e)
 
+        # Wire WS viewer_message → MessageClient
+        if ws_client and msg_client:
+            ws_client._on_viewer_message = msg_client.on_ws_message
+
         if tray:
             monitor = threading.Thread(
-                target=_monitor_loop, args=(cfg, reporter, tray), daemon=True
+                target=_monitor_loop,
+                args=(cfg, reporter, tray, ws_client, msg_client),
+                daemon=True,
             )
             monitor.start()
             tray.run()  # Blocks until quit or settings
             shutdown_event.set()
             monitor.join(timeout=5)
+            if ws_client:
+                ws_client.stop()
 
             if tray.settings_requested:
                 shutdown_event.clear()
@@ -960,9 +1362,11 @@ def main() -> None:
                 break  # Quit
         else:
             try:
-                _monitor_loop(cfg, reporter, None)
+                _monitor_loop(cfg, reporter, None, ws_client, msg_client)
             except KeyboardInterrupt:
                 pass
+            if ws_client:
+                ws_client.stop()
             break
 
     log.info("Agent stopped")
