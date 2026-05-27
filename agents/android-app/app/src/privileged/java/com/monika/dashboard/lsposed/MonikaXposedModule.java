@@ -320,8 +320,8 @@ public final class MonikaXposedModule extends XposedModule {
                 if ("idle".equals(lastForegroundKey) && now - lastForegroundBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
                 lastForegroundKey = "idle";
                 lastForegroundBroadcastAt = now;
-                foregroundPackage = "";
-                foregroundApp = "";
+                foregroundPackage = "idle";
+                foregroundApp = "idle";
                 foregroundActivity = "";
                 foregroundTitle = "";
             } else {
@@ -340,7 +340,10 @@ public final class MonikaXposedModule extends XposedModule {
             Intent intent = new Intent(ACTION_STATUS);
             intent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
             if (idle) {
-                intent.putExtra("idle", true);
+                intent.putExtra("package_name", "idle");
+                intent.putExtra("app_name", "idle");
+                intent.putExtra("activity", "");
+                intent.putExtra("input_active", false);
             } else {
                 intent.putExtra("package_name", foregroundPackage);
                 intent.putExtra("app_name", foregroundApp);
@@ -585,6 +588,7 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private String primaryDisplayTitle() {
+        if ("idle".equals(foregroundPackage) || "idle".equals(foregroundApp)) return "暂时离开";
         if (foregroundApp.length() > 0 && mediaPlaying && mediaTitle.length() > 0 && mediaApp.length() > 0 && !mediaApp.equals(foregroundApp)) {
             return "正在用" + foregroundApp + "，后台" + mediaApp + "正在播放" + mediaTitle;
         }
