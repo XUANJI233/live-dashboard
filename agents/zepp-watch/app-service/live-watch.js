@@ -16,6 +16,7 @@ import { Step } from '@zos/sensor'
 import { HeartRate } from '@zos/sensor'
 import { Sleep } from '@zos/sensor'
 import { set as setAlarm, cancel as cancelAlarm, getAllAlarms } from '@zos/alarm'
+import { LocalStorage } from '@zos/storage'
 
 // ── Sensor instances (created once, reused) ──
 const battery = new Battery()
@@ -33,22 +34,20 @@ let lastHrSyncDate = ''
 let sleepSkipCounter = 0 // 睡眠状态下跳过传输的计数器
 
 // ── Persist sleepSkipCounter (survives alarm wakeups) ──
+// 使用 @zos/storage LocalStorage (API_LEVEL 3.0+, 官方推荐)
+const _localStorage = new LocalStorage()
+
 function readSleepSkipCounter() {
   try {
-    const fs = require('@zos/fs')
-    const data = fs.readFileSync('data://livewatch_skip.json')
-    if (data) {
-      const parsed = JSON.parse(data)
-      return parsed.counter || 0
-    }
+    const val = _localStorage.getItem('lw_skip', 0)
+    return typeof val === 'number' ? val : 0
   } catch (e) {}
   return 0
 }
 
 function writeSleepSkipCounter(value) {
   try {
-    const fs = require('@zos/fs')
-    fs.writeFileSync('data://livewatch_skip.json', JSON.stringify({ counter: value }))
+    _localStorage.setItem('lw_skip', value)
   } catch (e) {
     console.warn('[LiveWatch:device] Failed to persist sleepSkipCounter: ' + e.message)
   }

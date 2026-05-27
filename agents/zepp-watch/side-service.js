@@ -66,12 +66,36 @@ AppSideService(
           break
         }
         case 'BATCH_DATA': {
+          // 设置关闭时，拒绝处理并通知手表端
+          if (!this.state.enabled) {
+            console.log('[LiveWatch:companion] Upload disabled, reject BATCH_DATA')
+            res(null, { ok: false, reason: 'disabled' })
+            break
+          }
           // 接收手表端批量数据，进行插值后上传
           this.handleBatchData(params, res)
           break
         }
         default:
           res({ error: 'unknown method' }, null)
+      }
+    },
+
+    // ── 设置变更实时同步（来自设置应用） ──
+    onSettingsChange({ key, newValue }) {
+      if (key === 'livewatch_config' && newValue) {
+        try {
+          const cfg = JSON.parse(newValue)
+          if (cfg.serverUrl !== undefined) this.state.serverUrl = cfg.serverUrl
+          if (cfg.token !== undefined) this.state.token = cfg.token
+          if (cfg.syncInterval !== undefined) this.state.syncInterval = Number(cfg.syncInterval)
+          if (cfg.enabled !== undefined) {
+            this.state.enabled = Boolean(cfg.enabled)
+            console.log('[LiveWatch:companion] Settings changed, enabled=' + this.state.enabled)
+          }
+        } catch (e) {
+          console.warn('[LiveWatch:companion] Failed to parse settings change: ' + e.message)
+        }
       }
     },
 
@@ -183,6 +207,10 @@ AppSideService(
 
     uploadStatus(status) {
       if (!this.state.serverUrl || !this.state.token) return
+      if (!this.state.enabled) {
+        console.log('[LiveWatch:companion] Upload disabled, skip status')
+        return
+      }
 
       fetch({
         url: this.state.serverUrl.replace(/\/+$/, '') + '/api/report',
@@ -192,7 +220,6 @@ AppSideService(
           'Authorization': 'Bearer ' + this.state.token,
         },
         body: JSON.stringify(status),
-        timeout: 10000,
       }).then(res => {
         if (res.status >= 200 && res.status < 300) {
           console.log('[LiveWatch:companion] Status upload OK')
@@ -208,6 +235,10 @@ AppSideService(
 
     uploadHeartRateHistory(records) {
       if (!this.state.serverUrl || !this.state.token) return
+      if (!this.state.enabled) {
+        console.log('[LiveWatch:companion] Upload disabled, skip HR history')
+        return
+      }
 
       const payload = { records: records }
 
@@ -219,7 +250,6 @@ AppSideService(
           'Authorization': 'Bearer ' + this.state.token,
         },
         body: JSON.stringify(payload),
-        timeout: 15000,
       }).then(res => {
         if (res.status >= 200 && res.status < 300) {
           console.log('[LiveWatch:companion] HR history upload OK: ' + records.length + ' records')
