@@ -137,6 +137,27 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
     const events: TimelineEvent[] = [];
     let i = 0;
     while (i < sorted.length) {
+      // Merge consecutive same-app same-title segments into a single event
+      const merged = collectSameAppCluster(sorted, i);
+      if (merged.length > 1) {
+        const first = merged[0]!;
+        const last = merged[merged.length - 1]!;
+        events.push({
+          key: `${deviceId}:merged:${first.started_at}`,
+          kind: "single",
+          appName: first.app_name,
+          appId: first.app_id,
+          title: describeSegment(first),
+          startedAt: first.started_at,
+          endedAt: last.ended_at,
+          durationSeconds: spanSeconds(merged),
+          isCurrent: merged.some((seg) => currentAppByDevice[deviceId] === seg.app_name),
+          children: merged.filter((s) => meaningfulDetailTitle(s)),
+        });
+        i += merged.length;
+        continue;
+      }
+
       const cluster = collectSwitchCluster(sorted, i);
       if (cluster.length >= 3) {
         const first = cluster[0]!;
@@ -178,6 +199,28 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
     events.sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent));
     return { deviceId, deviceName: entry.deviceName, events };
   }).filter((entry) => entry.events.length > 0);
+}
+
+function collectSameAppCluster(segments: TimelineSegment[], startIndex: number) {
+  const first = segments[startIndex]!;
+  const cluster = [first];
+  const firstTitle = (first.display_title || "").trim();
+
+  for (let i = startIndex + 1; i < segments.length; i += 1) {
+    const next = segments[i]!;
+    const nextTitle = (next.display_title || "").trim();
+    // Merge only if same app_name AND same display_title, within 5 min gap
+    if (next.app_name !== first.app_name) break;
+    if (nextTitle !== firstTitle && firstTitle !== "") break;
+    const nextStart = new Date(next.started_at).getTime();
+    const prevEnd = cluster[cluster.length - 1]!.ended_at
+      ? new Date(cluster[cluster.length - 1]!.ended_at!).getTime()
+      : new Date(cluster[cluster.length - 1]!.started_at).getTime();
+    if (nextStart - prevEnd > 300_000) break; // 5 minute gap → don't merge
+    cluster.push(next);
+  }
+
+  return cluster;
 }
 
 function collectSwitchCluster(segments: TimelineSegment[], startIndex: number) {

@@ -84,8 +84,7 @@ export function verifyViewerToken(token: string | null | undefined): ViewerIdent
 
 export function viewerTokenFromRequest(req: Request): string | null {
   const auth = req.headers.get("authorization");
-  if (!auth) return null;
-  const match = auth.match(/^Bearer\s+(.+)$/i);
+  const match = auth?.match(/^Bearer\s+(.+)$/i);
   if (match?.[1]) return match[1];
   const url = new URL(req.url);
   return url.searchParams.get("viewer_token");

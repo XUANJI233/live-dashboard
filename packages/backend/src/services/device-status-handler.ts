@@ -215,18 +215,22 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
   }
 
   try {
-    insertActivity.run(
-      device.device_id,
-      device.device_name,
-      device.platform,
-      appId,
-      appName,
-      windowTitle,
-      displayTitle,
-      titleHash,
-      timeBucket,
-      startedAt
-    );
+    // Watch / IoT devices should not create activity timeline entries.
+    // They only update device state (battery, online status).
+    if (device.platform !== "zepp") {
+      insertActivity.run(
+        device.device_id,
+        device.device_name,
+        device.platform,
+        appId,
+        appName,
+        windowTitle,
+        displayTitle,
+        titleHash,
+        timeBucket,
+        startedAt
+      );
+    }
   } catch (e: any) {
     if (!e.message?.includes("UNIQUE constraint")) {
       console.error("[report] DB insert error:", e.message);
