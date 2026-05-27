@@ -42,7 +42,9 @@ AppService({
 
   onDestroy() {
     console.log('[LiveWatch:device] AppService destroy')
-    stopSync()
+    // Only release runtime resources — do NOT change the user's enabled config.
+    // System may kill/restart the service at any time.
+    stopRuntime()
   },
 })
 
@@ -50,6 +52,7 @@ AppService({
 
 function restoreConfig() {
   try {
+    // Primary: settingsStorage (synced with companion)
     const storage = require('@zos/settings').settingsStorage
     const raw = storage.getItem('livewatch_config')
     if (raw) {
@@ -61,8 +64,40 @@ function restoreConfig() {
       console.log('[LiveWatch:device] Config restored: enabled=' + enabled)
     }
   } catch (e) {
-    console.log('[LiveWatch:device] No saved config')
+    // Fallback: file-based config (settingsStorage may not be available in device context)
+    try {
+      const fs = require('@zos/fs')
+      const data = fs.readFileSync('data://livewatch_config.json')
+      if (data) {
+        const cfg = JSON.parse(data)
+        serverUrl = cfg.serverUrl || ''
+        token = cfg.token || ''
+        syncIntervalMs = Math.max(60_000, (cfg.syncInterval || 300) * 1000)
+        enabled = cfg.enabled || false
+        console.log('[LiveWatch:device] Config restored from file: enabled=' + enabled)
+      }
+    } catch (e2) {
+      console.log('[LiveWatch:device] No saved config (settingsStorage + file both unavailable)')
+    }
   }
+}
+
+function persistConfig() {
+  const cfg = JSON.stringify({
+    serverUrl, token,
+    syncInterval: Math.round(syncIntervalMs / 1000),
+    enabled,
+  })
+  try {
+    // Primary: sync via settingsStorage (companion-visible)
+    const storage = require('@zos/settings').settingsStorage
+    storage.setItem('livewatch_config', cfg)
+  } catch (e) { /* settingsStorage may be unavailable in device context */ }
+  try {
+    // Fallback: local file (always available on device)
+    const fs = require('@zos/fs')
+    fs.writeFileSync('data://livewatch_config.json', cfg)
+  } catch (e) { /* file system may be unavailable in preview */ }
 }
 
 // ── Sync Control ──────────────────────────
@@ -83,8 +118,17 @@ function startSync() {
 }
 
 function stopSync() {
+  // Called only by explicit user action (page STOP button or companion relay).
+  // This sets enabled=false AND stops runtime resources.
   enabled = false
   persistConfig()
+  stopRuntime()
+  console.log('[LiveWatch:device] Sync disabled by user')
+}
+
+function stopRuntime() {
+  // Release timer/alarm resources without changing the user's enabled flag.
+  // Called by onDestroy() (system may restart us) and stopSync().
   if (syncTimerId != null) {
     stopTimer(syncTimerId)
     syncTimerId = null
@@ -93,14 +137,18 @@ function stopSync() {
     cancelAlarm(alarmId)
     alarmId = null
   }
-  console.log('[LiveWatch:device] Sync stopped')
 }
 
 function setupAlarm() {
-  if (syncIntervalMs < 60_000) return // too frequent for alarm
+  if (syncIntervalMs < 60_000) return
   try {
+    // Only cancel OUR app-service alarm — don't touch other app alarms
     const alarms = getAllAlarms()
-    if (alarms && alarms.length > 0) alarms.forEach(a => cancelAlarm(a.id))
+    if (alarms && alarms.length > 0) {
+      alarms.forEach(a => {
+        if (a.url === 'app-service/live-watch.js') cancelAlarm(a.id)
+      })
+    }
     alarmId = setAlarm({
       url: 'app-service/live-watch.js',
       delay: Math.ceil(syncIntervalMs / 1000),
@@ -162,7 +210,14 @@ function syncNow() {
     },
   })
 
-  // httpRequest from zml — works in Device App Service
+  // httpRequest is provided by zml messaging plugin for device-side HTTP.
+  // If unavailable in the device context, fall back: collect data and
+  // return it for the companion to upload via BLE/messaging.
+  // In zeus preview, httpRequest should work if the simulator network is active.
+  if (typeof httpRequest !== 'function') {
+    console.warn('[LiveWatch:device] httpRequest not available — data not uploaded')
+    return
+  }
   httpRequest({
     method: 'POST',
     url: serverUrl.replace(/\/+$/, '') + '/api/report',

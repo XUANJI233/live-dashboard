@@ -692,8 +692,15 @@ public final class MonikaXposedModule extends XposedModule {
     private String buildDirectReportBody(long now) {
         try {
             String appId = directUploadForeground ? safeString(foregroundPackage) : "";
-            if (appId.length() == 0 && directUploadMedia && mediaPackage.length() > 0) appId = mediaPackage;
-            if (appId.length() == 0) appId = "idle";
+            if (appId.length() == 0 || "idle".equals(appId)) {
+                // When idle but media is playing, use the media package as app_id.
+                // Avoids displaying "idle" when user is actually listening.
+                if (directUploadMedia && mediaPackage.length() > 0) {
+                    appId = mediaPackage;
+                } else {
+                    appId = "idle";
+                }
+            }
             String windowTitle = primaryDisplayTitle();
             JSONObject extra = new JSONObject();
             JSONObject device = new JSONObject();
@@ -1020,10 +1027,14 @@ public final class MonikaXposedModule extends XposedModule {
                 SSLSocket ssl = (SSLSocket) factory.createSocket();
                 ssl.setTcpNoDelay(true);
                 ssl.setSoTimeout(0);
-                // SNI (Server Name Indication) — required for virtual-hosted TLS
+                // SNI (Server Name Indication) — required for virtual-hosted TLS.
+                // Skip SNI for IP addresses (SNIHostName throws on raw IP).
+                boolean isIp = host.matches("[0-9.]+|[:0-9a-fA-F]+");
                 javax.net.ssl.SSLParameters params = ssl.getSSLParameters();
-                params.setServerNames(java.util.Collections.singletonList(
-                    new javax.net.ssl.SNIHostName(host)));
+                if (!isIp) {
+                    params.setServerNames(java.util.Collections.singletonList(
+                        new javax.net.ssl.SNIHostName(host)));
+                }
                 // Hostname verification — prevents MITM with valid cert for wrong host
                 params.setEndpointIdentificationAlgorithm("HTTPS");
                 ssl.setSSLParameters(params);

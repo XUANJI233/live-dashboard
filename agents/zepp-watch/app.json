@@ -3,6 +3,7 @@
     "appId": "com.monika.livewatch",
     "appName": "Live Watch",
     "appType": "app",
+    "description": "Watch health data sync agent for Live Dashboard",
     "version": {
       "code": 1,
       "name": "0.1.0"
