@@ -19,11 +19,34 @@ const MESSAGE_TTL_MINUTES = 30;
 const VIEWER_RATE_LIMIT = 10;
 const VIEWER_API_RATE_LIMIT = 60;
 const RATE_WINDOW_MS = 60_000;
+const PING_INTERVAL_MS = 25_000;
+const PONG_TIMEOUT_MS = 35_000;
 
 const deviceSockets = new Map<string, ServerWebSocket<WsData>>();
 const viewerSockets = new Map<string, ServerWebSocket<WsData>>();
+const devicePongTimes = new Map<string, number>();
 const viewerRate = new Map<string, { count: number; resetAt: number }>();
 const viewerApiRate = new Map<string, { count: number; resetAt: number }>();
+
+// ── Prepared statement: mark a single device offline immediately ──
+const markDeviceOffline = db.prepare(`
+  UPDATE device_states SET is_online = 0
+  WHERE device_id = ? AND is_online = 1
+`);
+
+// ── WS keepalive: periodic ping → pong timeout → close stale connections ──
+const pingTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [deviceId, ws] of deviceSockets) {
+    const lastPong = devicePongTimes.get(deviceId) ?? 0;
+    if (now - lastPong > PONG_TIMEOUT_MS) {
+      ws.close(4001, "pong timeout");
+      continue;
+    }
+    try { ws.ping(); } catch { /* socket may already be closing */ }
+  }
+}, PING_INTERVAL_MS);
+pingTimer.unref();
 
 const insertQueuedMessage = db.prepare(`
   INSERT INTO device_messages (id, device_id, viewer_id, text, expires_at)
@@ -256,12 +279,19 @@ export const realtimeWebSocket = {
   open(ws: ServerWebSocket<WsData>) {
     if (ws.data.role === "device") {
       deviceSockets.set(ws.data.id, ws);
+      devicePongTimes.set(ws.data.id, Date.now());
       send(ws, { type: "ack", status: "connected", role: "device", device_id: ws.data.id });
       deliverQueuedMessages(ws.data.id, ws);
       return;
     }
     viewerSockets.set(ws.data.id, ws);
     send(ws, { type: "ack", status: "connected", role: "viewer", viewer_id: ws.data.id });
+  },
+
+  pong(ws: ServerWebSocket<WsData>) {
+    if (ws.data.role === "device") {
+      devicePongTimes.set(ws.data.id, Date.now());
+    }
   },
 
   message(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
@@ -344,6 +374,8 @@ export const realtimeWebSocket = {
     }
 
     if (ws.data.role === "device" && data.type === "device_status") {
+      // Any device_status message refreshes keepalive (proof of life)
+      devicePongTimes.set(ws.data.id, Date.now());
       // If payload present, process as full report (WebSocket上报通道)
       if (data.payload && ws.data.device) {
         processReportPayload(data.payload, ws.data.device);
@@ -358,6 +390,9 @@ export const realtimeWebSocket = {
   close(ws: ServerWebSocket<WsData>) {
     if (ws.data.role === "device") {
       if (deviceSockets.get(ws.data.id) === ws) deviceSockets.delete(ws.data.id);
+      devicePongTimes.delete(ws.data.id);
+      // Immediately mark device offline so dashboard reflects disconnection
+      try { markDeviceOffline.run(ws.data.id); } catch { /* ignore */ }
     } else if (viewerSockets.get(ws.data.id) === ws) {
       viewerSockets.delete(ws.data.id);
     }
