@@ -745,17 +745,32 @@ public final class MonikaXposedModule extends XposedModule {
                 wsClient = null;
             }
 
-            SharedPreferences prefs = context.createDeviceProtectedStorageContext()
-                    .getSharedPreferences("monika_lsp_direct_upload", Context.MODE_PRIVATE);
-            prefs.edit()
-                    .putBoolean("enabled", enabled)
-                    .putString("server_url", serverUrl)
-                    .putString("token", token)
-                    .putLong("interval_ms", Math.max(MIN_DIRECT_UPLOAD_MS, intervalSec * 1000L))
-                    .putBoolean("upload_foreground", uploadForeground)
-                    .putBoolean("upload_media", uploadMedia)
-                    .commit(); // synchronous — avoid race with immediate loadDirectUploadConfig()
-            loadDirectUploadConfig();
+            // Write to system_server device-protected storage for persistence across reboots
+            try {
+                SharedPreferences prefs = context.createDeviceProtectedStorageContext()
+                        .getSharedPreferences("monika_lsp_direct_upload", Context.MODE_PRIVATE);
+                prefs.edit()
+                        .putBoolean("enabled", enabled)
+                        .putString("server_url", serverUrl)
+                        .putString("token", token)
+                        .putLong("interval_ms", Math.max(MIN_DIRECT_UPLOAD_MS, intervalSec * 1000L))
+                        .putBoolean("upload_foreground", uploadForeground)
+                        .putBoolean("upload_media", uploadMedia)
+                        .commit();
+            } catch (Throwable ignored) {}
+
+            // IMPORTANT: Set volatile fields directly from broadcast extras.
+            // Do NOT rely on getRemotePreferences() to read back from the above storage,
+            // because it may read from a different storage location (LSPosed framework
+            // storage vs system_server device-protected storage).
+            directUploadEnabled = enabled;
+            directServerUrl = serverUrl;
+            directToken = token;
+            directIntervalMs = Math.max(MIN_DIRECT_UPLOAD_MS, intervalSec * 1000L);
+            directUploadForeground = uploadForeground;
+            directUploadMedia = uploadMedia;
+            log(Log.INFO, TAG, "config applied from broadcast: enabled=" + enabled + " url=" + serverUrl + " token=" + (token.length() > 0 ? "set" : "empty"));
+
             maybeDirectUpload(true);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "save config failed: " + t.getClass().getSimpleName());

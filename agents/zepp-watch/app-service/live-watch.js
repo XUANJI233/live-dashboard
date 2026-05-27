@@ -25,6 +25,8 @@ let token = ''
 let syncIntervalMs = 300_000 // default 5 minutes
 let enabled = false
 let lastReportedAppId = ''
+let lastHrSyncIndex = -1 // tracks last synced minute-index in heartRate.getToday()
+let lastHrSyncDate = '' // YYYY-MM-DD to detect day change and reset index
 
 // ── AppService entry (runs ON WATCH) ──
 AppService({
@@ -230,10 +232,97 @@ function syncNow() {
   }).then(res => {
     if (res.status >= 200 && res.status < 300) {
       console.log('[LiveWatch:device] Sync OK')
+      // Upload historical heart rate data after successful status sync
+      uploadHeartRateHistory()
     } else {
       console.warn('[LiveWatch:device] HTTP ' + res.status)
     }
   }).catch(err => {
     console.error('[LiveWatch:device] Sync failed: ' + (err.message || err))
   })
+}
+
+// ── Historical Heart Rate Upload ──────────
+
+function uploadHeartRateHistory() {
+  try {
+    const todayData = heartRate.getToday()
+    if (!todayData || todayData.length === 0) return
+
+    // Reset sync index on day change
+    const now = new Date()
+    const todayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0')
+    if (todayStr !== lastHrSyncDate) {
+      lastHrSyncIndex = -1
+      lastHrSyncDate = todayStr
+    }
+
+    // Only upload new entries since last sync
+    const newEntries = []
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+
+    // Smooth zero values: interpolate between valid readings
+    for (let i = lastHrSyncIndex + 1; i < todayData.length; i++) {
+      const hr = todayData[i]
+      const timestamp = new Date(today.getTime() + i * 60000).toISOString()
+      
+      let value = hr
+      if (hr === 0) {
+        // Find previous valid value
+        let prevVal = 0, prevIdx = i - 1
+        while (prevIdx > lastHrSyncIndex && todayData[prevIdx] === 0) prevIdx--
+        if (prevIdx > lastHrSyncIndex) prevVal = todayData[prevIdx]
+        
+        // Find next valid value
+        let nextVal = 0, nextIdx = i + 1
+        while (nextIdx < todayData.length && todayData[nextIdx] === 0) nextIdx++
+        if (nextIdx < todayData.length) nextVal = todayData[nextIdx]
+        
+        // Linear interpolation if both sides have valid values
+        if (prevVal > 0 && nextVal > 0) {
+          const ratio = (i - prevIdx) / (nextIdx - prevIdx)
+          value = Math.round(prevVal + ratio * (nextVal - prevVal))
+        } else if (prevVal > 0) {
+          value = prevVal // Use previous value if no next value
+        } else if (nextVal > 0) {
+          value = nextVal // Use next value if no previous value
+        } else {
+          continue // Skip if no valid values anywhere (entire array is zeros)
+        }
+      }
+      
+      newEntries.push({
+        type: 'heart_rate',
+        value: value,
+        unit: 'bpm',
+        timestamp: timestamp,
+      })
+    }
+
+    if (newEntries.length === 0) return
+
+    const body = JSON.stringify({ records: newEntries })
+
+    httpRequest({
+      method: 'POST',
+      url: serverUrl.replace(/\/+$/, '') + '/api/health-data',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token,
+      },
+      body: body,
+      timeout: 15_000,
+    }).then(res => {
+      if (res.status >= 200 && res.status < 300) {
+        lastHrSyncIndex = todayData.length - 1
+        console.log('[LiveWatch:device] HR history OK: ' + newEntries.length + ' records')
+      } else {
+        console.warn('[LiveWatch:device] HR history HTTP ' + res.status)
+      }
+    }).catch(err => {
+      console.error('[LiveWatch:device] HR history failed: ' + (err.message || err))
+    })
+  } catch (e) {
+    console.warn('[LiveWatch:device] getToday() unavailable: ' + e.message)
+  }
 }

@@ -9,6 +9,8 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.theme.lightColorScheme as miuixLightColorScheme
 
 // Matching the web dashboard's warm color palette
 val Cream = Color(0xFFFFF8E7)
@@ -78,6 +80,22 @@ fun DashboardTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = DashboardColorScheme,
         typography = DashboardTypography,
-        content = content
-    )
+    ) {
+        MiuixTheme(
+            colors = miuixLightColorScheme(
+                primary = Primary,
+                onPrimary = Color.White,
+                secondary = Secondary,
+                onSecondary = Color.White,
+                background = Cream,
+                onBackground = TextMain,
+                surface = Card,
+                onSurface = TextMain,
+                surfaceVariant = SakuraBg,
+                onSurfaceSecondary = TextMuted,
+                outline = Border
+            ),
+            content = content
+        )
+    }
 }

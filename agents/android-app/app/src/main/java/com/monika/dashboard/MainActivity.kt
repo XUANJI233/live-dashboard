@@ -79,29 +79,11 @@ private fun DashboardTopBar(settings: SettingsStore) {
     var connected by remember { mutableStateOf(false) }
     val serverUrl by settings.serverUrl.collectAsState(initial = "")
 
-    // Auto-test connection every 5 seconds
+    // Poll MessageSocketManager WebSocket status instead of creating new HTTP clients
     LaunchedEffect(serverUrl) {
         while (true) {
-            val url = serverUrl.trim()
-            val token = withContext(Dispatchers.IO) { settings.getToken() }
-            if (url.isNotEmpty() && !token.isNullOrEmpty() && SettingsStore.validateUrl(url)) {
-                val result = withContext(Dispatchers.IO) {
-                    try {
-                        val client = ReportClient(url, token)
-                        try {
-                            client.testConnection()
-                        } finally {
-                            client.shutdown()
-                        }
-                    } catch (_: Exception) {
-                        Result.failure<Unit>(Exception("error"))
-                    }
-                }
-                connected = result.isSuccess
-            } else {
-                connected = false
-            }
-            delay(5000L)
+            connected = MessageSocketManager.isConnected()
+            delay(3000L)
         }
     }
 
