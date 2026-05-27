@@ -288,6 +288,11 @@ export const realtimeWebSocket = {
       deliverQueuedMessages(ws.data.id, ws);
       return;
     }
+    // Close existing socket for this viewer if any (prevents socket leak on reconnect)
+    const existingViewerWs = viewerSockets.get(ws.data.id);
+    if (existingViewerWs && existingViewerWs !== ws) {
+      try { existingViewerWs.close(1000, "replaced by new connection"); } catch { /* ignore */ }
+    }
     viewerSockets.set(ws.data.id, ws);
     send(ws, { type: "ack", status: "connected", role: "viewer", viewer_id: ws.data.id });
   },
