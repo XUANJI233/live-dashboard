@@ -51,15 +51,7 @@ AppSideService(
         case 'CONFIG': {
           if (params?.serverUrl !== undefined) this.state.serverUrl = params.serverUrl
           if (params?.token !== undefined) this.state.token = params.token
-          if (params?.syncInterval !== undefined) {
-            const interval = Number(params.syncInterval)
-            // Validate: must be a positive number between 60 and 3600 seconds
-            if (!isNaN(interval) && interval >= 60 && interval <= 3600) {
-              this.state.syncInterval = interval
-            } else {
-              console.warn('[LiveWatch:companion] Invalid syncInterval:', params.syncInterval, '- keeping current value')
-            }
-          }
+          if (params?.syncInterval !== undefined) this.state.syncInterval = Number(params.syncInterval)
           this.persistConfig()
           res(null, { ok: true })
           break

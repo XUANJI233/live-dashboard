@@ -3,8 +3,8 @@
   "app": {
     "appType": "app",
     "version": {
-      "code": 1,
-      "name": "0.1.0"
+      "code": 2,
+      "name": "0.2.0"
     },
     "appId": 10001,
     "appName": "Live Watch",
@@ -30,6 +30,9 @@
         },
         "app-side": {
           "path": "side-service"
+        },
+        "app-event": {
+          "path": "app-service/live-watch"
         }
       },
       "platforms": [
@@ -42,10 +45,13 @@
   "permissions": [
     "device:os.alarm",
     "device:os.timer",
-    "device:os.network",
     "device:os.bg_service",
+    "device:os.ble",
+    "device:os.local_storage",
     "data:user.hd.heart_rate",
-    "data:user.hd.step"
+    "data:user.hd.step",
+    "event:os.health.heart_rate_abnl",
+    "event:os.health.wear_status"
   ],
   "i18n": {
     "en-US": {
