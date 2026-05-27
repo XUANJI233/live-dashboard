@@ -53,6 +53,7 @@
     "device:os.local_storage",
     "data:user.hd.heart_rate",
     "data:user.hd.spo2",
+    "data:user.hd.body_temp",
     "data:user.hd.step",
     "data:user.hd.sleep",
     "event:os.health.heart_rate_abnl",

@@ -16,6 +16,7 @@ import { Step } from '@zos/sensor'
 import { HeartRate } from '@zos/sensor'
 import { Sleep } from '@zos/sensor'
 import { BloodOxygen } from '@zos/sensor'
+import { BodyTemperature } from '@zos/sensor'
 import { set as setAlarm, cancel as cancelAlarm, getAllAlarms } from '@zos/alarm'
 import { LocalStorage } from '@zos/storage'
 
@@ -25,6 +26,7 @@ const step = new Step()
 const heartRate = new HeartRate()
 const sleep = new Sleep()
 const bloodOxygen = new BloodOxygen()
+const bodyTemperature = new BodyTemperature()
 
 // ── Runtime state ──
 let serverUrl = ''
@@ -33,6 +35,10 @@ let syncIntervalMs = 300_000 // default 5 minutes
 let enabled = false
 let lastHrSyncIndex = -1
 let lastHrSyncDate = ''
+let lastSpo2SyncTime = 0 // 上次同步的血氧时间戳 (秒), 由 LocalStorage 恢复
+let lastSpo2SyncDate = '' // 上次同步日期，跨日重置用
+let lastTempSyncIndex = -1 // 上次同步的体温索引 (每5分钟一个, 共288个)
+let lastTempSyncDate = '' // 上次同步日期，跨日重置用
 let sleepSkipCounter = 0 // 睡眠状态下跳过传输的计数器
 
 // ── Persist sleepSkipCounter (survives alarm wakeups) ──
@@ -55,6 +61,23 @@ function writeSleepSkipCounter(value) {
   }
 }
 
+// ── Persist lastSpo2SyncTime (survives alarm wakeups) ──
+function readLastSpo2SyncTime() {
+  try {
+    const val = _localStorage.getItem('lw_spo2_time', 0)
+    return typeof val === 'number' ? val : 0
+  } catch (e) {}
+  return 0
+}
+
+function writeLastSpo2SyncTime(value) {
+  try {
+    _localStorage.setItem('lw_spo2_time', value)
+  } catch (e) {
+    console.warn('[LiveWatch:device] Failed to persist lastSpo2SyncTime: ' + e.message)
+  }
+}
+
 // ── AppService entry (single-execution mode) ──
 AppService({
   onInit(options) {
@@ -63,6 +86,10 @@ AppService({
     // Restore sleepSkipCounter from file
     sleepSkipCounter = readSleepSkipCounter()
     console.log('[LiveWatch:device] sleepSkipCounter restored: ' + sleepSkipCounter)
+
+    // Restore lastSpo2SyncTime from file
+    lastSpo2SyncTime = readLastSpo2SyncTime()
+    console.log('[LiveWatch:device] lastSpo2SyncTime restored: ' + lastSpo2SyncTime)
 
     // Read config
     restoreConfig()
@@ -193,14 +220,18 @@ function collectAndUpload() {
   // Heart rate history (only non-zero values)
   const hrHistory = collectHeartRateHistory(now)
 
-  // SpO2 history (last 6 hours, all measurements via getLastFewHour)
+  // SpO2 history (last 6 hours, incremental via getLastFewHour)
   const spo2History = collectSpo2History(6)
+
+  // Body temperature history (today, incremental via getToday)
+  const tempHistory = collectTempHistory(now)
 
   // Batch pack into single JSON
   const batchPayload = {
     status: statusReport,
     heart_rate_history: hrHistory,
     spo2_history: spo2History,
+    body_temp_history: tempHistory,
   }
 
   const body = JSON.stringify(batchPayload)
@@ -288,19 +319,34 @@ function updateHrSyncIndex(now) {
   } catch (e) {}
 }
 
-// ── SpO2 History Collection (getLastFewHour, returns all measurements) ──
+// ── SpO2 History Collection (getLastFewHour, incremental sync) ──
 // getLastDay() 只返回 24 个平均数，不适合详细上报
 // getLastFewHour(hour) 返回指定小时内的全部测量数据 {spo2, time}
+// 增量同步：只上传 lastSpo2SyncTime 之后的新数据
 
 function collectSpo2History(hours) {
   try {
     const data = bloodOxygen.getLastFewHour(hours)
     if (!data || data.length === 0) return []
 
+    // 跨日重置
+    const today = new Date()
+    const todayStr = today.getFullYear() + '-' +
+      String(today.getMonth() + 1).padStart(2, '0') + '-' +
+      String(today.getDate()).padStart(2, '0')
+    if (todayStr !== lastSpo2SyncDate) {
+      lastSpo2SyncTime = 0
+      lastSpo2SyncDate = todayStr
+    }
+
     const records = []
+    let maxTime = lastSpo2SyncTime
     for (const d of data) {
       // Skip invalid readings (spo2=0 means no measurement)
       if (!d || d.spo2 <= 0 || d.spo2 > 100) continue
+
+      // 增量：只取时间戳大于上次同步的
+      if (d.time <= lastSpo2SyncTime) continue
 
       records.push({
         type: 'spo2',
@@ -308,11 +354,69 @@ function collectSpo2History(hours) {
         unit: '%',
         timestamp: new Date(d.time * 1000).toISOString(),
       })
+
+      if (d.time > maxTime) maxTime = d.time
+    }
+
+    // 更新同步时间戳
+    if (maxTime > lastSpo2SyncTime) {
+      lastSpo2SyncTime = maxTime
+      writeLastSpo2SyncTime(maxTime)
     }
 
     return records
   } catch (e) {
     console.warn('[LiveWatch:device] getLastFewHour() failed: ' + e.message)
+    return []
+  }
+}
+
+// ── Body Temperature History Collection (getToday, incremental sync) ──
+// getToday() 返回 288 个点（每5分钟一个），无数据为 -1000
+// 增量同步：只上传 lastTempSyncIndex 之后的新数据
+
+function collectTempHistory(now) {
+  try {
+    const todayData = bodyTemperature.getToday()
+    if (!todayData || todayData.length === 0) return []
+
+    // 跨日重置
+    const todayStr = now.getFullYear() + '-' +
+      String(now.getMonth() + 1).padStart(2, '0') + '-' +
+      String(now.getDate()).padStart(2, '0')
+    if (todayStr !== lastTempSyncDate) {
+      lastTempSyncIndex = -1
+      lastTempSyncDate = todayStr
+    }
+
+    // 只采集新数据
+    const records = []
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+
+    for (let i = lastTempSyncIndex + 1; i < todayData.length; i++) {
+      const temp = todayData[i]
+
+      // Skip invalid (-1000 means no measurement)
+      if (temp <= -999 || temp < 30 || temp > 45) continue
+
+      // 每个点间隔5分钟
+      const timestamp = new Date(today.getTime() + i * 5 * 60000).toISOString()
+      records.push({
+        type: 'body_temp',
+        value: temp,
+        unit: '°C',
+        timestamp: timestamp,
+      })
+    }
+
+    // 更新同步索引
+    if (todayData.length > 0) {
+      lastTempSyncIndex = todayData.length - 1
+    }
+
+    return records
+  } catch (e) {
+    console.warn('[LiveWatch:device] bodyTemperature.getToday() failed: ' + e.message)
     return []
   }
 }

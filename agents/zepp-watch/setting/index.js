@@ -79,6 +79,11 @@ AppSettingsPage({
           onChange: (value) => set('sensorSleep', boolToStr(value)),
         }),
         Toggle({
+          label: '体表温度',
+          value: strToBool(get('sensorBodyTemp', '1')),
+          onChange: (value) => set('sensorBodyTemp', boolToStr(value)),
+        }),
+        Toggle({
           label: '血氧',
           value: strToBool(get('sensorSpo2', '0')),
           onChange: (value) => set('sensorSpo2', boolToStr(value)),
