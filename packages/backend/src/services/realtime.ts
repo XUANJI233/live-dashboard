@@ -242,6 +242,11 @@ function deliverQueuedMessages(deviceId: string, ws: ServerWebSocket<WsData>) {
   }[];
   if (rows.length === 0) return;
 
+  // Mark messages as delivered BEFORE sending to avoid race condition.
+  // If send fails after marking, messages won't be resent on reconnect,
+  // but this prevents the worse case of infinite redelivery loops.
+  markMessagesDelivered(deviceId, rows.map((r) => r.id));
+
   for (const row of rows) {
     send(ws, {
       type: "viewer_message",
@@ -254,7 +259,6 @@ function deliverQueuedMessages(deviceId: string, ws: ServerWebSocket<WsData>) {
       queued: true,
     });
   }
-  markMessagesDelivered(deviceId, rows.map((r) => r.id));
 }
 
 export function getWsInfo(req: Request): WsData | Response {
