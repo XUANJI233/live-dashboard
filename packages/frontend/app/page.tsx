@@ -481,12 +481,3 @@ function friendlyUnit(unit: string) {
   if (unit === "status" || unit === "minute_of_day") return "";
   return unit;
 }
-
-function latestHealthValue(records: HealthRecord[], type: string) {
-  let latest: HealthRecord | undefined;
-  for (const record of records) {
-    if (record.type !== type) continue;
-    if (!latest || record.recorded_at > latest.recorded_at) latest = record;
-  }
-  return latest?.value;
-}
