@@ -746,6 +746,7 @@ export function getAppDescription(appName: string, displayTitle?: string, music?
   if (!appName) return DEFAULT_DESCRIPTION;
 
   const appLower = appName.toLowerCase();
+  const cleanTitle = (displayTitle || "").trim();
 
   if (appLower === "idle") return "暂时离开了喵~";
   const isMusicAppForeground = _musicAppNames.has(appLower);
@@ -755,10 +756,10 @@ export function getAppDescription(appName: string, displayTitle?: string, music?
 
   // If we have a display_title, try to use a rich template
   // BUT skip template for music apps when music extra is present (♪ line handles song info)
-  if (displayTitle && !(isMusicAppForeground && music?.title)) {
+  if (cleanTitle && !(isMusicAppForeground && music?.title)) {
     const template = titleTemplates.get(appLower);
     if (template) {
-      base = template(displayTitle);
+      base = template(cleanTitle);
     }
   }
 
