@@ -53,6 +53,8 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long FOREGROUND_POLL_MS = 5000L;
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
     private static final long MIN_DIRECT_UPLOAD_MS = 5000L;
+    private static final int IDLE_DEBOUNCE_COUNT = 3; // 3 consecutive idle samples (~15s) before uploading
+    private volatile int idleConsecutiveCount = 0;
     private static final String[] BROWSER_PACKAGES = new String[] {
             "com.android.browser",
             "com.android.chrome",
@@ -328,8 +330,14 @@ public final class MonikaXposedModule extends XposedModule {
             ComponentName top = getTopActivityComponentName();
             String taskDescription = getFocusedTaskDescription();
             long now = System.currentTimeMillis();
-            boolean idle = top == null || isIgnoredPackage(top.getPackageName());
-            if (idle) {
+            boolean idleCandidate = top == null || isIgnoredPackage(top.getPackageName());
+
+            if (idleCandidate) {
+                // Debounce: only report idle after N consecutive idle samples.
+                // Avoids noise from momentary launcher flashes / hidden API gaps / split-focus glitches.
+                idleConsecutiveCount++;
+                if (idleConsecutiveCount < IDLE_DEBOUNCE_COUNT) return; // skip — wait for more samples
+                // N consecutive idles reached → commit idle state
                 if ("idle".equals(lastForegroundKey) && now - lastForegroundBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
                 lastForegroundKey = "idle";
                 lastForegroundBroadcastAt = now;
@@ -338,6 +346,7 @@ public final class MonikaXposedModule extends XposedModule {
                 foregroundActivity = "";
                 foregroundTitle = "";
             } else {
+                idleConsecutiveCount = 0; // reset on valid foreground
                 String packageName = top.getPackageName();
                 String activityName = top.getClassName();
                 String key = packageName + "/" + activityName;
@@ -360,7 +369,7 @@ public final class MonikaXposedModule extends XposedModule {
 
             Intent intent = new Intent(ACTION_STATUS);
             intent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
-            if (idle) {
+            if (idleCandidate) {
                 intent.putExtra("package_name", "idle");
                 intent.putExtra("app_name", "idle");
                 intent.putExtra("activity", "");
@@ -650,11 +659,14 @@ public final class MonikaXposedModule extends XposedModule {
         final String body = buildDirectReportBody(now);
         if (body == null) return;
 
-        // Try WebSocket first (persistent connection, no per-message TLS overhead)
-        ensureWsConnected(directServerUrl, directToken);
-        final LspWebSocketClient client = wsClient;
-        if (client != null && client.isConnected()) {
-            new Thread(() -> {
+        // CRITICAL: never do network I/O on the system_server main looper.
+        // ensureWsConnected() performs TCP+TLS+WS handshake (up to 8s) — do it off-thread.
+        final String url = directServerUrl;
+        final String tok = directToken;
+        new Thread(() -> {
+            ensureWsConnected(url, tok);
+            final LspWebSocketClient client = wsClient;
+            if (client != null && client.isConnected()) {
                 try {
                     String msg = new org.json.JSONObject()
                             .put("type", "device_status")
@@ -667,11 +679,10 @@ public final class MonikaXposedModule extends XposedModule {
                     log(Log.WARN, TAG, "ws send failed: " + t.getClass().getSimpleName());
                     postDirectReportFallback(body);
                 }
-            }, "MonikaLspWs").start();
-        } else {
-            // WebSocket not connected, fall back to HTTP
-            new Thread(() -> postDirectReportFallback(body), "MonikaLspUpload").start();
-        }
+            } else {
+                postDirectReportFallback(body);
+            }
+        }, "MonikaLspUpload").start();
     }
 
     private String buildDirectReportBody(long now) {
@@ -960,7 +971,7 @@ public final class MonikaXposedModule extends XposedModule {
         private final String wsUrl;
         private final String authHeader;
         private final SecureRandom secureRandom = new SecureRandom();
-        private SSLSocket socket;
+        private java.net.Socket socket;
         private InputStream in;
         private OutputStream out;
         private Thread readerThread;
@@ -973,26 +984,36 @@ public final class MonikaXposedModule extends XposedModule {
         }
 
         boolean isConnected() {
-            return connected && socket != null && socket.isConnected();
+            return connected && socket != null && !socket.isClosed() && socket.isConnected();
         }
 
         void connect() throws Exception {
             URI uri = URI.create(wsUrl);
             String host = uri.getHost();
-            int port = uri.getPort() > 0 ? uri.getPort() : 443;
+            String scheme = uri.getScheme();
+            boolean isWss = "wss".equalsIgnoreCase(scheme);
+            int defaultPort = isWss ? 443 : 80;
+            int port = uri.getPort() > 0 ? uri.getPort() : defaultPort;
             String path = uri.getRawPath();
             String query = uri.getRawQuery();
             String resource = path + (query != null ? "?" + query : "");
             if (resource.isEmpty()) resource = "/";
 
-            SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
-            socket = (SSLSocket) factory.createSocket();
-            socket.setTcpNoDelay(true);
-            socket.setSoTimeout(0); // no read timeout — keepalive via ping/pong
-            socket.connect(new InetSocketAddress(host, port), 8000);
-
-            // TLS handshake
-            socket.startHandshake();
+            if (isWss) {
+                SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+                SSLSocket ssl = (SSLSocket) factory.createSocket();
+                ssl.setTcpNoDelay(true);
+                ssl.setSoTimeout(0);
+                ssl.connect(new InetSocketAddress(host, port), 8000);
+                ssl.startHandshake();
+                socket = ssl;
+            } else {
+                java.net.Socket plain = new java.net.Socket();
+                plain.setTcpNoDelay(true);
+                plain.setSoTimeout(0);
+                plain.connect(new InetSocketAddress(host, port), 8000);
+                socket = plain;
+            }
             in = socket.getInputStream();
             out = socket.getOutputStream();
 
@@ -1152,10 +1173,11 @@ public final class MonikaXposedModule extends XposedModule {
 
                     switch (opcode) {
                         case OP_PING:
-                            // Respond with pong (echo the ping payload)
+                            // Respond with pong (echo the ping payload).
+                            // CRITICAL: per RFC 6455 §5.5, client-to-server frames MUST be masked.
                             try {
                                 synchronized (out) {
-                                    sendFrame(OP_PONG, payload, false);
+                                    sendFrame(OP_PONG, payload, true);
                                     out.flush();
                                 }
                             } catch (Throwable t) {
