@@ -50,6 +50,7 @@
     "device:os.local_storage",
     "data:user.hd.heart_rate",
     "data:user.hd.step",
+    "data:user.hd.sleep",
     "event:os.health.heart_rate_abnl",
     "event:os.health.wear_status"
   ],

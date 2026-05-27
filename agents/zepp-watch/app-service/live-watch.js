@@ -14,12 +14,14 @@
 import { Battery } from '@zos/sensor'
 import { Step } from '@zos/sensor'
 import { HeartRate } from '@zos/sensor'
+import { Sleep } from '@zos/sensor'
 import { set as setAlarm, cancel as cancelAlarm, getAllAlarms } from '@zos/alarm'
 
 // ── Sensor instances (created once, reused) ──
 const battery = new Battery()
 const step = new Step()
 const heartRate = new HeartRate()
+const sleep = new Sleep()
 
 // ── Runtime state ──
 let serverUrl = ''
@@ -28,6 +30,7 @@ let syncIntervalMs = 300_000 // default 5 minutes
 let enabled = false
 let lastHrSyncIndex = -1
 let lastHrSyncDate = ''
+let sleepSkipCounter = 0 // 睡眠状态下跳过传输的计数器
 
 // ── AppService entry (single-execution mode) ──
 AppService({
@@ -88,6 +91,30 @@ function collectAndUpload() {
   const nowISO = now.toISOString()
   const extra = {}
 
+  // 1. 先检测睡眠状态 (API_LEVEL 3.0+)
+  let isSleeping = false
+  try {
+    const sleepStatus = sleep.getSleepingStatus()
+    isSleeping = (sleepStatus === 1)
+    console.log('[LiveWatch:device] Sleep status: ' + (isSleeping ? 'sleeping' : 'awake'))
+  } catch (e) {
+    console.warn('[LiveWatch:device] Sleep detection failed: ' + e.message)
+  }
+
+  // 2. 智能传输策略：睡眠状态下每6次才传输1次（节省80%传输+传感器功耗）
+  if (isSleeping) {
+    sleepSkipCounter++
+    if (sleepSkipCounter < 6) {
+      console.log('[LiveWatch:device] Sleeping, skip all (' + sleepSkipCounter + '/6)')
+      return // 直接退出，不获取任何传感器数据
+    }
+    sleepSkipCounter = 0 // 重置计数器
+    console.log('[LiveWatch:device] Sleeping but uploading (6th cycle)')
+  } else {
+    sleepSkipCounter = 0 // 清醒时重置计数器
+  }
+
+  // 3. 清醒状态（或睡眠第6次）才获取传感器数据
   // Battery
   try {
     const level = battery.getCurrent()
@@ -109,6 +136,9 @@ function collectAndUpload() {
     const restingHr = heartRate.getResting?.()
     if (restingHr != null && restingHr > 0) extra.heart_rate_resting = restingHr
   } catch (e) {}
+
+  // 4. 把睡眠状态也包含在上报数据中（服务器端可以看到睡眠历史）
+  extra.sleeping = isSleeping
 
   // Status report
   const statusReport = {
