@@ -271,6 +271,13 @@ class ReportClient(
         return post("${serverUrl.trimEnd('/')}/api/messages/block", body)
     }
 
+    fun unblockViewer(viewerId: String): Result<Unit> {
+        val body = JSONObject().apply {
+            put("viewer_id", viewerId.take(120))
+        }
+        return post("${serverUrl.trimEnd('/')}/api/messages/unblock", body)
+    }
+
     fun deleteMessage(messageId: String): Result<Unit> {
         val body = JSONObject().apply {
             put("message_id", messageId.take(120))

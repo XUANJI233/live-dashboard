@@ -387,11 +387,6 @@ class HeartbeatWorker(
                 message.viewerName,
                 message.kind,
             )
-            safeClient.replyToMessage(
-                messageId = message.id,
-                viewerId = message.viewerId,
-                text = "手机已收到消息"
-            )
         }
     }
 
