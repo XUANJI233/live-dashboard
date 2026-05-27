@@ -47,6 +47,14 @@
         android:theme="@style/Theme.LiveDashboard"
         tools:targetApi="34">
 
+        <!-- Remove default WorkManager initializer when using on-demand init (Configuration.Provider) -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="remove"
+            tools:replace="android:authorities" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
