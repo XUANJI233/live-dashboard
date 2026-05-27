@@ -312,4 +312,29 @@ export const cleanupOldLocations = db.prepare(`
   DELETE FROM location_records WHERE created_at < datetime('now', '-30 days')
 `);
 
+// Daily summaries table (AI-generated, kept 7 days)
+db.run(`
+  CREATE TABLE IF NOT EXISTS daily_summaries (
+    date TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    generated_at TEXT DEFAULT (datetime('now'))
+  )
+`);
+
+export const upsertDailySummary = db.prepare(`
+  INSERT INTO daily_summaries (date, summary, generated_at)
+  VALUES (?, ?, datetime('now'))
+  ON CONFLICT(date) DO UPDATE SET
+    summary = excluded.summary,
+    generated_at = datetime('now')
+`);
+
+export const getDailySummary = db.prepare(`
+  SELECT * FROM daily_summaries WHERE date = ?
+`);
+
+export const cleanupOldSummaries = db.prepare(`
+  DELETE FROM daily_summaries WHERE date < date('now', '-7 days')
+`);
+
 export default db;

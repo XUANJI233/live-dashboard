@@ -8,6 +8,7 @@ import { handleHealth } from "./routes/health";
 import { handleHealthData, handleHealthDataQuery } from "./routes/health-data";
 import { handleHealthWebhook } from "./routes/health-webhook";
 import { handleConfig } from "./routes/config";
+import { handleDailySummary } from "./routes/daily-summary";
 import { handleLocationQuery } from "./routes/location";
 import { handleViewerTokenIssue } from "./routes/viewer-token";
 import {
@@ -109,6 +110,8 @@ const server = Bun.serve<WsData>({
         response = await handleHealthWebhook(req);
       } else if (pathname === "/api/config" && req.method === "GET") {
         response = handleConfig();
+      } else if (pathname === "/api/daily-summary" && req.method === "GET") {
+        response = handleDailySummary(url);
       } else if (pathname === "/api/location" && req.method === "GET") {
         response = handleLocationQuery(url);
       } else if (pathname === "/api/messages" && req.method === "GET") {
