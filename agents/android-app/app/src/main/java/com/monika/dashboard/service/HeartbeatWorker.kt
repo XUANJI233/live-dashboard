@@ -234,6 +234,8 @@ class HeartbeatWorker(
             device.put("capability_mode", it.capabilityMode)
             device.put("last_sample_at", Instant.ofEpochMilli(it.sampledAt).toString())
         }
+        // Device form factor detection
+        device.put("device_kind", detectDeviceKind())
         if (device.length() > 0) extra.put("device", device)
 
         location?.let { loc ->
@@ -371,6 +373,23 @@ class HeartbeatWorker(
         if (location) UploadStatusStore.mark(applicationContext, UploadItem.LOCATION, ok, message)
         if (vpn) UploadStatusStore.mark(applicationContext, UploadItem.VPN, ok, message)
         if (input) UploadStatusStore.mark(applicationContext, UploadItem.INPUT, ok, message)
+    }
+
+    /** Detect device form factor: "phone", "tablet", or "foldable" */
+    private fun detectDeviceKind(): String {
+        return try {
+            // MIUI: miui.os.Build.IS_TABLET
+            try {
+                val miuiBuild = Class.forName("miui.os.Build")
+                val isTablet = miuiBuild.getDeclaredField("IS_TABLET").get(null) as? Boolean
+                if (isTablet == true) return "tablet"
+            } catch (_: Throwable) {}
+            // AOSP: smallest width >= 600dp
+            val config = applicationContext.resources.configuration
+            if (config.smallestScreenWidthDp >= 600) "tablet" else "phone"
+        } catch (_: Throwable) {
+            "phone"
+        }
     }
 
     private data class NetworkState(

@@ -480,6 +480,73 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
+    /**
+     * Detect the current windowing mode of the focused task.
+     * @return one of: "fullscreen", "split-screen", "freeform", "pip", or null if unknown
+     */
+    private String getWindowingMode() {
+        try {
+            Object service = getActivityTaskManagerService();
+            if (service == null) return null;
+            Object info = callAny(service, "getFocusedRootTaskInfo");
+            if (info == null) info = callAny(service, "getFocusedStackInfo");
+            if (info == null) return null;
+            // Try getWindowingMode() method
+            Object mode = callAny(info, "getWindowingMode");
+            if (mode == null) mode = readField(info, "mWindowingMode");
+            if (mode instanceof Integer) {
+                int m = (Integer) mode;
+                switch (m) {
+                    case 1: return "fullscreen";
+                    case 2: return "split-screen";
+                    case 3: return "split-screen-secondary"; // Android 14+
+                    case 4: return "split-screen-primary";   // Android 14+
+                    case 5: return "freeform";
+                    case 6: return "pip";
+                    default: return "mode_" + m;
+                }
+            }
+            return null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Detect device form factor: "phone", "tablet", or "foldable".
+     * Uses MIUI-specific detection first, falls back to AOSP screen size.
+     */
+    private String getDeviceFormFactor() {
+        try {
+            // MIUI: miui.os.Build.IS_TABLET (most reliable for Xiaomi devices)
+            Class<?> miuiBuild = Class.forName("miui.os.Build");
+            Object isTablet = miuiBuild.getDeclaredField("IS_TABLET").get(null);
+            if (Boolean.TRUE.equals(isTablet)) return "tablet";
+        } catch (Throwable ignored) {}
+        try {
+            // AOSP: smallest width >= 600dp = tablet
+            Context ctx = getSystemContext();
+            if (ctx != null) {
+                android.content.res.Configuration config = ctx.getResources().getConfiguration();
+                if (config.smallestScreenWidthDp >= 600) return "tablet";
+            }
+        } catch (Throwable ignored) {}
+        try {
+            // Detect foldable via PackageManager feature
+            Context ctx = getSystemContext();
+            if (ctx != null) {
+                boolean hasFold = ctx.getPackageManager().hasSystemFeature("com.sec.feature.foldable_display")
+                    || ctx.getPackageManager().hasSystemFeature("org.chromium.arc")
+                    || ctx.getPackageManager().hasSystemFeature("android.hardware.type.pc");
+                // Check screen width in landscape
+                android.content.res.Configuration config = ctx.getResources().getConfiguration();
+                int screenWidth = config.screenWidthDp;
+                if ((hasFold || screenWidth >= 800) && config.smallestScreenWidthDp >= 600) return "tablet";
+            }
+        } catch (Throwable ignored) {}
+        return "phone";
+    }
+
     private Object getActivityTaskManagerService() {
         try {
             Class<?> atm = Class.forName("android.app.ActivityTaskManager");
@@ -612,6 +679,10 @@ public final class MonikaXposedModule extends XposedModule {
             device.put("capability_mode", "lsposed");
             device.put("uploader", "lsposed");
             device.put("last_sample_at", isoTime(now));
+            // Multi-window / tablet detection
+            device.put("device_kind", getDeviceFormFactor());
+            String wm = getWindowingMode();
+            if (wm != null) device.put("window_mode", wm);
             extra.put("device", device);
             if (directUploadForeground && foregroundPackage.length() > 0) {
                 JSONObject foreground = new JSONObject();
