@@ -1,0 +1,15 @@
+{
+  "name": "live-dashboard-zepp-watch",
+  "version": "0.1.0",
+  "description": "Zepp OS watch agent for Live Dashboard — background health data sync",
+  "scripts": {
+    "build": "zeus build",
+    "dev": "zeus dev"
+  },
+  "dependencies": {
+    "@zeppos/zml": "^0.0.41"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "app": {
+    "appId": "com.monika.livewatch",
+    "appName": "Live Watch",
+    "appType": "app",
+    "version": {
+      "code": 1,
+      "name": "0.1.0"
+    }
+  },
+  "permissions": [
+    "device:os.alarm",
+    "device:os.timer",
+    "device:os.ble",
+    "device:os.network"
+  ],
+  "targetApi": {
+    "apiVersion": 4
+  },
+  "sideService": {
+    "path": "side-service"
+  }
+}
