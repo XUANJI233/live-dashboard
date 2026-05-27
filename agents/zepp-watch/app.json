@@ -1,13 +1,43 @@
 {
   "configVersion": "v3",
   "app": {
+    "appType": "app",
+    "version": {
+      "code": 1,
+      "name": "0.1.0"
+    },
     "appId": 10001,
     "appName": "Live Watch",
-    "appType": "app",
-    "version": { "code": 1, "name": "0.1.0" },
     "icon": "icon.png",
     "vender": "zepp",
-    "description": "Live Dashboard watch sync agent"
+    "description": "Watch health data sync agent for Live Dashboard"
+  },
+  "runtime": {
+    "apiVersion": {
+      "compatible": "4.0",
+      "target": "4.0",
+      "minVersion": "4.0"
+    }
+  },
+  "targets": {
+    "gt": {
+      "module": {
+        "page": {
+          "pages": ["page/index"]
+        },
+        "app-service": {
+          "services": ["app-service/live-watch"]
+        },
+        "app-side": {
+          "path": "side-service"
+        }
+      },
+      "platforms": [
+        { "st": "r", "dw": 480 },
+        { "st": "s", "dw": 390 }
+      ],
+      "designWidth": 480
+    }
   },
   "permissions": [
     "device:os.alarm",
@@ -17,27 +47,13 @@
     "data:user.hd.heart_rate",
     "data:user.hd.step"
   ],
-  "runtime": {
-    "apiVersion": {
-      "compatible": "4.0",
-      "target": "4.0",
-      "minVersion": "4.0"
-    }
-  },
-  "targets": {
-    "common": {
-      "module": {
-        "page": { "pages": ["page/index"] },
-        "app-service": { "services": ["app-service/live-watch"] },
-        "app-side": { "path": "side-service" }
-      },
-      "platforms": [{ "st": "r", "dw": 480 }],
-      "designWidth": 480
-    }
-  },
   "i18n": {
-    "en-US": { "appName": "Live Watch" },
-    "zh-CN": { "appName": "Live 手表" }
+    "en-US": {
+      "name": "Live Watch"
+    },
+    "zh-CN": {
+      "name": "Live 手表"
+    }
   },
   "defaultLanguage": "zh-CN"
 }
