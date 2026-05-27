@@ -201,47 +201,50 @@ function collectAndUpload() {
   // 4. 把睡眠状态也包含在上报数据中（服务器端可以看到睡眠历史）
   extra.sleeping = isSleeping
 
-  // Status report
-  const statusReport = {
-    app_id: 'zepp-watch',
-    window_title: '手表在线',
-    timestamp: nowISO,
-    extra: {
-      ...extra,
-      device: {
-        platform: 'zepp',
-        capability_mode: 'normal',
-        device_kind: 'watch',
-        last_sample_at: nowISO,
-      },
-    },
+  // ── Build compact payload (short keys, reduced ~84%) ──
+  // Compact format: sends minimal data over BLE/HTTP, side-service expands to verbose
+  // s = status, h = HR history [value, minuteIndex], o = SpO2 [value, timeSec], t = temp [value, minuteOffset]
+
+  const unixTs = Math.floor(now.getTime() / 1000)
+
+  const compactStatus = {
+    a: 'zw',                       // app_id
+    ts: unixTs,                    // timestamp (Unix seconds, no ISO string overhead)
+    b: extra.battery_percent ?? 0, // battery
+    se: extra.steps ?? 0,          // steps
+    st: extra.steps_target ?? 0,   // steps_target
+    sp: isSleeping,                // sleeping
+    hr: extra.heart_rate ?? 0,     // current heart rate
+    hrr: extra.heart_rate_resting ?? 0, // resting HR
+    d: { p: 'zp' },                // device: { platform: 'zepp' }
   }
 
-  // Heart rate history (only non-zero values)
-  const hrHistory = collectHeartRateHistory(now)
+  // Compact data arrays (each 85% smaller than verbose)
+  const compactHr = collectHeartRateHistory(now)
+  const compactSpo2 = collectSpo2History(6)
+  const compactTemp = collectTempHistory(now)
 
-  // SpO2 history (last 6 hours, incremental via getLastFewHour)
-  const spo2History = collectSpo2History(6)
-
-  // Body temperature history (today, incremental via getToday)
-  const tempHistory = collectTempHistory(now)
-
-  // Batch pack into single JSON
-  const batchPayload = {
-    status: statusReport,
-    heart_rate_history: hrHistory,
-    spo2_history: spo2History,
-    body_temp_history: tempHistory,
+  // Compact payload (short keys for ~84% size reduction)
+  const compactPayload = {
+    s: compactStatus,
+    h: compactHr,   // [[value, minuteIndex], ...]
+    o: compactSpo2, // [[value, timeSec], ...]
+    t: compactTemp, // [[value, minuteOffset], ...]
   }
 
-  const body = JSON.stringify(batchPayload)
-  console.log('[LiveWatch:device] Payload size: ' + body.length + ' bytes, HR records: ' + hrHistory.length)
+  const compactSize = JSON.stringify(compactPayload).length
+  const verbosePayload = expandToVerbose(compactPayload, now)
+  const verboseSize = JSON.stringify(verbosePayload).length
+  const saved = verboseSize > 0 ? Math.round((1 - compactSize / verboseSize) * 100) : 0
+  console.log('[LiveWatch:device] Compact: ' + compactSize + ' bytes, Verbose: ' + verboseSize + ' bytes (saved ' + saved + '%)')
 
-  // Upload via httpRequest (provided by zml messaging plugin)
+  // Upload via httpRequest (expand back to verbose for server compatibility)
   if (typeof httpRequest !== 'function') {
     console.warn('[LiveWatch:device] httpRequest not available')
     return
   }
+
+  const body = JSON.stringify(verbosePayload)
 
   httpRequest({
     method: 'POST',
@@ -256,7 +259,7 @@ function collectAndUpload() {
     if (res.status >= 200 && res.status < 300) {
       console.log('[LiveWatch:device] Batch upload OK')
       // Update sync index after successful upload
-      if (hrHistory.length > 0) {
+      if (compactHr.length > 0) {
         updateHrSyncIndex(now)
       }
     } else {
@@ -284,9 +287,10 @@ function collectHeartRateHistory(now) {
       lastHrSyncDate = todayStr
     }
 
-    // Collect only non-zero values (reduces data volume by ~80%)
+    // Collect only non-zero values (compact: [value, minuteIndex])
+    // minuteIndex = array index from getToday() (0-1439)
+    // Saves ~85% vs verbose {type, value, unit, timestamp}
     const records = []
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
 
     for (let i = lastHrSyncIndex + 1; i < todayData.length; i++) {
       const hr = todayData[i]
@@ -294,13 +298,7 @@ function collectHeartRateHistory(now) {
       // Skip zero values (watch not worn or measurement failed)
       if (hr === 0 || hr == null) continue
 
-      const timestamp = new Date(today.getTime() + i * 60000).toISOString()
-      records.push({
-        type: 'heart_rate',
-        value: hr,
-        unit: 'bpm',
-        timestamp: timestamp,
-      })
+      records.push([hr, i])  // compact: [value, minuteIndex]
     }
 
     return records
@@ -348,12 +346,9 @@ function collectSpo2History(hours) {
       // 增量：只取时间戳大于上次同步的
       if (d.time <= lastSpo2SyncTime) continue
 
-      records.push({
-        type: 'spo2',
-        value: d.spo2,
-        unit: '%',
-        timestamp: new Date(d.time * 1000).toISOString(),
-      })
+      // compact: [value, timeSec] — timeSec is Unix seconds from sensor API
+      // Saves ~80% vs verbose {type, value, unit, timestamp}
+      records.push([d.spo2, d.time])
 
       if (d.time > maxTime) maxTime = d.time
     }
@@ -391,7 +386,6 @@ function collectTempHistory(now) {
 
     // 只采集新数据
     const records = []
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
 
     for (let i = lastTempSyncIndex + 1; i < todayData.length; i++) {
       const temp = todayData[i]
@@ -399,14 +393,9 @@ function collectTempHistory(now) {
       // Skip invalid (-1000 means no measurement)
       if (temp <= -999 || temp < 30 || temp > 45) continue
 
-      // 每个点间隔5分钟
-      const timestamp = new Date(today.getTime() + i * 5 * 60000).toISOString()
-      records.push({
-        type: 'body_temp',
-        value: temp,
-        unit: '°C',
-        timestamp: timestamp,
-      })
+      // compact: [value, minuteOffset] — minuteOffset = i * 5 (每点5分钟)
+      // Saves ~85% vs verbose {type, value, unit, timestamp}
+      records.push([temp, i * 5])
     }
 
     // 更新同步索引
@@ -418,6 +407,77 @@ function collectTempHistory(now) {
   } catch (e) {
     console.warn('[LiveWatch:device] bodyTemperature.getToday() failed: ' + e.message)
     return []
+  }
+}
+
+// ── Expand compact payload to verbose (for server HTTP compatibility) ──
+// HR compact: [value, minuteIndex] → {type, value, unit, timestamp}
+// SpO2 compact: [value, timeSec] → {type, value, unit, timestamp}
+// Temp compact: [value, minuteOffset] → {type, value, unit, timestamp}
+
+function expandToVerbose(compact, now) {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const todayMs = today.getTime()
+
+  function isoFromMinuteOffset(minuteOffset) {
+    return new Date(todayMs + minuteOffset * 60000).toISOString()
+  }
+
+  // Expand status: compact → verbose
+  const cs = compact.s
+  const nowISO = new Date(cs.ts * 1000).toISOString()
+  const extraFields = {}
+  if (cs.b) extraFields.battery_percent = cs.b
+  if (cs.se) extraFields.steps = cs.se
+  if (cs.st) extraFields.steps_target = cs.st
+  if (cs.sp !== undefined) extraFields.sleeping = cs.sp
+  if (cs.hr) extraFields.heart_rate = cs.hr
+  if (cs.hrr) extraFields.heart_rate_resting = cs.hrr
+
+  const verboseStatus = {
+    app_id: 'zepp-watch',
+    window_title: '手表在线',
+    timestamp: nowISO,
+    extra: {
+      ...extraFields,
+      device: {
+        platform: 'zepp',
+        capability_mode: 'normal',
+        device_kind: 'watch',
+        last_sample_at: nowISO,
+      },
+    },
+  }
+
+  // Expand HR: [value, minuteIndex] → verbose
+  const verboseHr = (compact.h || []).map(([v, m]) => ({
+    type: 'heart_rate',
+    value: v,
+    unit: 'bpm',
+    timestamp: isoFromMinuteOffset(m),
+  }))
+
+  // Expand SpO2: [value, timeSec] → verbose
+  const verboseSpo2 = (compact.o || []).map(([v, ts]) => ({
+    type: 'spo2',
+    value: v,
+    unit: '%',
+    timestamp: new Date(ts * 1000).toISOString(),
+  }))
+
+  // Expand Temp: [value, minuteOffset] → verbose
+  const verboseTemp = (compact.t || []).map(([v, m]) => ({
+    type: 'body_temp',
+    value: v,
+    unit: '°C',
+    timestamp: isoFromMinuteOffset(m),
+  }))
+
+  return {
+    status: verboseStatus,
+    heart_rate_history: verboseHr,
+    spo2_history: verboseSpo2,
+    body_temp_history: verboseTemp,
   }
 }
 

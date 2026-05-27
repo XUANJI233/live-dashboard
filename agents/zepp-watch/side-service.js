@@ -107,14 +107,21 @@ AppSideService(
         return
       }
 
-      const { status, heart_rate_history } = params
+      // Expand compact format to verbose
+      const expanded = this.expandCompact(params)
+      if (!expanded) {
+        res(null, { ok: false, reason: 'invalid compact payload' })
+        return
+      }
 
-      // 1. 上传状态报告
+      const { status, heart_rate_history, spo2_history, body_temp_history } = expanded
+
+      // 1. Status report
       if (status) {
         this.uploadStatus(status)
       }
 
-      // 2. 插值并上传心率历史
+      // 2. Interpolate + upload HR history (phone has power for this)
       if (heart_rate_history && heart_rate_history.length > 0) {
         const interpolated = this.interpolateHeartRate(heart_rate_history)
         if (interpolated.length > 0) {
@@ -122,7 +129,91 @@ AppSideService(
         }
       }
 
+      // 3. Upload SpO2 history (no interpolation needed)
+      if (spo2_history && spo2_history.length > 0) {
+        this.uploadHealthData(spo2_history, 'spo2')
+      }
+
+      // 4. Upload body temp history (no interpolation needed)
+      if (body_temp_history && body_temp_history.length > 0) {
+        this.uploadHealthData(body_temp_history, 'body_temp')
+      }
+
       res(null, { ok: true, message: 'processing' })
+    },
+
+    // ── Expand compact format to verbose ──
+    // Compacts ~84% payload for BLE transfer, expand here for server upload
+
+    expandCompact(compact) {
+      try {
+        const cs = compact.s
+        if (!cs || !cs.ts) return null
+
+        // Determine date from timestamp
+        const baseDate = new Date(cs.ts * 1000)
+        const today = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate())
+        const todayMs = today.getTime()
+        const nowISO = baseDate.toISOString()
+
+        // Build verbose status
+        const extraFields = {}
+        if (cs.b) extraFields.battery_percent = cs.b
+        if (cs.se) extraFields.steps = cs.se
+        if (cs.st) extraFields.steps_target = cs.st
+        if (cs.sp !== undefined) extraFields.sleeping = cs.sp
+        if (cs.hr) extraFields.heart_rate = cs.hr
+        if (cs.hrr) extraFields.heart_rate_resting = cs.hrr
+
+        const verboseStatus = {
+          app_id: 'zepp-watch',
+          window_title: '手表在线',
+          timestamp: nowISO,
+          extra: {
+            ...extraFields,
+            device: {
+              platform: 'zepp',
+              capability_mode: 'normal',
+              device_kind: 'watch',
+              last_sample_at: nowISO,
+            },
+          },
+        }
+
+        // HR: [value, minuteIndex] → verbose
+        const verboseHr = (compact.h || []).map(([v, m]) => ({
+          type: 'heart_rate',
+          value: v,
+          unit: 'bpm',
+          timestamp: new Date(todayMs + m * 60000).toISOString(),
+        }))
+
+        // SpO2: [value, timeSec] → verbose
+        const verboseSpo2 = (compact.o || []).map(([v, ts]) => ({
+          type: 'spo2',
+          value: v,
+          unit: '%',
+          timestamp: new Date(ts * 1000).toISOString(),
+        }))
+
+        // Temp: [value, minuteOffset] → verbose
+        const verboseTemp = (compact.t || []).map(([v, m]) => ({
+          type: 'body_temp',
+          value: v,
+          unit: '°C',
+          timestamp: new Date(todayMs + m * 60000).toISOString(),
+        }))
+
+        return {
+          status: verboseStatus,
+          heart_rate_history: verboseHr,
+          spo2_history: verboseSpo2,
+          body_temp_history: verboseTemp,
+        }
+      } catch (e) {
+        console.error('[LiveWatch:companion] expandCompact failed: ' + e.message)
+        return null
+      }
     },
 
     // ── O(N) 心率插值算法 ──
@@ -258,6 +349,36 @@ AppSideService(
         }
       }).catch(err => {
         console.error('[LiveWatch:companion] HR history upload failed: ' + (err.message || err))
+      })
+    },
+
+    // ── 上传健康数据（SpO2/体温等） ──
+
+    uploadHealthData(records, type) {
+      if (!this.state.serverUrl || !this.state.token) return
+      if (!this.state.enabled) {
+        console.log('[LiveWatch:companion] Upload disabled, skip ' + type)
+        return
+      }
+
+      const payload = { records: records }
+
+      fetch({
+        url: this.state.serverUrl.replace(/\/+$/, '') + '/api/health-data',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + this.state.token,
+        },
+        body: JSON.stringify(payload),
+      }).then(res => {
+        if (res.status >= 200 && res.status < 300) {
+          console.log('[LiveWatch:companion] ' + type + ' upload OK: ' + records.length + ' records')
+        } else {
+          console.warn('[LiveWatch:companion] ' + type + ' upload HTTP ' + res.status)
+        }
+      }).catch(err => {
+        console.error('[LiveWatch:companion] ' + type + ' upload failed: ' + (err.message || err))
       })
     },
 
