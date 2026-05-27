@@ -15,6 +15,7 @@ import { Battery } from '@zos/sensor'
 import { Step } from '@zos/sensor'
 import { HeartRate } from '@zos/sensor'
 import { Sleep } from '@zos/sensor'
+import { BloodOxygen } from '@zos/sensor'
 import { set as setAlarm, cancel as cancelAlarm, getAllAlarms } from '@zos/alarm'
 import { LocalStorage } from '@zos/storage'
 
@@ -23,6 +24,7 @@ const battery = new Battery()
 const step = new Step()
 const heartRate = new HeartRate()
 const sleep = new Sleep()
+const bloodOxygen = new BloodOxygen()
 
 // ── Runtime state ──
 let serverUrl = ''
@@ -191,10 +193,14 @@ function collectAndUpload() {
   // Heart rate history (only non-zero values)
   const hrHistory = collectHeartRateHistory(now)
 
+  // SpO2 history (last 6 hours, all measurements via getLastFewHour)
+  const spo2History = collectSpo2History(6)
+
   // Batch pack into single JSON
   const batchPayload = {
     status: statusReport,
     heart_rate_history: hrHistory,
+    spo2_history: spo2History,
   }
 
   const body = JSON.stringify(batchPayload)
@@ -280,6 +286,35 @@ function updateHrSyncIndex(now) {
       lastHrSyncIndex = todayData.length - 1
     }
   } catch (e) {}
+}
+
+// ── SpO2 History Collection (getLastFewHour, returns all measurements) ──
+// getLastDay() 只返回 24 个平均数，不适合详细上报
+// getLastFewHour(hour) 返回指定小时内的全部测量数据 {spo2, time}
+
+function collectSpo2History(hours) {
+  try {
+    const data = bloodOxygen.getLastFewHour(hours)
+    if (!data || data.length === 0) return []
+
+    const records = []
+    for (const d of data) {
+      // Skip invalid readings (spo2=0 means no measurement)
+      if (!d || d.spo2 <= 0 || d.spo2 > 100) continue
+
+      records.push({
+        type: 'spo2',
+        value: d.spo2,
+        unit: '%',
+        timestamp: new Date(d.time * 1000).toISOString(),
+      })
+    }
+
+    return records
+  } catch (e) {
+    console.warn('[LiveWatch:device] getLastFewHour() failed: ' + e.message)
+    return []
+  }
 }
 
 // ── Alarm Management (System-level, survives screen-off) ──
