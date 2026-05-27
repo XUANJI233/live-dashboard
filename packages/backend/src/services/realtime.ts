@@ -2,6 +2,7 @@ import { db } from "../db";
 import { authenticateToken } from "../middleware/auth";
 import { currentHourWindow, currentMessageSlot, withCdnHeaders } from "./cdn";
 import { verifyViewerToken, viewerTokenFromRequest } from "./viewer-auth";
+import { processReportPayload } from "./device-status-handler";
 import type { DeviceInfo } from "../types";
 import type { ServerWebSocket } from "bun";
 
@@ -343,6 +344,10 @@ export const realtimeWebSocket = {
     }
 
     if (ws.data.role === "device" && data.type === "device_status") {
+      // If payload present, process as full report (WebSocket上报通道)
+      if (data.payload && ws.data.device) {
+        processReportPayload(data.payload, ws.data.device);
+      }
       send(ws, { type: "ack", status: "status_received" });
       return;
     }
