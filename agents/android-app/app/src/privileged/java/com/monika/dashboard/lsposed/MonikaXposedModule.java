@@ -633,7 +633,7 @@ public final class MonikaXposedModule extends XposedModule {
                     .putLong("interval_ms", Math.max(MIN_DIRECT_UPLOAD_MS, intervalSec * 1000L))
                     .putBoolean("upload_foreground", uploadForeground)
                     .putBoolean("upload_media", uploadMedia)
-                    .apply();
+                    .commit(); // synchronous — avoid race with immediate loadDirectUploadConfig()
             loadDirectUploadConfig();
             maybeDirectUpload(true);
         } catch (Throwable t) {
