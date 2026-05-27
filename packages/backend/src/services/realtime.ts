@@ -71,6 +71,11 @@ const blockViewerStmt = db.prepare(`
   ON CONFLICT(device_id, viewer_id) DO UPDATE SET blocked_at = datetime('now')
 `);
 
+const unblockViewerStmt = db.prepare(`
+  DELETE FROM blocked_viewers
+  WHERE device_id = ? AND viewer_id = ?
+`);
+
 const insertVisitorMessage = db.prepare(`
   INSERT INTO visitor_messages (id, device_id, viewer_id, viewer_name, kind, direction, text, created_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -489,6 +494,26 @@ export async function handleBlockViewer(req: Request): Promise<Response> {
   }
 
   blockViewerStmt.run(device.device_id, viewerId);
+  return Response.json({ ok: true });
+}
+
+export async function handleUnblockViewer(req: Request): Promise<Response> {
+  const device = authenticateToken(req.headers.get("authorization"));
+  if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
+
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const viewerId = cleanViewerId(body.viewer_id);
+  if (!viewerId) {
+    return Response.json({ error: "viewer_id required" }, { status: 400 });
+  }
+
+  unblockViewerStmt.run(device.device_id, viewerId);
   return Response.json({ ok: true });
 }
 

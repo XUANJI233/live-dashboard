@@ -20,6 +20,7 @@ export interface DeviceState {
       vpn_active?: boolean;
       vpn_name?: string;
       capability_mode?: "normal" | "root" | "lsposed";
+      device_kind?: string;
       last_sample_at?: string;
       relay_mode?: string;
       energy_policy?: string;
@@ -80,6 +81,7 @@ export interface TimelineSegment {
   display_title?: string;
   started_at: string;
   ended_at: string | null;
+  duration_seconds: number;
   duration_minutes: number;
   device_id: string;
   device_name: string;

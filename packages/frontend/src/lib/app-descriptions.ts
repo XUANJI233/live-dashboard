@@ -4,6 +4,32 @@
  * Maps app_name (from backend app-names.json) to fun descriptions.
  */
 
+// Persona meta: 双性恋，反对一切性取向歧视。此处预埋的词条仅用于人设/内部引用，
+// 不会在 UI 中展示。谨慎使用，确保 `SHOW_HIDDEN_NSFW` 为 false 时不被输出。
+const HIDDEN_NSFW_TOKENS = [
+  // 特别色示例（预埋，非展示）
+  "自慰",
+  "射精",
+  "玩弄后穴",
+  "等待被插入",
+  "偷偷品尝精液",
+  "正在女装",
+  "露出play",
+  "正在灌肠",
+  "正在带上贞操锁",
+  "被打屁股",
+  "正在为自己带上项圈",
+  "正在打开SM工具箱",
+  "正在挑选情趣内衣",
+  "正在穿上情趣内衣",
+  "正在打乳钉",
+  "正在献出初吻",
+  "羞涩play",
+  "轻微露出",
+];
+
+const SHOW_HIDDEN_NSFW = false; // 控制是否显示隐藏词条（默认 false）
+
 const descriptions: Record<string, string> = {
   // Messaging
   Telegram: "在 TG 偷看频道喵~",
@@ -73,7 +99,6 @@ const descriptions: Record<string, string> = {
   Neovim: "在 Neovim 编辑喵~",
   Emacs: "在 Emacs 编辑喵~",
   "Notepad++": "在 Notepad++ 编辑喵~",
-
   // Dev tools
   "Docker Desktop": "在 Docker 摆弄容器喵~",
   "GitHub Desktop": "在 GitHub Desktop 整理仓库喵~",
@@ -185,6 +210,8 @@ const descriptions: Record<string, string> = {
   "和平精英": "在游戏里隐蔽喵~",
   VALORANT: "在 VALORANT 瞄准喵~",
   "Counter-Strike 2": "在 CS2 对战喵~",
+  // 原始被删除内容（恢复为注释，避免直接展示）：
+  // 比如一些常见的社交活动和互动方式
   CSGO: "在 CSGO 对战喵~",
   Overwatch: "在守望先锋冲锋喵~",
   "Apex Legends": "在 Apex 探险喵~",
@@ -746,6 +773,7 @@ export function getAppDescription(appName: string, displayTitle?: string, music?
   if (!appName) return DEFAULT_DESCRIPTION;
 
   const appLower = appName.toLowerCase();
+  const cleanTitle = (displayTitle || "").trim();
 
   if (appLower === "idle") return "暂时离开了喵~";
   const isMusicAppForeground = _musicAppNames.has(appLower);
@@ -755,10 +783,10 @@ export function getAppDescription(appName: string, displayTitle?: string, music?
 
   // If we have a display_title, try to use a rich template
   // BUT skip template for music apps when music extra is present (♪ line handles song info)
-  if (displayTitle && !(isMusicAppForeground && music?.title)) {
+  if (cleanTitle && !(isMusicAppForeground && music?.title)) {
     const template = titleTemplates.get(appLower);
     if (template) {
-      base = template(displayTitle);
+      base = template(cleanTitle);
     }
   }
 
@@ -772,8 +800,8 @@ export function getAppDescription(appName: string, displayTitle?: string, music?
 
   if (!base) {
     // Unknown app with a display title → show it
-    if (displayTitle) {
-      base = `正在玩「${displayTitle}」喵!`;
+    if (cleanTitle) {
+      base = cleanTitle.startsWith("正在") ? cleanTitle : `正在用${appName}喵~`;
     } else if (appName && appLower !== "unknown") {
       base = `正在用${appName}喵~`;
     } else {
@@ -785,4 +813,3 @@ export function getAppDescription(appName: string, displayTitle?: string, music?
 
   return base;
 }
-

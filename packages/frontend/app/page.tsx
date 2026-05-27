@@ -38,6 +38,7 @@ function HomeInner() {
   // Check if health data exists for the selected date
   const [hasHealthData, setHasHealthData] = useState(false);
   const [healthRecords, setHealthRecords] = useState<HealthRecord[]>([]);
+  const [watchHealthRecords, setWatchHealthRecords] = useState<HealthRecord[]>([]);
 
   // Reset tab to activity if health data disappears
   useEffect(() => {
@@ -68,6 +69,8 @@ function HomeInner() {
     const arr = current?.devices ?? [];
     return [...arr].sort((a, b) => a.device_id.localeCompare(b.device_id));
   }, [current?.devices]);
+
+  const watchDevice = useMemo(() => devices.find(isWatchDevice), [devices]);
 
   // Auto-select: default to first online device, fallback to first device
   const selectedDevice = useMemo(() => {
@@ -103,6 +106,22 @@ function HomeInner() {
       });
     return () => controller.abort();
   }, [selectedDate, selectedDeviceIdResolved]);
+
+  useEffect(() => {
+    if (!selectedDate || !watchDevice?.device_id) {
+      setWatchHealthRecords([]);
+      return;
+    }
+    const controller = new AbortController();
+    fetchHealthData(selectedDate, controller.signal, watchDevice.device_id)
+      .then((d) => {
+        if (!controller.signal.aborted) setWatchHealthRecords(d.records);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setWatchHealthRecords([]);
+      });
+    return () => controller.abort();
+  }, [selectedDate, watchDevice?.device_id]);
 
   // Filter timeline data by selected device
   const filteredTimeline = useMemo(() => {
@@ -158,11 +177,15 @@ function HomeInner() {
 
       {current && (
         <>
-          <BodySnapshot device={selectedDevice} records={healthRecords} />
+          <BodySnapshot
+            device={watchDevice || selectedDevice}
+            records={watchHealthRecords.length > 0 ? watchHealthRecords : healthRecords}
+            title={watchDevice ? "手表健康" : "身体状态"}
+          />
 
-          {selectedDevice && <CurrentStatus device={selectedDevice} sleepStatus={latestHealthValue(healthRecords, "sleep_status")} />}
+          {selectedDevice && <CurrentStatus device={selectedDevice} sleepStatus={latestHealthValue(watchHealthRecords.length > 0 ? watchHealthRecords : healthRecords, "sleep_status")} />}
 
-          <div className="grid gap-6 lg:grid-cols-[14rem_minmax(0,1fr)_20rem]">
+          <div className="grid gap-6 lg:grid-cols-[14rem_minmax(0,1fr)]">
             {/* Left: device cards (narrow) */}
             {devices.length > 0 && (
               <div className="space-y-2">
@@ -236,17 +259,16 @@ function HomeInner() {
                       currentAppByDevice={currentAppByDevice}
                     />
                   ) : null}
+                  {selectedDevice && (
+                    <div className="mt-5">
+                      <VisitorMessages device={selectedDevice} />
+                    </div>
+                  )}
                 </>
               ) : (
                 <HealthData selectedDate={selectedDate} deviceId={selectedDevice?.device_id} />
               )}
             </div>
-
-            {selectedDevice && (
-              <aside className="min-w-0">
-                <VisitorMessages device={selectedDevice} />
-              </aside>
-            )}
           </div>
         </>
       )}
@@ -264,7 +286,12 @@ function HomeInner() {
 const platformIcons: Record<string, string> = {
   windows: "\u{1F5A5}",
   android: "\u{1F4F1}",
+  zepp: "\u231A",
 };
+
+function isWatchDevice(device: DeviceState) {
+  return device.platform === "zepp" || device.extra?.device?.device_kind === "watch";
+}
 
 function DeviceOverview({ devices }: { devices: DeviceState[] }) {
   return (
@@ -282,7 +309,7 @@ function DeviceOverview({ devices }: { devices: DeviceState[] }) {
   );
 }
 
-function BodySnapshot({ device, records }: { device: DeviceState | undefined; records: HealthRecord[] }) {
+function BodySnapshot({ device, records, title = "身体状态" }: { device: DeviceState | undefined; records: HealthRecord[]; title?: string }) {
   const [expanded, setExpanded] = useState(false);
   type BodyMetric = { label: string; value: string; unit: string; at?: string };
   const latest = new Map<string, HealthRecord>();
@@ -307,6 +334,9 @@ function BodySnapshot({ device, records }: { device: DeviceState | undefined; re
   const wearStatus = latest.get("wear_status");
   const napDuration = latest.get("nap_duration");
 
+  const heartRateHistory = records
+    .filter((record) => record.type === "heart_rate" && Number.isFinite(record.value))
+    .sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime());
   const items = ([
     metric("心率", latest.get("heart_rate"), "bpm"),
     metric("血氧", latest.get("oxygen_saturation"), "%"),
@@ -335,6 +365,14 @@ function BodySnapshot({ device, records }: { device: DeviceState | undefined; re
 
   return (
     <section className="mb-4 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="text-xs font-semibold text-[var(--color-text-muted)]">{title}</div>
+        {device && (
+          <div className="truncate text-[10px] text-[var(--color-text-muted)]">
+            {device.device_name} · {device.is_online === 1 ? "在线" : "手表离线"}
+          </div>
+        )}
+      </div>
       <div className="flex flex-wrap items-center gap-2">
         {preview.map((item) => (
           <div key={item.label} className="min-w-[5.5rem]">
@@ -352,20 +390,59 @@ function BodySnapshot({ device, records }: { device: DeviceState | undefined; re
         )}
       </div>
       {expanded && (
-        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          {items.slice(preview.length).map((item) => (
-            <div key={item.label} className="rounded border border-[var(--color-border)] px-3 py-2">
-              <div className="text-[10px] text-[var(--color-text-muted)]">{item.label}</div>
-              <div className="font-mono text-sm text-[var(--color-primary)]">
-                {item.value}
-                {item.unit && <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">{item.unit}</span>}
+        <>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {items.slice(preview.length).map((item) => (
+              <div key={item.label} className="rounded border border-[var(--color-border)] px-3 py-2">
+                <div className="text-[10px] text-[var(--color-text-muted)]">{item.label}</div>
+                <div className="font-mono text-sm text-[var(--color-primary)]">
+                  {item.value}
+                  {item.unit && <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">{item.unit}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+          {heartRateHistory.length > 1 && (
+            <div className="mt-3 rounded border border-[var(--color-border)] px-3 py-2">
+              <div className="mb-2 flex items-center justify-between text-[10px] text-[var(--color-text-muted)]">
+                <span>历史心率</span>
+                <span>{heartRateHistory.length} 条</span>
+              </div>
+              <div className="flex h-16 items-end gap-[2px] overflow-hidden">
+                {sampleRecords(heartRateHistory, 80).map((record, index) => {
+                  const height = Math.max(8, Math.min(100, ((record.value - 45) / 90) * 100));
+                  return (
+                    <span
+                      key={`${record.recorded_at}-${index}`}
+                      title={`${formatShortTime(record.recorded_at)} ${Math.round(record.value)} bpm`}
+                      className="min-w-[2px] flex-1 rounded-sm bg-[var(--color-primary)] opacity-70"
+                      style={{ height: `${height}%` }}
+                    />
+                  );
+                })}
               </div>
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
     </section>
   );
+}
+
+function sampleRecords(records: HealthRecord[], max: number) {
+  if (records.length <= max) return records;
+  const step = records.length / max;
+  const result: HealthRecord[] = [];
+  for (let i = 0; i < max; i += 1) {
+    result.push(records[Math.floor(i * step)]!);
+  }
+  return result;
+}
+
+function formatShortTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--:--";
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function metric(label: string, record: HealthRecord | undefined, fallbackUnit: string) {
