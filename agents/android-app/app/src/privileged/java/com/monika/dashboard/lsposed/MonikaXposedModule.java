@@ -325,6 +325,7 @@ public final class MonikaXposedModule extends XposedModule {
     private void broadcastSnapshot() {
         try {
             ComponentName top = getTopActivityComponentName();
+            String taskDescription = getFocusedTaskDescription();
             long now = System.currentTimeMillis();
             boolean idle = top == null || isIgnoredPackage(top.getPackageName());
             if (idle) {
@@ -345,7 +346,15 @@ public final class MonikaXposedModule extends XposedModule {
                 foregroundPackage = packageName;
                 foregroundApp = safeString(resolveAppLabel(packageName));
                 foregroundActivity = activityName;
-                if (!isBrowserPackage(packageName)) foregroundTitle = "";
+                // For browsers, extract page title from Android task description
+                // (works for Chrome, Firefox, WebView browsers — Activity.setTitle is unreliable)
+                if (isBrowserPackage(packageName) && taskDescription != null && taskDescription.length() > 0) {
+                    foregroundTitle = cleanTitle(taskDescription);
+                    if (foregroundTitle == null) foregroundTitle = "";
+                } else if (!isBrowserPackage(packageName)) {
+                    foregroundTitle = "";
+                }
+                // else: keep previous title if browser package and no new description
             }
 
             Intent intent = new Intent(ACTION_STATUS);
@@ -439,6 +448,33 @@ public final class MonikaXposedModule extends XposedModule {
             if (info == null) return null;
             Object top = readField(info, "topActivity");
             return top instanceof ComponentName ? (ComponentName) top : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Extract the task description from the focused root task.
+     * On Android, browsers set the page title as the task description
+     * (visible in the Recent Apps / task switcher). This is the most
+     * reliable way to get page titles across Chrome, Firefox, and WebView browsers.
+     */
+    private String getFocusedTaskDescription() {
+        try {
+            Object service = getActivityTaskManagerService();
+            if (service == null) return null;
+            Object info = callAny(service, "getFocusedRootTaskInfo");
+            if (info == null) info = callAny(service, "getFocusedStackInfo");
+            if (info == null) return null;
+            // Try common field names: description, taskDescription, origDescription
+            Object desc = readField(info, "description");
+            if (desc == null) desc = readField(info, "taskDescription");
+            if (desc == null) desc = readField(info, "origDescription");
+            if (desc instanceof CharSequence) {
+                String s = desc.toString().trim();
+                return s.length() > 0 ? s : null;
+            }
+            return null;
         } catch (Throwable ignored) {
             return null;
         }
