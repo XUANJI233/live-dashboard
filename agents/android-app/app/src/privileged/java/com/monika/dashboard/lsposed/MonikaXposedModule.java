@@ -162,6 +162,9 @@ public final class MonikaXposedModule extends XposedModule {
                 startForegroundSampler();
                 return;
             }
+            // Deoptimize to prevent ART from inlining systemReady into its callers,
+            // which would bypass our hook (per libxposed best practice).
+            try { deoptimize(method); } catch (Throwable t) { log(Log.WARN, TAG, "deoptimize systemReady failed: " + t.getClass().getSimpleName()); }
             hook(method)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
@@ -246,6 +249,7 @@ public final class MonikaXposedModule extends XposedModule {
         Method method = findMethod(clazz, name);
         if (method == null) return;
         try {
+            try { deoptimize(method); } catch (Throwable t) { log(Log.WARN, TAG, "deoptimize " + name + " failed: " + t.getClass().getSimpleName()); }
             hook(method)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
@@ -270,6 +274,7 @@ public final class MonikaXposedModule extends XposedModule {
         try {
             Class<?> activity = Class.forName("android.app.Activity", false, cl);
             Method setTitleText = activity.getDeclaredMethod("setTitle", CharSequence.class);
+            try { deoptimize(setTitleText); } catch (Throwable ignored) {}
             hook(setTitleText)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
@@ -285,6 +290,7 @@ public final class MonikaXposedModule extends XposedModule {
                         return result;
                     });
             Method setTitleRes = activity.getDeclaredMethod("setTitle", int.class);
+            try { deoptimize(setTitleRes); } catch (Throwable ignored) {}
             hook(setTitleRes)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
@@ -297,6 +303,7 @@ public final class MonikaXposedModule extends XposedModule {
                         return result;
                     });
             Method focusChanged = activity.getDeclaredMethod("onWindowFocusChanged", boolean.class);
+            try { deoptimize(focusChanged); } catch (Throwable ignored) {}
             hook(focusChanged)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
@@ -320,6 +327,7 @@ public final class MonikaXposedModule extends XposedModule {
         for (Method method : clazz.getDeclaredMethods()) {
             if (!name.equals(method.getName())) continue;
             try {
+                try { deoptimize(method); } catch (Throwable t) { log(Log.WARN, TAG, "deoptimize " + name + " failed: " + t.getClass().getSimpleName()); }
                 hook(method)
                         .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                         .intercept(chain -> {
