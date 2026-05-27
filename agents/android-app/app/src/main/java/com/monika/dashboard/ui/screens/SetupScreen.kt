@@ -25,6 +25,7 @@ import com.monika.dashboard.data.UploadItem
 import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.realtime.MessageSocketManager
 import com.monika.dashboard.service.HeartbeatWorker
+import com.monika.dashboard.system.LsposedConfigBridge
 import com.monika.dashboard.ui.theme.Primary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -48,6 +49,7 @@ fun SetupScreen(settings: SettingsStore) {
     val uploadVpnStatus by settings.uploadVpnStatus.collectAsState(initial = false)
     val uploadInputState by settings.uploadInputState.collectAsState(initial = false)
     val highFrequencyReport by settings.highFrequencyReport.collectAsState(initial = false)
+    val debugMode by settings.debugMode.collectAsState(initial = false)
 
     var urlInput by remember(serverUrl) { mutableStateOf(serverUrl) }
     var tokenInput by remember { mutableStateOf("") }
@@ -60,6 +62,7 @@ fun SetupScreen(settings: SettingsStore) {
     var vpnInput by remember(uploadVpnStatus) { mutableStateOf(uploadVpnStatus) }
     var inputStateInput by remember(uploadInputState) { mutableStateOf(uploadInputState) }
     var highFrequencyInput by remember(highFrequencyReport) { mutableStateOf(highFrequencyReport) }
+    var debugInput by remember(debugMode) { mutableStateOf(debugMode) }
 
     // Load token asynchronously to avoid blocking main thread
     LaunchedEffect(Unit) {
@@ -239,6 +242,14 @@ fun SetupScreen(settings: SettingsStore) {
             inputStateInput = it
             scope.launch { settings.setUploadInputState(it); notifySaved() }
         }
+        OptionalSwitch(
+            checked = debugInput,
+            title = "调试模式",
+            body = "显示最近上传 payload 和本地调试日志；关闭后调试页不展示这些内容"
+        ) {
+            debugInput = it
+            scope.launch { settings.setDebugMode(it); notifySaved(if (it) "调试模式已开启" else "调试模式已关闭") }
+        }
 
         // Token
         OutlinedTextField(
@@ -335,6 +346,8 @@ fun SetupScreen(settings: SettingsStore) {
                     settings.setUploadLocation(locationInput)
                     settings.setUploadVpnStatus(vpnInput)
                     settings.setUploadInputState(inputStateInput)
+                    settings.setDebugMode(debugInput)
+                    LsposedConfigBridge.publish(context, settings)
                     if (locationInput) requestLocationPermissionIfNeeded(context)
                     intervalInput = seconds.toString()
                     if (monitoringEnabled) {
@@ -377,6 +390,8 @@ fun SetupScreen(settings: SettingsStore) {
                         settings.setUploadLocation(locationInput)
                         settings.setUploadVpnStatus(vpnInput)
                         settings.setUploadInputState(inputStateInput)
+                        settings.setDebugMode(debugInput)
+                        LsposedConfigBridge.publish(context, settings)
                         if (locationInput) requestLocationPermissionIfNeeded(context)
                         intervalInput = seconds.toString()
                         HeartbeatWorker.schedule(context, seconds)

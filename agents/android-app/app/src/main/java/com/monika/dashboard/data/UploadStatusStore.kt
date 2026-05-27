@@ -11,7 +11,6 @@ enum class UploadItem(val key: String, val label: String) {
     VPN("vpn", "VPN"),
     INPUT("input", "输入状态"),
     HEALTH("health", "健康数据"),
-    WATCH("watch", "手表数据"),
 }
 
 data class UploadStatus(

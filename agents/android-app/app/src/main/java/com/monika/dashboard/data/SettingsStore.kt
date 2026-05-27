@@ -35,6 +35,7 @@ class SettingsStore(private val context: Context) {
         val UPLOAD_VPN_STATUS = booleanPreferencesKey("upload_vpn_status")
         val UPLOAD_INPUT_STATE = booleanPreferencesKey("upload_input_state")
         val HIGH_FREQUENCY_REPORT = booleanPreferencesKey("high_frequency_report")
+        val DEBUG_MODE = booleanPreferencesKey("debug_mode")
     }
 
     val serverUrl: Flow<String> = context.dataStore.data.map { prefs ->
@@ -88,6 +89,10 @@ class SettingsStore(private val context: Context) {
 
     val highFrequencyReport: Flow<Boolean> = context.dataStore.data.map { prefs ->
         prefs[Keys.HIGH_FREQUENCY_REPORT] ?: false
+    }
+
+    val debugMode: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.DEBUG_MODE] ?: false
     }
 
     val lastSyncTimestamp: Flow<Long> = context.dataStore.data.map { prefs ->
@@ -150,6 +155,10 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setHighFrequencyReport(enabled: Boolean) {
         context.dataStore.edit { it[Keys.HIGH_FREQUENCY_REPORT] = enabled }
+    }
+
+    suspend fun setDebugMode(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.DEBUG_MODE] = enabled }
     }
 
     /** Update last sync timestamp with compare-and-set (only advances forward). */
