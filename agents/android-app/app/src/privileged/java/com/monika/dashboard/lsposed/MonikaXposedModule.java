@@ -168,8 +168,11 @@ public final class MonikaXposedModule extends XposedModule {
         try {
             Handler handler = new Handler(Looper.getMainLooper());
             samplerStarted = true;
-            loadDirectUploadConfig();
-            registerConfigReceiver(handler);
+            // Defer config loading and receiver registration to allow system context to fully initialize
+            handler.postDelayed(() -> {
+                try { loadDirectUploadConfig(); } catch (Throwable t) { log(Log.WARN, TAG, "deferred load config failed: " + t.getClass().getSimpleName()); }
+                try { registerConfigReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register receiver failed: " + t.getClass().getSimpleName()); }
+            }, 10000L);
             handler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
@@ -386,6 +389,9 @@ public final class MonikaXposedModule extends XposedModule {
                 intent.putExtra("app_name", foregroundApp);
                 intent.putExtra("activity", foregroundActivity);
                 intent.putExtra("input_active", false);
+                if (foregroundTitle.length() > 0) {
+                    intent.putExtra("title", foregroundTitle);
+                }
             }
             Context context = getSystemContext();
             if (context != null) {
@@ -492,6 +498,16 @@ public final class MonikaXposedModule extends XposedModule {
             Object desc = readField(info, "description");
             if (desc == null) desc = readField(info, "taskDescription");
             if (desc == null) desc = readField(info, "origDescription");
+            
+            // desc might be an ActivityManager.TaskDescription object instead of CharSequence
+            if (desc != null && !(desc instanceof CharSequence)) {
+                try {
+                    Method getLabel = desc.getClass().getMethod("getLabel");
+                    Object label = getLabel.invoke(desc);
+                    if (label instanceof CharSequence) desc = label;
+                } catch (Throwable ignored) {}
+            }
+            
             if (desc instanceof CharSequence) {
                 String s = desc.toString().trim();
                 return s.length() > 0 ? s : null;
