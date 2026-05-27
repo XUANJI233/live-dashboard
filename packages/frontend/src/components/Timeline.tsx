@@ -83,7 +83,7 @@ export default function Timeline({ segments, currentAppByDevice }: Props) {
 
                       <div className="w-24 flex-shrink-0 px-2 py-2 text-right">
                         <span className="font-mono text-[10px] font-medium text-[var(--color-accent)]">
-                          {formatDurationSeconds(event.durationSeconds)}
+                          {formatTimeRange(event.startedAt, event.endedAt, event.isCurrent)}
                         </span>
                         {canOpen && (
                           <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">
@@ -99,11 +99,10 @@ export default function Timeline({ segments, currentAppByDevice }: Props) {
                           <div key={`${child.started_at}-${index}`} className="text-xs">
                             <div className="flex items-center justify-between gap-3">
                               <span className="font-mono text-[10px] text-[var(--color-text-muted)]">
-                                {formatClock(child.started_at)}
-                                {child.ended_at ? ` - ${formatClock(child.ended_at)}` : ""}
+                                {formatTimeRange(child.started_at, child.ended_at, false)}
                               </span>
                               <span className="font-mono text-[10px] text-[var(--color-accent)]">
-                                {formatDurationSeconds(durationSeconds(child))}
+                                {formatTimeRange(child.started_at, child.ended_at, false)}
                               </span>
                             </div>
                             <div className="mt-0.5 truncate text-[var(--color-text)]" title={describeChild(child)}>
@@ -284,13 +283,11 @@ function getAppColor(appName: string, colorMap: Map<string, string>): string {
   return color;
 }
 
-function formatDurationSeconds(seconds: number): string {
-  if (seconds < 60) return "不到 1 分钟";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} 分钟`;
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return m > 0 ? `${h} 小时 ${m} 分钟` : `${h} 小时`;
+function formatTimeRange(startValue: string, endValue: string | null, allowCurrentEnd: boolean) {
+  const start = formatClock(startValue);
+  if (start === "--:--") return start;
+  const end = endValue ? formatClock(endValue) : allowCurrentEnd ? formatClock(new Date().toISOString()) : "现在";
+  return `${start}-${end}`;
 }
 
 function formatClock(value: string) {
