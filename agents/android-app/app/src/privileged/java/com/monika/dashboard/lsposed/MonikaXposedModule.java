@@ -9,6 +9,7 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.media.MediaMetadata;
 import android.media.session.PlaybackState;
+import android.os.Binder;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -371,7 +372,10 @@ public final class MonikaXposedModule extends XposedModule {
                 intent.putExtra("input_active", false);
             }
             Context context = getSystemContext();
-            if (context != null) context.sendBroadcast(intent);
+            if (context != null) {
+                long token = Binder.clearCallingIdentity();
+                try { context.sendBroadcast(intent); } finally { Binder.restoreCallingIdentity(token); }
+            }
             maybeDirectUpload(false);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "broadcast failed: " + t.getClass().getSimpleName());
@@ -411,7 +415,8 @@ public final class MonikaXposedModule extends XposedModule {
             putIfNotNull(intent, "media_artist", mediaArtist);
             putIfNotNull(intent, "media_app", mediaApp);
             putIfNotNull(intent, "media_state", mediaState);
-            context.sendBroadcast(intent);
+            long token = Binder.clearCallingIdentity();
+            try { context.sendBroadcast(intent); } finally { Binder.restoreCallingIdentity(token); }
             maybeDirectUpload(false);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "media broadcast failed: " + t.getClass().getSimpleName());
@@ -432,7 +437,8 @@ public final class MonikaXposedModule extends XposedModule {
             intent.putExtra("app_name", foregroundApp);
             intent.putExtra("activity", foregroundActivity);
             intent.putExtra("title", cleanTitle);
-            activity.sendBroadcast(intent);
+            long token = Binder.clearCallingIdentity();
+            try { activity.sendBroadcast(intent); } finally { Binder.restoreCallingIdentity(token); }
             maybeDirectUpload(false);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "activity title broadcast failed: " + t.getClass().getSimpleName());
