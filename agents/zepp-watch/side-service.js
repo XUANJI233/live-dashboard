@@ -1,9 +1,9 @@
 // ────────────────────────────────────────────
 //  Live Watch — Companion Side Service
 //  运行在手机 Zepp 伴生侧，负责：
-//  1. 页面 ↔ 设备 App Service 的消息中继
-//  2. 配置持久化 (通过 zml SettingsPlugin)
-//  3. 手表数据采集已移至 app-service/live-watch.js
+//  1. 配置持久化 (settings.settingsStorage)
+//  2. 页面请求处理
+//  3. 手表数据采集在 app-service/live-watch.js
 // ────────────────────────────────────────────
 
 import { BaseSideService } from '@zeppos/zml/base-side'
@@ -13,24 +13,22 @@ AppSideService(
     state: {
       serverUrl: '',
       token: '',
-      syncInterval: 30,
+      syncInterval: 300,
       enabled: false,
     },
 
     onInit() {
-      console.log('[LiveWatch:companion] Side service init')
+      console.log('[LiveWatch:companion] init')
       this.restoreConfig()
     },
 
     onRun() {
-      console.log('[LiveWatch:companion] Side service running')
+      console.log('[LiveWatch:companion] running')
     },
 
     onDestroy() {
-      console.log('[LiveWatch:companion] Side service destroy')
+      console.log('[LiveWatch:companion] destroy')
     },
-
-    // ── Page → Companion → Device relay ──
 
     onRequest(req, res) {
       const { method, params } = req
@@ -38,26 +36,23 @@ AppSideService(
         case 'START': {
           this.state.serverUrl = params?.serverUrl || this.state.serverUrl
           this.state.token = params?.token || this.state.token
-          this.state.syncInterval = params?.syncInterval || this.state.syncInterval
+          this.state.syncInterval = Number(params?.syncInterval) || 300
           this.state.enabled = true
           this.persistConfig()
-          this.callDevice({ method: 'START', params: this.state })
           res(null, { ok: true, status: 'started' })
           break
         }
         case 'STOP': {
           this.state.enabled = false
           this.persistConfig()
-          this.callDevice({ method: 'STOP' })
           res(null, { ok: true, status: 'stopped' })
           break
         }
         case 'CONFIG': {
           if (params?.serverUrl !== undefined) this.state.serverUrl = params.serverUrl
           if (params?.token !== undefined) this.state.token = params.token
-          if (params?.syncInterval !== undefined) this.state.syncInterval = params.syncInterval
+          if (params?.syncInterval !== undefined) this.state.syncInterval = Number(params.syncInterval)
           this.persistConfig()
-          this.callDevice({ method: 'CONFIG', params: this.state })
           res(null, { ok: true })
           break
         }
@@ -66,34 +61,27 @@ AppSideService(
       }
     },
 
-    callDevice(data) {
-      try {
-        if (typeof this.sendToDevice === 'function') {
-          this.sendToDevice(data)
-        }
-      } catch (e) {
-        console.warn('[LiveWatch:companion] callDevice failed: ' + e.message)
-      }
-    },
-
     restoreConfig() {
       try {
-        const saved = this.getSettings()
-        if (saved?.serverUrl) this.state.serverUrl = saved.serverUrl
-        if (saved?.token) this.state.token = saved.token
-        if (saved?.syncInterval) this.state.syncInterval = Number(saved.syncInterval)
-        if (saved?.enabled !== undefined) this.state.enabled = Boolean(saved.enabled)
+        const raw = settings.settingsStorage.getItem('livewatch_config')
+        if (raw) {
+          const saved = JSON.parse(raw)
+          if (saved.serverUrl) this.state.serverUrl = saved.serverUrl
+          if (saved.token) this.state.token = saved.token
+          if (saved.syncInterval) this.state.syncInterval = Number(saved.syncInterval)
+          if (saved.enabled !== undefined) this.state.enabled = Boolean(saved.enabled)
+        }
       } catch (e) { /* no saved config */ }
     },
 
     persistConfig() {
       try {
-        this.setSettings({
+        settings.settingsStorage.setItem('livewatch_config', JSON.stringify({
           serverUrl: this.state.serverUrl,
           token: this.state.token,
           syncInterval: this.state.syncInterval,
           enabled: this.state.enabled,
-        })
+        }))
       } catch (e) { /* settings may be unavailable in preview */ }
     },
   }),

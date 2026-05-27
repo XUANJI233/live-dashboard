@@ -11,8 +11,8 @@
   "permissions": [
     "device:os.alarm",
     "device:os.timer",
-    "device:os.ble",
     "device:os.network",
+    "device:os.bg_service",
     "data:user.hd.heart_rate",
     "data:user.hd.step"
   ],

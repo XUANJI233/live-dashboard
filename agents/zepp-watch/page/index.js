@@ -1,6 +1,8 @@
 import { BasePage } from '@zeppos/zml/base-page'
 import { px } from '@zos/utils'
 import { getDeviceInfo, SCREEN_SHAPE_ROUND } from '@zos/device'
+import { startAppService, stopAppService } from '@zos/app-service'
+import { settingsStorage } from '@zos/settings'
 
 // T-Rex 3: 480×480 round, effective ~324×324 circle
 const deviceInfo = getDeviceInfo()
@@ -107,18 +109,33 @@ Page(
         this.setStatus('请先配置服务器', 0xff6600)
         return
       }
+      // Persist config to settingsStorage (shared with Device App Service)
+      const cfg = {
+        serverUrl: this.state.serverUrl,
+        token: this.state.token,
+        syncInterval: this.state.syncInterval,
+        enabled: true,
+      }
+      settingsStorage.setItem('livewatch_config', JSON.stringify(cfg))
+      // Start Device App Service on watch
+      startAppService({ url: 'app-service/live-watch.js' })
+      // Also notify companion side-service
       this.request({
         method: 'START',
-        params: {
-          serverUrl: this.state.serverUrl,
-          token: this.state.token,
-          syncInterval: this.state.syncInterval,
-        },
+        params: cfg,
       })
       this.setStatus('同步已启动', 0x00aa55)
     },
 
     onStopClick() {
+      const cfg = {
+        serverUrl: this.state.serverUrl,
+        token: this.state.token,
+        syncInterval: this.state.syncInterval,
+        enabled: false,
+      }
+      settingsStorage.setItem('livewatch_config', JSON.stringify(cfg))
+      stopAppService({ url: 'app-service/live-watch.js' })
       this.request({ method: 'STOP' })
       this.setStatus('同步已停止', 0x999999)
     },

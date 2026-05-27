@@ -22,26 +22,20 @@ let syncTimerId = null
 let alarmId = null
 let serverUrl = ''
 let token = ''
-let syncIntervalMs = 30_000
+let syncIntervalMs = 300_000 // default 5 minutes
 let enabled = false
 let lastReportedAppId = ''
 
-// ── AppService entry ──
+// ── AppService entry (runs ON WATCH) ──
 AppService({
   onInit(options) {
-    console.log('[LiveWatch:device] AppService init, options=' + options)
+    console.log('[LiveWatch:device] AppService init')
 
-    // Restore saved config (via file system or settings storage)
+    // Read config from settings storage (set by page before starting)
     restoreConfig()
 
-    // If woken by alarm, the event parameter indicates the trigger source
-    if (options && options.indexOf('event=alarm') >= 0) {
-      // Woken by alarm — do a sync and exit
-      syncNow()
-      return
-    }
-
-    if (options && options.indexOf('event=start') >= 0) {
+    // If auto-start is configured, begin sync
+    if (enabled) {
       startSync()
     }
   },
@@ -52,35 +46,22 @@ AppService({
   },
 })
 
-// ── Config ────────────────────────────────
+// ── Config (from settingsStorage, standard Zepp API) ──
 
 function restoreConfig() {
   try {
-    const fs = require('@zos/fs')
-    const data = fs.readFileSync('data://livewatch_config.json')
-    if (data) {
-      const cfg = JSON.parse(data)
+    const storage = require('@zos/settings').settingsStorage
+    const raw = storage.getItem('livewatch_config')
+    if (raw) {
+      const cfg = JSON.parse(raw)
       serverUrl = cfg.serverUrl || ''
       token = cfg.token || ''
-      syncIntervalMs = (cfg.syncInterval || 30) * 1000
+      syncIntervalMs = Math.max(60_000, (cfg.syncInterval || 300) * 1000) // minimum 1 minute
       enabled = cfg.enabled || false
       console.log('[LiveWatch:device] Config restored: enabled=' + enabled)
     }
   } catch (e) {
     console.log('[LiveWatch:device] No saved config')
-  }
-}
-
-function persistConfig() {
-  try {
-    const fs = require('@zos/fs')
-    fs.writeFileSync('data://livewatch_config.json', JSON.stringify({
-      serverUrl, token,
-      syncInterval: Math.round(syncIntervalMs / 1000),
-      enabled,
-    }))
-  } catch (e) {
-    console.warn('[LiveWatch:device] persistConfig failed: ' + e.message)
   }
 }
 
@@ -201,33 +182,3 @@ function syncNow() {
     console.error('[LiveWatch:device] Sync failed: ' + (err.message || err))
   })
 }
-
-// ── Side-service message handler (for page.js communication) ──
-AppSideService({
-  onRequest(req, res) {
-    const { method } = req
-    switch (method) {
-      case 'START':
-        serverUrl = req.params?.serverUrl || serverUrl
-        token = req.params?.token || token
-        syncIntervalMs = (req.params?.syncInterval || 30) * 1000
-        startSync()
-        res(null, { ok: true, status: 'started' })
-        break
-      case 'STOP':
-        stopSync()
-        res(null, { ok: true, status: 'stopped' })
-        break
-      case 'CONFIG':
-        serverUrl = req.params?.serverUrl || serverUrl
-        token = req.params?.token || token
-        syncIntervalMs = (req.params?.syncInterval || 30) * 1000
-        persistConfig()
-        if (enabled) { stopSync(); startSync() }
-        res(null, { ok: true })
-        break
-      default:
-        res({ error: 'unknown method' }, null)
-    }
-  },
-})

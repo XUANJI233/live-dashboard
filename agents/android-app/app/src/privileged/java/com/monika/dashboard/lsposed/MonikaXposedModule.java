@@ -53,8 +53,12 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long FOREGROUND_POLL_MS = 5000L;
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
     private static final long MIN_DIRECT_UPLOAD_MS = 5000L;
-    private static final int IDLE_DEBOUNCE_COUNT = 3; // 3 consecutive idle samples (~15s) before uploading
+    private static final long IDLE_DEBOUNCE_COUNT = 12; // 12 consecutive idle samples (~60s at 5s poll) before uploading
+    private static final long WS_RETRY_BASE_MS = 30_000L;  // first retry delay
+    private static final long WS_RETRY_MAX_MS = 300_000L;  // max retry delay (5 min)
     private volatile int idleConsecutiveCount = 0;
+    private volatile long wsLastFailAt = 0L;
+    private volatile long wsRetryDelayMs = WS_RETRY_BASE_MS;
     private static final String[] BROWSER_PACKAGES = new String[] {
             "com.android.browser",
             "com.android.chrome",
@@ -758,7 +762,15 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private void ensureWsConnected(String serverUrl, String token) {
-        if (wsClient != null && wsClient.isConnected()) return;
+        if (wsClient != null && wsClient.isConnected()) {
+            wsRetryDelayMs = WS_RETRY_BASE_MS; // reset on success
+            return;
+        }
+        // Backoff: don't hammer WS handshake on repeated failures
+        long now = System.currentTimeMillis();
+        if (wsLastFailAt > 0 && now - wsLastFailAt < wsRetryDelayMs) {
+            return; // still in backoff window — skip WS, caller falls back to HTTP
+        }
         synchronized (this) {
             if (wsClient != null && wsClient.isConnected()) return;
             if (wsClient != null) {
@@ -768,10 +780,14 @@ public final class MonikaXposedModule extends XposedModule {
                 String wsUrl = buildLspWsUrl(serverUrl);
                 wsClient = new LspWebSocketClient(wsUrl, "Bearer " + token);
                 wsClient.connect();
+                wsRetryDelayMs = WS_RETRY_BASE_MS; // reset on success
+                wsLastFailAt = 0L;
                 log(Log.INFO, TAG, "LSP WS connected to " + wsUrl);
             } catch (Throwable t) {
                 wsClient = null;
-                log(Log.WARN, TAG, "LSP WS connect failed: " + t.getClass().getSimpleName());
+                wsLastFailAt = System.currentTimeMillis();
+                wsRetryDelayMs = Math.min(wsRetryDelayMs * 2, WS_RETRY_MAX_MS);
+                log(Log.WARN, TAG, "LSP WS connect failed (retry in " + (wsRetryDelayMs / 1000) + "s): " + t.getClass().getSimpleName());
             }
         }
     }
@@ -1004,8 +1020,20 @@ public final class MonikaXposedModule extends XposedModule {
                 SSLSocket ssl = (SSLSocket) factory.createSocket();
                 ssl.setTcpNoDelay(true);
                 ssl.setSoTimeout(0);
+                // SNI (Server Name Indication) — required for virtual-hosted TLS
+                javax.net.ssl.SSLParameters params = ssl.getSSLParameters();
+                params.setServerNames(java.util.Collections.singletonList(
+                    new javax.net.ssl.SNIHostName(host)));
+                // Hostname verification — prevents MITM with valid cert for wrong host
+                params.setEndpointIdentificationAlgorithm("HTTPS");
+                ssl.setSSLParameters(params);
                 ssl.connect(new InetSocketAddress(host, port), 8000);
                 ssl.startHandshake();
+                // Verify hostname post-handshake (defense-in-depth)
+                javax.net.ssl.HostnameVerifier verifier = javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier();
+                if (!verifier.verify(host, ssl.getSession())) {
+                    throw new IOException("Hostname verification failed: " + host);
+                }
                 socket = ssl;
             } else {
                 java.net.Socket plain = new java.net.Socket();
