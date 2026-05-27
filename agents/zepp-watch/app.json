@@ -17,6 +17,12 @@
   "targetApi": {
     "apiVersion": 4
   },
+  "targets": {
+    "8716544": { "designWidth": 480 },
+    "8716545": { "designWidth": 480 },
+    "8716547": { "designWidth": 480 },
+    "default": { "designWidth": 480 }
+  },
   "sideService": {
     "path": "side-service"
   }

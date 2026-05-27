@@ -1,4 +1,18 @@
 import { BasePage } from '@zeppos/zml/base-page'
+import { px } from '@zos/utils'
+import { getDeviceInfo, SCREEN_SHAPE_ROUND } from '@zos/device'
+
+// T-Rex 3: 480×480 round, effective ~324×324 circle
+const deviceInfo = getDeviceInfo()
+const IS_ROUND = deviceInfo.screenShape === SCREEN_SHAPE_ROUND
+
+const MARGIN_X = IS_ROUND ? 78 : 24
+const MARGIN_TOP = IS_ROUND ? 90 : 60
+const FIELD_W = IS_ROUND ? 324 : 432
+const FIELD_H = 56
+const BTN_W = IS_ROUND ? 324 : 432
+const BTN_H = 64
+const GAP = 12
 
 Page(
   BasePage({
@@ -6,69 +20,115 @@ Page(
       serverUrl: '',
       token: '',
       syncInterval: 30,
-      lastSyncAt: '--',
-      batteryLevel: '--',
-      steps: '--',
-      heartRate: '--',
-      status: '未连接',
+      status: '未启动',
+      statusColor: 0x999999,
     },
 
     onInit() {
-      // Load saved settings
-      const saved = this.getStoredSettings()
-      if (saved.serverUrl) this.state.serverUrl = saved.serverUrl
-      if (saved.token) this.state.token = saved.token
-      if (saved.syncInterval) this.state.syncInterval = saved.syncInterval
+      this.buildUI()
     },
 
-    // Save settings and notify side-service
-    saveSettings() {
-      const settings = {
-        serverUrl: this.state.serverUrl.trim(),
-        token: this.state.token.trim(),
-        syncInterval: this.state.syncInterval,
-      }
-      // Store via SettingsPlugin (synced to side-service)
-      this.setSideSettings(settings)
-      this.log('Settings saved: ' + JSON.stringify(settings))
-    },
+    buildUI() {
+      let y = MARGIN_TOP
 
-    // Start background sync via side-service
-    startSync() {
-      this.saveSettings()
-      this.callSideService({ method: 'startSync' })
-      this.state.status = '同步已启动'
-    },
-
-    // Stop background sync
-    stopSync() {
-      this.callSideService({ method: 'stopSync' })
-      this.state.status = '同步已停止'
-    },
-
-    // Called by side-service to update UI status
-    onStatusUpdate(data) {
-      if (data.batteryLevel !== undefined) this.state.batteryLevel = String(data.batteryLevel) + '%'
-      if (data.steps !== undefined) this.state.steps = String(data.steps)
-      if (data.heartRate !== undefined) this.state.heartRate = String(data.heartRate)
-      if (data.lastSyncAt) this.state.lastSyncAt = data.lastSyncAt
-      this.state.status = data.error ? '同步失败: ' + data.error : '运行中'
-    },
-
-    getStoredSettings() {
-      // SettingsPlugin handles persistent storage
-      return {}
-    },
-
-    setSideSettings(settings) {
-      this.callSideService({ method: 'updateConfig', params: settings })
-    },
-
-    callSideService(data) {
-      this.request({
-        method: data.method,
-        params: data.params || {},
+      hmUI.createWidget(hmUI.widget.TEXT, {
+        x: px(MARGIN_X), y: px(y),
+        w: px(FIELD_W), h: px(36),
+        text: 'Live Watch',
+        text_size: px(28),
+        color: 0xffffff,
+        align_h: hmUI.align.CENTER_H,
       })
+      y += 44
+
+      hmUI.createWidget(hmUI.widget.TEXT, {
+        x: px(MARGIN_X), y: px(y),
+        w: px(FIELD_W), h: px(24),
+        text: '服务器地址',
+        text_size: px(20),
+        color: 0xaaaaaa,
+      })
+      y += 26
+
+      this._urlText = hmUI.createWidget(hmUI.widget.TEXT, {
+        x: px(MARGIN_X), y: px(y),
+        w: px(FIELD_W), h: px(FIELD_H),
+        text: this.state.serverUrl || '未设置',
+        text_size: px(24),
+        color: 0xffffff,
+      })
+      y += FIELD_H + GAP
+
+      this._intervalText = hmUI.createWidget(hmUI.widget.TEXT, {
+        x: px(MARGIN_X), y: px(y),
+        w: px(FIELD_W), h: px(FIELD_H),
+        text: this.state.syncInterval + ' 秒',
+        text_size: px(24),
+        color: 0xffffff,
+      })
+      y += FIELD_H + GAP * 2
+
+      this._startBtn = hmUI.createWidget(hmUI.widget.BUTTON, {
+        x: px(MARGIN_X), y: px(y),
+        w: px(BTN_W), h: px(BTN_H),
+        text: '启动同步',
+        text_size: px(26),
+        radius: px(12),
+        normal_color: 0x00aa55,
+        press_color: 0x008844,
+        click_func: () => this.onStartClick(),
+      })
+      y += BTN_H + GAP
+
+      this._stopBtn = hmUI.createWidget(hmUI.widget.BUTTON, {
+        x: px(MARGIN_X), y: px(y),
+        w: px(BTN_W), h: px(BTN_H),
+        text: '停止同步',
+        text_size: px(26),
+        radius: px(12),
+        normal_color: 0xcc3333,
+        press_color: 0x992222,
+        click_func: () => this.onStopClick(),
+      })
+      y += BTN_H + GAP * 2
+
+      this._statusText = hmUI.createWidget(hmUI.widget.TEXT, {
+        x: px(MARGIN_X), y: px(y),
+        w: px(FIELD_W), h: px(36),
+        text: this.state.status,
+        text_size: px(18),
+        color: this.state.statusColor,
+        align_h: hmUI.align.CENTER_H,
+      })
+    },
+
+    onStartClick() {
+      if (!this.state.serverUrl || !this.state.token) {
+        this.setStatus('请先配置服务器', 0xff6600)
+        return
+      }
+      this.request({
+        method: 'startSync',
+        params: {
+          serverUrl: this.state.serverUrl,
+          token: this.state.token,
+          syncInterval: this.state.syncInterval,
+        },
+      })
+      this.setStatus('同步已启动', 0x00aa55)
+    },
+
+    onStopClick() {
+      this.request({ method: 'stopSync' })
+      this.setStatus('同步已停止', 0x999999)
+    },
+
+    setStatus(text, color) {
+      this.state.status = text
+      this.state.statusColor = color || 0x999999
+      if (this._statusText) {
+        this._statusText.setProperty(hmUI.prop.MORE, { text, color: color || 0x999999 })
+      }
     },
   }),
 )
