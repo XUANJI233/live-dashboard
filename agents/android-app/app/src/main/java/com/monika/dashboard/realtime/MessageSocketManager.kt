@@ -31,7 +31,10 @@ object MessageSocketManager {
     private const val CHANNEL_ID = "visitor_messages"
     private const val NOTIFICATION_ID = 2001
     private const val PREFS = "message_controls"
-    private const val RECONNECT_DELAY_MS = 10_000L
+    private const val BASE_RECONNECT_DELAY_MS = 10_000L
+    private const val MAX_RECONNECT_DELAY_MS = 300_000L // 5 minutes max
+    @Volatile
+    private var reconnectAttempts = 0
     const val ACTION_BLOCK_VIEWER = "com.monika.dashboard.action.BLOCK_VIEWER"
     const val EXTRA_VIEWER_ID = "viewer_id"
 
@@ -218,6 +221,7 @@ object MessageSocketManager {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             connecting = false
             connected = true
+            reconnectAttempts = 0 // Reset backoff on successful connection
             DebugLog.log("消息", "WebSocket已连接")
         }
 
@@ -256,9 +260,11 @@ object MessageSocketManager {
 
         private fun scheduleReconnect() {
             scope.launch {
-                delay(RECONNECT_DELAY_MS)
+                val delayMs = (BASE_RECONNECT_DELAY_MS * (1L shl reconnectAttempts)).coerceAtMost(MAX_RECONNECT_DELAY_MS)
+                reconnectAttempts++
+                delay(delayMs)
                 if (socket != null || connecting) return@launch
-                DebugLog.log("消息", "WebSocket尝试重连...")
+                DebugLog.log("消息", "WebSocket尝试重连... (attempt $reconnectAttempts, delay ${delayMs}ms)")
                 connecting = true
                 runCatching {
                     val wsUrl = buildWsUrl(serverUrl)
@@ -270,7 +276,7 @@ object MessageSocketManager {
                 }.onFailure {
                     connecting = false
                     DebugLog.log("消息", "WebSocket重连失败: ${it.message}")
-                    scheduleReconnect() // retry
+                    scheduleReconnect() // retry with increased backoff
                 }
             }
         }
