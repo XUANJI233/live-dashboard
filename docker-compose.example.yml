@@ -15,6 +15,7 @@ services:
       - DEVICE_TOKEN_1=${DEVICE_TOKEN_1}
       - DEVICE_TOKEN_2=${DEVICE_TOKEN_2}
       - HASH_SECRET=${HASH_SECRET}
+      - CDN_MODE=${CDN_MODE:-true}
     volumes:
       - dashboard_data:/data
     mem_limit: 128m

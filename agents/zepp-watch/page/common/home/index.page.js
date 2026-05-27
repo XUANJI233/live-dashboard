@@ -23,6 +23,19 @@ const logger = log.getLogger('LiveDashboardPage')
 const { width: DEVICE_WIDTH, height: DEVICE_HEIGHT } = getDeviceInfo()
 const storage = new LocalStorage()
 const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000
+const DEFAULT_SENSORS = {
+  sensorHeartRate: true,
+  sensorBattery: true,
+  sensorWear: true,
+  sensorSleep: true,
+  sensorSpo2: true,
+  sensorBodyTemp: true,
+  sensorStand: true,
+  sensorStress: true,
+  sensorStep: true,
+  sensorCalorie: true,
+  sensorBarometer: true,
+}
 
 function sensorAvailable(SensorClass) {
   try {
@@ -61,7 +74,12 @@ function latestNumberFromList(list, keys) {
   return undefined
 }
 
-function readHeartRate() {
+function sensorEnabled(settings, key) {
+  return !settings || !settings.sensors || settings.sensors[key] !== false
+}
+
+function readHeartRate(settings) {
+  if (!sensorEnabled(settings, 'sensorHeartRate')) return undefined
   return readSensor(HeartRate, (sensor) => {
     const last = firstNumber(sensor.getLast && sensor.getLast(), ['heartRate', 'heart_rate', 'bpm', 'value'])
     if (last > 0) return last
@@ -72,16 +90,30 @@ function readHeartRate() {
   })
 }
 
-function readBloodOxygen() {
+function readBloodOxygen(settings) {
+  if (!sensorEnabled(settings, 'sensorSpo2')) return undefined
   return readSensor(BloodOxygen, (sensor) => {
-    const last = firstNumber(sensor.getLast && sensor.getLast(), ['spo2', 'oxygen', 'percentage', 'value'])
-    if (last > 0) return last
-    const current = firstNumber(sensor.getCurrent && sensor.getCurrent(), ['spo2', 'oxygen', 'percentage', 'value'])
-    return current > 0 ? current : undefined
+    const current = sensor.getCurrent && sensor.getCurrent()
+    const currentValue = firstNumber(current, ['value', 'spo2', 'oxygen', 'percentage'])
+    const retCode = firstNumber(current, ['retCode', 'ret_code'])
+    if (currentValue > 0 && (retCode === undefined || retCode === 2)) return currentValue
+    const recent = sensor.getLastFewHour && latestNumberFromList(sensor.getLastFewHour(6), ['spo2', 'value'])
+    if (recent > 0) return recent
+    const lastDay = sensor.getLastDay && latestNumberFromList(sensor.getLastDay(), ['spo2', 'value'])
+    return lastDay > 0 ? lastDay : undefined
   })
 }
 
-function readSleepMetrics(metrics) {
+function normalizeBodyTemperature(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  let current = value
+  if (current > 1000) current /= 100
+  if (current > 100) current /= 10
+  return current > -100 && current < 80 ? current : undefined
+}
+
+function readSleepMetrics(metrics, settings) {
+  if (!sensorEnabled(settings, 'sensorSleep')) return
   readSensor(Sleep, (sensor) => {
     const status = firstNumber(sensor.getSleepingStatus && sensor.getSleepingStatus(), ['status', 'sleepStatus', 'value'])
     if (typeof status === 'number') metrics.sleep_status = status
@@ -119,29 +151,30 @@ function readSleepMetrics(metrics) {
   })
 }
 
-function readWatchMetrics(heart_rate) {
+function readWatchMetrics(heart_rate, settings) {
   const metrics = {}
   if (heart_rate > 0) metrics.heart_rate = heart_rate
 
-  const battery = readSensor(Battery, (sensor) => sensor.getCurrent())
+  const battery = sensorEnabled(settings, 'sensorBattery') ? readSensor(Battery, (sensor) => sensor.getCurrent()) : undefined
   if (typeof battery === 'number') metrics.battery_percent = battery
 
-  const wear = readSensor(Wear, (sensor) => sensor.getStatus())
+  const wear = sensorEnabled(settings, 'sensorWear') ? readSensor(Wear, (sensor) => sensor.getStatus()) : undefined
   if (typeof wear === 'number') metrics.wear_status = wear
 
-  readSleepMetrics(metrics)
+  readSleepMetrics(metrics, settings)
 
-  const spo2 = readBloodOxygen()
+  const spo2 = readBloodOxygen(settings)
   if (spo2 > 0) metrics.spo2 = spo2
 
-  const temp = readSensor(BodyTemperature, (sensor) => sensor.getCurrent())
+  const temp = sensorEnabled(settings, 'sensorBodyTemp') ? readSensor(BodyTemperature, (sensor) => sensor.getCurrent()) : undefined
   const tempValue = firstNumber(temp, ['current', 'temperature', 'value'])
-  if (typeof tempValue === 'number' && tempValue > -100) metrics.body_temperature = tempValue
+  const normalizedTemp = normalizeBodyTemperature(tempValue)
+  if (typeof normalizedTemp === 'number') metrics.body_temperature = normalizedTemp
 
-  const stand = readSensor(Stand, (sensor) => ({
+  const stand = sensorEnabled(settings, 'sensorStand') ? readSensor(Stand, (sensor) => ({
     current: sensor.getCurrent && sensor.getCurrent(),
     target: sensor.getTarget && sensor.getTarget(),
-  }))
+  })) : undefined
   if (stand) {
     const current = firstNumber(stand.current, ['current', 'count', 'value'])
     const target = firstNumber(stand.target, ['target', 'count', 'value'])
@@ -149,19 +182,19 @@ function readWatchMetrics(heart_rate) {
     if (typeof target === 'number') metrics.stand_target = target
   }
 
-  const stress = readSensor(Stress, (sensor) => sensor.getCurrent())
+  const stress = sensorEnabled(settings, 'sensorStress') ? readSensor(Stress, (sensor) => sensor.getCurrent()) : undefined
   if (stress && typeof stress.value === 'number') metrics.stress = stress.value
 
-  const step = readSensor(Step, (sensor) => sensor.getCurrent())
+  const step = sensorEnabled(settings, 'sensorStep') ? readSensor(Step, (sensor) => sensor.getCurrent()) : undefined
   if (typeof step === 'number') metrics.steps = step
 
-  const calorie = readSensor(Calorie, (sensor) => sensor.getCurrent())
+  const calorie = sensorEnabled(settings, 'sensorCalorie') ? readSensor(Calorie, (sensor) => sensor.getCurrent()) : undefined
   if (typeof calorie === 'number') metrics.calorie = calorie
 
-  const barometer = readSensor(Barometer, (sensor) => ({
+  const barometer = sensorEnabled(settings, 'sensorBarometer') ? readSensor(Barometer, (sensor) => ({
     air_pressure: sensor.getAirPressure(),
     altitude: sensor.getAltitude(),
-  }))
+  })) : undefined
   if (barometer) {
     if (typeof barometer.air_pressure === 'number') metrics.air_pressure = barometer.air_pressure
     if (typeof barometer.altitude === 'number') metrics.altitude = barometer.altitude
@@ -339,7 +372,8 @@ Page(
 
     onInit() {
       this.autoTimerId = null
-      const initialHR = readHeartRate()
+      this.remoteSettings = { sensors: DEFAULT_SENSORS }
+      const initialHR = readHeartRate(this.remoteSettings)
       if (this.heartRateWidget && initialHR > 0) {
         this.heartRateWidget.setProperty(prop.TEXT, String(initialHR))
       }
@@ -382,25 +416,32 @@ Page(
         return Promise.resolve()
       }
 
-      const heart_rate = readHeartRate()
-      if (this.heartRateWidget && heart_rate > 0) {
-        this.heartRateWidget.setProperty(prop.TEXT, String(heart_rate))
-      }
-
       this.state.syncing = true
       this.updateStatus('同步中')
 
       return this.request({
+        method: 'watch.settings',
+        params: {},
+      })
+        .then((settings) => {
+          this.remoteSettings = settings || { sensors: DEFAULT_SENSORS }
+          const heart_rate = readHeartRate(this.remoteSettings)
+          if (this.heartRateWidget && heart_rate > 0) {
+            this.heartRateWidget.setProperty(prop.TEXT, String(heart_rate))
+          }
+          return this.request({
         method: 'watch.snapshot',
         params: {
           force,
-          relay_mode: 'phone-side',
+          relay_mode: this.remoteSettings.relay_mode || 'phone-side',
           heart_rate,
-          watch_metrics: readWatchMetrics(heart_rate),
+          watch_metrics: readWatchMetrics(heart_rate, this.remoteSettings),
           recorded_at: now,
         },
       })
-        .then((result) => {
+            .then((result) => ({ result, heart_rate }))
+        })
+        .then(({ result, heart_rate }) => {
           this.state.lastSyncTime = Date.now()
           if (result && result.skipped) {
             const wait = result.wait_ms ? ` ${formatWait(result.wait_ms)}` : ''

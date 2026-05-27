@@ -3,6 +3,10 @@
     <application>
         <receiver
             android:name=".system.LsposedBridgeReceiver"
-            android:exported="true" />
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.monika.dashboard.LSPOSED_STATUS" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

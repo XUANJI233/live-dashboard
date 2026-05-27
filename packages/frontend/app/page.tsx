@@ -160,11 +160,6 @@ function HomeInner() {
         <>
           <BodySnapshot device={selectedDevice} records={healthRecords} />
 
-          {/* 将健康数据也展示在页面顶部，突出身体信息而不是仅放在设备侧栏 */}
-          <div className="w-full">
-            <HealthData selectedDate={selectedDate} deviceId={selectedDevice?.device_id} />
-          </div>
-
           {selectedDevice && <CurrentStatus device={selectedDevice} sleepStatus={latestHealthValue(healthRecords, "sleep_status")} />}
 
           <div className="grid gap-6 lg:grid-cols-[14rem_minmax(0,1fr)_20rem]">
@@ -288,6 +283,7 @@ function DeviceOverview({ devices }: { devices: DeviceState[] }) {
 }
 
 function BodySnapshot({ device, records }: { device: DeviceState | undefined; records: HealthRecord[] }) {
+  const [expanded, setExpanded] = useState(false);
   type BodyMetric = { label: string; value: string; unit: string; at?: string };
   const latest = new Map<string, HealthRecord>();
   for (const record of records) {
@@ -335,18 +331,39 @@ function BodySnapshot({ device, records }: { device: DeviceState | undefined; re
   ].filter(Boolean) as BodyMetric[]);
 
   if (items.length === 0) return null;
+  const preview = items.slice(0, 5);
 
   return (
-    <section className="mb-4 flex flex-wrap gap-2">
-      {items.map((item) => (
-        <div key={item.label} className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 min-w-[5.5rem]">
-          <div className="text-[10px] text-[var(--color-text-muted)]">{item.label}</div>
-          <div className="font-mono text-sm text-[var(--color-primary)]">
-            {item.value}
-            {item.unit && <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">{item.unit}</span>}
+    <section className="mb-4 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {preview.map((item) => (
+          <div key={item.label} className="min-w-[5.5rem]">
+            <div className="text-[10px] text-[var(--color-text-muted)]">{item.label}</div>
+            <div className="font-mono text-sm text-[var(--color-primary)]">
+              {item.value}
+              {item.unit && <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">{item.unit}</span>}
+            </div>
           </div>
+        ))}
+        {items.length > preview.length && (
+          <button type="button" className="pill-btn ml-auto px-3 py-1 text-xs" onClick={() => setExpanded((v) => !v)}>
+            {expanded ? "收起" : "详情"}
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {items.slice(preview.length).map((item) => (
+            <div key={item.label} className="rounded border border-[var(--color-border)] px-3 py-2">
+              <div className="text-[10px] text-[var(--color-text-muted)]">{item.label}</div>
+              <div className="font-mono text-sm text-[var(--color-primary)]">
+                {item.value}
+                {item.unit && <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">{item.unit}</span>}
+              </div>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
     </section>
   );
 }

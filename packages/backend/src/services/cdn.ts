@@ -29,3 +29,14 @@ export function noStore(response: Response): Response {
 export function currentHourWindow(date = new Date()): string {
   return date.toISOString().slice(0, 13).replace(/[-T:]/g, "");
 }
+
+export function currentMessageSlot(date = new Date(), slotMinutes = 10): string {
+  const safeSlot = Math.max(1, Math.min(60, Math.floor(slotMinutes)));
+  const roundedMinute = Math.floor(date.getUTCMinutes() / safeSlot) * safeSlot;
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const hour = String(date.getUTCHours()).padStart(2, "0");
+  const minute = String(roundedMinute).padStart(2, "0");
+  return `${year}${month}${day}${hour}${minute}`;
+}

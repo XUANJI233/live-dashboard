@@ -21,6 +21,7 @@ import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.network.ReportClient
 import com.monika.dashboard.realtime.MessageSocketManager
 import com.monika.dashboard.system.RootSystemCollector
+import com.monika.dashboard.system.LsposedConfigBridge
 import com.monika.dashboard.system.LocationSnapshot
 import com.monika.dashboard.system.SystemSnapshot
 import com.monika.dashboard.system.SystemSnapshotStore
@@ -114,8 +115,16 @@ class HeartbeatWorker(
             val uploadForeground = settings.uploadForeground.first()
             val uploadMedia = settings.uploadMedia.first()
             val uploadNetwork = settings.uploadNetwork.first()
+            if (BuildConfig.PRIVILEGED_FEATURES && capabilityMode == "lsposed") {
+                LsposedConfigBridge.publish(applicationContext, settings)
+                DebugLog.log("心跳Worker", "LSPosed直传模式，APK跳过状态上报")
+                return Result.success()
+            }
             val snapshot = collectSystemSnapshot(capabilityMode, uploadInputState, uploadForeground, uploadMedia)
-            val appId = snapshot.foreground?.packageName ?: "idle"
+            val appId = snapshot.foreground?.packageName
+                ?: snapshot.media?.packageName
+                ?: snapshot.media?.app
+                ?: "idle"
             val windowTitle = snapshot.primaryDisplayTitle()
             val vpnState = if (uploadVpnStatus) getVpnState() else null
             val location = if (uploadLocation) getLowPowerLocation() else null
@@ -136,7 +145,7 @@ class HeartbeatWorker(
             )
 
             if (result.isSuccess) {
-                DebugLog.log("心跳Worker", "上报成功: $appId")
+                DebugLog.log("心跳Worker", "上报成功: $appId ${windowTitle.take(80)}")
                 markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, true, "OK")
                 Log.i(TAG, "Heartbeat sent: $appId")
             } else {

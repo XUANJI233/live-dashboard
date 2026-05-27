@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { authenticateToken } from "../middleware/auth";
-import { currentHourWindow, withCdnHeaders } from "./cdn";
+import { currentHourWindow, currentMessageSlot, withCdnHeaders } from "./cdn";
 import { verifyViewerToken, viewerTokenFromRequest } from "./viewer-auth";
 import type { DeviceInfo } from "../types";
 import type { ServerWebSocket } from "bun";
@@ -429,6 +429,28 @@ export function handlePublicMessages(req: Request): Response {
   }
 
   const url = new URL(req.url);
+  const slotParam = url.searchParams.get("slot");
+  if (slotParam) {
+    if (!/^\d{12}$/.test(slotParam)) {
+      return Response.json({ error: "slot must be YYYYMMDDHHmm" }, { status: 400 });
+    }
+    const year = Number(slotParam.slice(0, 4));
+    const month = Number(slotParam.slice(4, 6)) - 1;
+    const day = Number(slotParam.slice(6, 8));
+    const hour = Number(slotParam.slice(8, 10));
+    const minute = Number(slotParam.slice(10, 12));
+    const start = new Date(Date.UTC(year, month, day, hour, minute));
+    if (isNaN(start.getTime())) return Response.json({ error: "invalid slot" }, { status: 400 });
+    const end = new Date(start.getTime() + 10 * 60_000);
+    const rows = getPublicMessagesByWindow.all(start.toISOString(), end.toISOString());
+    const currentSlot = slotParam === currentMessageSlot();
+    return withCdnHeaders(
+      Response.json({ slot: slotParam, messages: rows }),
+      ["public-messages", `public-messages-slot-${slotParam}`],
+      currentSlot ? 10 : 60 * 60 * 24 * 30,
+    );
+  }
+
   const windowParam = url.searchParams.get("window") || currentHourWindow();
   if (!/^\d{10}$/.test(windowParam)) {
     return Response.json({ error: "window must be YYYYMMDDHH" }, { status: 400 });

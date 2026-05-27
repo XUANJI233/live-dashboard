@@ -76,6 +76,7 @@ AppSettingsPage({
   boolSelect(label, key) {
     return Select({
       label,
+      settingsKey: key,
       value: this.state.draft[key] || DEFAULTS[key],
       options: [
         { name: '开启', value: '1' },
@@ -91,18 +92,21 @@ AppSettingsPage({
     return Section({}, [
       TextInput({
         label: '服务器地址',
+        settingsKey: 'serverUrl',
         value: this.state.draft.serverUrl,
         placeholder: 'https://your-dashboard.example.com:9443',
         onChange: (value) => this.setDraft('serverUrl', String(value || '').trim()),
       }),
       TextInput({
         label: '设备令牌',
+        settingsKey: 'token',
         value: this.state.draft.token,
         placeholder: '这里填仪表板给的小令牌',
         onChange: (value) => this.setDraft('token', String(value || '').trim()),
       }),
       Select({
         label: '中继模式',
+        settingsKey: 'relayMode',
         value: this.state.draft.relayMode || DEFAULTS.relayMode,
         options: [
           { name: '手机端，低功耗', value: 'phone-side' },
@@ -111,6 +115,7 @@ AppSettingsPage({
       }),
       TextInput({
         label: '最小间隔 (毫秒)',
+        settingsKey: 'minIntervalMs',
         value: this.state.draft.minIntervalMs,
         placeholder: DEFAULTS.minIntervalMs,
         onChange: (value) => this.setDraft('minIntervalMs', cleanInterval(value)),

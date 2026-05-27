@@ -37,8 +37,15 @@ function fingerprint() {
   ].join("|");
 }
 
-function currentWindow() {
-  return new Date().toISOString().slice(0, 13).replace(/[-T:]/g, "");
+function currentMessageSlot() {
+  const date = new Date();
+  const roundedMinute = Math.floor(date.getUTCMinutes() / 10) * 10;
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const hour = String(date.getUTCHours()).padStart(2, "0");
+  const minute = String(roundedMinute).padStart(2, "0");
+  return `${year}${month}${day}${hour}${minute}`;
 }
 
 function historyKey(deviceId?: string) {
@@ -186,7 +193,7 @@ export default function VisitorMessages({ device }: Props) {
     const loadPublic = async () => {
       try {
         const identity = await ensureViewerToken();
-        const url = `${API_BASE}/api/messages/public?window=${currentWindow()}`;
+        const url = `${API_BASE}/api/messages/public?slot=${currentMessageSlot()}`;
         const res = await fetch(url, { headers: { Authorization: `Bearer ${identity.token}` } });
         if (!res.ok || stopped) return;
         const data = await res.json();

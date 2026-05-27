@@ -22,6 +22,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.repeatOnLifecycle
 import com.monika.dashboard.data.DebugLog
+import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.data.UploadItem
 import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.health.BackgroundReadAvailability
@@ -44,6 +45,8 @@ fun StatusScreen() {
     var bgPermGranted by remember { mutableStateOf(false) }
     // Always create manager (constructor is cheap, client is lazy)
     val hcManager = remember(context) { HealthConnectManager(context.applicationContext) }
+    val settings = remember(context) { SettingsStore(context.applicationContext) }
+    val debugMode by settings.debugMode.collectAsState(initial = false)
 
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -365,71 +368,87 @@ fun StatusScreen() {
             }
         }
 
-        val lastPayload = remember(tick) { UploadStatusStore.getLastPayload(context) }
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 80.dp, max = 260.dp)
-                .border(1.dp, Border, RoundedCornerShape(8.dp)),
-            shape = RoundedCornerShape(8.dp)
-        ) {
-            Text(
-                text = lastPayload.ifBlank { "暂无上传 payload" },
-                style = MaterialTheme.typography.bodySmall,
-                color = TextMuted,
-                modifier = Modifier.padding(12.dp)
-            )
-        }
-
-        Divider(color = Border, thickness = 1.dp)
-
-        // Debug log
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(text = "调试日志", style = MaterialTheme.typography.titleMedium)
-            TextButton(onClick = { DebugLog.clear() }) {
-                Text("清空", style = MaterialTheme.typography.bodySmall)
+        if (debugMode) {
+            val lastPayload = remember(tick) { UploadStatusStore.getLastPayload(context) }
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 80.dp, max = 260.dp)
+                    .border(1.dp, Border, RoundedCornerShape(8.dp)),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text(
+                    text = lastPayload.ifBlank { "暂无上传 payload" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMuted,
+                    modifier = Modifier.padding(12.dp)
+                )
             }
-        }
 
-        val logLines = remember(tick) { DebugLog.lines }
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 100.dp, max = 300.dp)
-                .border(1.dp, Border, RoundedCornerShape(8.dp)),
-            shape = RoundedCornerShape(8.dp)
-        ) {
-            if (logLines.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "暂无日志",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextMuted
-                    )
+            Divider(color = Border, thickness = 1.dp)
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = "调试日志", style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = { DebugLog.clear() }) {
+                    Text("清空", style = MaterialTheme.typography.bodySmall)
                 }
-            } else {
-                val logScrollState = rememberScrollState()
-                Column(
-                    modifier = Modifier
-                        .padding(8.dp)
-                        .verticalScroll(logScrollState)
-                ) {
-                    logLines.forEach { line ->
+            }
+
+            val logLines = remember(tick) { DebugLog.lines }
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 100.dp, max = 300.dp)
+                    .border(1.dp, Border, RoundedCornerShape(8.dp)),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                if (logLines.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Text(
-                            text = line,
+                            text = "暂无日志",
                             style = MaterialTheme.typography.bodySmall,
-                            color = TextMuted,
-                            modifier = Modifier.padding(vertical = 1.dp)
+                            color = TextMuted
                         )
                     }
+                } else {
+                    val logScrollState = rememberScrollState()
+                    Column(
+                        modifier = Modifier
+                            .padding(8.dp)
+                            .verticalScroll(logScrollState)
+                    ) {
+                        logLines.forEach { line ->
+                            Text(
+                                text = line,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextMuted,
+                                modifier = Modifier.padding(vertical = 1.dp)
+                            )
+                        }
+                    }
                 }
+            }
+        } else {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Text(
+                    text = "调试模式已关闭。需要查看上传 payload 时，请在设置页开启调试模式。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMuted,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                )
             }
         }
     }

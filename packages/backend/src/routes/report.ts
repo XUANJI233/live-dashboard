@@ -135,6 +135,8 @@ export async function handleReport(req: Request): Promise<Response> {
       if (energyPolicy) deviceExtra.energy_policy = energyPolicy;
       const minIntervalMs = cleanFiniteNumber(deviceBody.min_interval_ms, 0, 24 * 60 * 60 * 1000);
       if (minIntervalMs != null) deviceExtra.min_interval_ms = Math.round(minIntervalMs);
+      const deviceKind = cleanString(deviceBody.device_kind, MAX_SHORT_LENGTH);
+      if (deviceKind) deviceExtra.device_kind = deviceKind;
       if (Object.keys(deviceExtra).length > 0) extra.device = deviceExtra;
     }
 

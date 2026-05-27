@@ -774,6 +774,8 @@ export function getAppDescription(appName: string, displayTitle?: string, music?
     // Unknown app with a display title → show it
     if (displayTitle) {
       base = `正在玩「${displayTitle}」喵!`;
+    } else if (appName && appLower !== "unknown") {
+      base = `正在用${appName}喵~`;
     } else {
       base = DEFAULT_DESCRIPTION;
     }
@@ -783,3 +785,4 @@ export function getAppDescription(appName: string, displayTitle?: string, music?
 
   return base;
 }
+

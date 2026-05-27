@@ -6,10 +6,31 @@ const MAX_AUTO_INTERVAL_MS = 60 * 60 * 1000
 const MIN_FORCE_INTERVAL_MS = 30 * 1000
 const MAX_RECORDS_PER_SYNC = 20
 const DEFAULT_RELAY_MODE = 'phone-side'
+const SENSOR_KEYS = [
+  'sensorHeartRate',
+  'sensorBattery',
+  'sensorWear',
+  'sensorSleep',
+  'sensorSpo2',
+  'sensorBodyTemp',
+  'sensorStand',
+  'sensorStress',
+  'sensorStep',
+  'sensorCalorie',
+  'sensorBarometer',
+]
 
 function readSetting(settings, key, fallback = '') {
-  const value = settings.getItem(key)
-  return value == null || value === '' ? fallback : value
+  try {
+    if (typeof sideService !== 'undefined' && sideService.appInfo && sideService.appInfo.settingsStorage) {
+      const direct = sideService.appInfo.settingsStorage[key]
+      if (direct != null && direct !== '') return direct
+    }
+    const value = settings && settings.getItem ? settings.getItem(key) : undefined
+    return value == null || value === '' ? fallback : value
+  } catch (_) {
+    return fallback
+  }
 }
 
 function trimServerUrl(url) {
@@ -41,9 +62,17 @@ function clamp(value, min, max) {
 }
 
 function enabled(settings, key, fallback = true) {
-  const value = settings.getItem(key)
+  const value = readSetting(settings, key, fallback ? '1' : '0')
   if (value == null || value === '') return fallback
   return value === '1' || value === true || value === 'true'
+}
+
+function enabledSensors(settings) {
+  const sensors = {}
+  SENSOR_KEYS.forEach((key) => {
+    sensors[key] = enabled(settings, key, true)
+  })
+  return sensors
 }
 
 function addMetricRecord(records, settings, key, type, value, unit, timestamp) {
@@ -68,6 +97,15 @@ AppSideService(
     },
 
     onRequest(req, res) {
+      if (req.method === 'watch.settings') {
+        res(null, {
+          relay_mode: readSetting(this.settings, 'relayMode', DEFAULT_RELAY_MODE),
+          min_interval_ms: asNumber(readSetting(this.settings, 'minIntervalMs', DEFAULT_MIN_INTERVAL_MS), DEFAULT_MIN_INTERVAL_MS),
+          sensors: enabledSensors(this.settings),
+        })
+        return
+      }
+
       if (req.method !== 'watch.snapshot') {
         res('unsupported method')
         return
@@ -126,6 +164,7 @@ AppSideService(
         timestamp: new Date(now).toISOString(),
         extra: {
           device: {
+            device_kind: 'watch',
             capability_mode: 'normal',
             relay_mode: relayMode,
             energy_policy: 'balanced',
