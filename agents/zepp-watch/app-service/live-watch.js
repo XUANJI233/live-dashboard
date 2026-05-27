@@ -213,13 +213,17 @@ function syncNow() {
   })
 
   // httpRequest is provided by zml messaging plugin for device-side HTTP.
-  // If unavailable in the device context, fall back: collect data and
-  // return it for the companion to upload via BLE/messaging.
+  // If unavailable in the device context, cache data locally for later upload.
   // In zeus preview, httpRequest should work if the simulator network is active.
   if (typeof httpRequest !== 'function') {
-    console.warn('[LiveWatch:device] httpRequest not available — data not uploaded')
+    console.warn('[LiveWatch:device] httpRequest not available — caching data locally')
+    cacheDataForLaterUpload(body)
     return
   }
+  
+  // Try to upload any previously cached data first
+  uploadCachedData()
+  
   httpRequest({
     method: 'POST',
     url: serverUrl.replace(/\/+$/, '') + '/api/report',
@@ -240,6 +244,107 @@ function syncNow() {
   }).catch(err => {
     console.error('[LiveWatch:device] Sync failed: ' + (err.message || err))
   })
+}
+
+// ── Local Data Cache ──────────
+
+const CACHE_FILE = 'data://live_watch_cache.json'
+const MAX_CACHE_ENTRIES = 100 // Prevent unbounded growth
+
+function cacheDataForLaterUpload(body) {
+  try {
+    const fs = require('@zos/fs')
+    let cache = []
+    
+    // Read existing cache
+    try {
+      const existing = fs.readFileSync(CACHE_FILE)
+      if (existing) {
+        cache = JSON.parse(existing)
+        if (!Array.isArray(cache)) cache = []
+      }
+    } catch (e) { /* File doesn't exist or is invalid */ }
+    
+    // Add new entry with timestamp
+    cache.push({
+      timestamp: Date.now(),
+      body: body,
+    })
+    
+    // Limit cache size (keep most recent entries)
+    if (cache.length > MAX_CACHE_ENTRIES) {
+      cache = cache.slice(-MAX_CACHE_ENTRIES)
+    }
+    
+    // Write back to file
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache))
+    console.log('[LiveWatch:device] Cached data for later upload (total: ' + cache.length + ')')
+  } catch (e) {
+    console.warn('[LiveWatch:device] Failed to cache data: ' + e.message)
+  }
+}
+
+function uploadCachedData() {
+  try {
+    const fs = require('@zos/fs')
+    let cache = []
+    
+    try {
+      const existing = fs.readFileSync(CACHE_FILE)
+      if (existing) {
+        cache = JSON.parse(existing)
+        if (!Array.isArray(cache) || cache.length === 0) return
+      } else {
+        return // No cache file
+      }
+    } catch (e) {
+      return // No cache or invalid
+    }
+    
+    console.log('[LiveWatch:device] Uploading ' + cache.length + ' cached entries')
+    
+    // Upload each cached entry
+    let successCount = 0
+    for (const entry of cache) {
+      try {
+        const res = httpRequest({
+          method: 'POST',
+          url: serverUrl.replace(/\/+$/, '') + '/api/report',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + token,
+          },
+          body: entry.body,
+          timeout: 10_000,
+        })
+        
+        if (res.status >= 200 && res.status < 300) {
+          successCount++
+        } else {
+          console.warn('[LiveWatch:device] Cached upload HTTP ' + res.status)
+          break // Stop on first failure
+        }
+      } catch (err) {
+        console.error('[LiveWatch:device] Cached upload failed: ' + (err.message || err))
+        break // Stop on first failure
+      }
+    }
+    
+    if (successCount > 0) {
+      console.log('[LiveWatch:device] Uploaded ' + successCount + ' cached entries')
+      // Remove successfully uploaded entries
+      cache = cache.slice(successCount)
+      if (cache.length === 0) {
+        // Delete cache file if empty
+        try { fs.unlinkSync(CACHE_FILE) } catch (e) { /* ignore */ }
+      } else {
+        // Write remaining entries back
+        fs.writeFileSync(CACHE_FILE, JSON.stringify(cache))
+      }
+    }
+  } catch (e) {
+    console.warn('[LiveWatch:device] Failed to upload cached data: ' + e.message)
+  }
 }
 
 // ── Historical Heart Rate Upload ──────────
