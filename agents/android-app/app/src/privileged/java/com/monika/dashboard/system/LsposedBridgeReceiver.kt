@@ -9,7 +9,7 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_STATUS) return
         val packageName = intent.getStringExtra(EXTRA_PACKAGE)
-            ?.takeIf { it.isNotBlank() && it != "android" && it != "com.android.systemui" }
+            ?.takeIf { it.isNotBlank() && it != "idle" && it != "android" && it != "com.android.systemui" }
         val foreground = ForegroundInfo(
             packageName = packageName,
             appName = intent.getStringExtra(EXTRA_APP_NAME),

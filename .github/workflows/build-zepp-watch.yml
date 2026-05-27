@@ -1,0 +1,45 @@
+name: Build Zepp Watch
+
+on:
+  push:
+    branches: ["android-source"]
+    paths:
+      - "agents/zepp-watch/**"
+      - ".github/workflows/build-zepp-watch.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "agents/zepp-watch/**"
+      - ".github/workflows/build-zepp-watch.yml"
+  workflow_dispatch:
+
+jobs:
+  zepp-watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Install Zepp dependencies
+        working-directory: agents/zepp-watch
+        run: npm install
+      - name: Install Zepp OS CLI
+        run: npm install --global @zeppos/zeus-cli
+      - name: Validate Zepp project layout
+        working-directory: agents/zepp-watch
+        run: |
+          pwd
+          find . -maxdepth 4 -type f | sort
+          ls -la assets/gt.r/icon.png assets/gt.s/icon.png
+          node -e "const fs=require('fs'); for (const p of ['app.json','assets/gt.r/icon.png','assets/gt.s/icon.png']) console.log(p, fs.existsSync(p), fs.statSync(p).size)"
+      - name: Build Zepp watch package
+        working-directory: agents/zepp-watch
+        run: zeus build
+      - name: Upload Zepp watch package
+        uses: actions/upload-artifact@v6
+        with:
+          name: zepp-watch-dist
+          path: agents/zepp-watch/dist/**
+          if-no-files-found: error
+          retention-days: 14

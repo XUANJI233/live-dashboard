@@ -123,8 +123,8 @@ class HeartbeatWorker(
 
         val battery = getBatteryInfo()
         val snapshot = collectSystemSnapshot(capabilityMode, uploadInputState, uploadForeground, uploadMedia)
-        val appId = snapshot.foreground?.packageName
-            ?: snapshot.media?.packageName
+        val appId = snapshot.foreground?.packageName?.takeIf { it.isNotBlank() && it != "idle" }
+            ?: snapshot.media?.packageName?.takeIf { snapshot.media?.playing == true }
             ?: snapshot.media?.app
             ?: "idle"
         val windowTitle = snapshot.primaryDisplayTitle()
@@ -331,17 +331,18 @@ class HeartbeatWorker(
     }
 
     private fun SystemSnapshot.hasUsefulPrivilegedData(): Boolean {
-        return foreground?.packageName?.isNotBlank() == true ||
-            foreground?.appName?.isNotBlank() == true ||
+        val foregroundUseful = foreground?.packageName?.takeIf { it != "idle" }?.isNotBlank() == true ||
+            foreground?.appName?.takeIf { it != "idle" }?.isNotBlank() == true ||
             foreground?.title?.isNotBlank() == true ||
-            foreground?.activity?.isNotBlank() == true ||
+            foreground?.activity?.isNotBlank() == true
+        return foregroundUseful ||
             input?.inputActive != null ||
             media?.title?.isNotBlank() == true ||
             media?.playing == true
     }
 
     private fun SystemSnapshot.primaryDisplayTitle(): String {
-        val appName = foreground?.appName?.takeIf { it.isNotBlank() }
+        val appName = foreground?.appName?.takeIf { it.isNotBlank() && it != "idle" }
         val foregroundTitle = foreground?.title?.takeIf { it.isNotBlank() }
         val mediaTitle = media?.title?.takeIf { media.playing == true && it.isNotBlank() }
         val mediaApp = media?.app?.takeIf { it.isNotBlank() }
@@ -350,6 +351,10 @@ class HeartbeatWorker(
                 "正在用${appName}，后台${mediaApp}正在播放${mediaTitle}"
             appName != null && mediaTitle != null ->
                 "正在用${appName}播放${mediaTitle}"
+            appName == null && mediaTitle != null && mediaApp != null ->
+                "${mediaApp}正在播放${mediaTitle}"
+            appName == null && mediaTitle != null ->
+                "正在播放${mediaTitle}"
             appName != null && foregroundTitle != null ->
                 "正在用${appName}看${foregroundTitle}"
             appName != null -> "正在用${appName}"

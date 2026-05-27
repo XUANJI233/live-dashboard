@@ -692,10 +692,11 @@ public final class MonikaXposedModule extends XposedModule {
     private String buildDirectReportBody(long now) {
         try {
             String appId = directUploadForeground ? safeString(foregroundPackage) : "";
-            if (appId.length() == 0 || "idle".equals(appId)) {
+            boolean foregroundIsIdle = appId.length() == 0 || "idle".equals(appId);
+            if (foregroundIsIdle) {
                 // When idle but media is playing, use the media package as app_id.
                 // Avoids displaying "idle" when user is actually listening.
-                if (directUploadMedia && mediaPackage.length() > 0) {
+                if (directUploadMedia && mediaPlaying && mediaPackage.length() > 0) {
                     appId = mediaPackage;
                 } else {
                     appId = "idle";
@@ -712,7 +713,7 @@ public final class MonikaXposedModule extends XposedModule {
             String wm = getWindowingMode();
             if (wm != null) device.put("window_mode", wm);
             extra.put("device", device);
-            if (directUploadForeground && foregroundPackage.length() > 0) {
+            if (directUploadForeground && foregroundPackage.length() > 0 && !"idle".equals(foregroundPackage)) {
                 JSONObject foreground = new JSONObject();
                 foreground.put("package_name", foregroundPackage);
                 if (foregroundApp.length() > 0) foreground.put("app_name", foregroundApp);
@@ -810,17 +811,26 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private String primaryDisplayTitle() {
-        if ("idle".equals(foregroundPackage) || "idle".equals(foregroundApp)) return "暂时离开";
-        if (foregroundApp.length() > 0 && mediaPlaying && mediaTitle.length() > 0 && mediaApp.length() > 0 && !mediaApp.equals(foregroundApp)) {
+        boolean foregroundValid = foregroundApp.length() > 0
+                && !"idle".equals(foregroundPackage)
+                && !"idle".equals(foregroundApp);
+        if (foregroundValid && mediaPlaying && mediaTitle.length() > 0 && mediaApp.length() > 0 && !mediaApp.equals(foregroundApp)) {
             return "正在用" + foregroundApp + "，后台" + mediaApp + "正在播放" + mediaTitle;
         }
-        if (foregroundApp.length() > 0 && mediaPlaying && mediaTitle.length() > 0) {
+        if (foregroundValid && mediaPlaying && mediaTitle.length() > 0) {
             return "正在用" + foregroundApp + "播放" + mediaTitle;
         }
-        if (foregroundApp.length() > 0 && foregroundTitle.length() > 0) {
+        if (!foregroundValid && mediaPlaying && mediaTitle.length() > 0 && mediaApp.length() > 0) {
+            return mediaApp + "正在播放" + mediaTitle;
+        }
+        if (!foregroundValid && mediaPlaying && mediaTitle.length() > 0) {
+            return "正在播放" + mediaTitle;
+        }
+        if (foregroundValid && foregroundTitle.length() > 0) {
             return "正在用" + foregroundApp + "看" + foregroundTitle;
         }
-        if (foregroundApp.length() > 0) return "正在用" + foregroundApp;
+        if (foregroundValid) return "正在用" + foregroundApp;
+        if ("idle".equals(foregroundPackage) || "idle".equals(foregroundApp)) return "暂时离开";
         return "";
     }
 
@@ -990,6 +1000,7 @@ public final class MonikaXposedModule extends XposedModule {
         private static final int OP_PONG  = 0xA;
         private static final String WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         private static final int RECEIVE_BUF = 8192;
+        private final byte[] recvBuf = new byte[RECEIVE_BUF];
 
         private final String wsUrl;
         private final String authHeader;
@@ -1200,7 +1211,6 @@ public final class MonikaXposedModule extends XposedModule {
         }
 
         private void readerLoop() {
-            byte[] buf = new byte[RECEIVE_BUF];
             try {
                 while (running && connected) {
                     byte[] frame = readFrame();
@@ -1292,14 +1302,14 @@ public final class MonikaXposedModule extends XposedModule {
                 int offset = 1;
                 int remaining = len;
                 while (remaining > 0) {
-                    int read = in.read(buf, 0, Math.min(buf.length, remaining));
+                    int read = in.read(recvBuf, 0, Math.min(recvBuf.length, remaining));
                     if (read < 0) return null;
                     if (masked) {
                         for (int i = 0; i < read; i++) {
-                            buf[i] ^= maskKey[(offset - 1 + i) % 4];
+                            recvBuf[i] ^= maskKey[(offset - 1 + i) % 4];
                         }
                     }
-                    System.arraycopy(buf, 0, result, offset, read);
+                    System.arraycopy(recvBuf, 0, result, offset, read);
                     offset += read;
                     remaining -= read;
                 }
