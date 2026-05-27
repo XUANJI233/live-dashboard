@@ -620,40 +620,13 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void loadDirectUploadConfig() {
         try {
-            java.io.File prefsFile = new java.io.File("/data/user_de/0/" + TARGET_PACKAGE + "/shared_prefs/monika_lsp_direct_upload.xml");
-            if (!prefsFile.exists()) {
-                prefsFile = new java.io.File("/data/data/" + TARGET_PACKAGE + "/shared_prefs/monika_lsp_direct_upload.xml");
-            }
-            if (!prefsFile.exists()) {
-                log(Log.INFO, TAG, "config file not found");
-                return;
-            }
-
-            java.io.InputStream in = new java.io.FileInputStream(prefsFile);
-            org.xmlpull.v1.XmlPullParser parser = android.util.Xml.newPullParser();
-            parser.setInput(in, "UTF-8");
-            int eventType = parser.getEventType();
-            while (eventType != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
-                if (eventType == org.xmlpull.v1.XmlPullParser.START_TAG) {
-                    String name = parser.getAttributeValue(null, "name");
-                    String type = parser.getName();
-                    if ("boolean".equals(type)) {
-                        boolean val = Boolean.parseBoolean(parser.getAttributeValue(null, "value"));
-                        if ("enabled".equals(name)) directUploadEnabled = val;
-                        else if ("upload_foreground".equals(name)) directUploadForeground = val;
-                        else if ("upload_media".equals(name)) directUploadMedia = val;
-                    } else if ("string".equals(type)) {
-                        String val = parser.nextText();
-                        if ("server_url".equals(name)) directServerUrl = val;
-                        else if ("token".equals(name)) directToken = val;
-                    } else if ("long".equals(type)) {
-                        long val = Long.parseLong(parser.getAttributeValue(null, "value"));
-                        if ("interval_ms".equals(name)) directIntervalMs = Math.max(MIN_DIRECT_UPLOAD_MS, val);
-                    }
-                }
-                eventType = parser.next();
-            }
-            in.close();
+            SharedPreferences prefs = getRemotePreferences("monika_lsp_direct_upload");
+            directUploadEnabled = prefs.getBoolean("enabled", false);
+            directServerUrl = prefs.getString("server_url", "");
+            directToken = prefs.getString("token", "");
+            directIntervalMs = Math.max(MIN_DIRECT_UPLOAD_MS, prefs.getLong("interval_ms", 30000L));
+            directUploadForeground = prefs.getBoolean("upload_foreground", true);
+            directUploadMedia = prefs.getBoolean("upload_media", true);
             log(Log.INFO, TAG, "config loaded: enabled=" + directUploadEnabled + " url=" + directServerUrl + " token=" + (directToken.length() > 0 ? "set" : "empty"));
         } catch (Throwable t) {
             log(Log.WARN, TAG, "load config failed: " + Log.getStackTraceString(t));
