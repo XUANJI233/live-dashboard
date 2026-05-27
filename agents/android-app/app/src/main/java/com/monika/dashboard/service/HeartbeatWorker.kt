@@ -507,6 +507,14 @@ class HeartbeatWorker(
                 runCatching { lm.getLastKnownLocation(provider) }.getOrNull()
             }.maxByOrNull { it.time } ?: return null
 
+            // Reject location data older than 30 minutes
+            val maxAgeMs = 30 * 60 * 1000L
+            val locationAge = System.currentTimeMillis() - best.time
+            if (locationAge > maxAgeMs) {
+                DebugLog.log("心跳Worker", "位置数据过期 (${locationAge / 1000}s), 跳过上报")
+                return null
+            }
+
             LocationSnapshot(
                 latitude = best.latitude,
                 longitude = best.longitude,
