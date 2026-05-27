@@ -56,6 +56,10 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long IDLE_DEBOUNCE_COUNT = 12; // 12 consecutive idle samples (~60s at 5s poll) before uploading
     private static final long WS_RETRY_BASE_MS = 30_000L;  // first retry delay
     private static final long WS_RETRY_MAX_MS = 300_000L;  // max retry delay (5 min)
+    
+    // Static instance for global access
+    private static MonikaXposedModule instance;
+    
     private volatile int idleConsecutiveCount = 0;
     private volatile long wsLastFailAt = 0L;
     private volatile long wsRetryDelayMs = WS_RETRY_BASE_MS;
@@ -126,6 +130,15 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String mediaTitle = "";
     private volatile String mediaArtist = "";
     private volatile String mediaState = "";
+
+    @Override
+    public void onModuleLoaded(@NonNull XposedModuleInterface.ModuleLoadedParam param) {
+        instance = this;
+        log(Log.INFO, TAG, "onModuleLoaded: isSystemServer=" + param.isSystemServer() 
+                + " process=" + param.getProcessName() 
+                + " apiVersion=" + getApiVersion() 
+                + " framework=" + getFrameworkName() + " v" + getFrameworkVersion());
+    }
 
     @Override
     public void onSystemServerStarting(@NonNull XposedModuleInterface.SystemServerStartingParam param) {
@@ -486,34 +499,112 @@ public final class MonikaXposedModule extends XposedModule {
      * On Android, browsers set the page title as the task description
      * (visible in the Recent Apps / task switcher). This is the most
      * reliable way to get page titles across Chrome, Firefox, and WebView browsers.
+     * 
+     * Enhanced with multiple fallback strategies based on open-source analysis:
+     * - getFocusedRootTaskInfo() (Android 11+)
+     * - getFocusedStackInfo() (Android 10)
+     * - getTasks() fallback (Android 9 and below)
+     * - ActivityTaskManagerService direct access
      */
     private String getFocusedTaskDescription() {
         try {
             Object service = getActivityTaskManagerService();
             if (service == null) return null;
+            
+            // Strategy 1: getFocusedRootTaskInfo (Android 11+)
             Object info = callAny(service, "getFocusedRootTaskInfo");
-            if (info == null) info = callAny(service, "getFocusedStackInfo");
-            if (info == null) return null;
-            // Try common field names: description, taskDescription, origDescription
-            Object desc = readField(info, "description");
-            if (desc == null) desc = readField(info, "taskDescription");
+            
+            // Strategy 2: getFocusedStackInfo (Android 10)
+            if (info == null) {
+                info = callAny(service, "getFocusedStackInfo");
+            }
+            
+            // Strategy 3: getTasks() fallback (Android 9 and below)
+            if (info == null) {
+                try {
+                    Method getTasks = service.getClass().getMethod("getTasks", int.class);
+                    @SuppressWarnings("unchecked")
+                    List<?> tasks = (List<?>) getTasks.invoke(service, 1);
+                    if (tasks != null && !tasks.isEmpty()) {
+                        Object topTask = tasks.get(0);
+                        // Try to get TaskInfo from RunningTaskInfo
+                        info = readField(topTask, "taskInfo");
+                        if (info == null) info = topTask;
+                    }
+                } catch (Throwable t) {
+                    log(Log.DEBUG, TAG, "getTasks fallback failed: " + t.getMessage());
+                }
+            }
+            
+            if (info == null) {
+                log(Log.DEBUG, TAG, "getFocusedTaskDescription: no task info available");
+                return null;
+            }
+            
+            // Try multiple field names for TaskDescription
+            Object desc = readField(info, "taskDescription");
+            if (desc == null) desc = readField(info, "description");
             if (desc == null) desc = readField(info, "origDescription");
+            
+            if (desc == null) {
+                log(Log.DEBUG, TAG, "getFocusedTaskDescription: taskDescription field is null");
+                return null;
+            }
             
             // desc might be an ActivityManager.TaskDescription object instead of CharSequence
             if (desc != null && !(desc instanceof CharSequence)) {
                 try {
+                    // Try getLabel() method (standard API)
                     Method getLabel = desc.getClass().getMethod("getLabel");
                     Object label = getLabel.invoke(desc);
-                    if (label instanceof CharSequence) desc = label;
+                    if (label instanceof CharSequence) {
+                        String result = ((CharSequence) label).toString().trim();
+                        if (result.length() > 0) {
+                            log(Log.DEBUG, TAG, "getFocusedTaskDescription: got label from TaskDescription.getLabel()");
+                            return result;
+                        }
+                    }
+                } catch (Throwable t) {
+                    log(Log.DEBUG, TAG, "getFocusedTaskDescription: getLabel() failed: " + t.getMessage());
+                }
+                
+                // Fallback: try getDescription() method
+                try {
+                    Method getDescription = desc.getClass().getMethod("getDescription");
+                    Object description = getDescription.invoke(desc);
+                    if (description instanceof CharSequence) {
+                        String result = ((CharSequence) description).toString().trim();
+                        if (result.length() > 0) {
+                            log(Log.DEBUG, TAG, "getFocusedTaskDescription: got description from TaskDescription.getDescription()");
+                            return result;
+                        }
+                    }
+                } catch (Throwable t) {
+                    log(Log.DEBUG, TAG, "getFocusedTaskDescription: getDescription() failed: " + t.getMessage());
+                }
+                
+                // Last resort: toString()
+                try {
+                    String str = desc.toString();
+                    if (str != null && str.length() > 0 && !str.contains("@")) {
+                        log(Log.DEBUG, TAG, "getFocusedTaskDescription: using toString() fallback");
+                        return str.trim();
+                    }
                 } catch (Throwable ignored) {}
             }
             
             if (desc instanceof CharSequence) {
                 String s = desc.toString().trim();
-                return s.length() > 0 ? s : null;
+                if (s.length() > 0) {
+                    log(Log.DEBUG, TAG, "getFocusedTaskDescription: got CharSequence directly");
+                    return s;
+                }
             }
+            
+            log(Log.DEBUG, TAG, "getFocusedTaskDescription: no valid description found");
             return null;
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "getFocusedTaskDescription failed: " + t.getClass().getSimpleName() + ": " + t.getMessage());
             return null;
         }
     }
