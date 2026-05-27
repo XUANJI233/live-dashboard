@@ -31,6 +31,9 @@
         "app-side": {
           "path": "side-service"
         },
+        "setting": {
+          "path": "setting/index"
+        },
         "app-event": {
           "path": "app-service/live-watch"
         }
