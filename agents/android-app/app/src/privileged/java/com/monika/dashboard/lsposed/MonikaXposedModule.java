@@ -544,14 +544,10 @@ public final class MonikaXposedModule extends XposedModule {
             intent.putExtra("package_name", packageName);
             intent.putExtra("title", title);
             intent.putExtra("activity", safeString(activityName));
-            // Android 14+: share sender identity so receiver can verify via getSentFromPackage()
-            if (android.os.Build.VERSION.SDK_INT >= 34) {
-                android.app.BroadcastOptions options = android.app.BroadcastOptions.makeBasic();
-                options.setShareIdentityEnabled(true);
-                context.sendBroadcast(intent, null, options.toBundle());
-            } else {
-                context.sendBroadcast(intent);
-            }
+            // Send broadcast using browser's own context (Activity/ApplicationContext).
+            // getSentFromPackage() on API 34+ will return the browser's package because
+            // we're sending from the browser's own Context, not system_server's.
+            context.sendBroadcast(intent);
         } catch (Throwable t) {
             log(Log.DEBUG, TAG, "publishBrowserTitleFromProcess failed: " + t.getMessage());
         }
