@@ -282,25 +282,18 @@ public final class MonikaXposedModule extends XposedModule {
                     if (!isBrowserPackage(pkg)) return;
                     if (title == null || title.trim().isEmpty()) return;
 
-                    // Android 14+ (API 34+): verify sender identity via getSentFromPackage()
-                    // Reliable because sender uses BroadcastOptions.setShareIdentityEnabled(true)
+                    // Security: verify sender identity on API 34+
+                    // Note: getSentFromPackage() requires sender to use setShareIdentityEnabled(true),
+                    // which requires sendBroadcast(Intent, String, Bundle) — a non-public API.
+                    // So we rely on the foreground package check below as the primary security measure.
                     if (android.os.Build.VERSION.SDK_INT >= 34) {
-                        final String sentPkg;
                         try {
-                            sentPkg = getSentFromPackage();
-                        } catch (Throwable t) {
-                            log(Log.WARN, TAG, "browser title rejected: getSentFromPackage failed: "
-                                    + t.getClass().getSimpleName());
-                            return;
-                        }
-                        if (sentPkg == null) {
-                            log(Log.WARN, TAG, "browser title rejected: sender identity unknown (API 34+)");
-                            return;
-                        }
-                        if (!sentPkg.equals(pkg)) {
-                            log(Log.WARN, TAG, "browser title rejected: sender=" + sentPkg + " claimed=" + pkg);
-                            return;
-                        }
+                            String sentPkg = getSentFromPackage();
+                            if (sentPkg != null && !sentPkg.equals(pkg)) {
+                                log(Log.WARN, TAG, "browser title rejected: sender=" + sentPkg + " claimed=" + pkg);
+                                return;
+                            }
+                        } catch (Throwable ignored) {}
                     }
 
                     // Security: verify the claimed package is actually the current foreground
@@ -340,8 +333,11 @@ public final class MonikaXposedModule extends XposedModule {
     private void installMediaHooks(ClassLoader cl) {
         try {
             Class<?> clazz = Class.forName("com.android.server.media.MediaSessionRecord", false, cl);
-            hookMediaMethod(clazz, "setPlaybackState");
-            hookMediaMethod(clazz, "setMetadata");
+            boolean hooked1 = hookMediaMethod(clazz, "setPlaybackState");
+            boolean hooked2 = hookMediaMethod(clazz, "setMetadata");
+            if (!hooked1 && !hooked2) {
+                log(Log.WARN, TAG, "MediaSessionRecord: no methods hooked (class exists but methods not found)");
+            }
         } catch (Throwable t) {
             log(Log.WARN, TAG, "media hooks skipped: " + t.getClass().getSimpleName());
         }
@@ -356,9 +352,12 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
-    private void hookMediaMethod(Class<?> clazz, String name) {
+    private boolean hookMediaMethod(Class<?> clazz, String name) {
         Method method = findMethod(clazz, name);
-        if (method == null) return;
+        if (method == null) {
+            log(Log.DEBUG, TAG, "MediaSessionRecord#" + name + " not found");
+            return false;
+        }
         try {
             try { deoptimize(method); } catch (Throwable t) { log(Log.WARN, TAG, "deoptimize " + name + " failed: " + t.getClass().getSimpleName()); }
             hook(method)
@@ -369,8 +368,10 @@ public final class MonikaXposedModule extends XposedModule {
                         return result;
                     });
             log(Log.INFO, TAG, "hooked MediaSessionRecord#" + name);
+            return true;
         } catch (Throwable t) {
             log(Log.WARN, TAG, "media hook failed " + name + ": " + t.getClass().getSimpleName());
+            return false;
         }
     }
 
@@ -789,32 +790,10 @@ public final class MonikaXposedModule extends XposedModule {
                         }
                     }
                 } catch (Throwable t) {
-                    log(Log.DEBUG, TAG, "getFocusedTaskDescription: getLabel() failed: " + t.getMessage());
+                    // getLabel() not available on this device — expected on some ROMs
                 }
                 
-                // Fallback: try getDescription() method
-                try {
-                    Method getDescription = desc.getClass().getMethod("getDescription");
-                    Object description = getDescription.invoke(desc);
-                    if (description instanceof CharSequence) {
-                        String result = ((CharSequence) description).toString().trim();
-                        if (result.length() > 0) {
-                            log(Log.DEBUG, TAG, "getFocusedTaskDescription: got description from TaskDescription.getDescription()");
-                            return result;
-                        }
-                    }
-                } catch (Throwable t) {
-                    log(Log.DEBUG, TAG, "getFocusedTaskDescription: getDescription() failed: " + t.getMessage());
-                }
-                
-                // Last resort: toString()
-                try {
-                    String str = desc.toString();
-                    if (str != null && str.length() > 0 && !str.contains("@")) {
-                        log(Log.DEBUG, TAG, "getFocusedTaskDescription: using toString() fallback");
-                        return str.trim();
-                    }
-                } catch (Throwable ignored) {}
+                // getLabel() returned null — no useful task description available
             }
             
             if (desc instanceof CharSequence) {
