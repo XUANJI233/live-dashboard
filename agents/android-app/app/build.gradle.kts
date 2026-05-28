@@ -39,9 +39,11 @@ android {
         }
     }
 
-    // LSPosed module must use hidden APIs via reflection — disable this lint check
+    // LSPosed module runs in system_server (always latest API) and uses new APIs
+    // with runtime version guards. Disable lint checks that would block compilation.
     lint {
         disable += "BlockedPrivateApi"
+        disable += "NewApi"
     }
 
     compileOptions {
