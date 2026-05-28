@@ -152,7 +152,7 @@ fun SetupScreen(settings: SettingsStore) {
                 CapabilityOption(
                     selected = modeInput == "lsposed",
                     title = "Root / LSPosed",
-                    body = "优先使用 LSPosed 系统事件；模块未激活时自动使用 root dumpsys"
+                    body = "由 LSPosed 模块直接上传；App 仅负责配置。若模块未激活，则不会上传当前应用/媒体状态。"
                 ) {
                     modeInput = "lsposed"
                     scope.launch { settings.setCapabilityMode("lsposed"); notifySaved() }
@@ -184,7 +184,7 @@ fun SetupScreen(settings: SettingsStore) {
             checked = foregroundInput,
             title = "当前应用/页面",
             body = if (BuildConfig.PRIVILEGED_FEATURES) {
-                "高级模式优先用 LSPosed/root；普通模式使用辅助功能兜底"
+                "LSPosed 模式由模块直接采集前台应用和浏览器页面标题"
             } else {
                 "普通模式使用辅助功能采集应用名和窗口/网页/视频页面标题"
             }
@@ -197,7 +197,7 @@ fun SetupScreen(settings: SettingsStore) {
             checked = mediaInput,
             title = "视频/音乐",
             body = if (BuildConfig.PRIVILEGED_FEATURES) {
-                "高级模式优先解析系统媒体会话；普通模式使用媒体通知兜底"
+                "LSPosed 模式由模块直接采集系统媒体会话（标题/艺术家/播放状态）"
             } else {
                 "普通模式使用媒体通知兜底，尽量只采集播放类通知"
             }

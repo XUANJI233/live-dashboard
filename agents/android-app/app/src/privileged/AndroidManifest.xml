@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="com.monika.dashboard.permission.LSPOSED_CONFIG" />
+
     <application>
         <receiver
             android:name=".system.LsposedBridgeReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="com.monika.dashboard.permission.LSPOSED_CONFIG">
             <intent-filter>
                 <action android:name="com.monika.dashboard.LSPOSED_STATUS" />
             </intent-filter>

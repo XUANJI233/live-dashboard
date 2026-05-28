@@ -43,7 +43,11 @@ object LsposedConfigBridge {
             putExtra("upload_foreground", uploadFg)
             putExtra("upload_media", uploadMedia)
         }
-        context.sendBroadcast(intent, PERMISSION)
+        try {
+            context.sendBroadcast(intent, PERMISSION)
+        } catch (e: Exception) {
+            DebugLog.log("LSPosed", "Config broadcast failed: ${e.message}")
+        }
         DebugLog.log("LSPosed", if (enabled) "已下发直传配置" else "已通知直传暂停")
     }
 }

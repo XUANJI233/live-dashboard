@@ -11,6 +11,7 @@ import android.media.MediaMetadata;
 import android.media.session.PlaybackState;
 import android.os.Binder;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.util.Log;
 
@@ -49,6 +50,7 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String TARGET_RECEIVER = TARGET_PACKAGE + ".system.LsposedBridgeReceiver";
     private static final String ACTION_STATUS = "com.monika.dashboard.LSPOSED_STATUS";
     private static final String ACTION_CONFIG = "com.monika.dashboard.LSPOSED_CONFIG";
+    private static final String ACTION_BROWSER_TITLE = "com.monika.dashboard.LSPOSED_BROWSER_TITLE";
     private static final String CONFIG_PERMISSION = "com.monika.dashboard.permission.LSPOSED_CONFIG";
     private static final long FOREGROUND_POLL_MS = 5000L;
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
@@ -108,6 +110,9 @@ public final class MonikaXposedModule extends XposedModule {
             "com.cromite"
     };
     private volatile boolean samplerStarted = false;
+    private volatile boolean browserTitleReceiverRegistered = false;
+    private volatile Handler uploadHandler;
+    private HandlerThread uploadThread;
     private volatile String lastForegroundKey = "";
     private volatile long lastForegroundBroadcastAt = 0L;
     private volatile long lastMediaBroadcastAt = 0L;
@@ -143,6 +148,7 @@ public final class MonikaXposedModule extends XposedModule {
     @Override
     public void onSystemServerStarting(@NonNull XposedModuleInterface.SystemServerStartingParam param) {
         ClassLoader cl = param.getClassLoader();
+        initUploadThread();
         installForegroundSampler(cl);
         installMediaHooks(cl);
     }
@@ -151,6 +157,12 @@ public final class MonikaXposedModule extends XposedModule {
     public void onPackageReady(@NonNull XposedModuleInterface.PackageReadyParam param) {
         String packageName = param.getPackageName();
         if (!isBrowserPackage(packageName)) return;
+        String processName = param.getProcessName();
+        // Only hook browser main process — skip renderer, sandbox, GPU, service processes
+        if (processName != null && !packageName.equals(processName)) {
+            log(Log.DEBUG, TAG, "skip browser non-main process: " + packageName + "/" + processName);
+            return;
+        }
         installActivityTitleHooks(param.getClassLoader(), packageName);
     }
 
@@ -188,6 +200,7 @@ public final class MonikaXposedModule extends XposedModule {
             handler.postDelayed(() -> {
                 try { loadDirectUploadConfig(); } catch (Throwable t) { log(Log.WARN, TAG, "deferred load config failed: " + t.getClass().getSimpleName()); }
                 try { registerConfigReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register receiver failed: " + t.getClass().getSimpleName()); }
+                try { registerBrowserTitleReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register browser title receiver failed: " + t.getClass().getSimpleName()); }
             }, 10000L);
             handler.postDelayed(new Runnable() {
                 @Override
@@ -212,17 +225,105 @@ public final class MonikaXposedModule extends XposedModule {
         if (context == null) return;
         try {
             IntentFilter filter = new IntentFilter(ACTION_CONFIG);
-            context.registerReceiver(new BroadcastReceiver() {
+            BroadcastReceiver configReceiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context receiverContext, Intent intent) {
                     if (!ACTION_CONFIG.equals(intent.getAction())) return;
                     saveDirectUploadConfig(receiverContext, intent);
                 }
-            }, filter, CONFIG_PERMISSION, handler);
+            };
+            // Config is cross-process (App → system_server): must be RECEIVER_EXPORTED on API 33+
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                context.registerReceiver(configReceiver, filter, CONFIG_PERMISSION, handler, Context.RECEIVER_EXPORTED);
+            } else {
+                context.registerReceiver(configReceiver, filter, CONFIG_PERMISSION, handler);
+            }
             configReceiverRegistered = true;
             log(Log.INFO, TAG, "registered direct upload config receiver");
         } catch (Throwable t) {
             log(Log.WARN, TAG, "config receiver failed: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void initUploadThread() {
+        try {
+            uploadThread = new HandlerThread("MonikaLspUpload", android.os.Process.THREAD_PRIORITY_BACKGROUND);
+            uploadThread.start();
+            uploadHandler = new Handler(uploadThread.getLooper());
+            log(Log.INFO, TAG, "upload HandlerThread started");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "init upload thread failed: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private Handler getUploadHandler() {
+        if (uploadHandler != null) return uploadHandler;
+        return new Handler(Looper.getMainLooper());
+    }
+
+    private void registerBrowserTitleReceiver(Handler handler) {
+        if (browserTitleReceiverRegistered) return;
+        Context context = getSystemContext();
+        if (context == null) return;
+        try {
+            IntentFilter filter = new IntentFilter(ACTION_BROWSER_TITLE);
+            BroadcastReceiver receiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context ctx, Intent intent) {
+                    if (!ACTION_BROWSER_TITLE.equals(intent.getAction())) return;
+                    String pkg = intent.getStringExtra("package_name");
+                    String title = intent.getStringExtra("title");
+                    String activity = intent.getStringExtra("activity");
+                    if (!isBrowserPackage(pkg)) return;
+                    if (title == null || title.trim().isEmpty()) return;
+
+                    // Android 14+ (API 34+): verify sender identity via getSentFromPackage()
+                    // Reliable because sender uses BroadcastOptions.setShareIdentityEnabled(true)
+                    if (android.os.Build.VERSION.SDK_INT >= 34) {
+                        final String sentPkg;
+                        try {
+                            sentPkg = getSentFromPackage();
+                        } catch (Throwable t) {
+                            log(Log.WARN, TAG, "browser title rejected: getSentFromPackage failed: "
+                                    + t.getClass().getSimpleName());
+                            return;
+                        }
+                        if (sentPkg == null) {
+                            log(Log.WARN, TAG, "browser title rejected: sender identity unknown (API 34+)");
+                            return;
+                        }
+                        if (!sentPkg.equals(pkg)) {
+                            log(Log.WARN, TAG, "browser title rejected: sender=" + sentPkg + " claimed=" + pkg);
+                            return;
+                        }
+                    }
+
+                    // Security: verify the claimed package is actually the current foreground
+                    ComponentName top = getTopActivityComponentName();
+                    if (top == null || !pkg.equals(top.getPackageName())) {
+                        log(Log.DEBUG, TAG, "browser title ignored: " + pkg + " is not foreground (top=" +
+                                (top != null ? top.getPackageName() : "null") + ")");
+                        return;
+                    }
+
+                    foregroundPackage = pkg;
+                    foregroundApp = safeString(resolveAppLabel(pkg));
+                    foregroundActivity = safeString(activity);
+                    foregroundTitle = cleanTitle(title);
+                    log(Log.DEBUG, TAG, "browser title received: " + pkg + " title=" + foregroundTitle);
+                    maybeDirectUpload(true);
+                }
+            };
+            // API 33+: must specify exported flag for dynamic receivers (cross-process from browser)
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                context.registerReceiver(receiver, filter, null, handler, Context.RECEIVER_EXPORTED);
+            } else {
+                context.registerReceiver(receiver, filter, null, handler);
+            }
+            browserTitleReceiverRegistered = true;
+            log(Log.INFO, TAG, "registered browser title receiver");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "browser title receiver failed: " + t.getClass().getSimpleName());
         }
     }
 
@@ -273,6 +374,8 @@ public final class MonikaXposedModule extends XposedModule {
     private void installActivityTitleHooks(ClassLoader cl, String packageName) {
         try {
             Class<?> activity = Class.forName("android.app.Activity", false, cl);
+
+            // Hook 1: Activity#setTitle(CharSequence)
             Method setTitleText = activity.getDeclaredMethod("setTitle", CharSequence.class);
             try { deoptimize(setTitleText); } catch (Throwable ignored) {}
             hook(setTitleText)
@@ -285,10 +388,12 @@ public final class MonikaXposedModule extends XposedModule {
                                 ? (CharSequence) args.get(0)
                                 : owner instanceof Activity ? ((Activity) owner).getTitle() : null;
                         if (owner instanceof Activity && title != null) {
-                            broadcastActivityTitle((Activity) owner, packageName, title.toString());
+                            publishBrowserTitle((Activity) owner, packageName, title.toString());
                         }
                         return result;
                     });
+
+            // Hook 2: Activity#setTitle(int)
             Method setTitleRes = activity.getDeclaredMethod("setTitle", int.class);
             try { deoptimize(setTitleRes); } catch (Throwable ignored) {}
             hook(setTitleRes)
@@ -298,10 +403,35 @@ public final class MonikaXposedModule extends XposedModule {
                         Object owner = chain.getThisObject();
                         if (owner instanceof Activity) {
                             CharSequence title = ((Activity) owner).getTitle();
-                            if (title != null) broadcastActivityTitle((Activity) owner, packageName, title.toString());
+                            if (title != null) publishBrowserTitle((Activity) owner, packageName, title.toString());
                         }
                         return result;
                     });
+
+            // Hook 3: Activity#setTaskDescription — browsers set page title here
+            Method setTaskDesc = activity.getDeclaredMethod("setTaskDescription",
+                    Class.forName("android.app.ActivityManager$TaskDescription", false, cl));
+            try { deoptimize(setTaskDesc); } catch (Throwable ignored) {}
+            hook(setTaskDesc)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            Object owner = chain.getThisObject();
+                            List<Object> args = chain.getArgs();
+                            if (owner instanceof Activity && args.size() > 0 && args.get(0) != null) {
+                                Object td = args.get(0);
+                                java.lang.reflect.Method getLabel = td.getClass().getMethod("getLabel");
+                                Object label = getLabel.invoke(td);
+                                if (label instanceof CharSequence && ((CharSequence) label).length() > 0) {
+                                    publishBrowserTitle((Activity) owner, packageName, label.toString());
+                                }
+                            }
+                        } catch (Throwable ignored) {}
+                        return result;
+                    });
+
+            // Hook 4: Activity#onWindowFocusChanged
             Method focusChanged = activity.getDeclaredMethod("onWindowFocusChanged", boolean.class);
             try { deoptimize(focusChanged); } catch (Throwable ignored) {}
             hook(focusChanged)
@@ -313,13 +443,110 @@ public final class MonikaXposedModule extends XposedModule {
                         Object owner = chain.getThisObject();
                         if (hasFocus && owner instanceof Activity) {
                             CharSequence title = ((Activity) owner).getTitle();
-                            if (title != null) broadcastActivityTitle((Activity) owner, packageName, title.toString());
+                            if (title != null) publishBrowserTitle((Activity) owner, packageName, title.toString());
                         }
                         return result;
                     });
-            log(Log.INFO, TAG, "hooked Activity#setTitle for " + packageName);
+
+            // Hook 5: Window#setTitle
+            try {
+                Class<?> window = Class.forName("android.view.Window", false, cl);
+                Method windowSetTitle = window.getDeclaredMethod("setTitle", CharSequence.class);
+                try { deoptimize(windowSetTitle); } catch (Throwable ignored) {}
+                hook(windowSetTitle)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            try {
+                                List<Object> args = chain.getArgs();
+                                if (args.size() > 0 && args.get(0) instanceof CharSequence) {
+                                    String title = args.get(0).toString();
+                                    Object windowObj = chain.getThisObject();
+                                    java.lang.reflect.Method getContext = windowObj.getClass().getMethod("getContext");
+                                    Object ctx = getContext.invoke(windowObj);
+                                    if (ctx instanceof Activity) {
+                                        publishBrowserTitle((Activity) ctx, packageName, title);
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+                            return result;
+                        });
+            } catch (Throwable ignored) {}
+
+            // Hook 6: WebChromeClient#onReceivedTitle
+            try {
+                Class<?> wcc = Class.forName("android.webkit.WebChromeClient", false, cl);
+                Method onReceivedTitle = wcc.getDeclaredMethod("onReceivedTitle",
+                        Class.forName("android.webkit.WebView", false, cl), String.class);
+                try { deoptimize(onReceivedTitle); } catch (Throwable ignored) {}
+                hook(onReceivedTitle)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            try {
+                                List<Object> args = chain.getArgs();
+                                if (args.size() > 1 && args.get(1) instanceof String) {
+                                    String title = (String) args.get(1);
+                                    Object webView = args.get(0);
+                                    java.lang.reflect.Method getContext = webView.getClass().getMethod("getContext");
+                                    Object ctx = getContext.invoke(webView);
+                                    if (ctx instanceof Activity) {
+                                        publishBrowserTitle((Activity) ctx, packageName, title);
+                                    } else {
+                                        // WebView context is not an Activity — use it directly as send context
+                                        Context sendCtx = ctx instanceof Context ? (Context) ctx : null;
+                                        publishBrowserTitleFromProcess(sendCtx, packageName, title, "");
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+                            return result;
+                        });
+            } catch (Throwable ignored) {}
+
+            log(Log.INFO, TAG, "installed browser title hooks for " + packageName);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "activity title hook failed for " + packageName + ": " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void publishBrowserTitle(Activity activity, String packageName, String title) {
+        try {
+            String clean = cleanTitle(title);
+            if (clean == null || isIgnoredPackage(packageName)) return;
+            foregroundPackage = packageName;
+            foregroundApp = safeString(resolveAppLabel(activity, packageName));
+            foregroundActivity = activity.getClass().getName();
+            foregroundTitle = clean;
+            // Use Activity's application context so getSentFromPackage() returns browser's package
+            Context sendContext = null;
+            try {
+                sendContext = activity.getApplicationContext();
+            } catch (Throwable ignored) {}
+            if (sendContext == null) sendContext = activity;
+            publishBrowserTitleFromProcess(sendContext, packageName, clean, activity.getClass().getName());
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "publishBrowserTitle failed: " + t.getMessage());
+        }
+    }
+
+    private void publishBrowserTitleFromProcess(Context context, String packageName, String title, String activityName) {
+        try {
+            if (context == null) context = getSystemContext();
+            if (context == null) return;
+            Intent intent = new Intent(ACTION_BROWSER_TITLE);
+            intent.putExtra("package_name", packageName);
+            intent.putExtra("title", title);
+            intent.putExtra("activity", safeString(activityName));
+            // Android 14+: share sender identity so receiver can verify via getSentFromPackage()
+            if (android.os.Build.VERSION.SDK_INT >= 34) {
+                android.app.BroadcastOptions options = android.app.BroadcastOptions.makeBasic();
+                options.setShareIdentityEnabled(true);
+                context.sendBroadcast(intent, null, options.toBundle());
+            } else {
+                context.sendBroadcast(intent);
+            }
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "publishBrowserTitleFromProcess failed: " + t.getMessage());
         }
     }
 
@@ -427,9 +654,6 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void broadcastMediaSnapshot(Object record) {
         try {
-            long now = System.currentTimeMillis();
-            if (now - lastMediaBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
-            lastMediaBroadcastAt = now;
             Context context = getSystemContext();
             if (context == null) return;
             Object playback = callAny(record, "getPlaybackState");
@@ -439,9 +663,13 @@ public final class MonikaXposedModule extends XposedModule {
             String packageName = stringValue(callAny(record, "getPackageName"));
             if (packageName == null) packageName = stringValue(readField(record, "mPackageName"));
             if (isIgnoredPackage(packageName)) return;
+            // Always update in-memory state first (so polling reads latest)
             mediaPlaying = isPlaying(playback);
             mediaPackage = safeString(packageName);
-            mediaTitle = safeString(mediaText(metadata, MediaMetadata.METADATA_KEY_TITLE));
+            mediaTitle = safeString(firstNonBlank(
+                    mediaText(metadata, MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
+                    mediaText(metadata, MediaMetadata.METADATA_KEY_TITLE)
+            ));
             mediaArtist = safeString(firstNonBlank(
                     mediaText(metadata, MediaMetadata.METADATA_KEY_ARTIST),
                     mediaText(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
@@ -449,6 +677,10 @@ public final class MonikaXposedModule extends XposedModule {
             ));
             mediaApp = safeString(resolveAppLabel(packageName));
             mediaState = safeString(playbackStateName(playback));
+            // Debounce only the broadcast/send to avoid spamming
+            long now = System.currentTimeMillis();
+            if (now - lastMediaBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
+            lastMediaBroadcastAt = now;
 
             Intent intent = new Intent(ACTION_STATUS);
             intent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
@@ -463,28 +695,6 @@ public final class MonikaXposedModule extends XposedModule {
             maybeDirectUpload(false);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "media broadcast failed: " + t.getClass().getSimpleName());
-        }
-    }
-
-    private void broadcastActivityTitle(Activity activity, String packageName, String title) {
-        try {
-            String cleanTitle = cleanTitle(title);
-            if (cleanTitle == null || isIgnoredPackage(packageName)) return;
-            foregroundPackage = packageName;
-            foregroundApp = safeString(resolveAppLabel(activity, packageName));
-            foregroundActivity = activity.getClass().getName();
-            foregroundTitle = cleanTitle;
-            Intent intent = new Intent(ACTION_STATUS);
-            intent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
-            intent.putExtra("package_name", packageName);
-            intent.putExtra("app_name", foregroundApp);
-            intent.putExtra("activity", foregroundActivity);
-            intent.putExtra("title", cleanTitle);
-            long token = Binder.clearCallingIdentity();
-            try { activity.sendBroadcast(intent); } finally { Binder.restoreCallingIdentity(token); }
-            maybeDirectUpload(false);
-        } catch (Throwable t) {
-            log(Log.WARN, TAG, "activity title broadcast failed: " + t.getClass().getSimpleName());
         }
     }
 
@@ -719,6 +929,25 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void loadDirectUploadConfig() {
         try {
+            // Priority 1: Read from device-protected storage
+            Context context = getSystemContext();
+            if (context != null) {
+                try {
+                    SharedPreferences dps = context.createDeviceProtectedStorageContext()
+                            .getSharedPreferences("monika_lsp_direct_upload", Context.MODE_PRIVATE);
+                    if (dps.contains("enabled")) {
+                        directUploadEnabled = dps.getBoolean("enabled", false);
+                        directServerUrl = dps.getString("server_url", "");
+                        directToken = dps.getString("token", "");
+                        directIntervalMs = Math.max(MIN_DIRECT_UPLOAD_MS, dps.getLong("interval_ms", 30000L));
+                        directUploadForeground = dps.getBoolean("upload_foreground", true);
+                        directUploadMedia = dps.getBoolean("upload_media", true);
+                        log(Log.INFO, TAG, "config loaded from DPS: enabled=" + directUploadEnabled);
+                        return;
+                    }
+                } catch (Throwable ignored) {}
+            }
+            // Priority 2: Fallback to getRemotePreferences
             SharedPreferences prefs = getRemotePreferences("monika_lsp_direct_upload");
             directUploadEnabled = prefs.getBoolean("enabled", false);
             directServerUrl = prefs.getString("server_url", "");
@@ -726,7 +955,7 @@ public final class MonikaXposedModule extends XposedModule {
             directIntervalMs = Math.max(MIN_DIRECT_UPLOAD_MS, prefs.getLong("interval_ms", 30000L));
             directUploadForeground = prefs.getBoolean("upload_foreground", true);
             directUploadMedia = prefs.getBoolean("upload_media", true);
-            log(Log.INFO, TAG, "config loaded: enabled=" + directUploadEnabled + " url=" + directServerUrl + " token=" + (directToken.length() > 0 ? "set" : "empty"));
+            log(Log.INFO, TAG, "config loaded from remote prefs: enabled=" + directUploadEnabled);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "load config failed: " + Log.getStackTraceString(t));
         }
@@ -800,11 +1029,10 @@ public final class MonikaXposedModule extends XposedModule {
             log(Log.INFO, TAG, "upload: app_id=" + diag.optString("app_id") + " title=" + diag.optString("window_title"));
         } catch (Throwable ignored) {}
 
-        // CRITICAL: never do network I/O on the system_server main looper.
-        // ensureWsConnected() performs TCP+TLS+WS handshake (up to 8s) — do it off-thread.
+        // Use dedicated upload HandlerThread (single background thread, no unbounded spawning).
         final String url = directServerUrl;
         final String tok = directToken;
-        new Thread(() -> {
+        getUploadHandler().post(() -> {
             ensureWsConnected(url, tok);
             final LspWebSocketClient client = wsClient;
             if (client != null && client.isConnected()) {
@@ -826,7 +1054,7 @@ public final class MonikaXposedModule extends XposedModule {
                 postDirectReportFallback(body);
                 log(Log.INFO, TAG, "http fallback upload attempted");
             }
-        }, "MonikaLspUpload").start();
+        });
     }
 
     private String buildDirectReportBody(long now) {
