@@ -22,6 +22,20 @@
   --gold:        oklch(62% 0.11 70);
   --gold-soft:   oklch(85% 0.05 70);
 
+  /* ── Compat aliases: components use var(--color-*) ── */
+  --color-primary:       var(--sakura);
+  --color-primary-soft:  var(--sakura-soft);
+  --color-secondary:     var(--sage);
+  --color-accent:        var(--gold);
+  --color-accent-soft:   var(--gold-soft);
+  --color-text:          var(--ink);
+  --color-text-muted:    var(--ink-muted);
+  --color-border:        var(--border);
+  --color-surface:       var(--bg-surface);
+  --color-emerald:       var(--sage);
+  --color-card:          var(--bg-surface);
+  --color-cream:         var(--bg);
+
   --text-xs:   clamp(0.65rem, 0.6rem + 0.2vw, 0.72rem);
   --text-sm:   clamp(0.78rem, 0.72rem + 0.25vw, 0.85rem);
   --text-base: clamp(0.92rem, 0.88rem + 0.2vw, 0.98rem);
@@ -784,6 +798,128 @@ body {
 .tl-stagger {
   animation: reveal-up 400ms var(--ease-out-expo) both;
   animation-delay: calc(var(--i, 0) * 35ms + 400ms);
+}
+
+/* ════════════════════════════════════════
+   Component Compat Classes
+   (used by CurrentStatus, DeviceCard, Timeline, VisitorMessages etc.)
+   ════════════════════════════════════════ */
+
+/* Glass card — small */
+.glass-sm {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: border-color 0.2s, transform 0.15s ease, box-shadow 0.2s;
+}
+.glass-sm:hover {
+  border-color: var(--sakura-soft);
+}
+
+/* Glass hero — main status card */
+.glass-hero {
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 2px 12px oklch(0% 0 0 / 0.04);
+  transition: box-shadow 0.6s ease;
+}
+
+/* Glow breathe — subtle breathing glow on the hero card */
+.glow-breathe {
+  animation: glow-breathe 4s ease-in-out infinite;
+}
+@keyframes glow-breathe {
+  0%, 100% { box-shadow: 0 2px 12px oklch(0% 0 0 / 0.04); }
+  50%      { box-shadow: 0 4px 24px oklch(68% 0.13 12 / 0.12); }
+}
+
+/* Pulse dot — online status indicator */
+.pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.6; transform: scale(0.85); }
+}
+
+/* Music bar — equalizer bar (single bar) */
+.music-bar {
+  width: 3px;
+  border-radius: 1.5px;
+  background: var(--sakura);
+  animation: music-bar-bounce ease-in-out infinite;
+}
+.music-bar:nth-child(1) { height: 8px;  animation-duration: 0.8s; }
+.music-bar:nth-child(2) { height: 14px; animation-duration: 0.6s; animation-delay: 0.1s; }
+.music-bar:nth-child(3) { height: 10px; animation-duration: 0.7s; animation-delay: 0.2s; }
+.music-bar:nth-child(4) { height: 16px; animation-duration: 0.5s; animation-delay: 0.15s; }
+@keyframes music-bar-bounce {
+  0%, 100% { transform: scaleY(1); }
+  50%      { transform: scaleY(0.4); }
+}
+
+/* Loading dots */
+.loading-dots {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.loading-dots span {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sakura);
+  animation: bounce 1.4s ease-in-out infinite;
+}
+.loading-dots span:nth-child(2) { animation-delay: 0.16s; }
+.loading-dots span:nth-child(3) { animation-delay: 0.32s; }
+@keyframes bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-10px); opacity: 1; }
+}
+
+/* VN bubble — speech bubble */
+.vn-bubble {
+  position: relative;
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  transition: border-color 0.2s ease;
+}
+.vn-bubble:hover {
+  border-color: var(--sakura-soft);
+}
+
+/* Pill button */
+.pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 0.82rem;
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 0.2s, transform 0.1s, background-color 0.2s;
+}
+.pill-btn:hover {
+  border-color: var(--sakura);
+  background-color: var(--sakura-bg);
+}
+.pill-btn:active {
+  transform: translateY(1px);
+}
+
+/* Separator dashed */
+.separator-dashed {
+  border-top: 1.5px dashed var(--border);
 }
 
 /* ════════════════════════════════════════
