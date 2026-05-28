@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.monika.dashboard"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.monika.dashboard"
