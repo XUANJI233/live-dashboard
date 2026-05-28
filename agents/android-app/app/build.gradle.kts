@@ -1,16 +1,17 @@
 plugins {
-    id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.android.application")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
     namespace = "com.monika.dashboard"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.monika.dashboard"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 1
         versionName = "1.0.0"
     }
@@ -55,10 +56,6 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
-    }
-
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.15"
     }
 }
 
