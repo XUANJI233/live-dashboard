@@ -155,18 +155,25 @@ function collectAndUpload() {
     console.warn('[LiveWatch:device] Sleep detection failed: ' + e.message)
   }
 
-  // 2. 智能传输策略：睡眠状态下每6次才传输1次（节省80%传输+传感器功耗）
+  // 2. 智能传输策略：首次检测到睡眠时必须上传（让服务端立即知道），
+  //    之后每6次才上传1次（节省80%传输+传感器功耗）
   if (isSleeping) {
-    sleepSkipCounter++
-    writeSleepSkipCounter(sleepSkipCounter)
-    console.log('[LiveWatch:device] sleepSkipCounter incremented to ' + sleepSkipCounter)
-    if (sleepSkipCounter < 6) {
-      console.log('[LiveWatch:device] Sleeping, skip all (' + sleepSkipCounter + '/6)')
-      return // 直接退出，不获取任何传感器数据
+    if (sleepSkipCounter === 0) {
+      // 首次检测到睡眠 → 强制上传，让服务端立即知道用户睡着了
+      sleepSkipCounter = 1
+      writeSleepSkipCounter(sleepSkipCounter)
+      console.log('[LiveWatch:device] First sleep detected, force upload')
+    } else {
+      sleepSkipCounter++
+      writeSleepSkipCounter(sleepSkipCounter)
+      if (sleepSkipCounter < 6) {
+        console.log('[LiveWatch:device] Sleeping, skip all (' + sleepSkipCounter + '/6)')
+        return // 直接退出，不获取任何传感器数据
+      }
+      sleepSkipCounter = 0 // 重置计数器
+      writeSleepSkipCounter(sleepSkipCounter)
+      console.log('[LiveWatch:device] Sleeping but uploading (6th cycle)')
     }
-    sleepSkipCounter = 0 // 重置计数器
-    writeSleepSkipCounter(sleepSkipCounter)
-    console.log('[LiveWatch:device] Sleeping but uploading (6th cycle)')
   } else {
     if (sleepSkipCounter !== 0) {
       sleepSkipCounter = 0 // 清醒时重置计数器
