@@ -8,6 +8,8 @@ import android.content.ComponentName;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.media.MediaMetadata;
+import android.media.session.MediaController;
+import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
 import android.os.Binder;
 import android.os.Handler;
@@ -110,13 +112,14 @@ public final class MonikaXposedModule extends XposedModule {
             "com.cromite"
     };
     private volatile boolean samplerStarted = false;
+    private volatile boolean mediaListenerRegistered = false;
+    private MediaSessionManager mediaSessionManager;
     private volatile String currentProcessName = "";
     private volatile boolean browserTitleReceiverRegistered = false;
     private volatile Handler uploadHandler;
     private HandlerThread uploadThread;
     private volatile String lastForegroundKey = "";
     private volatile long lastForegroundBroadcastAt = 0L;
-    private volatile long lastMediaBroadcastAt = 0L;
     private volatile boolean configReceiverRegistered = false;
     private volatile boolean directUploadEnabled = false;
     private volatile String directServerUrl = "";
@@ -152,7 +155,6 @@ public final class MonikaXposedModule extends XposedModule {
         ClassLoader cl = param.getClassLoader();
         initUploadThread();
         installForegroundSampler(cl);
-        installMediaHooks(cl);
     }
 
     @Override
@@ -204,6 +206,7 @@ public final class MonikaXposedModule extends XposedModule {
                 try { loadDirectUploadConfig(); } catch (Throwable t) { log(Log.WARN, TAG, "deferred load config failed: " + t.getClass().getSimpleName()); }
                 try { registerConfigReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register receiver failed: " + t.getClass().getSimpleName()); }
                 try { registerBrowserTitleReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register browser title receiver failed: " + t.getClass().getSimpleName()); }
+                try { initMediaSessionListener(); } catch (Throwable t) { log(Log.WARN, TAG, "deferred init media listener failed: " + t.getClass().getSimpleName()); }
             }, 10000L);
             handler.postDelayed(new Runnable() {
                 @Override
@@ -330,48 +333,108 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
-    private void installMediaHooks(ClassLoader cl) {
+    /**
+     * Initialize MediaSessionManager listener for media capture.
+     * Uses standard Android API (MediaSessionManager.getActiveSessions + MediaController.Callback)
+     * instead of hooking internal MediaSessionRecord methods which may not exist on MIUI/HyperOS.
+     * Reference: SuperLyric (PlayStateListener), HyperLyric (MediaMetadataHelper)
+     */
+    private void initMediaSessionListener() {
+        if (mediaListenerRegistered) return;
+        Context context = getSystemContext();
+        if (context == null) return;
         try {
-            Class<?> clazz = Class.forName("com.android.server.media.MediaSessionRecord", false, cl);
-            boolean hooked1 = hookMediaMethod(clazz, "setPlaybackState");
-            boolean hooked2 = hookMediaMethod(clazz, "setMetadata");
-            if (!hooked1 && !hooked2) {
-                log(Log.WARN, TAG, "MediaSessionRecord: no methods hooked (class exists but methods not found)");
+            mediaSessionManager = (MediaSessionManager) context.getSystemService(Context.MEDIA_SESSION_SERVICE);
+            if (mediaSessionManager == null) {
+                log(Log.WARN, TAG, "MediaSessionManager not available");
+                return;
             }
+            mediaSessionManager.addOnActiveSessionsChangedListener(
+                    controllers -> {
+                        try {
+                            if (controllers == null) return;
+                            log(Log.DEBUG, TAG, "active sessions changed: " + controllers.size());
+                            for (MediaController controller : controllers) {
+                                registerMediaControllerCallback(controller);
+                            }
+                        } catch (Throwable t) {
+                            log(Log.WARN, TAG, "onActiveSessionsChanged failed: " + t.getClass().getSimpleName());
+                        }
+                    }, null);
+            List<MediaController> active = mediaSessionManager.getActiveSessions(null);
+            if (active != null) {
+                log(Log.INFO, TAG, "initial active media sessions: " + active.size());
+                for (MediaController controller : active) {
+                    registerMediaControllerCallback(controller);
+                }
+            }
+            mediaListenerRegistered = true;
+            log(Log.INFO, TAG, "MediaSessionManager listener registered");
         } catch (Throwable t) {
-            log(Log.WARN, TAG, "media hooks skipped: " + t.getClass().getSimpleName());
-        }
-        try {
-            Class<?> service = Class.forName("com.android.server.media.MediaSessionService", false, cl);
-            hookMediaServiceMethod(service, "onSessionPlaystateChanged");
-            hookMediaServiceMethod(service, "onSessionPlaybackStateChanged");
-            hookMediaServiceMethod(service, "onSessionMetadataChanged");
-            hookMediaServiceMethod(service, "updateMediaButtonSession");
-        } catch (Throwable t) {
-            log(Log.WARN, TAG, "media service hooks skipped: " + t.getClass().getSimpleName());
+            log(Log.WARN, TAG, "initMediaSessionListener failed: " + t.getClass().getSimpleName());
         }
     }
 
-    private boolean hookMediaMethod(Class<?> clazz, String name) {
-        Method method = findMethod(clazz, name);
-        if (method == null) {
-            log(Log.DEBUG, TAG, "MediaSessionRecord#" + name + " not found");
-            return false;
-        }
+    private void registerMediaControllerCallback(MediaController controller) {
+        if (controller == null) return;
         try {
-            try { deoptimize(method); } catch (Throwable t) { log(Log.WARN, TAG, "deoptimize " + name + " failed: " + t.getClass().getSimpleName()); }
-            hook(method)
-                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                    .intercept(chain -> {
-                        Object result = chain.proceed();
-                        broadcastMediaSnapshot(chain.getThisObject());
-                        return result;
-                    });
-            log(Log.INFO, TAG, "hooked MediaSessionRecord#" + name);
-            return true;
-        } catch (Throwable t) {
-            log(Log.WARN, TAG, "media hook failed " + name + ": " + t.getClass().getSimpleName());
-            return false;
+            controller.registerCallback(new MediaController.Callback() {
+                @Override
+                public void onPlaybackStateChanged(PlaybackState state) {
+                    try {
+                        if (state == null) return;
+                        String pkg = controller.getPackageName();
+                        mediaPlaying = state.getState() == PlaybackState.STATE_PLAYING;
+                        mediaPackage = safeString(pkg);
+                        mediaApp = safeString(resolveAppLabel(pkg));
+                        mediaState = safeString(playbackStateName(state));
+                        MediaMetadata metadata = controller.getMetadata();
+                        if (metadata != null) {
+                            mediaTitle = safeString(firstNonBlank(
+                                    mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
+                                    mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_TITLE)));
+                            mediaArtist = safeString(firstNonBlank(
+                                    mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ARTIST),
+                                    mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
+                                    mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
+                        }
+                        log(Log.DEBUG, TAG, "media playback: pkg=" + pkg + " playing=" + mediaPlaying + " title=" + mediaTitle);
+                        maybeDirectUpload(false);
+                    } catch (Throwable t) {
+                        log(Log.WARN, TAG, "onPlaybackStateChanged failed: " + t.getClass().getSimpleName());
+                    }
+                }
+
+                @Override
+                public void onMetadataChanged(MediaMetadata metadata) {
+                    try {
+                        if (metadata == null) return;
+                        String pkg = controller.getPackageName();
+                        mediaPackage = safeString(pkg);
+                        mediaApp = safeString(resolveAppLabel(pkg));
+                        mediaTitle = safeString(firstNonBlank(
+                                mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
+                                mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_TITLE)));
+                        mediaArtist = safeString(firstNonBlank(
+                                mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ARTIST),
+                                mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
+                                mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
+                        log(Log.DEBUG, TAG, "media metadata: pkg=" + pkg + " title=" + mediaTitle + " artist=" + mediaArtist);
+                        maybeDirectUpload(false);
+                    } catch (Throwable t) {
+                        log(Log.WARN, TAG, "onMetadataChanged failed: " + t.getClass().getSimpleName());
+                    }
+                }
+            });
+        } catch (Throwable ignored) {}
+    }
+
+    private String mediaTextFromMeta(MediaMetadata metadata, String key) {
+        try {
+            CharSequence value = metadata.getText(key);
+            return value != null ? value.toString() : null;
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 
@@ -557,35 +620,6 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
-    private void hookMediaServiceMethod(Class<?> clazz, String name) {
-        for (Method method : clazz.getDeclaredMethods()) {
-            if (!name.equals(method.getName())) continue;
-            try {
-                try { deoptimize(method); } catch (Throwable t) { log(Log.WARN, TAG, "deoptimize " + name + " failed: " + t.getClass().getSimpleName()); }
-                hook(method)
-                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                        .intercept(chain -> {
-                            Object result = chain.proceed();
-                            Object record = findMediaSessionRecord(chain.getThisObject(), chain.getArgs());
-                            if (record != null) broadcastMediaSnapshot(record);
-                            return result;
-                        });
-                log(Log.INFO, TAG, "hooked MediaSessionService#" + name);
-            } catch (Throwable t) {
-                log(Log.WARN, TAG, "media service hook failed " + name + ": " + t.getClass().getSimpleName());
-            }
-        }
-    }
-
-    private Object findMediaSessionRecord(Object owner, List<Object> args) {
-        if (args != null) {
-            for (Object arg : args) {
-                if (arg != null && arg.getClass().getName().contains("MediaSessionRecord")) return arg;
-            }
-        }
-        if (owner != null && owner.getClass().getName().contains("MediaSessionRecord")) return owner;
-        return null;
-    }
 
     private void broadcastSnapshot() {
         try {
@@ -656,52 +690,6 @@ public final class MonikaXposedModule extends XposedModule {
             maybeDirectUpload(false);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "broadcast failed: " + t.getClass().getSimpleName());
-        }
-    }
-
-    private void broadcastMediaSnapshot(Object record) {
-        try {
-            Context context = getSystemContext();
-            if (context == null) return;
-            Object playback = callAny(record, "getPlaybackState");
-            if (playback == null) playback = readField(record, "mPlaybackState");
-            Object metadata = callAny(record, "getMetadata");
-            if (metadata == null) metadata = readField(record, "mMetadata");
-            String packageName = stringValue(callAny(record, "getPackageName"));
-            if (packageName == null) packageName = stringValue(readField(record, "mPackageName"));
-            if (isIgnoredPackage(packageName)) return;
-            // Always update in-memory state first (so polling reads latest)
-            mediaPlaying = isPlaying(playback);
-            mediaPackage = safeString(packageName);
-            mediaTitle = safeString(firstNonBlank(
-                    mediaText(metadata, MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
-                    mediaText(metadata, MediaMetadata.METADATA_KEY_TITLE)
-            ));
-            mediaArtist = safeString(firstNonBlank(
-                    mediaText(metadata, MediaMetadata.METADATA_KEY_ARTIST),
-                    mediaText(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
-                    mediaText(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
-            ));
-            mediaApp = safeString(resolveAppLabel(packageName));
-            mediaState = safeString(playbackStateName(playback));
-            // Debounce only the broadcast/send to avoid spamming
-            long now = System.currentTimeMillis();
-            if (now - lastMediaBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
-            lastMediaBroadcastAt = now;
-
-            Intent intent = new Intent(ACTION_STATUS);
-            intent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
-            intent.putExtra("media_playing", mediaPlaying);
-            putIfNotNull(intent, "media_package", packageName);
-            putIfNotNull(intent, "media_title", mediaTitle);
-            putIfNotNull(intent, "media_artist", mediaArtist);
-            putIfNotNull(intent, "media_app", mediaApp);
-            putIfNotNull(intent, "media_state", mediaState);
-            long token = Binder.clearCallingIdentity();
-            try { context.sendBroadcast(intent); } finally { Binder.restoreCallingIdentity(token); }
-            maybeDirectUpload(false);
-        } catch (Throwable t) {
-            log(Log.WARN, TAG, "media broadcast failed: " + t.getClass().getSimpleName());
         }
     }
 
@@ -1225,36 +1213,6 @@ public final class MonikaXposedModule extends XposedModule {
             }
         }
         return null;
-    }
-
-    private String mediaText(Object metadata, String key) {
-        if (metadata == null) return null;
-        try {
-            if (metadata instanceof MediaMetadata) {
-                CharSequence value = ((MediaMetadata) metadata).getText(key);
-                return value == null ? null : value.toString();
-            }
-            Method getText = metadata.getClass().getDeclaredMethod("getText", String.class);
-            getText.setAccessible(true);
-            Object value = getText.invoke(metadata, key);
-            if (value != null) return value.toString();
-        } catch (Throwable ignored) {
-        }
-        try {
-            Method getString = metadata.getClass().getDeclaredMethod("getString", String.class);
-            getString.setAccessible(true);
-            Object value = getString.invoke(metadata, key);
-            return value == null ? null : value.toString();
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
-
-    private boolean isPlaying(Object playback) {
-        if (playback instanceof PlaybackState) {
-            return ((PlaybackState) playback).getState() == PlaybackState.STATE_PLAYING;
-        }
-        return playback != null && playback.toString().contains("state=3");
     }
 
     private String playbackStateName(Object playback) {
