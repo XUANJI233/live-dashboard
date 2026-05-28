@@ -19,6 +19,8 @@ import { BloodOxygen } from '@zos/sensor'
 import { BodyTemperature } from '@zos/sensor'
 import { set as setAlarm, cancel as cancelAlarm, getAllAlarms } from '@zos/alarm'
 import { LocalStorage } from '@zos/storage'
+import { settingsStorage } from '@zos/settings'
+import { readFileSync } from '@zos/fs'
 
 // ── Sensor instances (created once, reused) ──
 const battery = new Battery()
@@ -112,8 +114,7 @@ AppService({
 
 function restoreConfig() {
   try {
-    const storage = require('@zos/settings').settingsStorage
-    const raw = storage.getItem('livewatch_config')
+    const raw = settingsStorage.getItem('livewatch_config')
     if (raw) {
       const cfg = JSON.parse(raw)
       serverUrl = cfg.serverUrl || ''
@@ -123,8 +124,7 @@ function restoreConfig() {
     }
   } catch (e) {
     try {
-      const fs = require('@zos/fs')
-      const data = fs.readFileSync('data://livewatch_config.json')
+      const data = readFileSync({ path: 'data://livewatch_config.json' })
       if (data) {
         const cfg = JSON.parse(data)
         serverUrl = cfg.serverUrl || ''
@@ -491,13 +491,13 @@ function setupNextAlarm() {
     const alarms = getAllAlarms()
     if (alarms && alarms.length > 0) {
       alarms.forEach(a => {
-        if (a.url === 'app-service/live-watch.js') cancelAlarm(a.id)
+        if (a.url === 'app-event/index') cancelAlarm(a.id)
       })
     }
 
     // Setup next alarm (persistent, survives reboot)
     const alarmId = setAlarm({
-      url: 'app-service/live-watch.js',
+      url: 'app-event/index',
       delay: Math.ceil(syncIntervalMs / 1000),
       store: true,
     })
@@ -513,8 +513,7 @@ function setupNextAlarm() {
 function stopSync() {
   enabled = false
   try {
-    const storage = require('@zos/settings').settingsStorage
-    storage.setItem('livewatch_config', JSON.stringify({
+    settingsStorage.setItem('livewatch_config', JSON.stringify({
       serverUrl, token,
       syncInterval: Math.round(syncIntervalMs / 1000),
       enabled: false,

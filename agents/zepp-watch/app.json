@@ -35,7 +35,7 @@
           "path": "setting/index"
         },
         "app-event": {
-          "path": "app-service/live-watch"
+          "path": "app-event/index"
         }
       },
       "platforms": [

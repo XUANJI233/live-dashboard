@@ -1,10 +1,20 @@
+// ────────────────────────────────────────────
+//  Live Watch — Device Page (Zepp OS v3 / API 4.0)
+//
+//  使用 @zos/ui 模块化 API（v3 推荐），不依赖 hmUI 全局变量
+//  onInit 时从 settingsStorage 加载配置，确保设置页修改后手表端同步
+// ────────────────────────────────────────────
+
 import { BasePage } from '@zeppos/zml/base-page'
 import { px } from '@zos/utils'
 import { getDeviceInfo, SCREEN_SHAPE_ROUND } from '@zos/device'
+import { createWidget, prop, align } from '@zos/ui'
+import { TEXT, BUTTON } from '@zos/ui/page_widget'
 import { startAppService, stopAppService } from '@zos/app-service'
 import { settingsStorage } from '@zos/settings'
 
-// T-Rex 3: 480×480 round, effective ~324×324 circle
+const SERVICE_PATH = 'app-service/live-watch'
+
 const deviceInfo = getDeviceInfo()
 const IS_ROUND = deviceInfo.screenShape === SCREEN_SHAPE_ROUND
 
@@ -21,29 +31,49 @@ Page(
     state: {
       serverUrl: '',
       token: '',
-      syncInterval: 30,
+      syncInterval: 300,
+      enabled: false,
       status: '未启动',
       statusColor: 0x999999,
     },
 
     onInit() {
+      // 从 settingsStorage 加载配置（与设置页同步）
+      this.loadConfig()
       this.buildUI()
+    },
+
+    loadConfig() {
+      try {
+        const raw = settingsStorage.getItem('livewatch_config')
+        if (raw) {
+          const cfg = JSON.parse(raw)
+          if (cfg.serverUrl) this.state.serverUrl = cfg.serverUrl
+          if (cfg.token) this.state.token = cfg.token
+          if (cfg.syncInterval) this.state.syncInterval = cfg.syncInterval
+          if (cfg.enabled !== undefined) this.state.enabled = cfg.enabled
+        }
+      } catch (e) {
+        console.warn('[LiveWatch:page] loadConfig failed: ' + e.message)
+      }
     },
 
     buildUI() {
       let y = MARGIN_TOP
 
-      hmUI.createWidget(hmUI.widget.TEXT, {
+      // 标题
+      createWidget(TEXT, {
         x: px(MARGIN_X), y: px(y),
         w: px(FIELD_W), h: px(36),
         text: 'Live Watch',
         text_size: px(28),
         color: 0xffffff,
-        align_h: hmUI.align.CENTER_H,
+        align_h: align.CENTER_H,
       })
       y += 44
 
-      hmUI.createWidget(hmUI.widget.TEXT, {
+      // 服务器地址
+      createWidget(TEXT, {
         x: px(MARGIN_X), y: px(y),
         w: px(FIELD_W), h: px(24),
         text: '服务器地址',
@@ -52,25 +82,32 @@ Page(
       })
       y += 26
 
-      this._urlText = hmUI.createWidget(hmUI.widget.TEXT, {
+      // 显示截断的 URL
+      const displayUrl = this.state.serverUrl
+        ? this.state.serverUrl.replace(/^https?:\/\//, '').substring(0, 24)
+        : '未设置（请在手机端配置）'
+
+      this._urlText = createWidget(TEXT, {
         x: px(MARGIN_X), y: px(y),
         w: px(FIELD_W), h: px(FIELD_H),
-        text: this.state.serverUrl || '未设置',
-        text_size: px(24),
-        color: 0xffffff,
+        text: displayUrl,
+        text_size: px(22),
+        color: this.state.serverUrl ? 0xffffff : 0xff6600,
       })
       y += FIELD_H + GAP
 
-      this._intervalText = hmUI.createWidget(hmUI.widget.TEXT, {
+      // 同步间隔
+      this._intervalText = createWidget(TEXT, {
         x: px(MARGIN_X), y: px(y),
         w: px(FIELD_W), h: px(FIELD_H),
-        text: this.state.syncInterval + ' 秒',
-        text_size: px(24),
-        color: 0xffffff,
+        text: '间隔 ' + this.state.syncInterval + ' 秒',
+        text_size: px(22),
+        color: 0xcccccc,
       })
       y += FIELD_H + GAP * 2
 
-      this._startBtn = hmUI.createWidget(hmUI.widget.BUTTON, {
+      // 启动按钮
+      this._startBtn = createWidget(BUTTON, {
         x: px(MARGIN_X), y: px(y),
         w: px(BTN_W), h: px(BTN_H),
         text: '启动同步',
@@ -82,7 +119,8 @@ Page(
       })
       y += BTN_H + GAP
 
-      this._stopBtn = hmUI.createWidget(hmUI.widget.BUTTON, {
+      // 停止按钮
+      this._stopBtn = createWidget(BUTTON, {
         x: px(MARGIN_X), y: px(y),
         w: px(BTN_W), h: px(BTN_H),
         text: '停止同步',
@@ -94,22 +132,22 @@ Page(
       })
       y += BTN_H + GAP * 2
 
-      this._statusText = hmUI.createWidget(hmUI.widget.TEXT, {
+      // 状态文本
+      this._statusText = createWidget(TEXT, {
         x: px(MARGIN_X), y: px(y),
         w: px(FIELD_W), h: px(36),
-        text: this.state.status,
+        text: this.state.enabled ? '同步已启动' : this.state.status,
         text_size: px(18),
-        color: this.state.statusColor,
-        align_h: hmUI.align.CENTER_H,
+        color: this.state.enabled ? 0x00aa55 : this.state.statusColor,
+        align_h: align.CENTER_H,
       })
     },
 
     onStartClick() {
       if (!this.state.serverUrl || !this.state.token) {
-        this.setStatus('请先配置服务器', 0xff6600)
+        this.setStatus('请先在手机端配置', 0xff6600)
         return
       }
-      // Persist config to settingsStorage (shared with Device App Service)
       const cfg = {
         serverUrl: this.state.serverUrl,
         token: this.state.token,
@@ -117,13 +155,9 @@ Page(
         enabled: true,
       }
       settingsStorage.setItem('livewatch_config', JSON.stringify(cfg))
-      // Start Device App Service on watch
-      startAppService({ url: 'app-service/live-watch.js' })
-      // Also notify companion side-service
-      this.request({
-        method: 'START',
-        params: cfg,
-      })
+      startAppService({ url: SERVICE_PATH })
+      this.request({ method: 'START', params: cfg })
+      this.state.enabled = true
       this.setStatus('同步已启动', 0x00aa55)
     },
 
@@ -135,8 +169,9 @@ Page(
         enabled: false,
       }
       settingsStorage.setItem('livewatch_config', JSON.stringify(cfg))
-      stopAppService({ url: 'app-service/live-watch.js' })
+      stopAppService({ url: SERVICE_PATH })
       this.request({ method: 'STOP' })
+      this.state.enabled = false
       this.setStatus('同步已停止', 0x999999)
     },
 
@@ -144,7 +179,10 @@ Page(
       this.state.status = text
       this.state.statusColor = color || 0x999999
       if (this._statusText) {
-        this._statusText.setProperty(hmUI.prop.MORE, { text, color: color || 0x999999 })
+        this._statusText.setProperty(prop.MORE, {
+          text,
+          color: color || 0x999999,
+        })
       }
     },
   }),
