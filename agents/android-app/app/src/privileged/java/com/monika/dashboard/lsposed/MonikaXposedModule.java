@@ -232,8 +232,10 @@ public final class MonikaXposedModule extends XposedModule {
                     saveDirectUploadConfig(receiverContext, intent);
                 }
             };
-            // Config is cross-process (App → system_server): must be RECEIVER_EXPORTED on API 33+
-            if (android.os.Build.VERSION.SDK_INT >= 33) {
+            // 5-param registerReceiver(..., flags) requires API 34.
+            // On API 34+: use 5-param with RECEIVER_EXPORTED + handler + permission.
+            // On API < 34: fall back to 4-param with permission + handler (no explicit export flag).
+            if (android.os.Build.VERSION.SDK_INT >= 34) {
                 context.registerReceiver(configReceiver, filter, CONFIG_PERMISSION, handler, Context.RECEIVER_EXPORTED);
             } else {
                 context.registerReceiver(configReceiver, filter, CONFIG_PERMISSION, handler);
@@ -314,9 +316,14 @@ public final class MonikaXposedModule extends XposedModule {
                     maybeDirectUpload(true);
                 }
             };
-            // API 33+: must specify exported flag for dynamic receivers (cross-process from browser)
-            if (android.os.Build.VERSION.SDK_INT >= 33) {
+            // 5-param registerReceiver(..., flags) requires API 34.
+            // On API 34+: use 5-param with RECEIVER_EXPORTED + handler.
+            // On API 33: use 3-param with RECEIVER_EXPORTED (loses handler).
+            // On API < 33: use 4-param with handler (no explicit export flag).
+            if (android.os.Build.VERSION.SDK_INT >= 34) {
                 context.registerReceiver(receiver, filter, null, handler, Context.RECEIVER_EXPORTED);
+            } else if (android.os.Build.VERSION.SDK_INT >= 33) {
+                context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
             } else {
                 context.registerReceiver(receiver, filter, null, handler);
             }
