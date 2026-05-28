@@ -16,6 +16,22 @@ on:
 jobs:
   android:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: normal-debug
+            tasks: assembleNormalDebug
+            artifact: android-normal-debug
+          - variant: normal-release
+            tasks: assembleNormalRelease
+            artifact: android-normal-release
+          - variant: privileged-debug
+            tasks: assemblePrivilegedDebug
+            artifact: android-privileged-debug
+          - variant: privileged-release
+            tasks: assemblePrivilegedRelease
+            artifact: android-privileged-release
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
@@ -42,31 +58,21 @@ jobs:
       - name: Verify Gradle wrapper
         working-directory: agents/android-app
         run: chmod +x ./gradlew && ./gradlew --version
-      - name: Build Android debug APKs
+      - name: Build ${{ matrix.variant }}
         working-directory: agents/android-app
-        run: ./gradlew assembleNormalDebug assemblePrivilegedDebug --stacktrace
-      - name: Build Android release APKs
-        working-directory: agents/android-app
-        run: ./gradlew assembleNormalRelease assemblePrivilegedRelease --stacktrace
-      - name: Upload Android debug APK
+        run: ./gradlew ${{ matrix.tasks }} --stacktrace
+      - name: Upload ${{ matrix.variant }} APK
         uses: actions/upload-artifact@v6
         with:
-          name: android-debug-apk
-          path: agents/android-app/app/build/outputs/apk/**/debug/*.apk
-          if-no-files-found: error
-          retention-days: 14
-      - name: Upload Android release APK
-        uses: actions/upload-artifact@v6
-        with:
-          name: android-release-apk
-          path: agents/android-app/app/build/outputs/apk/**/release/*.apk
+          name: ${{ matrix.artifact }}
+          path: agents/android-app/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
           retention-days: 14
       - name: Upload Android build reports
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: android-build-reports
+          name: android-build-reports-${{ matrix.variant }}
           path: |
             agents/android-app/**/build/reports/**
             agents/android-app/**/build/outputs/logs/**
