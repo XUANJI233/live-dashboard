@@ -20,14 +20,30 @@ function timeAgo(isoStr: string): string {
   return `${Math.floor(hrs / 24)}d`;
 }
 
-export default function DeviceCard({ device }: { device: DeviceState }) {
+type Props = {
+  device: DeviceState;
+  selected?: boolean;
+  onSelect?: () => void;
+};
+
+export default function DeviceCard({ device, selected = false, onSelect }: Props) {
   const isOnline = device.is_online === 1;
   const icon = platformIcons[device.platform] || "\u{1F4BB}";
   const battery = device.extra;
   const hasBattery = battery && typeof battery.battery_percent === "number";
 
+  const rootClass = `glass-sm px-4 py-3 flex items-center gap-3 group ${
+    selected ? "ring-2 ring-[var(--color-primary)] bg-[var(--color-primary-soft)]" : ""
+  }`;
+
   return (
-    <div className="glass-sm px-4 py-3 flex items-center gap-3 group">
+    <div
+      role={onSelect ? "button" : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      onClick={onSelect}
+      onKeyDown={onSelect ? (e) => { if (e.key === "Enter" || e.key === " ") onSelect(); } : undefined}
+      className={rootClass}
+    >
       {/* Icon */}
       <span className="text-lg opacity-70 group-hover:opacity-100 transition-opacity" aria-hidden="true">
         {icon}
