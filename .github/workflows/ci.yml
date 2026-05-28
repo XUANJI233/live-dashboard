@@ -44,7 +44,7 @@ jobs:
         run: chmod +x ./gradlew && ./gradlew --version
       - name: Build Android debug APKs
         working-directory: agents/android-app
-        run: ./gradlew assembleNormalDebug assemblePrivilegedDebug --stacktrace
+        run: ./gradlew assembleNormalDebug assemblePrivilegedDebug --stacktrace --info 2>&1 | tail -100
       - name: Build Android release APKs
         working-directory: agents/android-app
         run: ./gradlew assembleNormalRelease assemblePrivilegedRelease --stacktrace
