@@ -613,3 +613,28 @@ export async function handleSetRemark(req: Request): Promise<Response> {
   upsertViewerRemark.run(device.device_id, viewerId, remark);
   return Response.json({ ok: true });
 }
+
+/**
+ * DELETE /api/device — 删除当前设备的所有数据（状态 + activities）
+ * 认证方式：Bearer token（与 /api/report 相同）
+ */
+export async function handleDeleteDevice(req: Request): Promise<Response> {
+  const device = authenticateToken(req.headers.get("authorization"));
+  if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
+
+  const { deleteDevice, deleteDeviceActivities } = await import("../db");
+
+  // 1. 断开 WebSocket 连接
+  const ws = deviceSockets.get(device.device_id);
+  if (ws) {
+    try { ws.close(4003, "device_deleted"); } catch { /* ignore */ }
+    deviceSockets.delete(device.device_id);
+  }
+  devicePongTimes.delete(device.device_id);
+
+  // 2. 删除数据库记录
+  deleteDeviceActivities.run(device.device_id);
+  deleteDevice.run(device.device_id);
+
+  return Response.json({ ok: true, deleted: device.device_id });
+}

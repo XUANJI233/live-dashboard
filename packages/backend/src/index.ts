@@ -23,6 +23,7 @@ import {
   handlePublicMessages,
   realtimeWebSocket,
   type WsData,
+  handleDeleteDevice,
 } from "./services/realtime";
 import { currentHourWindow, withCdnHeaders } from "./services/cdn";
 import { injectSiteConfig } from "./services/site-config";
@@ -78,7 +79,7 @@ const server = Bun.serve<WsData>({
     const requestOrigin = req.headers.get("origin");
     
     let corsHeaders: Record<string, string> = {
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
     };
     
@@ -151,6 +152,8 @@ const server = Bun.serve<WsData>({
         response = handlePublicMessages(req);
       } else if (pathname === "/api/token/issue" && req.method === "POST") {
         response = await handleViewerTokenIssue(req, clientIp);
+      } else if (pathname === "/api/device" && req.method === "DELETE") {
+        response = await handleDeleteDevice(req);
       } else if (!pathname.startsWith("/api/")) {
         // Static file serving disabled if directory doesn't exist
         if (!staticEnabled) {

@@ -337,4 +337,12 @@ export const cleanupOldSummaries = db.prepare(`
   DELETE FROM daily_summaries WHERE date < date('now', '-7 days')
 `);
 
+// ── Device deletion ──
+export const deleteDevice = db.prepare(`
+  DELETE FROM device_states WHERE device_id = ?
+`);
+export const deleteDeviceActivities = db.prepare(`
+  DELETE FROM activities WHERE device_id = ?
+`);
+
 export default db;
