@@ -110,6 +110,7 @@ public final class MonikaXposedModule extends XposedModule {
             "com.cromite"
     };
     private volatile boolean samplerStarted = false;
+    private volatile String currentProcessName = "";
     private volatile boolean browserTitleReceiverRegistered = false;
     private volatile Handler uploadHandler;
     private HandlerThread uploadThread;
@@ -139,6 +140,7 @@ public final class MonikaXposedModule extends XposedModule {
     @Override
     public void onModuleLoaded(@NonNull XposedModuleInterface.ModuleLoadedParam param) {
         instance = this;
+        currentProcessName = param.getProcessName();
         log(Log.INFO, TAG, "onModuleLoaded: isSystemServer=" + param.isSystemServer() 
                 + " process=" + param.getProcessName() 
                 + " apiVersion=" + getApiVersion() 
@@ -157,9 +159,10 @@ public final class MonikaXposedModule extends XposedModule {
     public void onPackageReady(@NonNull XposedModuleInterface.PackageReadyParam param) {
         String packageName = param.getPackageName();
         if (!isBrowserPackage(packageName)) return;
-        String processName = param.getProcessName();
         // Only hook browser main process — skip renderer, sandbox, GPU, service processes
-        if (processName != null && !packageName.equals(processName)) {
+        // PackageReadyParam doesn't have getProcessName(); use stored process name from onModuleLoaded
+        String processName = currentProcessName;
+        if (processName != null && !processName.isEmpty() && !packageName.equals(processName)) {
             log(Log.DEBUG, TAG, "skip browser non-main process: " + packageName + "/" + processName);
             return;
         }
