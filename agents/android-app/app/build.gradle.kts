@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.monika.dashboard"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.monika.dashboard"
@@ -74,9 +74,9 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // Miuix UI library (MIUI-style components)
-    implementation("top.yukonga.miuix.kmp:miuix-ui:0.9.1")
-    implementation("top.yukonga.miuix.kmp:miuix-preference:0.9.1")
-    implementation("top.yukonga.miuix.kmp:miuix-icons:0.9.1")
+    implementation("top.yukonga.miuix.kmp:miuix-ui:0.8.8")
+    implementation("top.yukonga.miuix.kmp:miuix-preference:0.8.8")
+    implementation("top.yukonga.miuix.kmp:miuix-icons:0.8.8")
 
     // Lifecycle
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
