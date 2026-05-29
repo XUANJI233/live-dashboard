@@ -1373,21 +1373,11 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
-    private void putIfNotNull(Intent intent, String key, String value) {
-        if (value != null && value.length() > 0 && !"null".equals(value)) {
-            intent.putExtra(key, value);
-        }
-    }
-
     private String firstNonBlank(String... values) {
         for (String value : values) {
             if (value != null && value.trim().length() > 0) return value;
         }
         return null;
-    }
-
-    private String stringValue(Object value) {
-        return value == null ? null : value.toString();
     }
 
     private String safeString(String value) {
