@@ -770,7 +770,9 @@ export function getAppDescription(appName: string, displayTitle?: string, music?
   if (!base) {
     // Unknown app with a display title → show it
     if (displayTitle) {
-      base = `正在玩「${displayTitle}」喵~`;
+      // Avoid duplicate "正在用" — if displayTitle already starts with it, just wrap the rest
+      const clean = displayTitle.replace(/^正在用/, "").replace(/^在用/, "");
+      base = `正在用${clean}喵~`;
     } else {
       base = DEFAULT_DESCRIPTION;
     }
