@@ -645,6 +645,35 @@ public final class MonikaXposedModule extends XposedModule {
         try {
             // Skip expensive reflection when LSP upload is disabled — saves battery
             if (!directUploadEnabled) return;
+
+            // Screen-off detection: avoid repeated uploads of stale foreground
+            boolean screenOff = !isScreenInteractive();
+            if (screenOff && !mediaPlaying) {
+                long now = System.currentTimeMillis();
+                if ("sleeping".equals(lastForegroundKey) && now - lastForegroundBroadcastAt < 30_000L) return;
+                lastForegroundKey = "sleeping";
+                lastForegroundBroadcastAt = now;
+                foregroundPackage = "sleeping";
+                foregroundApp = "sleeping";
+                foregroundActivity = "";
+                foregroundTitle = "";
+                Intent intent = new Intent(ACTION_STATUS);
+                intent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
+                intent.putExtra("package_name", "sleeping");
+                intent.putExtra("app_name", "sleeping");
+                intent.putExtra("activity", "");
+                intent.putExtra("input_active", false);
+                Context ctx = getSystemContext();
+                if (ctx != null) {
+                    long token = Binder.clearCallingIdentity();
+                    try { ctx.sendBroadcast(intent); } finally { Binder.restoreCallingIdentity(token); }
+                }
+                maybeDirectUpload(false);
+                return;
+            }
+            // Screen off + media playing → continue to include media info in report
+            // Screen on → normal behavior
+
             ComponentName top = getTopActivityComponentName();
             String taskDescription = getFocusedTaskDescription();
             long now = System.currentTimeMillis();
@@ -881,6 +910,17 @@ public final class MonikaXposedModule extends XposedModule {
             }
         } catch (Throwable ignored) {}
         return "phone";
+    }
+
+    private boolean isScreenInteractive() {
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return true; // assume screen on if can't determine
+            PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+            return pm != null && pm.isInteractive();
+        } catch (Throwable ignored) {
+            return true; // assume screen on on error
+        }
     }
 
     private Object getActivityTaskManagerService() {
@@ -1177,6 +1217,13 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private String primaryDisplayTitle() {
+        // Screen off — show sleeping or media info
+        if ("sleeping".equals(foregroundPackage)) {
+            if (mediaPlaying && mediaTitle.length() > 0 && mediaApp.length() > 0) {
+                return mediaApp + "正在播放" + mediaTitle;
+            }
+            return "(.-)zzZ";
+        }
         boolean foregroundValid = foregroundApp.length() > 0
                 && !"idle".equals(foregroundPackage)
                 && !"idle".equals(foregroundApp);
