@@ -354,9 +354,30 @@ public final class MonikaXposedModule extends XposedModule {
                         try {
                             if (controllers == null) return;
                             log(Log.DEBUG, TAG, "active sessions changed: " + controllers.size());
+                            // Check if the currently tracked media package is still active
+                            String trackedPkg = mediaPackage;
+                            if (trackedPkg.length() > 0) {
+                                boolean stillActive = false;
+                                for (MediaController c : controllers) {
+                                    if (trackedPkg.equals(c.getPackageName())) {
+                                        stillActive = true;
+                                        break;
+                                    }
+                                }
+                                if (!stillActive) {
+                                    log(Log.DEBUG, TAG, "media session removed: " + trackedPkg + ", clearing media info");
+                                    mediaPlaying = false;
+                                    mediaTitle = "";
+                                    mediaArtist = "";
+                                    mediaPackage = "";
+                                    mediaApp = "";
+                                    mediaState = "";
+                                }
+                            }
                             for (MediaController controller : controllers) {
                                 registerMediaControllerCallback(controller);
                             }
+                            maybeDirectUpload(false);
                         } catch (Throwable t) {
                             log(Log.WARN, TAG, "onActiveSessionsChanged failed: " + t.getClass().getSimpleName());
                         }
@@ -1064,7 +1085,8 @@ public final class MonikaXposedModule extends XposedModule {
                 foreground.put("confidence", 0.95);
                 extra.put("foreground", foreground);
             }
-            if (directUploadMedia && (mediaPlaying || mediaTitle.length() > 0 || mediaApp.length() > 0)) {
+            // Only include media info when actively playing — avoids showing stale paused data
+            if (directUploadMedia && mediaPlaying && mediaTitle.length() > 0) {
                 JSONObject media = new JSONObject();
                 media.put("playing", mediaPlaying);
                 if (mediaTitle.length() > 0) media.put("title", mediaTitle);
