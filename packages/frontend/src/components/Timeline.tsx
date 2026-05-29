@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useMemo, useState } from "react";
 import type { TimelineSegment } from "@/lib/api";
@@ -66,7 +66,7 @@ export default function Timeline({ segments, currentAppByDevice }: Props) {
                 const isOpen = !!openKeys[event.key];
                 const canOpen = event.children.length > 1 || hasUsefulChildDetail(event.children);
                 return (
-                  <div key={event.key} className={	imeline-entry glass-sm rounded }>
+                  <div key={event.key} className={`timeline-entry glass-sm rounded ${event.isCurrent ? "timeline-active-glow" : ""}`}>
                     <button type="button" className="flex w-full items-center text-left group" onClick={() => { if (canOpen) setOpenKeys((prev) => ({ ...prev, [event.key]: !prev[event.key] })); }}>
                       <div className="flex w-12 flex-shrink-0 items-center justify-center px-2 py-2.5">
                         {event.isCurrent ? (
@@ -91,9 +91,9 @@ export default function Timeline({ segments, currentAppByDevice }: Props) {
                     {canOpen && isOpen && (
                       <div className="ml-12 space-y-1 border-l-2 border-[var(--color-border)] py-2 pl-3 mr-3 mb-2">
                         {compactChildren(event.children).map((child, index) => (
-                          <div key={${child.started_at}-} className="text-xs">
+                          <div key={`${child.started_at}-${index}`} className="text-xs">
                             <div className="flex items-center justify-between gap-3">
-                              <span className="font-mono text-[10px] text-[var(--color-text-muted)]">{formatClock(child.started_at)}{child.ended_at ?  –  : " – Now"}</span>
+                              <span className="font-mono text-[10px] text-[var(--color-text-muted)]">{formatClock(child.started_at)}{child.ended_at ? ` – ${formatClock(child.ended_at)}` : " – Now"}</span>
                             </div>
                             <div className="mt-0.5 truncate text-[var(--color-text)] text-xs" title={describeChild(child)}>{describeChild(child)}</div>
                           </div>
@@ -128,12 +128,12 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
       if (cluster.length >= 3) {
         const first = cluster[0]!;
         const last = cluster[cluster.length - 1]!;
-        events.push({ key: ${deviceId}:switch:, kind: "switching", appName: "切来切去", appId: "switching", title: "正在切来切去喵~", startedAt: first.started_at, endedAt: last.ended_at, durationSeconds: spanSeconds(cluster), isCurrent: cluster.some((seg) => currentAppByDevice[deviceId] === seg.app_name), children: cluster });
+        events.push({ key: `${deviceId}:switch:${first.started_at}`, kind: "switching", appName: "切来切去", appId: "switching", title: "正在切来切去喵~", startedAt: first.started_at, endedAt: last.ended_at, durationSeconds: spanSeconds(cluster), isCurrent: cluster.some((seg) => currentAppByDevice[deviceId] === seg.app_name), children: cluster });
         i += cluster.length;
         continue;
       }
       const seg = sorted[i]!;
-      events.push({ key: ${deviceId}::, kind: "single", appName: seg.app_name, appId: seg.app_id, title: describeSegment(seg), startedAt: seg.started_at, endedAt: seg.ended_at, durationSeconds: durationSeconds(seg), isCurrent: currentAppByDevice[deviceId] === seg.app_name, children: meaningfulDetailTitle(seg) ? [seg] : [] });
+      events.push({ key: `${deviceId}:${seg.started_at}:${seg.app_id}`, kind: "single", appName: seg.app_name, appId: seg.app_id, title: describeSegment(seg), startedAt: seg.started_at, endedAt: seg.ended_at, durationSeconds: durationSeconds(seg), isCurrent: currentAppByDevice[deviceId] === seg.app_name, children: meaningfulDetailTitle(seg) ? [seg] : [] });
       i += 1;
     }
     events.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
@@ -197,7 +197,7 @@ function meaningfulDetailTitle(seg: TimelineSegment) {
   const normalized = title.toLowerCase();
   const app = seg.app_name.toLowerCase();
   if (normalized === app || normalized === "android" || normalized.endsWith("activity")) return "";
-  if (title === 正在用 || title.startsWith("正在用系统桌面")) return "";
+  if (title === `正在用${seg.app_name}` || title.startsWith("正在用系统桌面")) return "";
   return title;
 }
 
@@ -221,11 +221,11 @@ function hasUsefulChildDetail(children: TimelineSegment[]) {
 }
 
 function isIdleSegment(seg: TimelineSegment) {
-  return ${seg.app_name} .toLowerCase().includes("idle");
+  return `${seg.app_name} ${seg.app_id}`.toLowerCase().includes("idle");
 }
 
 function isLauncherSegment(seg: TimelineSegment) {
-  const app = ${seg.app_name}  .toLowerCase();
+  const app = `${seg.app_name} ${seg.app_id} ${seg.display_title || ""}`.toLowerCase();
   return app.includes("launcher") || app.includes("systemui") || app.includes("桌面") || app.includes("主屏幕") || app.includes("home screen");
 }
 
@@ -238,7 +238,7 @@ function getAppColor(appName: string, colorMap: Map<string, string>): string {
 }
 
 function formatTimeRange(startedAt: string, endedAt: string | null) {
-  return ${formatClock(startedAt)} – ;
+  return `${formatClock(startedAt)} – ${endedAt ? formatClock(endedAt) : "Now"}`;
 }
 
 function formatClock(value: string) {
