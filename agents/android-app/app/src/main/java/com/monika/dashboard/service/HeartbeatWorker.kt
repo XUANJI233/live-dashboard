@@ -90,127 +90,132 @@ class HeartbeatWorker(
             intervalSec.coerceAtLeast(DEFAULT_INTERVAL_SECONDS)
         }
 
-        val enabled = settings.monitoringEnabled.first()
-        if (!enabled) {
-            DebugLog.log("心跳Worker", "监听未开启，跳过")
-            return Result.success()
-        }
-
-        val url = settings.serverUrl.first()
-        val token = settings.getToken()
-        if (url.isEmpty() || token.isNullOrEmpty()) {
-            DebugLog.log("心跳Worker", "URL或Token未配置，跳过")
-            enqueueNext(applicationContext, nextIntervalSec)
-            return Result.success()
-        }
-
-        // ── LSPosed mode: app is only a configurator, do NOT upload anything ──
-        val capabilityMode = settings.capabilityMode.first()
-        if (BuildConfig.PRIVILEGED_FEATURES && capabilityMode == "lsposed") {
-            LsposedConfigBridge.publish(applicationContext, settings)
-            DebugLog.log("心跳Worker", "LSPosed直传模式，APK仅下发配置，不做上传")
-            enqueueNext(applicationContext, nextIntervalSec)
-            return Result.success()
-        }
-
-        // ── Normal / Root mode: collect data and send via WebSocket device_status ──
-        val uploadInputState = settings.uploadInputState.first()
-        val uploadLocation = settings.uploadLocation.first()
-        val uploadVpnStatus = settings.uploadVpnStatus.first()
-        val uploadForeground = settings.uploadForeground.first()
-        val uploadMedia = settings.uploadMedia.first()
-        val uploadNetwork = settings.uploadNetwork.first()
-
-        val battery = getBatteryInfo()
-        val snapshot = collectSystemSnapshot(capabilityMode, uploadInputState, uploadForeground, uploadMedia)
-        val appId = snapshot.foreground?.packageName?.takeIf { it.isNotBlank() && it != "idle" }
-            ?: snapshot.media?.packageName?.takeIf { snapshot.media?.playing == true }
-            ?: snapshot.media?.app
-            ?: "idle"
-        val windowTitle = snapshot.primaryDisplayTitle()
-        val vpnState = if (uploadVpnStatus) getVpnState() else null
-        val location = if (uploadLocation) getLowPowerLocation() else null
-        val networkState = if (uploadNetwork) getNetworkState() else null
-
-        // Ensure WebSocket is connected for device_status
-        MessageSocketManager.ensureStarted(applicationContext)
-
-        // Build JSON payload matching /api/report body structure
-        val payload = buildStatusPayload(
-            appId, windowTitle,
-            batteryPercent = battery?.first,
-            batteryCharging = battery?.second,
-            networkConnected = networkState?.connected,
-            networkType = networkState?.type,
-            cellularGeneration = networkState?.cellularGeneration,
-            vpnActive = vpnState?.first,
-            vpnName = vpnState?.second,
-            location = location,
-            snapshot = snapshot,
-        )
-
-        // Try WebSocket first (fast, persistent, no per-request overhead)
-        val wsSent = MessageSocketManager.sendDeviceStatus(payload)
-        if (wsSent) {
-            DebugLog.log("心跳Worker", "WS上报成功: $appId ${windowTitle.take(80)}")
-            markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, true, "OK(ws)")
-            Log.i(TAG, "WS heartbeat sent: $appId")
-            
-            // Sync messages even when WebSocket is used for status reporting
-            // Message operations still require HTTP client
-            var client: ReportClient? = null
-            try {
-                client = ReportClient(url, token, applicationContext)
-                syncBlockedViewers(client)
-                syncMessageHistory(client)
-                pollMessages(client)
-            } catch (e: Exception) {
-                DebugLog.log("心跳Worker", "WS消息同步失败: ${e.message}")
-                Log.e(TAG, "Message sync failed after WS heartbeat", e)
-            } finally {
-                runCatching { client?.shutdown() }
+        try {
+            val enabled = settings.monitoringEnabled.first()
+            if (!enabled) {
+                DebugLog.log("心跳Worker", "监听未开启，跳过")
+                return Result.success()
             }
-        } else {
-            // Fallback to HTTP for backward compatibility
-            var client: ReportClient? = null
-            try {
-                client = ReportClient(url, token, applicationContext)
-                syncBlockedViewers(client)
-                val result = client.reportApp(
-                    appId = appId,
-                    windowTitle = windowTitle,
-                    batteryPercent = battery?.first,
-                    batteryCharging = battery?.second,
-                    networkConnected = networkState?.connected,
-                    networkType = networkState?.type,
-                    cellularGeneration = networkState?.cellularGeneration,
-                    vpnActive = vpnState?.first,
-                    vpnName = vpnState?.second,
-                    location = location,
-                    snapshot = snapshot
-                )
-                if (result.isSuccess) {
-                    DebugLog.log("心跳Worker", "HTTP上报成功: $appId ${windowTitle.take(80)}")
-                    markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, true, "OK(http)")
-                    Log.i(TAG, "HTTP heartbeat sent: $appId")
-                } else {
-                    val message = result.exceptionOrNull()?.message ?: "unknown"
-                    markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, false, message)
-                    DebugLog.log("心跳Worker", "HTTP上报失败: $message")
+
+            val url = settings.serverUrl.first()
+            val token = settings.getToken()
+            if (url.isEmpty() || token.isNullOrEmpty()) {
+                DebugLog.log("心跳Worker", "URL或Token未配置，跳过")
+                return Result.success()
+            }
+
+            // ── LSPosed mode: app is only a configurator, do NOT upload anything ──
+            val capabilityMode = settings.capabilityMode.first()
+            if (BuildConfig.PRIVILEGED_FEATURES && capabilityMode == "lsposed") {
+                try { LsposedConfigBridge.publish(applicationContext, settings) } catch (e: Exception) {
+                    Log.e(TAG, "LsposedConfigBridge.publish failed", e)
                 }
-            } catch (e: Exception) {
-                markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, false, e.message ?: "error")
-                DebugLog.log("心跳Worker", "HTTP异常: ${e.message}")
-                Log.e(TAG, "Heartbeat HTTP error", e)
-            } finally {
-                runCatching { syncMessageHistory(client) }
-                runCatching { pollMessages(client) }
-                runCatching { client?.shutdown() }
+                DebugLog.log("心跳Worker", "LSPosed直传模式，APK仅下发配置，不做上传")
+                return Result.success()
             }
-        }
 
-        // Always reschedule next heartbeat
-        enqueueNext(applicationContext, nextIntervalSec)
+            // ── Normal / Root mode: collect data and send via WebSocket device_status ──
+            val uploadInputState = settings.uploadInputState.first()
+            val uploadLocation = settings.uploadLocation.first()
+            val uploadVpnStatus = settings.uploadVpnStatus.first()
+            val uploadForeground = settings.uploadForeground.first()
+            val uploadMedia = settings.uploadMedia.first()
+            val uploadNetwork = settings.uploadNetwork.first()
+
+            val battery = getBatteryInfo()
+            val snapshot = collectSystemSnapshot(capabilityMode, uploadInputState, uploadForeground, uploadMedia)
+            val appId = snapshot.foreground?.packageName?.takeIf { it.isNotBlank() && it != "idle" }
+                ?: snapshot.media?.packageName?.takeIf { snapshot.media?.playing == true }
+                ?: snapshot.media?.app
+                ?: "idle"
+            val windowTitle = snapshot.primaryDisplayTitle()
+            val vpnState = if (uploadVpnStatus) getVpnState() else null
+            val location = if (uploadLocation) getLowPowerLocation() else null
+            val networkState = if (uploadNetwork) getNetworkState() else null
+
+            // Ensure WebSocket is connected for device_status
+            MessageSocketManager.ensureStarted(applicationContext)
+
+            // Build JSON payload matching /api/report body structure
+            val payload = buildStatusPayload(
+                appId, windowTitle,
+                batteryPercent = battery?.first,
+                batteryCharging = battery?.second,
+                networkConnected = networkState?.connected,
+                networkType = networkState?.type,
+                cellularGeneration = networkState?.cellularGeneration,
+                vpnActive = vpnState?.first,
+                vpnName = vpnState?.second,
+                location = location,
+                snapshot = snapshot,
+            )
+
+            // Try WebSocket first (fast, persistent, no per-request overhead)
+            val wsSent = MessageSocketManager.sendDeviceStatus(payload)
+            if (wsSent) {
+                DebugLog.log("心跳Worker", "WS上报成功: $appId ${windowTitle.take(80)}")
+                markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, true, "OK(ws)")
+                Log.i(TAG, "WS heartbeat sent: $appId")
+                
+                // Sync messages even when WebSocket is used for status reporting
+                var client: ReportClient? = null
+                try {
+                    client = ReportClient(url, token, applicationContext)
+                    syncBlockedViewers(client)
+                    syncMessageHistory(client)
+                    pollMessages(client)
+                } catch (e: Exception) {
+                    DebugLog.log("心跳Worker", "WS消息同步失败: ${e.message}")
+                    Log.e(TAG, "Message sync failed after WS heartbeat", e)
+                } finally {
+                    runCatching { client?.shutdown() }
+                }
+            } else {
+                // Fallback to HTTP for backward compatibility
+                var client: ReportClient? = null
+                try {
+                    client = ReportClient(url, token, applicationContext)
+                    syncBlockedViewers(client)
+                    val result = client.reportApp(
+                        appId = appId,
+                        windowTitle = windowTitle,
+                        batteryPercent = battery?.first,
+                        batteryCharging = battery?.second,
+                        networkConnected = networkState?.connected,
+                        networkType = networkState?.type,
+                        cellularGeneration = networkState?.cellularGeneration,
+                        vpnActive = vpnState?.first,
+                        vpnName = vpnState?.second,
+                        location = location,
+                        snapshot = snapshot
+                    )
+                    if (result.isSuccess) {
+                        DebugLog.log("心跳Worker", "HTTP上报成功: $appId ${windowTitle.take(80)}")
+                        markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, true, "OK(http)")
+                        Log.i(TAG, "HTTP heartbeat sent: $appId")
+                    } else {
+                        val message = result.exceptionOrNull()?.message ?: "unknown"
+                        markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, false, message)
+                        DebugLog.log("心跳Worker", "HTTP上报失败: $message")
+                    }
+                } catch (e: Exception) {
+                    markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, false, e.message ?: "error")
+                    DebugLog.log("心跳Worker", "HTTP异常: ${e.message}")
+                    Log.e(TAG, "Heartbeat HTTP error", e)
+                } finally {
+                    runCatching { syncMessageHistory(client) }
+                    runCatching { pollMessages(client) }
+                    runCatching { client?.shutdown() }
+                }
+            }
+        } catch (e: Exception) {
+            // Top-level catch: log but never crash — always reschedule
+            Log.e(TAG, "HeartbeatWorker unexpected error", e)
+            DebugLog.log("心跳Worker", "未预期异常: ${e.message}")
+        } finally {
+            // Always reschedule next heartbeat, even on error
+            enqueueNext(applicationContext, nextIntervalSec)
+        }
         return Result.success()
     }
 

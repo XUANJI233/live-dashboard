@@ -317,44 +317,48 @@ fun SetupScreen(settings: SettingsStore) {
         Button(
             onClick = {
                 scope.launch {
-                    val url = urlInput.trim()
-                    if (!SettingsStore.validateUrl(url)) {
-                        urlError = "地址无效：必须使用 HTTPS 或 http://localhost"
-                        return@launch
-                    }
-                    if (!settings.isSecureStorageAvailable) {
-                        statusMsg = "无法保存：安全存储不可用"
-                        return@launch
-                    }
-                    settings.setServerUrl(url)
-                    settings.setToken(tokenInput)
-                    val minInterval = if (highFrequencyInput) {
-                        HeartbeatWorker.MIN_INTERVAL_SECONDS
-                    } else {
-                        HeartbeatWorker.DEFAULT_INTERVAL_SECONDS
-                    }
-                    val seconds = intervalInput.toIntOrNull()?.coerceIn(
-                        minInterval,
-                        HeartbeatWorker.MAX_INTERVAL_SECONDS,
-                    ) ?: HeartbeatWorker.DEFAULT_INTERVAL_SECONDS
-                    settings.setReportInterval(seconds)
-                    settings.setCapabilityMode(modeInput)
-                    settings.setHighFrequencyReport(highFrequencyInput)
-                    settings.setUploadForeground(foregroundInput)
-                    settings.setUploadMedia(mediaInput)
-                    settings.setUploadNetwork(networkInput)
-                    settings.setUploadLocation(locationInput)
-                    settings.setUploadVpnStatus(vpnInput)
-                    settings.setUploadInputState(inputStateInput)
-                    settings.setDebugMode(debugInput)
-                    LsposedConfigBridge.publish(context, settings)
-                    if (locationInput) requestLocationPermissionIfNeeded(context)
-                    intervalInput = seconds.toString()
-                    if (monitoringEnabled) {
-                        HeartbeatWorker.schedule(context, seconds)
-                        notifySaved("设置已保存，并已应用新的心跳间隔（${seconds} 秒）")
-                    } else {
-                        notifySaved("设置已保存")
+                    try {
+                        val url = urlInput.trim()
+                        if (!SettingsStore.validateUrl(url)) {
+                            urlError = "地址无效：必须使用 HTTPS 或 http://localhost"
+                            return@launch
+                        }
+                        if (!settings.isSecureStorageAvailable) {
+                            statusMsg = "无法保存：安全存储不可用"
+                            return@launch
+                        }
+                        settings.setServerUrl(url)
+                        withContext(Dispatchers.IO) { settings.setToken(tokenInput) }
+                        val minInterval = if (highFrequencyInput) {
+                            HeartbeatWorker.MIN_INTERVAL_SECONDS
+                        } else {
+                            HeartbeatWorker.DEFAULT_INTERVAL_SECONDS
+                        }
+                        val seconds = intervalInput.toIntOrNull()?.coerceIn(
+                            minInterval,
+                            HeartbeatWorker.MAX_INTERVAL_SECONDS,
+                        ) ?: HeartbeatWorker.DEFAULT_INTERVAL_SECONDS
+                        settings.setReportInterval(seconds)
+                        settings.setCapabilityMode(modeInput)
+                        settings.setHighFrequencyReport(highFrequencyInput)
+                        settings.setUploadForeground(foregroundInput)
+                        settings.setUploadMedia(mediaInput)
+                        settings.setUploadNetwork(networkInput)
+                        settings.setUploadLocation(locationInput)
+                        settings.setUploadVpnStatus(vpnInput)
+                        settings.setUploadInputState(inputStateInput)
+                        settings.setDebugMode(debugInput)
+                        withContext(Dispatchers.IO) { LsposedConfigBridge.publish(context, settings) }
+                        if (locationInput) requestLocationPermissionIfNeeded(context)
+                        intervalInput = seconds.toString()
+                        if (monitoringEnabled) {
+                            HeartbeatWorker.schedule(context, seconds)
+                            notifySaved("设置已保存，并已应用新的心跳间隔（${seconds} 秒）")
+                        } else {
+                            notifySaved("设置已保存")
+                        }
+                    } catch (e: Exception) {
+                        statusMsg = "保存失败：${e.message}"
                     }
                 }
             },
