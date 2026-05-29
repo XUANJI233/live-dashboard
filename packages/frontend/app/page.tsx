@@ -163,7 +163,9 @@ function HomeInner() {
 
   return (
     <>
-      <main className="relative z-10 max-w-4xl mx-auto px-4 py-8">
+      <main className="relative z-10 max-w-6xl mx-auto px-4 py-8">
+        <div className="flex gap-4">
+        <div className="flex-1 min-w-0">
       <Header serverTime={current?.server_time} viewerCount={viewerCount} />
 
       {/* Error banner */}
@@ -281,11 +283,6 @@ function HomeInner() {
                       currentAppByDevice={currentAppByDevice}
                     />
                   ) : null}
-                  {selectedDevice && (
-                    <div className="mt-5">
-                      <VisitorMessages device={selectedDevice} />
-                    </div>
-                  )}
                 </>
               ) : (
                 <HealthData selectedDate={selectedDate} deviceId={selectedDevice?.device_id} />
@@ -293,6 +290,45 @@ function HomeInner() {
             </div>
           </div>
         </>
+      )}
+
+      </div>
+
+      {/* Right sidebar: visitor messages (collapsible) */}
+      {current && selectedDevice && (
+        <div className={`hidden lg:block flex-shrink-0 transition-all duration-300 ${messagesCollapsed ? "w-10" : "w-72"}`}>
+          {messagesCollapsed ? (
+            <button
+              onClick={() => setMessagesCollapsed(false)}
+              className="pill-btn text-xs w-10 h-10 flex items-center justify-center"
+              title="展开留言"
+            >
+              💬
+            </button>
+          ) : (
+            <div className="glass-sm rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-xs font-bold text-[var(--color-text-muted)] uppercase tracking-wider">留言小窗</h2>
+                <button
+                  onClick={() => setMessagesCollapsed(true)}
+                  className="text-[var(--color-text-muted)] hover:text-[var(--color-text)] text-xs"
+                >
+                  ✕
+                </button>
+              </div>
+              <VisitorMessages device={selectedDevice} />
+            </div>
+          )}
+        </div>
+      )}
+
+      </div>
+
+      {/* Mobile: visitor messages at bottom */}
+      {current && selectedDevice && (
+        <div className="lg:hidden mt-5">
+          <VisitorMessages device={selectedDevice} />
+        </div>
       )}
 
       {/* Footer */}
