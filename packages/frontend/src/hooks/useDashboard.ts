@@ -168,42 +168,43 @@ export function useDashboard() {
   // ── Effect 2: Polling ─────────────────────────────────────────────────
   useEffect(() => {
     const controller = new AbortController();
-    let requestId = 0;
+    let currentRequestId = 0;
+    let timelineRequestId = 0;
 
     const doFetchTimeline = async () => {
-      const thisRequest = ++requestId;
+      const thisRequest = ++timelineRequestId;
       setTimelineLoading(true);
       try {
         const tl = await fetchTimeline(selectedDate, controller.signal);
-        if (!controller.signal.aborted && thisRequest === requestId) {
+        if (!controller.signal.aborted && thisRequest === timelineRequestId) {
           setTimeline(tl);
         }
       } catch {
         // timeline fetch errors are non-critical
       } finally {
-        if (!controller.signal.aborted && thisRequest === requestId) {
+        if (!controller.signal.aborted && thisRequest === timelineRequestId) {
           setTimelineLoading(false);
         }
       }
     };
 
     const doFetchCurrent = async () => {
-      const thisRequest = ++requestId;
+      const thisRequest = ++currentRequestId;
       try {
         setError(null);
         if (firstLoad.current) setLoading(true);
         const cur = await fetchCurrent(controller.signal);
-        if (!controller.signal.aborted && thisRequest === requestId) {
+        if (!controller.signal.aborted && thisRequest === currentRequestId) {
           setCurrent(cur);
           setViewerCount(cur.viewer_count ?? 0);
           firstLoad.current = false;
         }
       } catch (e) {
-        if (!controller.signal.aborted && thisRequest === requestId) {
+        if (!controller.signal.aborted && thisRequest === currentRequestId) {
           setError(e instanceof Error ? e.message : "Failed to fetch data");
         }
       } finally {
-        if (!controller.signal.aborted && thisRequest === requestId) {
+        if (!controller.signal.aborted && thisRequest === currentRequestId) {
           setLoading(false);
         }
       }
