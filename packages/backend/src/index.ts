@@ -24,6 +24,7 @@ import {
   realtimeWebSocket,
   type WsData,
   handleDeleteDevice,
+  globalIpRateLimit,
 } from "./services/realtime";
 import { currentHourWindow, withCdnHeaders } from "./services/cdn";
 import { injectSiteConfig } from "./services/site-config";
@@ -95,6 +96,16 @@ const server = Bun.serve<WsData>({
     // Preflight
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
+    // Global IP rate limiting (60 requests/min for unauthenticated endpoints)
+    const clientIpForRate =
+      req.headers.get("x-real-ip") ||
+      req.headers.get("cf-connecting-ip") ||
+      server.requestIP(req)?.address ||
+      "unknown";
+    if (!globalIpRateLimit(clientIpForRate)) {
+      return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
     }
 
     // Request body size limit (1MB) — prevents memory exhaustion

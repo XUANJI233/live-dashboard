@@ -1,3 +1,17 @@
+const globalIpRate = new Map<string, { count: number; resetAt: number }>();
+const GLOBAL_IP_RATE_LIMIT = 120; // 120 requests per minute per IP
+
+export function globalIpRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const current = globalIpRate.get(ip);
+  if (!current || current.resetAt <= now) {
+    globalIpRate.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return true;
+  }
+  if (current.count >= GLOBAL_IP_RATE_LIMIT) return false;
+  current.count++;
+  return true;
+}
 import { db } from "../db";
 import { authenticateToken } from "../middleware/auth";
 import { currentHourWindow, currentMessageSlot, withCdnHeaders } from "./cdn";
@@ -56,6 +70,9 @@ const rateCleanupTimer = setInterval(() => {
   }
   for (const [key, val] of viewerApiRate) {
     if (val.resetAt < now) viewerApiRate.delete(key);
+  }
+  for (const [key, val] of globalIpRate) {
+    if (val.resetAt < now) globalIpRate.delete(key);
   }
 }, 300_000); // every 5 minutes
 rateCleanupTimer.unref();

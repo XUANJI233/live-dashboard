@@ -3,6 +3,8 @@ export interface SiteConfig {
   siteTitle: string;
   siteDescription: string;
   siteFavicon: string;
+  messageBoardEnabled: boolean;
+  privateChatEnabled: boolean;
 }
 
 export const DISPLAY_NAME_PLACEHOLDER = "__LIVE_DASHBOARD_DISPLAY_NAME__";
@@ -41,6 +43,8 @@ export function getSiteConfig(): SiteConfig {
     siteTitle,
     siteDescription,
     siteFavicon: isValidFaviconUrl(rawFavicon) ? rawFavicon : DEFAULT_FAVICON,
+    messageBoardEnabled: process.env.MESSAGE_BOARD_ENABLED !== "false",
+    privateChatEnabled: process.env.PRIVATE_CHAT_ENABLED !== "false",
   };
 }
 
