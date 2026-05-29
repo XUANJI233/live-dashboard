@@ -642,6 +642,8 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void broadcastSnapshot() {
         try {
+            // Skip expensive reflection when LSP upload is disabled — saves battery
+            if (!directUploadEnabled) return;
             ComponentName top = getTopActivityComponentName();
             String taskDescription = getFocusedTaskDescription();
             long now = System.currentTimeMillis();
