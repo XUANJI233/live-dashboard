@@ -59,16 +59,12 @@ export interface ViewerIdentity {
 }
 
 export function issueViewerToken(fingerprintValue: unknown, ip: string): { token?: string; viewerId?: string; error?: string; status?: number } {
-  // Reject empty IP — must have a valid client IP
-  if (!ip || ip === "unknown") {
-    return { error: "Unable to determine client IP", status: 400 };
-  }
-
   const fingerprint = cleanFingerprint(fingerprintValue);
   if (fingerprint.length < MIN_FINGERPRINT_LENGTH || new Set(fingerprint).size < MIN_FINGERPRINT_UNIQUE) {
     return { error: "fingerprint too weak", status: 400 };
   }
 
+  // Rate limit per IP only when IP is known
   const rateKey = ip;
   const now = Date.now();
   const current = issueRate.get(rateKey);
@@ -82,7 +78,8 @@ export function issueViewerToken(fingerprintValue: unknown, ip: string): { token
   }
 
   const nowSec = Math.floor(Date.now() / 1000);
-  const ih = ipHash(ip);
+  // IP binding: only bind when IP is known (not empty/unknown)
+  const ih = (ip && ip !== "unknown") ? ipHash(ip) : "";
   const payload = {
     sub: fingerprintId(fingerprint),
     ip: ih,

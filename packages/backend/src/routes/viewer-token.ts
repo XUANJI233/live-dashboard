@@ -3,11 +3,15 @@ import { noStore } from "../services/cdn";
 
 // GET /api/pow/challenge — issue a PoW challenge
 export function handlePowChallenge(req: Request, ipHint: string): Response {
-  if (isLocalIp(ipHint)) {
+  // Skip PoW for local IPs and unknown IPs (PoW is IP-bound, can't work without valid IP)
+  if (!ipHint || ipHint === "unknown" || isLocalIp(ipHint)) {
     return Response.json({ skip: true, message: "Local IP — PoW not required" });
   }
-  const { challenge, difficulty } = issuePowChallenge(ipHint);
-  return noStore(Response.json({ challenge, difficulty, expiresIn: 300 }));
+  const result = issuePowChallenge(ipHint);
+  if ("error" in result) {
+    return noStore(Response.json({ skip: true, message: result.error }));
+  }
+  return noStore(Response.json({ challenge: result.challenge, difficulty: result.difficulty, expiresIn: 300 }));
 }
 
 // POST /api/token/issue — require PoW + JA3 for non-local IPs
@@ -21,7 +25,8 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
 
   // JA3/JA4 check: reject non-browser TLS fingerprints (non-local only)
   const tlsFp = getTlsFingerprint(req);
-  if (!isLocalIp(ipHint) && tlsFp) {
+  const ipKnown2 = ipHint && ipHint !== "unknown";
+  if (ipKnown2 && !isLocalIp(ipHint) && tlsFp) {
     // Known bot TLS fingerprints (empty or suspicious)
     const knownBotFps = ["", "no-tls"];
     if (knownBotFps.includes(tlsFp.toLowerCase())) {
@@ -29,8 +34,10 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
     }
   }
 
-  // PoW verification: required for non-local IPs
-  if (!isLocalIp(ipHint)) {
+  // PoW verification: required for non-local IPs with known IP
+  // Skip PoW when IP is unknown (empty/unknown) since PoW is IP-bound and can't be verified
+  const ipKnown = ipHint && ipHint !== "unknown";
+  if (ipKnown && !isLocalIp(ipHint)) {
     const { pow_challenge, pow_nonce } = body;
     if (!pow_challenge || !pow_nonce) {
       return Response.json({ error: "PoW challenge and nonce required", code: "POW_REQUIRED" }, { status: 403 });

@@ -81,7 +81,11 @@ const server = Bun.serve<WsData>({
       pathname === "/api/health" ||
       pathname === "/api/daily-summary" ||
       pathname === "/api/config" ||
-      pathname === "/api/messages/public";
+      pathname === "/api/messages/public" ||
+      pathname === "/api/pow/challenge" ||
+      pathname === "/api/token/issue" ||
+      (pathname === "/api/health-data" && req.method === "GET") ||
+      (pathname === "/api/location" && req.method === "GET");
     
     const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS?.split(",").map(s => s.trim()).filter(Boolean) || [];
     const requestOrigin = req.headers.get("origin");
@@ -117,8 +121,14 @@ const server = Bun.serve<WsData>({
     const deviceTokens = (process.env.DEVICE_TOKEN_1 + "," + (process.env.DEVICE_TOKEN_2 || "")).split(",").filter(Boolean);
     const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
     const hasDeviceToken = bearerToken.length > 0 && deviceTokens.includes(bearerToken);
-    // Skip rate limit for: device tokens, public GET endpoints (cached by CDN/browser)
-    if (!hasDeviceToken && !(isPublicEndpoint && req.method === "GET") && !globalIpRateLimit(clientIpForRate)) {
+    // Auth endpoints (PoW challenge, token issue) and viewer-token authenticated GET endpoints
+    // should skip global IP rate limiting — they have their own rate limits or are auth flows
+    const isAuthEndpoint = pathname === "/api/pow/challenge" || pathname === "/api/token/issue";
+    const isViewerAuthGet = req.method === "GET" && (
+      pathname === "/api/health-data" || pathname === "/api/location" || pathname === "/api/ws"
+    );
+    // Skip rate limit for: device tokens, public GET endpoints, auth endpoints, viewer-auth GETs
+    if (!hasDeviceToken && !(isPublicEndpoint && req.method === "GET") && !isAuthEndpoint && !isViewerAuthGet && !globalIpRateLimit(clientIpForRate)) {
       return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
     }
 
