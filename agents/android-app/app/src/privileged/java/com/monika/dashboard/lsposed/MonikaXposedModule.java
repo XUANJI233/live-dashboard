@@ -139,6 +139,7 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String mediaTitle = "";
     private volatile String mediaArtist = "";
     private volatile String mediaState = "";
+    private volatile Object cachedAtmService = null;
 
     @Override
     public void onModuleLoaded(@NonNull XposedModuleInterface.ModuleLoadedParam param) {
@@ -883,10 +884,12 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private Object getActivityTaskManagerService() {
+        Object cached = cachedAtmService;
+        if (cached != null) return cached;
         try {
             Class<?> atm = Class.forName("android.app.ActivityTaskManager");
             Object service = atm.getDeclaredMethod("getService").invoke(null);
-            if (service != null) return service;
+            if (service != null) { cachedAtmService = service; return service; }
         } catch (Throwable ignored) {
         }
         try {
@@ -895,8 +898,10 @@ public final class MonikaXposedModule extends XposedModule {
                     .invoke(null, "activity_task");
             if (binder == null) return null;
             Class<?> stub = Class.forName("android.app.IActivityTaskManager$Stub");
-            return stub.getDeclaredMethod("asInterface", android.os.IBinder.class)
+            Object svc = stub.getDeclaredMethod("asInterface", android.os.IBinder.class)
                     .invoke(null, binder);
+            if (svc != null) cachedAtmService = svc;
+            return svc;
         } catch (Throwable ignored) {
             return null;
         }
