@@ -1111,7 +1111,8 @@ public final class MonikaXposedModule extends XposedModule {
         if (!directUploadEnabled || directServerUrl.length() == 0 || directToken.length() == 0) return;
         // Only system_server should perform network uploads.
         // Browser processes have uninitialized uploadHandler and would block the main thread (ANR).
-        if (currentProcessName != null && !currentProcessName.equals(TARGET_PACKAGE)) return;
+        // system_server process name is "system", app process name is TARGET_PACKAGE ("com.monika.dashboard")
+        if (!"system".equals(currentProcessName)) return;
         long now = System.currentTimeMillis();
         long safeInterval = Math.max(MIN_DIRECT_UPLOAD_MS, directIntervalMs);
         if (!force && now - lastDirectUploadAt < safeInterval) return;
