@@ -106,13 +106,15 @@ const server = Bun.serve<WsData>({
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // Global IP rate limiting (60 requests/min for unauthenticated endpoints)
+    // Global IP rate limiting — skip for device-authenticated requests
     const clientIpForRate =
       req.headers.get("x-real-ip") ||
       req.headers.get("cf-connecting-ip") ||
       server.requestIP(req)?.address ||
       "unknown";
-    if (!globalIpRateLimit(clientIpForRate)) {
+    const authHeader = req.headers.get("authorization") || "";
+    const hasDeviceToken = authHeader.startsWith("Bearer ") && authHeader.length > 10;
+    if (!hasDeviceToken && !globalIpRateLimit(clientIpForRate)) {
       return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
     }
 
