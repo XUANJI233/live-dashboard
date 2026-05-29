@@ -4,7 +4,7 @@ import { randomBytes, createHash } from "crypto";
 const TOKEN_TTL_SECONDS = 60 * 60;
 const MIN_FINGERPRINT_LENGTH = 32; // FingerprintJS visitorId is 32-char hex
 const MIN_FINGERPRINT_UNIQUE = 6;  // hex has 16 chars, 6 is reasonable
-const POW_DIFFICULTY_HEX = 4;      // 4 leading hex zeros = 16 bits of work
+const POW_DIFFICULTY_HEX = 3;      // 3 leading hex zeros = 12 bits of work (faster on mobile)
 const POW_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const VIEWER_TOKEN_RATE_LIMIT = 120;
 const MAX_POW_CHALLENGES = 10000;  // limit memory usage
@@ -145,7 +145,6 @@ export function issuePowChallenge(ip: string): { challenge: string; difficulty: 
 export function verifyPowSolution(challenge: string, nonce: string, ip: string): boolean {
   const entry = powChallenges.get(challenge);
   if (!entry) return false;
-  if (entry.ip !== ip) return false;
   if (Date.now() - entry.createdAt > POW_CHALLENGE_TTL_MS) {
     powChallenges.delete(challenge);
     return false;

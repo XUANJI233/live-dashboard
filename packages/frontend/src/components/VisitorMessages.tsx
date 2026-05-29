@@ -162,9 +162,13 @@ export default function VisitorMessages({ device }: Props) {
 
     const connect = async () => {
       try {
-        setLoadingStatus("pow");
+        // Check if token is already cached to avoid flash
+        const cachedToken = localStorage.getItem("live-dashboard-viewer-token");
+        const cachedExp = Number(localStorage.getItem("live-dashboard-viewer-token-exp") || 0);
+        const hasCachedToken = cachedToken && Date.now() < cachedExp - 60_000;
+        if (!hasCachedToken) setLoadingStatus("pow");
         const identity = await ensureViewerToken((s) => {
-          if (s === "pow") setLoadingStatus("pow");
+          if (s === "pow" && !hasCachedToken) setLoadingStatus("pow");
           else if (s === "token") setLoadingStatus("token");
           else setLoadingStatus("connecting");
         });
