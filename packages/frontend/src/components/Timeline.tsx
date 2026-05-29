@@ -14,20 +14,10 @@ function getColor(appName: string, colorMap: Map<string, string>): string {
   return color;
 }
 
-function formatDuration(minutes: number): string {
-  if (minutes < 1) return "<1m";
-  if (minutes < 60) return `${minutes}m`;
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
-}
-
-interface AggregatedApp {
-  appName: string;
-  displayTitle: string;
-  totalMinutes: number;
-  lastSeenAt: number;
-  isCurrent: boolean;
+function formatTime(isoStr: string): string {
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return "--:--";
+  return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
 interface Props {
@@ -62,45 +52,11 @@ export default function Timeline({ segments, summary, currentAppByDevice }: Prop
   return (
     <div className="space-y-8">
       {Array.from(byDevice.entries()).map(([deviceId, { name, segs }]) => {
-        const appMap = new Map<string, AggregatedApp>();
-        for (const seg of segs) {
-          const existing = appMap.get(seg.app_name);
-          const rawTime = new Date(seg.started_at).getTime();
-          const segTime = Number.isFinite(rawTime) ? rawTime : 0;
-          if (existing) {
-            if (segTime > existing.lastSeenAt) {
-              existing.lastSeenAt = segTime;
-              if (seg.display_title) existing.displayTitle = seg.display_title;
-            }
-          } else {
-            appMap.set(seg.app_name, {
-              appName: seg.app_name,
-              displayTitle: seg.display_title || "",
-              totalMinutes: 0,
-              lastSeenAt: segTime,
-              isCurrent: false,
-            });
-          }
-        }
-
-        const deviceSummary = summary[deviceId];
-        if (deviceSummary) {
-          for (const [app, mins] of Object.entries(deviceSummary)) {
-            const entry = appMap.get(app);
-            if (entry) entry.totalMinutes = mins;
-          }
-        }
-
-        const currentApp = currentAppByDevice[deviceId];
-        if (currentApp) {
-          const entry = appMap.get(currentApp);
-          if (entry) entry.isCurrent = true;
-        }
-
-        const sorted = Array.from(appMap.values()).sort((a, b) => {
-          if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
-          return b.lastSeenAt - a.lastSeenAt;
-        });
+          const currentApp = currentAppByDevice[deviceId];
+          // Sort segments by start time, newest first
+          const sorted = [...segs].sort((a, b) => {
+            return new Date(b.started_at).getTime() - new Date(a.started_at).getTime();
+          });
 
         return (
           <div key={deviceId}>
@@ -109,25 +65,27 @@ export default function Timeline({ segments, summary, currentAppByDevice }: Prop
             </h3>
 
             <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
-              {sorted.map((app) => {
-                const color = getColor(app.appName, colorMap);
+                {sorted.map((seg) => {
+                  const color = getColor(seg.app_name, colorMap);
+                  const isCurrent = seg.app_name === currentApp && !seg.ended_at;
+                  const timeRange = `${formatTime(seg.started_at)} – ${seg.ended_at ? formatTime(seg.ended_at) : "Now"}`;
 
                 return (
                   <div
-                    key={app.appName}
+                      key={`${seg.app_name}-${seg.started_at}`}
                     className={`timeline-entry glass-sm flex items-center gap-3 px-4 py-2.5 group ${
-                      app.isCurrent ? "timeline-active-glow" : ""
+                        isCurrent ? "timeline-active-glow" : ""
                     }`}
                   >
                     {/* Color accent bar */}
                     <div
                       className="w-1 self-stretch rounded-full flex-shrink-0 transition-opacity group-hover:opacity-100"
-                      style={{ backgroundColor: color, opacity: app.isCurrent ? 1 : 0.5 }}
+                        style={{ backgroundColor: color, opacity: isCurrent ? 1 : 0.5 }}
                     />
 
                     {/* Current badge or spacer */}
                     <div className="w-10 flex-shrink-0">
-                      {app.isCurrent && (
+                        {isCurrent && (
                         <span className="text-[10px] font-semibold text-[var(--color-accent)] uppercase tracking-wider">
                           Now
                         </span>
@@ -137,13 +95,13 @@ export default function Timeline({ segments, summary, currentAppByDevice }: Prop
                     {/* Description */}
                     <div className="flex-1 min-w-0">
                       <span className="text-sm truncate block text-[var(--color-text)]">
-                        {getAppDescription(app.appName, app.displayTitle)}
+                        {getAppDescription(seg.app_name, seg.display_title || "")}
                       </span>
                     </div>
 
-                    {/* Duration */}
+                    {/* Time range */}
                     <span className="text-[11px] font-mono text-[var(--color-text-muted)] tabular-nums flex-shrink-0">
-                      {formatDuration(app.totalMinutes)}
+                      {timeRange}
                     </span>
                   </div>
                 );

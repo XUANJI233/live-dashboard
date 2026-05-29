@@ -163,6 +163,7 @@ function HomeInner() {
 
   return (
     <>
+      <main className="relative z-10 max-w-4xl mx-auto px-4 py-8">
       <Header serverTime={current?.server_time} viewerCount={viewerCount} />
 
       {/* Error banner */}
@@ -300,6 +301,7 @@ function HomeInner() {
           {displayName} 现在在做什么 · 每 10 秒自动刷新一次 · 喵~
         </p>
       </footer>
+      </main>
     </>
   );
 }
