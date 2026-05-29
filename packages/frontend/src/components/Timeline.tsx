@@ -124,6 +124,16 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
     const events: TimelineEvent[] = [];
     let i = 0;
     while (i < sorted.length) {
+      // First: merge consecutive segments with same app_name
+      const current = sorted[i]!;
+      const merged = [current];
+      for (let j = i + 1; j < sorted.length; j++) {
+        const next = sorted[j]!;
+        if (next.app_name !== current.app_name) break;
+        merged.push(next);
+      }
+
+      // Then: check if this merged group is part of a rapid-switch cluster
       const cluster = collectSwitchCluster(sorted, i);
       if (cluster.length >= 3) {
         const first = cluster[0]!;
@@ -132,9 +142,21 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
         i += cluster.length;
         continue;
       }
-      const seg = sorted[i]!;
-      events.push({ key: `${deviceId}:${seg.started_at}:${seg.app_id}`, kind: "single", appName: seg.app_name, appId: seg.app_id, title: describeSegment(seg), startedAt: seg.started_at, endedAt: seg.ended_at, durationSeconds: durationSeconds(seg), isCurrent: currentAppByDevice[deviceId] === seg.app_name, children: meaningfulDetailTitle(seg) ? [seg] : [] });
-      i += 1;
+      const first = merged[0]!;
+      const last = merged[merged.length - 1]!;
+      events.push({
+        key: `${deviceId}:${first.started_at}:${first.app_id}`,
+        kind: "single",
+        appName: first.app_name,
+        appId: first.app_id,
+        title: describeSegment(first),
+        startedAt: first.started_at,
+        endedAt: last.ended_at,
+        durationSeconds: spanSeconds(merged),
+        isCurrent: currentAppByDevice[deviceId] === first.app_name,
+        children: merged.length > 1 ? compactChildren(merged) : (meaningfulDetailTitle(first) ? [first] : []),
+      });
+      i += merged.length;
     }
     events.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
     events.sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent));
