@@ -1,4 +1,3 @@
-import { issueViewerToken } from "../services/viewer-auth";
 import { issueViewerToken, issuePowChallenge, verifyPowSolution, getTlsFingerprint, isLocalIp } from "../services/viewer-auth";
 import { noStore } from "../services/cdn";
 
@@ -8,7 +7,7 @@ export function handlePowChallenge(req: Request, ipHint: string): Response {
     return Response.json({ skip: true, message: "Local IP — PoW not required" });
   }
   const { challenge, difficulty } = issuePowChallenge(ipHint);
-  return Response.json({ challenge, difficulty, expiresIn: 300 });
+  return noStore(Response.json({ challenge, difficulty, expiresIn: 300 }));
 }
 
 // POST /api/token/issue — require PoW + JA3 for non-local IPs
