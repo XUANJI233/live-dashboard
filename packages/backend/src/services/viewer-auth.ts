@@ -13,6 +13,7 @@ const MAX_POW_CHALLENGES = 10000;  // limit memory usage
 const powChallenges = new Map<string, { ip: string; createdAt: number }>();
 const issueRate = new Map<string, { count: number; resetAt: number }>();
 const viewerTokenRate = new Map<string, { count: number; resetAt: number }>();
+const powChallengeRate = new Map<string, { count: number; resetAt: number }>();
 
 // ── Cleanup (5 min) ──
 setInterval(() => {
@@ -20,6 +21,7 @@ setInterval(() => {
   for (const [k, v] of powChallenges) if (now - v.createdAt > POW_CHALLENGE_TTL_MS) powChallenges.delete(k);
   for (const [k, v] of issueRate) if (v.resetAt < now) issueRate.delete(k);
   for (const [k, v] of viewerTokenRate) if (v.resetAt < now) viewerTokenRate.delete(k);
+  for (const [k, v] of powChallengeRate) if (v.resetAt < now) powChallengeRate.delete(k);
 }, 300_000).unref();
 
 // ── Helpers ──
@@ -99,6 +101,19 @@ export function viewerTokenRateLimit(viewerId: string): boolean {
     return true;
   }
   if (current.count >= VIEWER_TOKEN_RATE_LIMIT) return false;
+  current.count++;
+  return true;
+}
+
+// Per-IP rate limit for PoW challenge requests (30/min)
+export function powChallengeRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const current = powChallengeRate.get(ip);
+  if (!current || current.resetAt <= now) {
+    powChallengeRate.set(ip, { count: 1, resetAt: now + 60_000 });
+    return true;
+  }
+  if (current.count >= 30) return false;
   current.count++;
   return true;
 }

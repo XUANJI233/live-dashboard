@@ -11,6 +11,7 @@ import { handleConfig } from "./routes/config";
 import { handleDailySummary } from "./routes/daily-summary";
 import { handleLocationQuery } from "./routes/location";
 import { handleViewerTokenIssue, handlePowChallenge } from "./routes/viewer-token";
+import { powChallengeRateLimit } from "./services/viewer-auth";
 import {
   getWsInfo,
   handleBlockViewer,
@@ -130,6 +131,14 @@ const server = Bun.serve<WsData>({
     // Skip rate limit for: device tokens, public GET endpoints, auth endpoints, viewer-auth GETs
     if (!hasDeviceToken && !(isPublicEndpoint && req.method === "GET") && !isAuthEndpoint && !isViewerAuthGet && !globalIpRateLimit(clientIpForRate)) {
       return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+    }
+
+    // PoW challenge endpoint: independent per-IP rate limit (30/min)
+    // Prevents flood attacks that could exhaust memory via challenge generation
+    if (pathname === "/api/pow/challenge" && req.method === "GET") {
+      if (!powChallengeRateLimit(clientIpForRate)) {
+        return Response.json({ error: "Too many PoW requests", retryAfter: 60 }, { status: 429 });
+      }
     }
 
     // Request body size limit (1MB) — prevents memory exhaustion
