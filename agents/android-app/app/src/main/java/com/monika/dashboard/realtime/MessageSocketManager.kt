@@ -84,24 +84,24 @@ object MessageSocketManager {
         val appContext = context.applicationContext
         connecting = true
         scope.launch {
-            val settings = SettingsStore(appContext)
-            val enabled = settings.monitoringEnabled.first()
-            val url = settings.serverUrl.first()
-            val token = settings.getToken()
-            if (!enabled || url.isBlank() || token.isNullOrBlank()) {
-                connecting = false
-                return@launch
-            }
-            runCatching {
+            try {
+                val settings = SettingsStore(appContext)
+                val enabled = settings.monitoringEnabled.first()
+                val url = settings.serverUrl.first()
+                val token = settings.getToken()
+                if (!enabled || url.isBlank() || token.isNullOrBlank()) {
+                    connecting = false
+                    return@launch
+                }
                 val wsUrl = buildWsUrl(url)
                 val request = Request.Builder()
                     .url(wsUrl)
                     .addHeader("Authorization", "Bearer $token")
                     .build()
                 socket = client.newWebSocket(request, Listener(appContext, url, token))
-            }.onFailure {
+            } catch (e: Exception) {
                 connecting = false
-                DebugLog.log("消息", "WebSocket启动失败: ${it.message}")
+                DebugLog.log("消息", "WebSocket启动失败: ${e.message}")
             }
         }
     }
