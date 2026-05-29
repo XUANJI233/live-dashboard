@@ -18,11 +18,18 @@ function todayStr(): string {
 export function useDashboard() {
   const [current, setCurrent] = useState<CurrentResponse | null>(null);
   const [timeline, setTimeline] = useState<TimelineResponse | null>(null);
-  const [selectedDate, setSelectedDate] = useState(todayStr);
+  // SSR-safe: initialize with empty string, set real date in useEffect
+  // todayStr() uses new Date() which can differ between server and client
+  const [selectedDate, setSelectedDate] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [viewerCount, setViewerCount] = useState(0);
   const firstLoad = useRef(true);
+
+  // Initialize selectedDate on client mount (SSR-safe)
+  useEffect(() => {
+    setSelectedDate(todayStr());
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -54,6 +61,8 @@ export function useDashboard() {
       }
     };
 
+    // Skip fetch if selectedDate is not yet initialized (SSR-safe)
+    if (!selectedDate) return;
     firstLoad.current = true;
     doFetch();
     const pollId = setInterval(doFetch, POLL_INTERVAL);

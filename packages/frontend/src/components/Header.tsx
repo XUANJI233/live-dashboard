@@ -33,7 +33,7 @@ export default function Header({ serverTime, viewerCount = 0 }: HeaderProps) {
           <h1 className="text-3xl font-semibold font-[var(--font-display)] gradient-text leading-tight tracking-tight">
             Monika Now
           </h1>
-          <p className="text-sm text-[var(--color-text-muted)] mt-2 font-light tracking-wide">
+          <p suppressHydrationWarning className="text-sm text-[var(--color-text-muted)] mt-2 font-light tracking-wide">
             {greeting.text}
           </p>
         </div>

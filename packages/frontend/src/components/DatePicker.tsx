@@ -34,7 +34,7 @@ export default function DatePicker({ selectedDate, onChange }: Props) {
         &larr;
       </button>
 
-      <span className="text-sm font-mono text-[var(--color-text-secondary)] tabular-nums px-2 min-w-[80px] text-center">
+      <span suppressHydrationWarning className="text-sm font-mono text-[var(--color-text-secondary)] tabular-nums px-2 min-w-[80px] text-center">
         {formatDisplay(selectedDate)}
       </span>
 
