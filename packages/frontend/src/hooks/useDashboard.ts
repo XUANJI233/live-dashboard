@@ -72,6 +72,19 @@ function mergeDevicePayload(
   return updated;
 }
 
+/** Shallow compare two objects — returns true if equal (no re-render needed) */
+function shallowEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  const ka = Object.keys(a as Record<string, unknown>);
+  const kb = Object.keys(b as Record<string, unknown>);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if ((a as Record<string, unknown>)[k] !== (b as Record<string, unknown>)[k]) return false;
+  }
+  return true;
+}
+
 export function useDashboard() {
   const [current, setCurrent] = useState<CurrentResponse | null>(null);
   const [timeline, setTimeline] = useState<TimelineResponse | null>(null);
@@ -177,7 +190,10 @@ export function useDashboard() {
       try {
         const tl = await fetchTimeline(selectedDate, controller.signal);
         if (!controller.signal.aborted && thisRequest === timelineRequestId) {
-          setTimeline(tl);
+            setTimeline(prev => {
+              if (prev && shallowEqual(prev.segments, tl.segments) && shallowEqual(prev.summary, tl.summary)) return prev;
+              return tl;
+            });
         }
       } catch {
         // timeline fetch errors are non-critical
@@ -195,8 +211,14 @@ export function useDashboard() {
         if (firstLoad.current) setLoading(true);
         const cur = await fetchCurrent(controller.signal);
         if (!controller.signal.aborted && thisRequest === currentRequestId) {
-          setCurrent(cur);
-          setViewerCount(cur.viewer_count ?? 0);
+          setCurrent(prev => {
+            if (prev && shallowEqual(prev.devices, cur.devices) && prev.server_time === cur.server_time) return prev;
+            return cur;
+          });
+          setViewerCount(prev => {
+            const next = cur.viewer_count ?? 0;
+            return prev === next ? prev : next;
+          });
           firstLoad.current = false;
         }
       } catch (e) {
