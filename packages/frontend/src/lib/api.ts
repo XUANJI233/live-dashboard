@@ -186,6 +186,9 @@ export async function fetchHealthData(date: string, signal?: AbortSignal, device
   const tz = new Date().getTimezoneOffset();
   let url = `${API_BASE}/api/health-data?date=${encodeURIComponent(date)}&tz=${tz}`;
   if (deviceId) url += `&device_id=${encodeURIComponent(deviceId)}`;
+  // Include viewer token for authentication
+  const viewerToken = typeof window !== "undefined" ? localStorage.getItem("live-dashboard-viewer-token") : null;
+  if (viewerToken) url += `&viewer_token=${encodeURIComponent(viewerToken)}`;
   const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
