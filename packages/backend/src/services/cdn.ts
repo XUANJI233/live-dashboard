@@ -5,10 +5,14 @@ export function isCdnMode(): boolean {
 }
 
 export function withCdnHeaders(response: Response, tags: string[], maxAgeSeconds: number): Response {
-  if (!CDN_MODE) return response;
   const headers = new Headers(response.headers);
-  headers.set("Cache-Control", `public, max-age=${maxAgeSeconds}, s-maxage=${maxAgeSeconds}, stale-while-revalidate=30`);
-  headers.set("Cache-Tag", tags.join(","));
+  // Browser cache always applies
+  headers.set("Cache-Control", `public, max-age=${maxAgeSeconds}, stale-while-revalidate=30`);
+  // CDN-specific headers only in CDN mode
+  if (CDN_MODE) {
+    headers.set("Cache-Tag", tags.join(","));
+    headers.set("Cache-Control", `public, max-age=${maxAgeSeconds}, s-maxage=${maxAgeSeconds}, stale-while-revalidate=30`);
+  }
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
