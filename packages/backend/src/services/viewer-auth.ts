@@ -2,10 +2,12 @@
 import { randomBytes, createHash } from "crypto";
 
 const TOKEN_TTL_SECONDS = 60 * 60;
-const MIN_FINGERPRINT_LENGTH = 48;
-const POW_DIFFICULTY = 4; // leading zero hex chars (SHA-256)
+const MIN_FINGERPRINT_LENGTH = 32; // FingerprintJS visitorId is 32-char hex
+const MIN_FINGERPRINT_UNIQUE = 6;  // hex has 16 chars, 6 is reasonable
+const POW_DIFFICULTY_HEX = 4;      // 4 leading hex zeros = 16 bits of work
 const POW_CHALLENGE_TTL_MS = 5 * 60 * 1000;
-const VIEWER_TOKEN_RATE_LIMIT = 120; // per hour per token
+const VIEWER_TOKEN_RATE_LIMIT = 120;
+const MAX_POW_CHALLENGES = 10000;  // limit memory usage
 
 // ── In-memory stores ──
 const powChallenges = new Map<string, { ip: string; createdAt: number }>();
@@ -57,11 +59,17 @@ export interface ViewerIdentity {
 }
 
 export function issueViewerToken(fingerprintValue: unknown, ip: string): { token?: string; viewerId?: string; error?: string; status?: number } {
+  // Reject empty IP — must have a valid client IP
+  if (!ip || ip === "unknown") {
+    return { error: "Unable to determine client IP", status: 400 };
+  }
+
   const fingerprint = cleanFingerprint(fingerprintValue);
-  if (fingerprint.length < MIN_FINGERPRINT_LENGTH || new Set(fingerprint).size < 12) {
+  if (fingerprint.length < MIN_FINGERPRINT_LENGTH || new Set(fingerprint).size < MIN_FINGERPRINT_UNIQUE) {
     return { error: "fingerprint too weak", status: 400 };
   }
-  const rateKey = ip || fingerprint.slice(0, 64);
+
+  const rateKey = ip;
   const now = Date.now();
   const current = issueRate.get(rateKey);
   if (current && current.resetAt > now && current.count >= 12) {
@@ -74,7 +82,7 @@ export function issueViewerToken(fingerprintValue: unknown, ip: string): { token
   }
 
   const nowSec = Math.floor(Date.now() / 1000);
-  const ih = ip ? ipHash(ip) : "";
+  const ih = ipHash(ip);
   const payload = {
     sub: fingerprintId(fingerprint),
     ip: ih,
@@ -107,7 +115,7 @@ export function verifyViewerToken(token: string | null | undefined, ip?: string)
     if (typeof payload.sub !== "string" || typeof payload.exp !== "number") return null;
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;
     if (!/^fp_[a-f0-9]{32}$/.test(payload.sub)) return null;
-    // IP binding check: if token has ip hash and request has ip, they must match
+    // IP binding check
     const tokenIpHash = typeof payload.ip === "string" ? payload.ip : "";
     if (tokenIpHash && ip && tokenIpHash !== ipHash(ip)) return null;
     return { viewerId: payload.sub, exp: payload.exp, ipHash: tokenIpHash };
@@ -117,14 +125,24 @@ export function verifyViewerToken(token: string | null | undefined, ip?: string)
 }
 
 // ── PoW Challenge ──
-export function issuePowChallenge(ip: string): { challenge: string; difficulty: number } {
-  const now = Date.now();
-  for (const [key, val] of powChallenges) {
-    if (now - val.createdAt > POW_CHALLENGE_TTL_MS) powChallenges.delete(key);
+export function issuePowChallenge(ip: string): { challenge: string; difficulty: number } | { error: string; status: number } {
+  if (!ip || ip === "unknown") {
+    return { error: "Unable to determine client IP", status: 400 };
+  }
+  // Limit challenge count to prevent memory exhaustion
+  if (powChallenges.size >= MAX_POW_CHALLENGES) {
+    // Clean expired first
+    const now = Date.now();
+    for (const [key, val] of powChallenges) {
+      if (now - val.createdAt > POW_CHALLENGE_TTL_MS) powChallenges.delete(key);
+    }
+    if (powChallenges.size >= MAX_POW_CHALLENGES) {
+      return { error: "Too many pending challenges", status: 429 };
+    }
   }
   const challenge = randomBytes(32).toString("hex");
-  powChallenges.set(challenge, { ip, createdAt: now });
-  return { challenge, difficulty: POW_DIFFICULTY };
+  powChallenges.set(challenge, { ip, createdAt: Date.now() });
+  return { challenge, difficulty: POW_DIFFICULTY_HEX };
 }
 
 export function verifyPowSolution(challenge: string, nonce: string, ip: string): boolean {
@@ -138,7 +156,7 @@ export function verifyPowSolution(challenge: string, nonce: string, ip: string):
   const input = challenge + nonce;
   const hashHex = createHash("sha256").update(input).digest("hex");
   powChallenges.delete(challenge);
-  return hashHex.startsWith("0".repeat(POW_DIFFICULTY));
+  return hashHex.startsWith("0".repeat(POW_DIFFICULTY_HEX));
 }
 
 // ── TLS Fingerprint ──

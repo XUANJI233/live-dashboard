@@ -78,15 +78,18 @@ function messageStatusText(status?: string) {
 }
 
 // Solve SHA-256 hashcash PoW challenge
-async function solvePow(challenge: string, difficulty: number): Promise<string> {
-  const targetZeros = Math.ceil(difficulty / 4);
-  for (let nonce = 0; nonce < 1_000_000; nonce++) {
+// difficulty = number of leading hex zeros required (same unit as server)
+async function solvePow(challenge: string, difficulty: number): Promise<string | null> {
+  const targetZeros = difficulty; // server sends hex zeros count directly
+  const deadline = Date.now() + 10_000; // 10 second timeout
+  for (let nonce = 0; nonce < 10_000_000; nonce++) {
+    if (Date.now() > deadline) return null; // timeout
     const input = challenge + String(nonce);
     const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
     const hashHex = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
     if (hashHex.startsWith("0".repeat(targetZeros))) return String(nonce);
   }
-  return "0"; // fallback
+  return null; // failed to solve
 }
 
 async function ensureViewerToken(): Promise<{ token: string; viewerId: string }> {
@@ -97,18 +100,18 @@ async function ensureViewerToken(): Promise<{ token: string; viewerId: string }>
     return { token: stored, viewerId: storedId };
   }
 
-  // Step 1: Get PoW challenge (server returns {skip: true} for local IPs)
-  let powData: { challenge?: string; difficulty?: number; skip?: boolean } = {};
-  try {
-    const powRes = await fetch(`${API_BASE}/api/pow/challenge`);
-    if (powRes.ok) powData = await powRes.json();
-  } catch { /* local IP or server error — try without PoW */ }
+  // Step 1: Get PoW challenge
+  const powRes = await fetch(`${API_BASE}/api/pow/challenge`);
+  if (!powRes.ok) throw new Error("获取 PoW 挑战失败");
+  const powData = await powRes.json();
 
-  // Step 2: Solve PoW if required
+  // Step 2: Solve PoW (required unless server says skip for local IPs)
   const body: Record<string, string> = { fingerprint: await fingerprint() };
   if (powData.challenge && !powData.skip) {
+    const nonce = await solvePow(powData.challenge, powData.difficulty || 4);
+    if (!nonce) throw new Error("PoW 计算超时，请重试");
     body.pow_challenge = powData.challenge;
-    body.pow_nonce = await solvePow(powData.challenge, powData.difficulty || 16);
+    body.pow_nonce = nonce;
   }
 
   // Step 3: Request token
@@ -117,7 +120,10 @@ async function ensureViewerToken(): Promise<{ token: string; viewerId: string }>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error("访客令牌领取失败");
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || "访客令牌领取失败");
+  }
   const data = await res.json();
   localStorage.setItem("live-dashboard-viewer-token", data.token);
   localStorage.setItem("live-dashboard-viewer-id", data.viewer_id);

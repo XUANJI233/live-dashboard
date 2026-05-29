@@ -113,7 +113,10 @@ const server = Bun.serve<WsData>({
       server.requestIP(req)?.address ||
       "unknown";
     const authHeader = req.headers.get("authorization") || "";
-    const hasDeviceToken = authHeader.startsWith("Bearer ") && authHeader.length > 10;
+    // Real device token check: verify against known tokens (not just string length)
+    const deviceTokens = (process.env.DEVICE_TOKEN_1 + "," + (process.env.DEVICE_TOKEN_2 || "")).split(",").filter(Boolean);
+    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+    const hasDeviceToken = bearerToken.length > 0 && deviceTokens.includes(bearerToken);
     if (!hasDeviceToken && !globalIpRateLimit(clientIpForRate)) {
       return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
     }
