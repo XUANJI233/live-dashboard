@@ -76,6 +76,15 @@ function mergeDevicePayload(
 function shallowEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  // Handle arrays: compare length + each element by reference
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+  // Handle objects: compare keys + each value by reference
   const ka = Object.keys(a as Record<string, unknown>);
   const kb = Object.keys(b as Record<string, unknown>);
   if (ka.length !== kb.length) return false;

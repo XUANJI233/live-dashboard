@@ -15,7 +15,6 @@ export function globalIpRateLimit(ip: string): boolean {
 import { db } from "../db";
 import { authenticateToken } from "../middleware/auth";
 import { currentHourWindow, currentMessageSlot, withCdnHeaders } from "./cdn";
-import { verifyViewerToken, viewerTokenFromRequest } from "./viewer-auth";
 import { verifyViewerToken, viewerTokenFromRequest, viewerTokenRateLimit } from "./viewer-auth";
 import { processReportPayload } from "./device-status-handler";
 import type { DeviceInfo } from "../types";

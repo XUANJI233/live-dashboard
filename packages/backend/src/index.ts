@@ -8,6 +8,7 @@ import { handleHealth } from "./routes/health";
 import { handleHealthData, handleHealthDataQuery } from "./routes/health-data";
 import { handleHealthWebhook } from "./routes/health-webhook";
 import { handleConfig } from "./routes/config";
+import { authenticateToken } from "./middleware/auth";
 import { handleDailySummary } from "./routes/daily-summary";
 import { handleLocationQuery } from "./routes/location";
 import { handleViewerTokenIssue, handlePowChallenge } from "./routes/viewer-token";
@@ -118,10 +119,8 @@ const server = Bun.serve<WsData>({
       server.requestIP(req)?.address ||
       "unknown";
     const authHeader = req.headers.get("authorization") || "";
-    // Real device token check: verify against known tokens (not just string length)
-    const deviceTokens = (process.env.DEVICE_TOKEN_1 + "," + (process.env.DEVICE_TOKEN_2 || "")).split(",").filter(Boolean);
-    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-    const hasDeviceToken = bearerToken.length > 0 && deviceTokens.includes(bearerToken);
+    // Real device token check: use authenticateToken which properly parses token:device_id:name:platform format
+    const hasDeviceToken = authenticateToken(authHeader) !== null;
     // Auth endpoints (PoW challenge, token issue) and viewer-token authenticated GET endpoints
     // should skip global IP rate limiting — they have their own rate limits or are auth flows
     const isAuthEndpoint = pathname === "/api/pow/challenge" || pathname === "/api/token/issue";
