@@ -92,7 +92,7 @@ async function solvePow(challenge: string, difficulty: number): Promise<string |
   return null; // failed to solve
 }
 
-async function ensureViewerToken(): Promise<{ token: string; viewerId: string }> {
+async function ensureViewerToken(onStatus?: (s: string) => void): Promise<{ token: string; viewerId: string }> {
   const stored = localStorage.getItem("live-dashboard-viewer-token");
   const storedId = localStorage.getItem("live-dashboard-viewer-id");
   const storedExp = Number(localStorage.getItem("live-dashboard-viewer-token-exp") || 0);
@@ -101,6 +101,8 @@ async function ensureViewerToken(): Promise<{ token: string; viewerId: string }>
   }
 
   // Step 1: Get PoW challenge
+  onStatus?.("正在验证身份...");
+    onStatus?.("pow");
   const powRes = await fetch(`${API_BASE}/api/pow/challenge`);
   if (!powRes.ok) throw new Error("获取 PoW 挑战失败");
   const powData = await powRes.json();
@@ -108,6 +110,7 @@ async function ensureViewerToken(): Promise<{ token: string; viewerId: string }>
   // Step 2: Solve PoW (required unless server says skip for local IPs)
   const body: Record<string, string> = { fingerprint: await fingerprint() };
   if (powData.challenge && !powData.skip) {
+    onStatus?.("pow");
     const nonce = await solvePow(powData.challenge, powData.difficulty || 4);
     if (!nonce) throw new Error("PoW 计算超时，请重试");
     body.pow_challenge = powData.challenge;
@@ -115,6 +118,7 @@ async function ensureViewerToken(): Promise<{ token: string; viewerId: string }>
   }
 
   // Step 3: Request token
+  onStatus?.("token");
   const res = await fetch(`${API_BASE}/api/token/issue`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -133,6 +137,7 @@ async function ensureViewerToken(): Promise<{ token: string; viewerId: string }>
 
 export default function VisitorMessages({ device }: Props) {
   const [connected, setConnected] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState<"idle" | "pow" | "token" | "connecting">("idle");
   const [privateText, setPrivateText] = useState("");
   const [publicText, setPublicText] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -157,22 +162,33 @@ export default function VisitorMessages({ device }: Props) {
 
     const connect = async () => {
       try {
-        const identity = await ensureViewerToken();
+        setLoadingStatus("pow");
+        const identity = await ensureViewerToken((s) => {
+          if (s === "pow") setLoadingStatus("pow");
+          else if (s === "token") setLoadingStatus("token");
+          else setLoadingStatus("connecting");
+        });
         if (closed) return;
         tokenRef.current = identity.token;
         setViewerId(identity.viewerId);
 
+        setLoadingStatus("connecting");
         const ws = new WebSocket(getRealtimeUrl(identity.token));
         socketRef.current = ws;
         ws.onopen = () => {
           setConnected(true);
+          setLoadingStatus("idle");
           setError("");
         };
         ws.onclose = () => {
           setConnected(false);
+          setLoadingStatus("idle");
           if (!closed) retry = setTimeout(connect, 3000);
         };
-        ws.onerror = () => setConnected(false);
+        ws.onerror = () => {
+          setConnected(false);
+          setLoadingStatus("idle");
+        };
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
@@ -204,12 +220,12 @@ export default function VisitorMessages({ device }: Props) {
                 text: typeof data.error === "string" ? data.error : "消息未送达，请稍后重试。",
               }]);
             }
-          } catch {
-            // Ignore malformed realtime frames.
+          } catch (e) {
+            // ignore parse errors
           }
         };
       } catch (e) {
-        setError(e instanceof Error ? e.message : "暂时无法获取访客令牌");
+        setError(e instanceof Error ? e.message : "\u8fde\u63a5\u5931\u8d25\uff0c\u6b63\u5728\u91cd\u8bd5...");
         if (!closed) retry = setTimeout(connect, 5000);
       }
     };
@@ -306,6 +322,9 @@ export default function VisitorMessages({ device }: Props) {
         />
         {viewerId && <div className="text-[10px] text-[var(--color-text-muted)]">你的访客牌：{viewerId}</div>}
         {error && <div className="text-[10px] text-red-400">{error}</div>}
+        {loadingStatus === "pow" && <div className="text-[10px] text-[var(--color-accent)]">🔐 正在计算工作证明，请稍候...</div>}
+        {loadingStatus === "token" && <div className="text-[10px] text-[var(--color-accent)]">🎫 正在获取访客令牌...</div>}
+        {loadingStatus === "connecting" && <div className="text-[10px] text-[var(--color-accent)]">🔗 正在连接...</div>}
       </div>
 
       <div className="mb-4">
