@@ -419,7 +419,6 @@ public final class MonikaXposedModule extends XposedModule {
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
                         }
-                        log(Log.DEBUG, TAG, "media playback: pkg=" + pkg + " playing=" + mediaPlaying + " title=" + mediaTitle);
                         maybeDirectUpload(false);
                     } catch (Throwable t) {
                         log(Log.WARN, TAG, "onPlaybackStateChanged failed: " + t.getClass().getSimpleName());
@@ -440,7 +439,6 @@ public final class MonikaXposedModule extends XposedModule {
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ARTIST),
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
-                        log(Log.DEBUG, TAG, "media metadata: pkg=" + pkg + " title=" + mediaTitle + " artist=" + mediaArtist);
                         maybeDirectUpload(false);
                     } catch (Throwable t) {
                         log(Log.WARN, TAG, "onMetadataChanged failed: " + t.getClass().getSimpleName());
@@ -766,12 +764,11 @@ public final class MonikaXposedModule extends XposedModule {
                         if (info == null) info = topTask;
                     }
                 } catch (Throwable t) {
-                    log(Log.DEBUG, TAG, "getTasks fallback failed: " + t.getMessage());
+                    // Silenced: fires every 5s on devices without getTasks
                 }
             }
             
             if (info == null) {
-                log(Log.DEBUG, TAG, "getFocusedTaskDescription: no task info available");
                 return null;
             }
             
@@ -781,7 +778,6 @@ public final class MonikaXposedModule extends XposedModule {
             if (desc == null) desc = readField(info, "origDescription");
             
             if (desc == null) {
-                log(Log.DEBUG, TAG, "getFocusedTaskDescription: taskDescription field is null");
                 return null;
             }
             
@@ -794,7 +790,6 @@ public final class MonikaXposedModule extends XposedModule {
                     if (label instanceof CharSequence) {
                         String result = ((CharSequence) label).toString().trim();
                         if (result.length() > 0) {
-                            log(Log.DEBUG, TAG, "getFocusedTaskDescription: got label from TaskDescription.getLabel()");
                             return result;
                         }
                     }
@@ -808,15 +803,12 @@ public final class MonikaXposedModule extends XposedModule {
             if (desc instanceof CharSequence) {
                 String s = desc.toString().trim();
                 if (s.length() > 0) {
-                    log(Log.DEBUG, TAG, "getFocusedTaskDescription: got CharSequence directly");
                     return s;
                 }
             }
             
-            log(Log.DEBUG, TAG, "getFocusedTaskDescription: no valid description found");
             return null;
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "getFocusedTaskDescription failed: " + t.getClass().getSimpleName() + ": " + t.getMessage());
             return null;
         }
     }
