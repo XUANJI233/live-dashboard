@@ -77,6 +77,18 @@ function messageStatusText(status?: string) {
   return map[status] || status;
 }
 
+// Solve SHA-256 hashcash PoW challenge
+async function solvePow(challenge: string, difficulty: number): Promise<string> {
+  const targetZeros = Math.ceil(difficulty / 4);
+  for (let nonce = 0; nonce < 1_000_000; nonce++) {
+    const input = challenge + String(nonce);
+    const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+    const hashHex = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+    if (hashHex.startsWith("0".repeat(targetZeros))) return String(nonce);
+  }
+  return "0"; // fallback
+}
+
 async function ensureViewerToken(): Promise<{ token: string; viewerId: string }> {
   const stored = localStorage.getItem("live-dashboard-viewer-token");
   const storedId = localStorage.getItem("live-dashboard-viewer-id");
@@ -85,10 +97,25 @@ async function ensureViewerToken(): Promise<{ token: string; viewerId: string }>
     return { token: stored, viewerId: storedId };
   }
 
+  // Step 1: Get PoW challenge (server returns {skip: true} for local IPs)
+  let powData: { challenge?: string; difficulty?: number; skip?: boolean } = {};
+  try {
+    const powRes = await fetch(`${API_BASE}/api/pow/challenge`);
+    if (powRes.ok) powData = await powRes.json();
+  } catch { /* local IP or server error — try without PoW */ }
+
+  // Step 2: Solve PoW if required
+  const body: Record<string, string> = { fingerprint: await fingerprint() };
+  if (powData.challenge && !powData.skip) {
+    body.pow_challenge = powData.challenge;
+    body.pow_nonce = await solvePow(powData.challenge, powData.difficulty || 16);
+  }
+
+  // Step 3: Request token
   const res = await fetch(`${API_BASE}/api/token/issue`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fingerprint: await fingerprint() }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error("访客令牌领取失败");
   const data = await res.json();

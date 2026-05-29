@@ -1,69 +1,85 @@
-import { hmacTitle } from "../db";
+﻿import { hmacTitle } from "../db";
+import { randomBytes, createHash } from "crypto";
 
 const TOKEN_TTL_SECONDS = 60 * 60;
 const MIN_FINGERPRINT_LENGTH = 48;
+const POW_DIFFICULTY = 4; // leading zero hex chars (SHA-256)
+const POW_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const VIEWER_TOKEN_RATE_LIMIT = 120; // per hour per token
+
+// ── In-memory stores ──
+const powChallenges = new Map<string, { ip: string; createdAt: number }>();
 const issueRate = new Map<string, { count: number; resetAt: number }>();
-// Combined IP+token rate limit: prevents network switching to bypass limits
 const viewerTokenRate = new Map<string, { count: number; resetAt: number }>();
-const VIEWER_TOKEN_RATE_LIMIT = 60; // 60 requests per hour per viewer token
 
+// ── Cleanup (5 min) ──
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of powChallenges) if (now - v.createdAt > POW_CHALLENGE_TTL_MS) powChallenges.delete(k);
+  for (const [k, v] of issueRate) if (v.resetAt < now) issueRate.delete(k);
+  for (const [k, v] of viewerTokenRate) if (v.resetAt < now) viewerTokenRate.delete(k);
+}, 300_000).unref();
+
+// ── Helpers ──
 function base64url(input: string): string {
-  return Buffer.from(input, "utf8")
-    .toString("base64")
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
+  return Buffer.from(input, "utf8").toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
 }
-
 function unbase64url(input: string): string {
-  const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
-  return Buffer.from(normalized, "base64").toString("utf8");
+  return Buffer.from(input.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
 }
-
 function sign(payload: string): string {
   return base64url(hmacTitle(payload));
 }
-
 function cleanFingerprint(value: unknown): string {
   if (typeof value !== "string") return "";
   return value.replace(/[^a-zA-Z0-9:_.,| -]/g, "").trim().slice(0, 512);
 }
-
 function fingerprintId(fingerprint: string): string {
   return `fp_${hmacTitle(fingerprint).slice(0, 32)}`;
 }
-
-function checkIssueRate(key: string): boolean {
-  const now = Date.now();
-  const current = issueRate.get(key);
-  if (!current || current.resetAt <= now) {
-    issueRate.set(key, { count: 1, resetAt: now + 60_000 });
-    return true;
-  }
-  if (current.count >= 12) return false;
-  current.count += 1;
-  return true;
+function ipHash(ip: string): string {
+  return hmacTitle("ip:" + ip).slice(0, 16);
 }
 
+// ── Local IP check ──
+export function isLocalIp(ip: string): boolean {
+  if (!ip) return false;
+  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1" ||
+    ip.startsWith("192.168.") || ip.startsWith("10.") ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(ip);
+}
+
+// ── Token encoding IP hash ──
 export interface ViewerIdentity {
   viewerId: string;
   exp: number;
+  ipHash: string;
 }
 
-export function issueViewerToken(fingerprintValue: unknown, ipHint: string): { token?: string; viewerId?: string; error?: string; status?: number } {
+export function issueViewerToken(fingerprintValue: unknown, ip: string): { token?: string; viewerId?: string; error?: string; status?: number } {
   const fingerprint = cleanFingerprint(fingerprintValue);
   if (fingerprint.length < MIN_FINGERPRINT_LENGTH || new Set(fingerprint).size < 12) {
     return { error: "fingerprint too weak", status: 400 };
   }
-  if (!checkIssueRate(ipHint || fingerprint.slice(0, 64))) {
+  const rateKey = ip || fingerprint.slice(0, 64);
+  const now = Date.now();
+  const current = issueRate.get(rateKey);
+  if (current && current.resetAt > now && current.count >= 12) {
     return { error: "rate limited", status: 429 };
   }
+  if (!current || current.resetAt <= now) {
+    issueRate.set(rateKey, { count: 1, resetAt: now + 60_000 });
+  } else {
+    current.count++;
+  }
 
-  const now = Math.floor(Date.now() / 1000);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ih = ip ? ipHash(ip) : "";
   const payload = {
     sub: fingerprintId(fingerprint),
-    iat: now,
-    exp: now + TOKEN_TTL_SECONDS,
+    ip: ih,
+    iat: nowSec,
+    exp: nowSec + TOKEN_TTL_SECONDS,
   };
   const encoded = base64url(JSON.stringify(payload));
   const token = `${encoded}.${sign(encoded)}`;
@@ -74,7 +90,7 @@ export function viewerTokenRateLimit(viewerId: string): boolean {
   const now = Date.now();
   const current = viewerTokenRate.get(viewerId);
   if (!current || current.resetAt <= now) {
-    viewerTokenRate.set(viewerId, { count: 1, resetAt: now + 3600_000 }); // 1 hour window
+    viewerTokenRate.set(viewerId, { count: 1, resetAt: now + 3600_000 });
     return true;
   }
   if (current.count >= VIEWER_TOKEN_RATE_LIMIT) return false;
@@ -82,21 +98,55 @@ export function viewerTokenRateLimit(viewerId: string): boolean {
   return true;
 }
 
-export function verifyViewerToken(token: string | null | undefined): ViewerIdentity | null {
+export function verifyViewerToken(token: string | null | undefined, ip?: string): ViewerIdentity | null {
   if (!token || !token.includes(".")) return null;
   const [encoded, signature] = token.split(".", 2);
   if (!encoded || !signature || sign(encoded) !== signature) return null;
   try {
-    const payload = JSON.parse(unbase64url(encoded)) as { sub?: unknown; exp?: unknown };
+    const payload = JSON.parse(unbase64url(encoded)) as { sub?: unknown; exp?: unknown; ip?: unknown };
     if (typeof payload.sub !== "string" || typeof payload.exp !== "number") return null;
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;
     if (!/^fp_[a-f0-9]{32}$/.test(payload.sub)) return null;
-    return { viewerId: payload.sub, exp: payload.exp };
+    // IP binding check: if token has ip hash and request has ip, they must match
+    const tokenIpHash = typeof payload.ip === "string" ? payload.ip : "";
+    if (tokenIpHash && ip && tokenIpHash !== ipHash(ip)) return null;
+    return { viewerId: payload.sub, exp: payload.exp, ipHash: tokenIpHash };
   } catch {
     return null;
   }
 }
 
+// ── PoW Challenge ──
+export function issuePowChallenge(ip: string): { challenge: string; difficulty: number } {
+  const now = Date.now();
+  for (const [key, val] of powChallenges) {
+    if (now - val.createdAt > POW_CHALLENGE_TTL_MS) powChallenges.delete(key);
+  }
+  const challenge = randomBytes(32).toString("hex");
+  powChallenges.set(challenge, { ip, createdAt: now });
+  return { challenge, difficulty: POW_DIFFICULTY };
+}
+
+export function verifyPowSolution(challenge: string, nonce: string, ip: string): boolean {
+  const entry = powChallenges.get(challenge);
+  if (!entry) return false;
+  if (entry.ip !== ip) return false;
+  if (Date.now() - entry.createdAt > POW_CHALLENGE_TTL_MS) {
+    powChallenges.delete(challenge);
+    return false;
+  }
+  const input = challenge + nonce;
+  const hashHex = createHash("sha256").update(input).digest("hex");
+  powChallenges.delete(challenge);
+  return hashHex.startsWith("0".repeat(POW_DIFFICULTY));
+}
+
+// ── TLS Fingerprint ──
+export function getTlsFingerprint(req: Request): string | null {
+  return req.headers.get("x-ja3-fingerprint") || req.headers.get("x-ja4") || null;
+}
+
+// ── Token extraction ──
 export function viewerTokenFromRequest(req: Request): string | null {
   const auth = req.headers.get("authorization");
   const match = auth?.match(/^Bearer\s+(.+)$/i);

@@ -10,7 +10,7 @@ import { handleHealthWebhook } from "./routes/health-webhook";
 import { handleConfig } from "./routes/config";
 import { handleDailySummary } from "./routes/daily-summary";
 import { handleLocationQuery } from "./routes/location";
-import { handleViewerTokenIssue } from "./routes/viewer-token";
+import { handleViewerTokenIssue, handlePowChallenge } from "./routes/viewer-token";
 import {
   getWsInfo,
   handleBlockViewer,
@@ -177,6 +177,8 @@ const server = Bun.serve<WsData>({
         response = await handleUnblockViewer(req);
       } else if (pathname === "/api/messages/public" && req.method === "GET") {
         response = handlePublicMessages(req);
+      } else if (pathname === "/api/pow/challenge" && req.method === "GET") {
+        response = handlePowChallenge(req, clientIp);
       } else if (pathname === "/api/token/issue" && req.method === "POST") {
         response = await handleViewerTokenIssue(req, clientIp);
       } else if (pathname === "/api/device" && req.method === "DELETE") {
