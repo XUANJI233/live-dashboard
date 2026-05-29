@@ -221,3 +221,6 @@ const server = Bun.serve<WsData>({
 });
 
 console.log(`[server] Live Dashboard backend running on http://localhost:${server.port}`);
+if (process.env.NSFW_FILTER_DISABLED === "true") {
+  console.warn("[server] ⚠️  NSFW FILTER IS DISABLED — content filtering is OFF. Set NSFW_FILTER_DISABLED=false to re-enable.");
+}

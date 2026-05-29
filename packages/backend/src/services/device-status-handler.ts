@@ -1,5 +1,7 @@
 import { resolveAppName } from "./app-mapper";
 import { isNSFW } from "./nsfw-filter";
+// NSFW filter can be disabled via environment variable (default: enabled)
+const NSFW_FILTER_ENABLED = process.env.NSFW_FILTER_DISABLED !== "true";
 import { processDisplayTitle } from "./privacy-tiers";
 import { insertActivity, insertLocationRecord, upsertDeviceState, hmacTitle } from "../db";
 import type { DeviceInfo } from "../types";
@@ -60,7 +62,7 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
     startedAt = new Date().toISOString();
   }
 
-  if (isNSFW(appId, windowTitle)) return;
+  if (NSFW_FILTER_ENABLED && isNSFW(appId, windowTitle)) return;
 
   const rawForegroundForName = body.extra && typeof body.extra === "object" && !Array.isArray(body.extra)
     ? (body.extra as Record<string, unknown>).foreground

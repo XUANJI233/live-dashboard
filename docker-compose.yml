@@ -15,6 +15,7 @@ services:
       - SITE_DESC=${SITE_DESC}
       - SITE_FAVICON=${SITE_FAVICON}
       - CDN_MODE=${CDN_MODE:-true}
+      - NSFW_FILTER_DISABLED=${NSFW_FILTER_DISABLED:-false}
     volumes:
       - dashboard_data:/data
     networks:
