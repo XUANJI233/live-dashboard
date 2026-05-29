@@ -55,11 +55,10 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String ACTION_CONFIG = "com.monika.dashboard.LSPOSED_CONFIG";
     private static final String ACTION_BROWSER_TITLE = "com.monika.dashboard.LSPOSED_BROWSER_TITLE";
     private static final String CONFIG_PERMISSION = "com.monika.dashboard.permission.LSPOSED_CONFIG";
-    private static final long FOREGROUND_POLL_MS = 5000L; // fallback, overridden by settings
-    private static final long FOREGROUND_POLL_IDLE_MS = 60_000L; // fallback poll when idle (event-driven is primary)
+    private static final long HEARTBEAT_MS = 300_000L; // 5 min heartbeat (event-driven is primary)
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
     private static final long MIN_DIRECT_UPLOAD_MS = 5000L;
-    private static final long IDLE_DEBOUNCE_COUNT = 12; // 12 consecutive idle samples (~60s at 5s poll) before uploading
+    private static final long IDLE_DEBOUNCE_COUNT = 2; // 2 consecutive heartbeats (~10 min) before reporting idle
     private static final long WS_RETRY_BASE_MS = 30_000L;  // first retry delay
     private static final long WS_RETRY_MAX_MS = 300_000L;  // max retry delay (5 min)
     
@@ -240,9 +239,8 @@ public final class MonikaXposedModule extends XposedModule {
                     } catch (Throwable t) {
                         log(Log.WARN, TAG, "foreground sample failed: " + t.getClass().getSimpleName());
                     } finally {
-                        // Adaptive poll: faster when foreground changes, slower when stable
-                        long pollMs = foregroundRecentlyChanged ? FOREGROUND_POLL_MS : FOREGROUND_POLL_IDLE_MS;
-                        handler.postDelayed(this, pollMs);
+                        // Heartbeat only — event-driven hook handles foreground changes
+                        handler.postDelayed(this, HEARTBEAT_MS);
                     }
                 }
             }, 15000L);
