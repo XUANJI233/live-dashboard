@@ -23,6 +23,7 @@ import androidx.annotation.NonNull;
 import com.monika.dashboard.BuildConfig;
 
 import java.lang.reflect.Field;
+import java.util.concurrent.ConcurrentHashMap;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
@@ -115,6 +116,7 @@ public final class MonikaXposedModule extends XposedModule {
     };
     private volatile boolean samplerStarted = false;
     private volatile boolean mediaListenerRegistered = false;
+        private final java.util.Set<String> registeredMediaControllers = new java.util.HashSet<>();
     private MediaSessionManager mediaSessionManager;
     private volatile String currentProcessName = "";
     private volatile boolean browserTitleReceiverRegistered = false;
@@ -141,6 +143,8 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String mediaTitle = "";
     private volatile String mediaArtist = "";
     private volatile String mediaState = "";
+    private volatile long lastTitleBroadcastAt = 0L;
+    private volatile String lastBroadcastTitle = "";
 
     @Override
     public void onModuleLoaded(@NonNull XposedModuleInterface.ModuleLoadedParam param) {
@@ -433,7 +437,10 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void registerMediaControllerCallback(MediaController controller) {
         if (controller == null) return;
+        String key = controller.getPackageName() + "@" + System.identityHashCode(controller);
+        if (registeredMediaControllers.contains(key)) return;
         try {
+            registeredMediaControllers.add(key);
             controller.registerCallback(new MediaController.Callback() {
                 @Override
                 public void onPlaybackStateChanged(PlaybackState state) {
@@ -651,6 +658,11 @@ public final class MonikaXposedModule extends XposedModule {
         try {
             String clean = cleanTitle(title);
             if (clean == null || isIgnoredPackage(packageName)) return;
+            // Debounce: skip if same title or within 1 second
+            long now = System.currentTimeMillis();
+            if (clean.equals(lastBroadcastTitle) && now - lastTitleBroadcastAt < 1000L) return;
+            lastBroadcastTitle = clean;
+            lastTitleBroadcastAt = now;
             foregroundPackage = packageName;
             foregroundApp = safeString(resolveAppLabel(activity, packageName));
             foregroundActivity = activity.getClass().getName();
@@ -945,6 +957,8 @@ public final class MonikaXposedModule extends XposedModule {
         return "phone";
     }
 
+    private final ConcurrentHashMap<String, Method> methodCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Field> fieldCache = new ConcurrentHashMap<>();
     private volatile Object cachedAtmService = null;
     private volatile Context cachedSystemContext = null;
 
@@ -1246,6 +1260,13 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private String primaryDisplayTitle() {
+        // Screen off — show sleeping or media info
+        if ("sleeping".equals(foregroundPackage)) {
+            if (mediaPlaying && mediaTitle.length() > 0 && mediaApp.length() > 0) {
+                return mediaApp + "正在播放" + mediaTitle;
+            }
+            return "(-.-)zzZ";
+        }
         boolean foregroundValid = foregroundApp.length() > 0
                 && !"idle".equals(foregroundPackage)
                 && !"idle".equals(foregroundApp);
@@ -1278,10 +1299,16 @@ public final class MonikaXposedModule extends XposedModule {
     private Object callAny(Object target, String methodName) {
         if (target == null) return null;
         Class<?> clazz = target instanceof Class<?> ? (Class<?>) target : target.getClass();
+        String cacheKey = clazz.getName() + "#" + methodName;
+        Method cached = methodCache.get(cacheKey);
+        if (cached != null) {
+            try { return cached.invoke(target instanceof Class<?> ? null : target); } catch (Throwable ignored) {}
+        }
         while (clazz != null) {
             try {
                 Method method = clazz.getDeclaredMethod(methodName);
                 method.setAccessible(true);
+                methodCache.put(cacheKey, method);
                 return method.invoke(target instanceof Class<?> ? null : target);
             } catch (Throwable ignored) {
                 clazz = clazz.getSuperclass();
@@ -1293,10 +1320,16 @@ public final class MonikaXposedModule extends XposedModule {
     private Object readField(Object target, String fieldName) {
         if (target == null) return null;
         Class<?> clazz = target.getClass();
+        String cacheKey = clazz.getName() + "." + fieldName;
+        Field cached = fieldCache.get(cacheKey);
+        if (cached != null) {
+            try { return cached.get(target); } catch (Throwable ignored) {}
+        }
         while (clazz != null) {
             try {
                 Field field = clazz.getDeclaredField(fieldName);
                 field.setAccessible(true);
+                fieldCache.put(cacheKey, field);
                 return field.get(target);
             } catch (Throwable ignored) {
                 clazz = clazz.getSuperclass();
