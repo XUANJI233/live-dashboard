@@ -366,6 +366,10 @@ const descriptions: Record<string, string> = {
   飞猪: "正在飞猪订行程喵~",
 };
 
+// Special states
+descriptions["sleeping"] = "(-.-)zzZ";
+descriptions["idle"] = "暂时离开喵~";
+
 const DEFAULT_DESCRIPTION = "正在忙别的喵~";
 
 // Pre-build lowercase index for O(1) lookups
