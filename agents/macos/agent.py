@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 import urllib.parse
 from pathlib import Path
 
@@ -477,7 +478,7 @@ class Reporter:
         payload = {
             "app_id": app_id,
             "window_title": window_title[:256],
-            "timestamp": int(time.time() * 1000),
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         }
         if extra:
             payload["extra"] = extra
