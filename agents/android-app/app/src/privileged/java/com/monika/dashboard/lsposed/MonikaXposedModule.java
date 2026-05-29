@@ -56,7 +56,7 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String ACTION_BROWSER_TITLE = "com.monika.dashboard.LSPOSED_BROWSER_TITLE";
     private static final String CONFIG_PERMISSION = "com.monika.dashboard.permission.LSPOSED_CONFIG";
     private static final long FOREGROUND_POLL_MS = 5000L; // fallback, overridden by settings
-    private static final long FOREGROUND_POLL_IDLE_MS = 30_000L; // poll slower when idle
+    private static final long FOREGROUND_POLL_IDLE_MS = 60_000L; // fallback poll when idle (event-driven is primary)
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
     private static final long MIN_DIRECT_UPLOAD_MS = 5000L;
     private static final long IDLE_DEBOUNCE_COUNT = 12; // 12 consecutive idle samples (~60s at 5s poll) before uploading
@@ -177,22 +177,43 @@ public final class MonikaXposedModule extends XposedModule {
     private void installForegroundSampler(ClassLoader cl) {
         try {
             Class<?> clazz = Class.forName("com.android.server.wm.ActivityTaskManagerService", false, cl);
-            Method method = findMethod(clazz, "systemReady");
-            if (method == null) {
+
+            // Hook systemReady to start the sampler
+            Method systemReady = findMethod(clazz, "systemReady");
+            if (systemReady != null) {
+                try { deoptimize(systemReady); } catch (Throwable ignored) {}
+                hook(systemReady)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            startForegroundSampler();
+                            return result;
+                        });
+                log(Log.INFO, TAG, "hooked ActivityTaskManagerService#systemReady");
+            } else {
                 startForegroundSampler();
-                return;
             }
-            // Deoptimize to prevent ART from inlining systemReady into its callers,
-            // which would bypass our hook (per libxposed best practice).
-            try { deoptimize(method); } catch (Throwable t) { log(Log.WARN, TAG, "deoptimize systemReady failed: " + t.getClass().getSimpleName()); }
-            hook(method)
-                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                    .intercept(chain -> {
-                        Object result = chain.proceed();
-                        startForegroundSampler();
-                        return result;
-                    });
-            log(Log.INFO, TAG, "hooked ActivityTaskManagerService#systemReady");
+
+            // Event-driven: hook moveTaskToFront to detect foreground changes immediately
+            // This eliminates the need for frequent polling when the foreground is stable
+            Method moveToFront = findMethod(clazz, "moveTaskToFront",
+                    android.app.IApplicationThread.class, String.class, int.class, int.class, android.os.Bundle.class);
+            if (moveToFront == null) {
+                moveToFront = findMethod(clazz, "moveTaskToFront",
+                        android.app.IApplicationThread.class, String.class, int.class, android.os.Bundle.class);
+            }
+            if (moveToFront != null) {
+                hook(moveToFront)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            // Foreground changed — trigger immediate snapshot
+                            foregroundRecentlyChanged = true;
+                            try { broadcastSnapshot(); } catch (Throwable ignored) {}
+                            return result;
+                        });
+                log(Log.INFO, TAG, "hooked ActivityTaskManagerService#moveTaskToFront (event-driven)");
+            }
         } catch (Throwable t) {
             log(Log.WARN, TAG, "foreground sampler hook skipped: " + t.getClass().getSimpleName());
             startForegroundSampler();
@@ -469,6 +490,14 @@ public final class MonikaXposedModule extends XposedModule {
             if (name.equals(method.getName())) return method;
         }
         return null;
+    }
+
+    private Method findMethod(Class<?> clazz, String name, Class<?>... paramTypes) {
+        try {
+            return clazz.getDeclaredMethod(name, paramTypes);
+        } catch (NoSuchMethodException ignored) {
+            return null;
+        }
     }
 
     private void installActivityTitleHooks(ClassLoader cl, String packageName) {
