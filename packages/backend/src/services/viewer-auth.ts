@@ -10,7 +10,7 @@ const VIEWER_TOKEN_RATE_LIMIT = 120;
 const MAX_POW_CHALLENGES = 10000;  // limit memory usage
 
 // ── In-memory stores ──
-const powChallenges = new Map<string, { ip: string; createdAt: number }>();
+const powChallenges = new Map<string, { ip: string; ipUpdated: boolean; createdAt: number }>();
 const issueRate = new Map<string, { count: number; resetAt: number }>();
 const viewerTokenRate = new Map<string, { count: number; resetAt: number }>();
 const powChallengeRate = new Map<string, { count: number; resetAt: number }>();
@@ -153,7 +153,7 @@ export function issuePowChallenge(ip: string): { challenge: string; difficulty: 
     }
   }
   const challenge = randomBytes(32).toString("hex");
-  powChallenges.set(challenge, { ip, createdAt: Date.now() });
+  powChallenges.set(challenge, { ip, ipUpdated: false, createdAt: Date.now() });
   return { challenge, difficulty: POW_DIFFICULTY_HEX };
 }
 
@@ -163,6 +163,12 @@ export function verifyPowSolution(challenge: string, nonce: string, ip: string):
   if (Date.now() - entry.createdAt > POW_CHALLENGE_TTL_MS) {
     powChallenges.delete(challenge);
     return false;
+  }
+  // IP binding: allow one IP change (mobile networks / CDN edge switching)
+  if (entry.ip !== ip) {
+    if (entry.ipUpdated) return false; // second IP change → reject
+    entry.ipUpdated = true;
+    entry.ip = ip;
   }
   const input = challenge + nonce;
   const hashHex = createHash("sha256").update(input).digest("hex");
