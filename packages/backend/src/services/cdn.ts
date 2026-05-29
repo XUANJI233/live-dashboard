@@ -22,7 +22,12 @@ export function withCdnHeaders(response: Response, tags: string[], maxAgeSeconds
 
 export function noStore(response: Response): Response {
   const headers = new Headers(response.headers);
-  headers.set("Cache-Control", "no-store");
+  // Aggressive anti-cache headers — Alibaba Cloud ESA ignores bare "no-store"
+  headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0, s-maxage=0");
+  headers.set("Pragma", "no-cache");
+  headers.set("Expires", "0");
+  headers.set("CDN-Cache-Control", "no-store");
+  headers.set("Surrogate-Control", "no-store");
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
