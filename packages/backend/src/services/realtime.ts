@@ -410,6 +410,8 @@ export const realtimeWebSocket = {
       try { markDeviceOffline.run(ws.data.id); } catch { /* ignore */ }
     } else if (viewerSockets.get(ws.data.id) === ws) {
       viewerSockets.delete(ws.data.id);
+        viewerRate.delete(ws.data.id);
+        viewerApiRate.delete(ws.data.id);
     }
   },
 };

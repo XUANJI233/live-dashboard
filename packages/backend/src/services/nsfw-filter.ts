@@ -39,10 +39,13 @@ export function isNSFW(appId: string, windowTitle: string): boolean {
   // Check domains in window title
   const domains = extractDomains(lowerTitle);
   for (const domain of domains) {
-    if (domainSet.has(domain)) return true;
-    // Check if any blocklist domain is a suffix (handles subdomains)
-    for (const blocked of domainSet) {
-      if (domain === blocked || domain.endsWith("." + blocked)) return true;
+    // Walk up the domain hierarchy: sub.example.com → example.com → com
+    let d: string | undefined = domain;
+    while (d) {
+      if (domainSet.has(d)) return true;
+      const dot = d.indexOf(".");
+      if (dot === -1) break;
+      d = d.slice(dot + 1);
     }
   }
 
