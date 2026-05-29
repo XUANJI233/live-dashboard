@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import FingerprintJS from "@fingerprintjs/fingerprintjs";
 import type { DeviceState } from "@/lib/api";
 import { getRealtimeUrl } from "@/lib/api";
 
@@ -25,16 +26,15 @@ interface PublicLine {
   created_at: string;
 }
 
-function fingerprint() {
-  return [
-    navigator.userAgent,
-    navigator.language,
-    navigator.languages?.join(",") || "",
-    Intl.DateTimeFormat().resolvedOptions().timeZone || "",
-    `${screen.width}x${screen.height}x${screen.colorDepth}`,
-    String(navigator.hardwareConcurrency || ""),
-    String((navigator as Navigator & { deviceMemory?: number }).deviceMemory || ""),
-  ].join("|");
+// FingerprintJS-based fingerprint (Canvas, WebGL, Audio, Fonts, etc.)
+let fpPromise: Promise<string> | null = null;
+function fingerprint(): Promise<string> {
+  if (!fpPromise) {
+    fpPromise = FingerprintJS.load()
+      .then(fp => fp.get())
+      .then(result => result.visitorId);
+  }
+  return fpPromise;
 }
 
 function currentMessageSlot() {
@@ -88,7 +88,7 @@ async function ensureViewerToken(): Promise<{ token: string; viewerId: string }>
   const res = await fetch(`${API_BASE}/api/token/issue`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fingerprint: fingerprint() }),
+    body: JSON.stringify({ fingerprint: await fingerprint() }),
   });
   if (!res.ok) throw new Error("访客令牌领取失败");
   const data = await res.json();

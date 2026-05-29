@@ -67,6 +67,14 @@ const server = Bun.serve<WsData>({
     const url = new URL(req.url);
     const { pathname } = url;
 
+    // Reject direct IP access (only allow localhost and domain-based access)
+    const host = req.headers.get("host") || "";
+    const isLocalhost = host.startsWith("localhost") || host.startsWith("127.0.0.1") || host.startsWith("[::1]");
+    const isDirectIp = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(host);
+    if (isDirectIp && !isLocalhost) {
+      return Response.json({ error: "Direct IP access not allowed" }, { status: 403 });
+    }
+
     // CORS headers: public endpoints allow wildcard, sensitive endpoints require explicit origins
     const isPublicEndpoint = pathname === "/api/current" ||
       pathname === "/api/timeline" ||
