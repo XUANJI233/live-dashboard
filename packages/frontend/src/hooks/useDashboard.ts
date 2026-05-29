@@ -24,6 +24,12 @@ function getViewerToken(): string | null {
   const token = localStorage.getItem("live-dashboard-viewer-token");
   const exp = Number(localStorage.getItem("live-dashboard-viewer-token-exp") || 0);
   if (token && Date.now() < exp - 60_000) return token;
+  // Token expired or missing — clear it so VisitorMessages can re-trigger PoW
+  if (token && Date.now() >= exp - 60_000) {
+    localStorage.removeItem("live-dashboard-viewer-token");
+    localStorage.removeItem("live-dashboard-viewer-id");
+    localStorage.removeItem("live-dashboard-viewer-token-exp");
+  }
   return null;
 }
 

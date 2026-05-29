@@ -106,7 +106,7 @@ const server = Bun.serve<WsData>({
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // Global IP rate limiting — skip for device-authenticated requests
+    // Global IP rate limiting — skip for device-authenticated and public GET requests
     const clientIpForRate =
       req.headers.get("x-real-ip") ||
       req.headers.get("cf-connecting-ip") ||
@@ -117,7 +117,8 @@ const server = Bun.serve<WsData>({
     const deviceTokens = (process.env.DEVICE_TOKEN_1 + "," + (process.env.DEVICE_TOKEN_2 || "")).split(",").filter(Boolean);
     const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
     const hasDeviceToken = bearerToken.length > 0 && deviceTokens.includes(bearerToken);
-    if (!hasDeviceToken && !globalIpRateLimit(clientIpForRate)) {
+    // Skip rate limit for: device tokens, public GET endpoints (cached by CDN/browser)
+    if (!hasDeviceToken && !(isPublicEndpoint && req.method === "GET") && !globalIpRateLimit(clientIpForRate)) {
       return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
     }
 
