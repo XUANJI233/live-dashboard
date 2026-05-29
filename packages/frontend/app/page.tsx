@@ -27,7 +27,7 @@ export default function Home() {
 
 function HomeInner() {
   const { displayName } = useConfig();
-  const { current, timeline, selectedDate, changeDate, loading, error, viewerCount } = useDashboard();
+  const { current, timeline, selectedDate, changeDate, loading, timelineLoading, error, viewerCount, wsConnected } = useDashboard();
 
   // Selected device for CurrentStatus bubble
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);

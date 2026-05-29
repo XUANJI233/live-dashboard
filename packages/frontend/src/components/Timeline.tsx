@@ -17,6 +17,7 @@ interface Props {
   segments: TimelineSegment[];
   summary: Record<string, Record<string, number>>;
   currentAppByDevice: Record<string, string>;
+  loading?: boolean;
 }
 
 type TimelineEvent = {
@@ -32,7 +33,7 @@ type TimelineEvent = {
   children: TimelineSegment[];
 };
 
-export default function Timeline({ segments, currentAppByDevice }: Props) {
+export default function Timeline({ segments, currentAppByDevice, loading }: Props) {
   const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
   const colorMap = useMemo(() => new Map<string, string>(), []);
   const byDevice = useMemo(
@@ -41,6 +42,14 @@ export default function Timeline({ segments, currentAppByDevice }: Props) {
   );
 
   if (byDevice.length === 0) {
+    if (loading) {
+      return (
+        <div className="text-center py-16">
+          <div className="loading-dots"><span></span><span></span><span></span></div>
+          <p className="text-sm text-[var(--color-text-muted)] mt-3">加载中...</p>
+        </div>
+      );
+    }
     return (
       <div className="text-center py-16">
         <p className="text-2xl opacity-40 mb-3">( ^-ω-^ )</p>

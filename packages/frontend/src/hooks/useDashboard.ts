@@ -73,6 +73,7 @@ export function useDashboard() {
   // todayStr() uses new Date() which can differ between server and client
   const [selectedDate, setSelectedDate] = useState("");
   const [loading, setLoading] = useState(true);
+  const [timelineLoading, setTimelineLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [viewerCount, setViewerCount] = useState(0);
   const [wsConnected, setWsConnected] = useState(false);
@@ -165,6 +166,7 @@ export function useDashboard() {
 
     const doFetchTimeline = async () => {
       const thisRequest = ++requestId;
+      setTimelineLoading(true);
       try {
         const tl = await fetchTimeline(selectedDate, controller.signal);
         if (!controller.signal.aborted && thisRequest === requestId) {
@@ -172,6 +174,10 @@ export function useDashboard() {
         }
       } catch {
         // timeline fetch errors are non-critical
+      } finally {
+        if (!controller.signal.aborted && thisRequest === requestId) {
+          setTimelineLoading(false);
+        }
       }
     };
 
@@ -226,5 +232,5 @@ export function useDashboard() {
     setSelectedDate(date);
   }, []);
 
-  return { current, timeline, selectedDate, changeDate, loading, error, viewerCount, wsConnected };
+  return { current, timeline, selectedDate, changeDate, loading, timelineLoading, error, viewerCount, wsConnected };
 }
