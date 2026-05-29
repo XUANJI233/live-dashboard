@@ -1,8 +1,10 @@
 @import url("https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,700;1,9..144,400&family=Noto+Serif+SC:wght@300;400;600&family=Source+Sans+3:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
 @import "tailwindcss";
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?   鑺变俊 路 Blossom Letter  v5
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
+/* ═══════════════════════════════════════════
+
+   花信 · Blossom Letter  v5
+   ═══════════════════════════════════════════ */
 
 :root {
   --bg:          oklch(96.5% 0.012 65);
@@ -78,9 +80,9 @@ body {
   overflow: hidden;
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+/* ════════════════════════════════════════
    Header
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 .top-bar {
   padding: 0.75rem 2.5rem;
   border-bottom: 1px solid var(--border-soft);
@@ -111,7 +113,7 @@ body {
   font-style: italic;
 }
 
-/* 鈹€鈹€ Device Buttons (center) 鈹€鈹€ */
+/* ── Device Buttons (center) ── */
 .top-bar-center {
   display: flex;
   gap: 8px;
@@ -194,9 +196,9 @@ body {
   margin-top: 1px;
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
-   Panels 鈥?38% / 62%
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+/* ════════════════════════════════════════
+   Panels — 38% / 62%
+   ════════════════════════════════════════ */
 .panels {
   display: grid;
   grid-template-columns: 38fr 62fr;
@@ -222,9 +224,9 @@ body {
   min-height: 0;
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+/* ════════════════════════════════════════
    Blossom Deco
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 .blossom-deco {
   position: absolute;
   top: -0.5rem;
@@ -241,9 +243,9 @@ body {
   100% { transform: rotate(12deg) scale(1.04); }
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
-   Presence 鈥?Left Panel
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+/* ════════════════════════════════════════
+   Presence — Left Panel
+   ════════════════════════════════════════ */
 .presence-content {
   display: flex;
   flex-direction: column;
@@ -286,7 +288,7 @@ body {
   100% { transform: scale(1.8); opacity: 0; }
 }
 
-/* Hero block 鈥?split into app + title */
+/* Hero block — split into app + title */
 .hero-block {
   margin-bottom: 0.75rem;
 }
@@ -394,9 +396,9 @@ body {
   opacity: 0.4;
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+/* ════════════════════════════════════════
    Usage Chart
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 .chart-section {
   flex: 1;
   min-height: 0;
@@ -466,9 +468,9 @@ body {
   flex-shrink: 0;
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+/* ════════════════════════════════════════
    AI Daily Summary
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 .ai-summary {
   margin-top: 4rem;
   padding: 10px 14px;
@@ -497,7 +499,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Offline 鈥?poetic */
+/* Offline — poetic */
 .offline-poem-line {
   font-family: var(--font-serif);
   font-size: var(--text-2xl);
@@ -530,9 +532,9 @@ body {
   padding-top: 1rem;
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+/* ════════════════════════════════════════
    Timeline Header
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 .tl-header {
   display: flex;
   align-items: center;
@@ -590,9 +592,9 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+/* ════════════════════════════════════════
    Timeline Scroll
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 .tl-scroll {
   flex: 1;
   overflow-y: auto;
@@ -625,7 +627,7 @@ body {
   font-style: italic;
 }
 
-/* Now Summary 鈥?pinned at top of timeline */
+/* Now Summary — pinned at top of timeline */
 .now-summary {
   padding: 10px 12px;
   margin-bottom: 1rem;
@@ -662,9 +664,9 @@ body {
   text-overflow: ellipsis;
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+/* ════════════════════════════════════════
    Timeline Items
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 .tl-device-group {
   margin-bottom: 1rem;
 }
@@ -731,9 +733,9 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+/* ════════════════════════════════════════
    Timeline Footer
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 .tl-footer {
   flex-shrink: 0;
   padding-top: 0.5rem;
@@ -752,9 +754,9 @@ body {
   font-family: var(--font-mono);
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+/* ════════════════════════════════════════
    Buttons
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 .btn-subtle {
   display: inline-flex;
   align-items: center;
@@ -783,9 +785,9 @@ body {
 }
 .btn-today { color: var(--sakura); }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+/* ════════════════════════════════════════
    Animations
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 @keyframes reveal-up {
   from { opacity: 0; transform: translateY(12px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -804,9 +806,9 @@ body {
   animation-delay: calc(var(--i, 0) * 35ms + 400ms);
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+/* ════════════════════════════════════════
    Night Mode
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 body.night-mode {
   --bg: oklch(16% 0.015 270);
   --bg-surface: oklch(20% 0.02 268);
@@ -828,9 +830,9 @@ body, body.night-mode {
   transition: background-color 1.2s ease, color 1.2s ease;
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
-   Falling Petals 鈥?left panel only
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+/* ════════════════════════════════════════
+   Falling Petals — left panel only
+   ════════════════════════════════════════ */
 .petal-container {
   position: absolute;
   inset: 0;
@@ -889,11 +891,11 @@ body, body.night-mode {
 /* Hide petals in night mode */
 body.night-mode .petal-container { display: none; }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
-   Fireflies 鈥?night mode only
+/* ════════════════════════════════════════
+   Fireflies — night mode only
    Drift from bottom-left toward upper-right
    with natural left-right sway like real bugs
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 .firefly-container {
   display: none;
   position: fixed;
@@ -924,7 +926,7 @@ body.night-mode .firefly-container { display: block; }
 .firefly:nth-child(7) { left: 2%;  bottom: 22%; animation: ff-a 9s  ease-in-out infinite 7s; }
 .firefly:nth-child(8) { left: 15%; bottom: 6%;  animation: ff-b 11s ease-in-out infinite 6s; }
 
-/* Three drift paths: bottom-left 鈫?upper-right with built-in sway */
+/* Three drift paths: bottom-left → upper-right with built-in sway */
 @keyframes ff-a {
   0%   { transform: translate(0, 0); opacity: 0; }
   5%   { opacity: 0.7; }
@@ -962,9 +964,9 @@ body.night-mode .firefly-container { display: block; }
   100% { transform: translate(68vw, -72vh); opacity: 0; }
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+/* ════════════════════════════════════════
    Reduced Motion
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -974,9 +976,9 @@ body.night-mode .firefly-container { display: block; }
   .firefly-container { display: none !important; }
 }
 
-/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+/* ════════════════════════════════════════
    Mobile
-   鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+   ════════════════════════════════════════ */
 @media (max-width: 768px) {
   html, body { overflow-x: hidden; overflow-y: auto; max-width: 100vw; }
   .app-shell { height: auto; min-height: 100vh; min-height: 100dvh; overflow-x: hidden; }
@@ -1010,7 +1012,7 @@ body.night-mode .firefly-container { display: block; }
   .dev-btn-batt { font-size: 8px; }
   .top-bar-right { display: none; }
 
-  /* Panels 鈫?single column scroll */
+  /* Panels → single column scroll */
   .panels {
     grid-template-columns: 1fr;
     overflow-y: auto;
@@ -1065,7 +1067,7 @@ body.night-mode .firefly-container { display: block; }
   .tl-date { min-width: 80px; font-size: 11px; }
   .btn-subtle { padding: 6px 10px; min-height: 36px; }
 
-  /* Timeline items 鈥?larger touch targets */
+  /* Timeline items — larger touch targets */
   .tl-list { min-width: 0; overflow: hidden; }
   .tl-item { padding: 8px 8px; gap: 6px; min-height: 36px; min-width: 0; overflow: hidden; }
   .tl-desc { font-size: 12px; min-width: 0; }
@@ -1081,7 +1083,7 @@ body.night-mode .firefly-container { display: block; }
 
 }
 
-/* Small phones (鈮?380px) */
+/* Small phones (≤ 380px) */
 @media (max-width: 380px) {
   .top-bar { padding: 0.5rem 0.75rem; }
   .panels { padding: 0 0.75rem 1rem; }
@@ -1092,92 +1094,62 @@ body.night-mode .firefly-container { display: block; }
   .usage-label { width: 50px; }
 }
 
-/* ══════════════════════════════════════════
-   Compat: component classes used by React
-   ══════════════════════════════════════════ */
+/* ── Component helpers ── */
 
-/* Glass cards */
 .glass-sm {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-.glass-sm:hover {
-  border-color: var(--sakura);
-  box-shadow: 0 2px 8px oklch(68% 0.13 12 / 0.12);
+  background: oklch(96% 0.005 100 / 0.7);
+  backdrop-filter: saturate(160%) blur(18px);
+  border: 1px solid oklch(78% 0.04 340 / 0.28);
+  box-shadow: 0 1px 3px oklch(0% 0 0 / 0.06);
 }
 
 .glass-hero {
-  background: var(--bg-surface);
-  border: 2px solid var(--border);
-  border-radius: 16px;
-  box-shadow: 0 2px 16px oklch(68% 0.13 12 / 0.1);
-  transition: box-shadow 0.3s ease, border-color 0.3s ease;
+  background: linear-gradient(oklch(97% 0.006 100 / 0.62), oklch(95% 0.008 300 / 0.52));
+  backdrop-filter: saturate(170%) blur(24px);
+  border: 1px solid oklch(78% 0.04 340 / 0.22);
+  box-shadow: 0 2px 8px oklch(0% 0 0 / 0.06);
 }
 
-/* Glow breathe (online status) */
+.glow-breathe {
+  animation: glow-breathe 5s ease-in-out infinite;
+}
+
 @keyframes glow-breathe {
-  0%, 100% { box-shadow: 0 2px 16px oklch(58% 0.09 155 / 0.08); }
-  50%      { box-shadow: 0 4px 24px oklch(58% 0.09 155 / 0.18); }
-}
-.glow-breathe { animation: glow-breathe 3s ease-in-out infinite; }
-body.night-mode .glow-breathe {
-  animation-name: glow-breathe-night;
-}
-@keyframes glow-breathe-night {
-  0%, 100% { box-shadow: 0 2px 16px oklch(55% 0.07 220 / 0.06); }
-  50%      { box-shadow: 0 4px 24px oklch(55% 0.07 220 / 0.12); }
+  0%, 100% { box-shadow: 0 0 4px oklch(75% 0.10 350 / 0.22); }
+  50%      { box-shadow: 0 0 14px oklch(75% 0.12 350 / 0.36); }
 }
 
-/* Pulse dot (online indicator) */
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%      { opacity: 0.6; transform: scale(1.4); }
+.pulse-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--sage);
+  box-shadow: 0 0 6px oklch(70% 0.12 155 / 0.45);
+  animation: pulse-glow 2.4s ease-in-out infinite;
 }
-.pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
 
-/* Music bar (singular — components use this name) */
-@keyframes music-bar {
-  0%, 100% { height: 4px; }
-  50%      { height: 16px; }
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 5px oklch(70% 0.12 155 / 0.40); transform: scale(1); }
+  50%      { box-shadow: 0 0 12px oklch(70% 0.14 155 / 0.60); transform: scale(1.2); }
 }
-.music-bar {
-  width: 3px;
-  background: var(--gold);
-  border-radius: 2px;
-  animation: music-bar 1.2s ease-in-out infinite;
-}
-.music-bar:nth-child(2) { animation-delay: 0.2s; }
-.music-bar:nth-child(3) { animation-delay: 0.4s; }
-.music-bar:nth-child(4) { animation-delay: 0.6s; }
 
-/* Gradient text */
 .gradient-text {
   background: linear-gradient(135deg, var(--sakura), var(--gold));
-  -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+  -webkit-background-clip: text;
   background-clip: text;
 }
 
-/* Separator (thin solid line) */
-.separator {
-  border-top: 1px solid var(--border);
-}
-
-/* Timeline entry & active glow */
 .timeline-entry {
   border-radius: 8px;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
+  transition: background-color 0.15s, border-color 0.15s;
 }
+
 .timeline-entry:hover {
   background: var(--sakura-bg);
 }
+
 .timeline-active-glow {
   border-left: 2px solid var(--sakura);
   box-shadow: 0 0 0 1px oklch(68% 0.13 12 / 0.2), 0 2px 8px oklch(68% 0.13 12 / 0.1);
-}
-body.night-mode .timeline-active-glow {
-  border-left-color: var(--sakura);
-  box-shadow: 0 0 0 1px oklch(65% 0.1 310 / 0.2), 0 2px 8px oklch(65% 0.1 310 / 0.1);
 }
