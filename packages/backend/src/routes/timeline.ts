@@ -33,8 +33,8 @@ export function handleTimeline(url: URL): Response {
 
     // Query with timezone adjustment: convert started_at to user's local date
     const query = deviceId
-      ? db.prepare(`SELECT * FROM activities WHERE date(started_at, '${modifier}') = ? AND device_id = ? ORDER BY started_at ASC`)
-      : db.prepare(`SELECT * FROM activities WHERE date(started_at, '${modifier}') = ? ORDER BY started_at ASC`);
+      ? db.prepare(`SELECT * FROM activities WHERE date(started_at, '${modifier}') = ? AND device_id = ? ORDER BY started_at ASC LIMIT 10000`)
+      : db.prepare(`SELECT * FROM activities WHERE date(started_at, '${modifier}') = ? ORDER BY started_at ASC LIMIT 10000`);
 
     activities = deviceId
       ? (query.all(date, deviceId) as ActivityRecord[])

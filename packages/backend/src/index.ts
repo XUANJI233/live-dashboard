@@ -72,7 +72,6 @@ const server = Bun.serve<WsData>({
       pathname === "/api/health" ||
       pathname === "/api/daily-summary" ||
       pathname === "/api/config" ||
-      pathname === "/api/location" ||
       pathname === "/api/messages/public";
     
     const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS?.split(",").map(s => s.trim()).filter(Boolean) || [];
@@ -96,6 +95,14 @@ const server = Bun.serve<WsData>({
     // Preflight
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
+    // Request body size limit (1MB) — prevents memory exhaustion
+    if (req.method === "POST" || req.method === "PUT" || req.method === "DELETE") {
+      const contentLength = parseInt(req.headers.get("content-length") || "0", 10);
+      if (contentLength > 1024 * 1024) {
+        return Response.json({ error: "Payload too large" }, { status: 413 });
+      }
     }
 
     // API routes
@@ -126,7 +133,7 @@ const server = Bun.serve<WsData>({
       } else if (pathname === "/api/health-data" && req.method === "POST") {
         response = await handleHealthData(req);
       } else if (pathname === "/api/health-data" && req.method === "GET") {
-        response = handleHealthDataQuery(url);
+        response = handleHealthDataQuery(url, req);
       } else if (pathname === "/api/health-webhook" && req.method === "POST") {
         response = await handleHealthWebhook(req);
       } else if (pathname === "/api/config" && req.method === "GET") {
@@ -134,7 +141,7 @@ const server = Bun.serve<WsData>({
       } else if (pathname === "/api/daily-summary" && req.method === "GET") {
         response = handleDailySummary(url);
       } else if (pathname === "/api/location" && req.method === "GET") {
-        response = handleLocationQuery(url);
+        response = handleLocationQuery(url, req);
       } else if (pathname === "/api/messages" && req.method === "GET") {
         response = handleDeviceMessages(req);
       } else if (pathname === "/api/messages/history" && req.method === "GET") {

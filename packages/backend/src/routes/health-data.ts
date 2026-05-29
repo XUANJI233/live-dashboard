@@ -1,5 +1,6 @@
 import { authenticateToken } from "../middleware/auth";
 import { db } from "../db";
+import { verifyViewerToken, viewerTokenFromRequest } from "../services/viewer-auth";
 import type { HealthRecord } from "../types";
 import { withCdnHeaders } from "../services/cdn";
 
@@ -98,7 +99,9 @@ export async function handleHealthData(req: Request): Promise<Response> {
 }
 
 // Query endpoint for frontend (public, like /api/current and /api/timeline)
-export function handleHealthDataQuery(url: URL): Response {
+export function handleHealthDataQuery(url: URL, req: Request): Response {
+  const viewer = verifyViewerToken(viewerTokenFromRequest(req));
+  if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
   const date = url.searchParams.get("date");
   const deviceId = url.searchParams.get("device_id");
 
@@ -126,6 +129,7 @@ export function handleHealthDataQuery(url: URL): Response {
           FROM health_records
           WHERE date(recorded_at, '${modifier}') = ? AND device_id = ?
           ORDER BY recorded_at ASC
+          LIMIT 10000
         `).all(date, deviceId) as HealthRecord[];
       } else {
         records = db.prepare(`
@@ -133,6 +137,7 @@ export function handleHealthDataQuery(url: URL): Response {
           FROM health_records
           WHERE date(recorded_at, '${modifier}') = ?
           ORDER BY recorded_at ASC
+          LIMIT 10000
         `).all(date) as HealthRecord[];
       }
 
@@ -155,6 +160,7 @@ export function handleHealthDataQuery(url: URL): Response {
         FROM health_records
         WHERE recorded_at >= ? AND recorded_at < ? AND device_id = ?
         ORDER BY recorded_at ASC
+        LIMIT 10000
       `).all(startOfDay, startOfNextDay, deviceId) as HealthRecord[];
     } else {
       records = db.prepare(`
@@ -162,6 +168,7 @@ export function handleHealthDataQuery(url: URL): Response {
         FROM health_records
         WHERE recorded_at >= ? AND recorded_at < ?
         ORDER BY recorded_at ASC
+        LIMIT 10000
       `).all(startOfDay, startOfNextDay) as HealthRecord[];
     }
 

@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { verifyViewerToken, viewerTokenFromRequest } from "../services/viewer-auth";
 import type { LocationRecord } from "../types";
 
 function timezoneModifier(url: URL): string | null {
@@ -15,7 +16,9 @@ function timezoneModifier(url: URL): string | null {
   return `${sign}${String(absH).padStart(2, "0")}:${String(absM).padStart(2, "0")}`;
 }
 
-export function handleLocationQuery(url: URL): Response {
+export function handleLocationQuery(url: URL, req: Request): Response {
+  const viewer = verifyViewerToken(viewerTokenFromRequest(req));
+  if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
   const date = url.searchParams.get("date");
   const deviceId = url.searchParams.get("device_id");
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -33,6 +36,7 @@ export function handleLocationQuery(url: URL): Response {
           FROM location_records
           WHERE date(recorded_at, '${modifier}') = ? AND device_id = ?
           ORDER BY recorded_at ASC
+          LIMIT 10000
         `).all(date, deviceId) as LocationRecord[];
       } else {
         records = db.prepare(`
@@ -40,6 +44,7 @@ export function handleLocationQuery(url: URL): Response {
           FROM location_records
           WHERE date(recorded_at, '${modifier}') = ?
           ORDER BY recorded_at ASC
+          LIMIT 10000
         `).all(date) as LocationRecord[];
       }
     } else {
@@ -57,6 +62,7 @@ export function handleLocationQuery(url: URL): Response {
           FROM location_records
           WHERE recorded_at >= ? AND recorded_at < ? AND device_id = ?
           ORDER BY recorded_at ASC
+          LIMIT 10000
         `).all(startOfDay, startOfNextDay, deviceId) as LocationRecord[];
       } else {
         records = db.prepare(`
@@ -64,6 +70,7 @@ export function handleLocationQuery(url: URL): Response {
           FROM location_records
           WHERE recorded_at >= ? AND recorded_at < ?
           ORDER BY recorded_at ASC
+          LIMIT 10000
         `).all(startOfDay, startOfNextDay) as LocationRecord[];
       }
     }
