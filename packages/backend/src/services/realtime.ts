@@ -48,6 +48,18 @@ const pingTimer = setInterval(() => {
 }, PING_INTERVAL_MS);
 pingTimer.unref();
 
+// ── Rate limit cleanup: evict expired entries to prevent memory leaks ──
+const rateCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of viewerRate) {
+    if (val.resetAt < now) viewerRate.delete(key);
+  }
+  for (const [key, val] of viewerApiRate) {
+    if (val.resetAt < now) viewerApiRate.delete(key);
+  }
+}, 300_000); // every 5 minutes
+rateCleanupTimer.unref();
+
 const insertQueuedMessage = db.prepare(`
   INSERT INTO device_messages (id, device_id, viewer_id, text, expires_at)
   VALUES (?, ?, ?, ?, datetime('now', ?))
@@ -154,7 +166,7 @@ function parseJson(raw: string | Buffer): any | null {
 
 function cleanText(value: unknown): string {
   if (typeof value !== "string") return "";
-  return value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, MAX_TEXT_LENGTH);
+  return value.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/g, "").trim().slice(0, MAX_TEXT_LENGTH);
 }
 
 function rateLimit(viewerId: string): boolean {

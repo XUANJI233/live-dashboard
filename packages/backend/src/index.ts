@@ -87,9 +87,10 @@ const server = Bun.serve<WsData>({
       corsHeaders["Access-Control-Allow-Origin"] = "*";
     } else if (allowedOrigins.length > 0 && requestOrigin && allowedOrigins.includes(requestOrigin)) {
       corsHeaders["Access-Control-Allow-Origin"] = requestOrigin;
-    } else if (allowedOrigins.length === 0) {
-      // If no allowlist configured, allow same-origin only
-      corsHeaders["Access-Control-Allow-Origin"] = requestOrigin || "";
+    } else if (allowedOrigins.length === 0 && isPublicEndpoint) {
+      corsHeaders["Access-Control-Allow-Origin"] = "*";
+    } else {
+      // No allowlist for write endpoints — deny cross-origin
     }
 
     // Preflight
@@ -214,6 +215,11 @@ const server = Bun.serve<WsData>({
     for (const [key, value] of Object.entries(corsHeaders)) {
       response.headers.set(key, value);
     }
+
+    // Security headers
+    response.headers.set("X-Content-Type-Options", "nosniff");
+    response.headers.set("X-Frame-Options", "SAMEORIGIN");
+    response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
 
     return response;
   },
