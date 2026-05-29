@@ -3,6 +3,9 @@ import { hmacTitle } from "../db";
 const TOKEN_TTL_SECONDS = 60 * 60;
 const MIN_FINGERPRINT_LENGTH = 48;
 const issueRate = new Map<string, { count: number; resetAt: number }>();
+// Combined IP+token rate limit: prevents network switching to bypass limits
+const viewerTokenRate = new Map<string, { count: number; resetAt: number }>();
+const VIEWER_TOKEN_RATE_LIMIT = 60; // 60 requests per hour per viewer token
 
 function base64url(input: string): string {
   return Buffer.from(input, "utf8")
@@ -65,6 +68,18 @@ export function issueViewerToken(fingerprintValue: unknown, ipHint: string): { t
   const encoded = base64url(JSON.stringify(payload));
   const token = `${encoded}.${sign(encoded)}`;
   return { token, viewerId: payload.sub };
+}
+
+export function viewerTokenRateLimit(viewerId: string): boolean {
+  const now = Date.now();
+  const current = viewerTokenRate.get(viewerId);
+  if (!current || current.resetAt <= now) {
+    viewerTokenRate.set(viewerId, { count: 1, resetAt: now + 3600_000 }); // 1 hour window
+    return true;
+  }
+  if (current.count >= VIEWER_TOKEN_RATE_LIMIT) return false;
+  current.count++;
+  return true;
 }
 
 export function verifyViewerToken(token: string | null | undefined): ViewerIdentity | null {
