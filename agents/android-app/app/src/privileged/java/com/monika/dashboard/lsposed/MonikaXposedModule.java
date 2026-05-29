@@ -15,6 +15,7 @@ import android.os.Binder;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -54,7 +55,8 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String ACTION_CONFIG = "com.monika.dashboard.LSPOSED_CONFIG";
     private static final String ACTION_BROWSER_TITLE = "com.monika.dashboard.LSPOSED_BROWSER_TITLE";
     private static final String CONFIG_PERMISSION = "com.monika.dashboard.permission.LSPOSED_CONFIG";
-    private static final long FOREGROUND_POLL_MS = 5000L;
+    private static final long FOREGROUND_POLL_MS = 5000L; // fallback, overridden by settings
+    private static final long FOREGROUND_POLL_IDLE_MS = 30_000L; // poll slower when idle
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
     private static final long MIN_DIRECT_UPLOAD_MS = 5000L;
     private static final long IDLE_DEBOUNCE_COUNT = 12; // 12 consecutive idle samples (~60s at 5s poll) before uploading
@@ -64,6 +66,7 @@ public final class MonikaXposedModule extends XposedModule {
     // Static instance for global access
     private static MonikaXposedModule instance;
     
+    private volatile boolean foregroundRecentlyChanged = false;
     private volatile int idleConsecutiveCount = 0;
     private volatile long wsLastFailAt = 0L;
     private volatile long wsRetryDelayMs = WS_RETRY_BASE_MS;
@@ -139,7 +142,6 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String mediaTitle = "";
     private volatile String mediaArtist = "";
     private volatile String mediaState = "";
-    private volatile Object cachedAtmService = null;
 
     @Override
     public void onModuleLoaded(@NonNull XposedModuleInterface.ModuleLoadedParam param) {
@@ -217,7 +219,9 @@ public final class MonikaXposedModule extends XposedModule {
                     } catch (Throwable t) {
                         log(Log.WARN, TAG, "foreground sample failed: " + t.getClass().getSimpleName());
                     } finally {
-                        handler.postDelayed(this, FOREGROUND_POLL_MS);
+                        // Adaptive poll: faster when foreground changes, slower when stable
+                        long pollMs = foregroundRecentlyChanged ? FOREGROUND_POLL_MS : FOREGROUND_POLL_IDLE_MS;
+                        handler.postDelayed(this, pollMs);
                     }
                 }
             }, 15000L);
@@ -420,6 +424,7 @@ public final class MonikaXposedModule extends XposedModule {
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
                         }
+                        log(Log.DEBUG, TAG, "media playback: pkg=" + pkg + " playing=" + mediaPlaying + " title=" + mediaTitle);
                         maybeDirectUpload(false);
                     } catch (Throwable t) {
                         log(Log.WARN, TAG, "onPlaybackStateChanged failed: " + t.getClass().getSimpleName());
@@ -440,6 +445,7 @@ public final class MonikaXposedModule extends XposedModule {
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ARTIST),
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
+                        log(Log.DEBUG, TAG, "media metadata: pkg=" + pkg + " title=" + mediaTitle + " artist=" + mediaArtist);
                         maybeDirectUpload(false);
                     } catch (Throwable t) {
                         log(Log.WARN, TAG, "onMetadataChanged failed: " + t.getClass().getSimpleName());
@@ -643,41 +649,21 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void broadcastSnapshot() {
         try {
-            // Skip expensive reflection when LSP upload is disabled — saves battery
-            if (!directUploadEnabled) return;
-
-            // Screen-off detection: avoid repeated uploads of stale foreground
-            boolean screenOff = !isScreenInteractive();
-            if (screenOff && !mediaPlaying) {
-                long now = System.currentTimeMillis();
-                if ("sleeping".equals(lastForegroundKey) && now - lastForegroundBroadcastAt < 30_000L) return;
-                lastForegroundKey = "sleeping";
-                lastForegroundBroadcastAt = now;
-                foregroundPackage = "sleeping";
-                foregroundApp = "sleeping";
-                foregroundActivity = "";
-                foregroundTitle = "";
-                Intent intent = new Intent(ACTION_STATUS);
-                intent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
-                intent.putExtra("package_name", "sleeping");
-                intent.putExtra("app_name", "sleeping");
-                intent.putExtra("activity", "");
-                intent.putExtra("input_active", false);
-                Context ctx = getSystemContext();
-                if (ctx != null) {
-                    long token = Binder.clearCallingIdentity();
-                    try { ctx.sendBroadcast(intent); } finally { Binder.restoreCallingIdentity(token); }
-                }
-                maybeDirectUpload(false);
-                return;
-            }
-            // Screen off + media playing → continue to include media info in report
-            // Screen on → normal behavior
-
             ComponentName top = getTopActivityComponentName();
-            String taskDescription = getFocusedTaskDescription();
             long now = System.currentTimeMillis();
             boolean idleCandidate = top == null || isIgnoredPackage(top.getPackageName());
+
+            // Only call expensive getFocusedTaskDescription when foreground changed or is browser
+            String taskDescription = null;
+            if (!idleCandidate) {
+                String pkg = top.getPackageName();
+                String newKey = pkg + "/" + top.getClassName();
+                boolean foregroundChanged = !newKey.equals(lastForegroundKey);
+                boolean isBrowser = isBrowserPackage(pkg);
+                if (foregroundChanged || isBrowser) {
+                    taskDescription = getFocusedTaskDescription();
+                }
+            }
 
             if (idleCandidate) {
                 // Debounce: only report idle after N consecutive idle samples.
@@ -699,6 +685,9 @@ public final class MonikaXposedModule extends XposedModule {
                 String key = packageName + "/" + activityName;
                 if (!key.equals(lastForegroundKey)) {
                     log(Log.INFO, TAG, "foreground: " + key + " title=" + (taskDescription != null ? taskDescription : ""));
+                    foregroundRecentlyChanged = true;
+                } else {
+                    foregroundRecentlyChanged = false;
                 }
                 if (key.equals(lastForegroundKey) && now - lastForegroundBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
                 lastForegroundKey = key;
@@ -796,11 +785,12 @@ public final class MonikaXposedModule extends XposedModule {
                         if (info == null) info = topTask;
                     }
                 } catch (Throwable t) {
-                    // Silenced: fires every 5s on devices without getTasks
+                    log(Log.DEBUG, TAG, "getTasks fallback failed: " + t.getMessage());
                 }
             }
             
             if (info == null) {
+                log(Log.DEBUG, TAG, "getFocusedTaskDescription: no task info available");
                 return null;
             }
             
@@ -810,6 +800,7 @@ public final class MonikaXposedModule extends XposedModule {
             if (desc == null) desc = readField(info, "origDescription");
             
             if (desc == null) {
+                log(Log.DEBUG, TAG, "getFocusedTaskDescription: taskDescription field is null");
                 return null;
             }
             
@@ -822,6 +813,7 @@ public final class MonikaXposedModule extends XposedModule {
                     if (label instanceof CharSequence) {
                         String result = ((CharSequence) label).toString().trim();
                         if (result.length() > 0) {
+                            log(Log.DEBUG, TAG, "getFocusedTaskDescription: got label from TaskDescription.getLabel()");
                             return result;
                         }
                     }
@@ -835,12 +827,15 @@ public final class MonikaXposedModule extends XposedModule {
             if (desc instanceof CharSequence) {
                 String s = desc.toString().trim();
                 if (s.length() > 0) {
+                    log(Log.DEBUG, TAG, "getFocusedTaskDescription: got CharSequence directly");
                     return s;
                 }
             }
             
+            log(Log.DEBUG, TAG, "getFocusedTaskDescription: no valid description found");
             return null;
         } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "getFocusedTaskDescription failed: " + t.getClass().getSimpleName() + ": " + t.getMessage());
             return null;
         }
     }
@@ -912,24 +907,11 @@ public final class MonikaXposedModule extends XposedModule {
         return "phone";
     }
 
-    private boolean isScreenInteractive() {
-        try {
-            Context ctx = getSystemContext();
-            if (ctx == null) return true; // assume screen on if can't determine
-            PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
-            return pm != null && pm.isInteractive();
-        } catch (Throwable ignored) {
-            return true; // assume screen on on error
-        }
-    }
-
     private Object getActivityTaskManagerService() {
-        Object cached = cachedAtmService;
-        if (cached != null) return cached;
         try {
             Class<?> atm = Class.forName("android.app.ActivityTaskManager");
             Object service = atm.getDeclaredMethod("getService").invoke(null);
-            if (service != null) { cachedAtmService = service; return service; }
+            if (service != null) return service;
         } catch (Throwable ignored) {
         }
         try {
@@ -938,10 +920,8 @@ public final class MonikaXposedModule extends XposedModule {
                     .invoke(null, "activity_task");
             if (binder == null) return null;
             Class<?> stub = Class.forName("android.app.IActivityTaskManager$Stub");
-            Object svc = stub.getDeclaredMethod("asInterface", android.os.IBinder.class)
+            return stub.getDeclaredMethod("asInterface", android.os.IBinder.class)
                     .invoke(null, binder);
-            if (svc != null) cachedAtmService = svc;
-            return svc;
         } catch (Throwable ignored) {
             return null;
         }
@@ -1217,13 +1197,6 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private String primaryDisplayTitle() {
-        // Screen off — show sleeping or media info
-        if ("sleeping".equals(foregroundPackage)) {
-            if (mediaPlaying && mediaTitle.length() > 0 && mediaApp.length() > 0) {
-                return mediaApp + "正在播放" + mediaTitle;
-            }
-            return "(.-)zzZ";
-        }
         boolean foregroundValid = foregroundApp.length() > 0
                 && !"idle".equals(foregroundPackage)
                 && !"idle".equals(foregroundApp);
