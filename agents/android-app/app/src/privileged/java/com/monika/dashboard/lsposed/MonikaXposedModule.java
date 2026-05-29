@@ -145,6 +145,8 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String mediaState = "";
     private volatile long lastTitleBroadcastAt = 0L;
     private volatile String lastBroadcastTitle = "";
+    private volatile String recentForegroundBrowser = "";
+    private volatile long recentForegroundBrowserAt = 0L;
 
     @Override
     public void onModuleLoaded(@NonNull XposedModuleInterface.ModuleLoadedParam param) {
@@ -338,11 +340,15 @@ public final class MonikaXposedModule extends XposedModule {
                         } catch (Throwable ignored) {}
                     }
 
-                    // Security: verify the claimed package is actually the current foreground
+                    // Verify the claimed package is (or recently was) the foreground browser.
+                    // Use time-window cache (2s) to tolerate broadcast delay — avoids
+                    // losing titles when user switches away just as broadcast arrives.
                     ComponentName top = getTopActivityComponentName();
-                    if (top == null || !pkg.equals(top.getPackageName())) {
-                        log(Log.DEBUG, TAG, "browser title ignored: " + pkg + " is not foreground (top=" +
-                                (top != null ? top.getPackageName() : "null") + ")");
+                    boolean isCurrentForeground = top != null && pkg.equals(top.getPackageName());
+                    boolean wasRecentForeground = pkg.equals(recentForegroundBrowser)
+                            && System.currentTimeMillis() - recentForegroundBrowserAt < 2000L;
+                    if (!isCurrentForeground && !wasRecentForeground) {
+                        log(Log.DEBUG, TAG, "browser title ignored: " + pkg + " is not foreground");
                         return;
                     }
 
@@ -416,6 +422,13 @@ public final class MonikaXposedModule extends XposedModule {
                             for (MediaController controller : controllers) {
                                 registerMediaControllerCallback(controller);
                             }
+                            // Cleanup: remove stale entries from registeredMediaControllers
+                            // that are no longer in the active session list
+                            java.util.Set<String> activeKeys = new java.util.HashSet<>();
+                            for (MediaController c : controllers) {
+                                activeKeys.add(c.getPackageName() + "@" + System.identityHashCode(c));
+                            }
+                            registeredMediaControllers.retainAll(activeKeys);
                             maybeDirectUpload(false);
                         } catch (Throwable t) {
                             log(Log.WARN, TAG, "onActiveSessionsChanged failed: " + t.getClass().getSimpleName());
@@ -663,10 +676,9 @@ public final class MonikaXposedModule extends XposedModule {
             if (clean.equals(lastBroadcastTitle) && now - lastTitleBroadcastAt < 1000L) return;
             lastBroadcastTitle = clean;
             lastTitleBroadcastAt = now;
-            foregroundPackage = packageName;
-            foregroundApp = safeString(resolveAppLabel(activity, packageName));
-            foregroundActivity = activity.getClass().getName();
-            foregroundTitle = clean;
+            // NOTE: Do NOT set foreground* fields here in browser process!
+            // Browser process has its own copy of static fields (different process).
+            // Only system_server should update these via the broadcast receiver.
             // Use Activity's application context so getSentFromPackage() returns browser's package
             Context sendContext = null;
             try {
@@ -744,6 +756,11 @@ public final class MonikaXposedModule extends XposedModule {
                 lastForegroundBroadcastAt = now;
                 foregroundPackage = packageName;
                 foregroundApp = safeString(resolveAppLabel(packageName));
+                // Cache recent foreground browser for race-condition tolerance
+                if (isBrowserPackage(packageName)) {
+                    recentForegroundBrowser = packageName;
+                    recentForegroundBrowserAt = now;
+                }
                 foregroundActivity = activityName;
                 // For browsers, extract page title from Android task description
                 // (works for Chrome, Firefox, WebView browsers — Activity.setTitle is unreliable)
@@ -1092,6 +1109,9 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void maybeDirectUpload(boolean force) {
         if (!directUploadEnabled || directServerUrl.length() == 0 || directToken.length() == 0) return;
+        // Only system_server should perform network uploads.
+        // Browser processes have uninitialized uploadHandler and would block the main thread (ANR).
+        if (currentProcessName != null && !currentProcessName.equals(TARGET_PACKAGE)) return;
         long now = System.currentTimeMillis();
         long safeInterval = Math.max(MIN_DIRECT_UPLOAD_MS, directIntervalMs);
         if (!force && now - lastDirectUploadAt < safeInterval) return;
