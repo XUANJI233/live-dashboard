@@ -195,11 +195,22 @@ public final class MonikaXposedModule extends XposedModule {
 
             // Event-driven: hook moveTaskToFront to detect foreground changes immediately
             // This eliminates the need for frequent polling when the foreground is stable
-            Method moveToFront = findMethod(clazz, "moveTaskToFront",
-                    android.app.IApplicationThread.class, String.class, int.class, int.class, android.os.Bundle.class);
-            if (moveToFront == null) {
+            // IApplicationThread is a hidden API — use Class.forName at runtime
+            Method moveToFront = null;
+            try {
+                Class<?> iAppThread = Class.forName("android.app.IApplicationThread");
                 moveToFront = findMethod(clazz, "moveTaskToFront",
-                        android.app.IApplicationThread.class, String.class, int.class, android.os.Bundle.class);
+                        iAppThread, String.class, int.class, int.class, android.os.Bundle.class);
+                if (moveToFront == null) {
+                    moveToFront = findMethod(clazz, "moveTaskToFront",
+                            iAppThread, String.class, int.class, android.os.Bundle.class);
+                }
+            } catch (ClassNotFoundException ignored) {}
+            // Fallback: search by name only
+            if (moveToFront == null) {
+                for (Method m : clazz.getDeclaredMethods()) {
+                    if ("moveTaskToFront".equals(m.getName())) { moveToFront = m; break; }
+                }
             }
             if (moveToFront != null) {
                 hook(moveToFront)
@@ -934,11 +945,16 @@ public final class MonikaXposedModule extends XposedModule {
         return "phone";
     }
 
+    private volatile Object cachedAtmService = null;
+    private volatile Context cachedSystemContext = null;
+
     private Object getActivityTaskManagerService() {
+        Object cached = cachedAtmService;
+        if (cached != null) return cached;
         try {
             Class<?> atm = Class.forName("android.app.ActivityTaskManager");
             Object service = atm.getDeclaredMethod("getService").invoke(null);
-            if (service != null) return service;
+            if (service != null) { cachedAtmService = service; return service; }
         } catch (Throwable ignored) {
         }
         try {
@@ -947,21 +963,27 @@ public final class MonikaXposedModule extends XposedModule {
                     .invoke(null, "activity_task");
             if (binder == null) return null;
             Class<?> stub = Class.forName("android.app.IActivityTaskManager$Stub");
-            return stub.getDeclaredMethod("asInterface", android.os.IBinder.class)
+            Object svc = stub.getDeclaredMethod("asInterface", android.os.IBinder.class)
                     .invoke(null, binder);
+            if (svc != null) cachedAtmService = svc;
+            return svc;
         } catch (Throwable ignored) {
             return null;
         }
     }
 
     private Context getSystemContext() {
+        Context cached = cachedSystemContext;
+        if (cached != null) return cached;
         try {
             Class<?> activityThread = Class.forName("android.app.ActivityThread");
             Method current = activityThread.getDeclaredMethod("currentActivityThread");
             Object thread = current.invoke(null);
             if (thread == null) return null;
             Method getSystemContext = activityThread.getDeclaredMethod("getSystemContext");
-            return (Context) getSystemContext.invoke(thread);
+            Context ctx = (Context) getSystemContext.invoke(thread);
+            if (ctx != null) cachedSystemContext = ctx;
+            return ctx;
         } catch (Throwable ignored) {
             return null;
         }
