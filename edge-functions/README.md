@@ -1,28 +1,5 @@
 # 边缘函数
 
-把 API 请求搬到边缘节点处理，减少回源量和响应延迟。支持阿里云 ESA 和腾讯云 EdgeOne。
-
-## 能干嘛
-
-读取接口（设备状态、时间线、配置）在边缘缓存几秒，不用每次都回源。PoW 挑战也在边缘处理。无效的 token 请求直接在边缘拒绝，不打到服务器。
-
-## 部署（ESA）
-
-[ESA 控制台](https://esa.console.aliyun.com/) → 边缘计算 → 函数和Pages → 创建函数 → 粘贴 `edge-router.js`
-
-环境变量：
-
-| 变量 | 值 |
-|------|---|
-| `ORIGIN_URL` | `http://你的服务器IP:3000` |
-| `HASH_SECRET` | 和服务器 `.env` 里的 `HASH_SECRET` 一样 |
-| `EDGE_KV_NAMESPACE` | `live-dashboard` |
-
-然后：
-- 边缘存储 → 创建命名空间 `live-dashboard`
-- 函数路由 → 添加 `你的域名/api/*` → 选这个函数
-# 边缘函数
-
 把 API 请求搬到边缘节点处理，减少回源量和响应延迟。
 
 ## 能干嘛
