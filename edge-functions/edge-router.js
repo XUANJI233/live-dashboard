@@ -87,18 +87,27 @@ export default {
 
       // WebSocket — 穿透
       if (pathname === "/api/ws") {
-        // ESA 不支持 WebSocket 代理，直接穿透
-        // 带签名以支持 REQUIRE_EDGE 模式
-        if (secret) {
-          const headers = new Headers(request.headers);
-          if (clientIp) headers.set("X-Real-IP", clientIp);
-          headers.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
-          return fetch(`${origin}${pathname}${url.search}`, {
-            method, headers,
-            body: method !== "GET" && method !== "HEAD" ? request.body : undefined,
-          });
+        // 边缘验证 token + 限流，通过才穿透
+        if (!secret) return passthrough(request, origin, clientIp);
+        const wsToken = extractViewerToken(request);
+        if (!wsToken) return jsonResponse({ error: "需要 viewer token" }, 403);
+        const wsV = await verifyViewerToken(wsToken, secret, clientIp);
+        if (!wsV) return jsonResponse({ error: "token 无效" }, 403);
+        // 限流
+        const wsKv = getEdgeKV();
+        if (wsKv) {
+          const wsRate = await kvGetNumber(wsKv, `vr:${wsV.viewerId}`);
+          if (wsRate >= RATE_VIEWER) return jsonResponse({ error: "限流" }, 429);
+          kvPut(wsKv, `vr:${wsV.viewerId}`, String((wsRate || 0) + 1), RATE_WINDOW);
         }
-        return passthrough(request, origin, clientIp);
+        // 签名穿透
+        const wsH = new Headers(request.headers);
+        wsH.set("X-Real-IP", clientIp);
+        wsH.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
+        return fetch(`${origin}${pathname}${url.search}`, {
+          method, headers: wsH,
+          body: method !== "GET" && method !== "HEAD" ? request.body : undefined,
+        });
       }
 
       // 需要 token 的端点 — 边缘验证后穿透
