@@ -19,12 +19,20 @@ const RATE_POW = 30;
 const RATE_ISSUE = 12;
 const RATE_VIEWER = 60;
 
+// 超时包装（ESA 推荐模式）
+function withTimeout(promise, ms, fallback) {
+  return Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
 // ── 配置加载 ──
 async function loadConfig() {
   const kv = new EdgeKV({ namespace: CONFIG_NS });
   const [origin, secret] = await Promise.all([
-    kv.get("origin", { type: "text" }),
-    kv.get("secret", { type: "text" }),
+    withTimeout(kv.get("origin", { type: "text" }), 2000, ""),
+    withTimeout(kv.get("secret", { type: "text" }), 2000, ""),
   ]);
   return { origin: origin || "", secret: secret || "" };
 }
