@@ -97,6 +97,16 @@ function HomeInner() {
     watchDevice && selectedDevice?.device_id !== watchDevice.device_id && watchHealthRecords.length > 0,
   );
 
+  // Set of online device IDs for Timeline offline detection
+  const onlineDevices = useMemo(() => {
+    const set = new Set<string>();
+    if (current?.devices) {
+      for (const d of current.devices) {
+        if (d.is_online === 1) set.add(d.device_id);
+      }
+    }
+    return set;
+  }, [current?.devices]);
   // Check if health data exists for the selected date + device
   const selectedDeviceIdResolved = selectedDevice?.device_id;
   useEffect(() => {
@@ -274,6 +284,7 @@ function HomeInner() {
                         segments={filteredTimeline.segments}
                         summary={filteredTimeline.summary}
                         currentAppByDevice={currentAppByDevice}
+                          onlineDevices={onlineDevices}
                       />
                     </div>
                   ) : filteredTimeline && hasTimelineData ? (
@@ -281,6 +292,7 @@ function HomeInner() {
                       segments={filteredTimeline.segments}
                       summary={filteredTimeline.summary}
                       currentAppByDevice={currentAppByDevice}
+                        onlineDevices={onlineDevices}
                     />
                   ) : null}
                 </>

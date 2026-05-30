@@ -267,6 +267,7 @@ export default function VisitorMessages({ device }: Props) {
 
   const statusText = useMemo(() => {
     if (!device) return "尚未选择目标设备";
+    if (!connected && device.is_online !== 1) return "对方离线，消息将稍后送达";
     if (!connected) return "连接中...";
     return device.is_online === 1 ? "可以发送消息了" : "对方离线，消息将稍后送达";
   }, [connected, device]);
@@ -315,7 +316,10 @@ export default function VisitorMessages({ device }: Props) {
         <h2 className="text-xs font-bold text-[var(--color-text-muted)] uppercase tracking-wider">
           留言小窗
         </h2>
-        <span className="text-[10px] text-[var(--color-text-muted)]">{statusText}</span>
+        <span className="text-[10px] text-[var(--color-text-muted)] flex items-center gap-1">
+          {!connected && <span className="inline-block w-2.5 h-2.5 border border-[var(--color-text-muted)] border-t-transparent rounded-full animate-spin" />}
+          {statusText}
+        </span>
       </div>
 
       <div className="grid gap-2 mb-3">

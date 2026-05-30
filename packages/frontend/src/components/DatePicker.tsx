@@ -34,8 +34,8 @@ export default function DatePicker({ selectedDate, onChange }: Props) {
         &larr;
       </button>
 
-      <span suppressHydrationWarning className="text-sm font-mono text-[var(--color-text-secondary)] tabular-nums px-2 min-w-[80px] text-center">
-        {formatDisplay(selectedDate)}
+      <span suppressHydrationWarning className={`text-sm font-mono tabular-nums px-2 min-w-[80px] text-center ${isToday ? "text-[var(--color-accent)] font-semibold" : "text-[var(--color-text-secondary)]"}`}>
+        {isToday ? "Today" : formatDisplay(selectedDate)}
       </span>
 
       <button

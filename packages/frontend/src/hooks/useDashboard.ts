@@ -9,7 +9,7 @@ import {
   type TimelineResponse,
 } from "@/lib/api";
 
-const TIMELINE_POLL_INTERVAL = 10 * 1000;
+const TIMELINE_POLL_INTERVAL = 30 * 1000;
 const DEVICE_POLL_INTERVAL = 15 * 1000; // slower fallback polling for devices
 const WS_RECONNECT_BASE = 3000;
 const WS_RECONNECT_MAX = 30000;

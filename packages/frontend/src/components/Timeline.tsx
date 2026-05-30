@@ -11,12 +11,14 @@ const APP_COLORS = [
 
 const MIN_VISIBLE_SECONDS = 10;
 const IDLE_VISIBLE_SECONDS = 10 * 60;
-const SWITCH_WINDOW_SECONDS = 5 * 60;
+const SWITCH_WINDOW_SECONDS = 10 * 60;
+const MIN_CLUSTER_SIZE = 2;
 
 interface Props {
   segments: TimelineSegment[];
   summary: Record<string, Record<string, number>>;
   currentAppByDevice: Record<string, string>;
+  onlineDevices?: Set<string>;
   loading?: boolean;
 }
 
@@ -33,12 +35,12 @@ type TimelineEvent = {
   children: TimelineSegment[];
 };
 
-export default function Timeline({ segments, currentAppByDevice, loading }: Props) {
+export default function Timeline({ segments, currentAppByDevice, onlineDevices, loading }: Props) {
   const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
   const colorMap = useMemo(() => new Map<string, string>(), []);
   const byDevice = useMemo(
-    () => buildDeviceEvents(segments, currentAppByDevice),
-    [segments, currentAppByDevice],
+    () => buildDeviceEvents(segments, currentAppByDevice, onlineDevices),
+    [segments, currentAppByDevice, onlineDevices],
   );
 
   if (byDevice.length === 0) {
@@ -91,7 +93,7 @@ export default function Timeline({ segments, currentAppByDevice, loading }: Prop
                         )}
                       </div>
                       <div className="w-28 flex-shrink-0 px-2 py-2.5 text-right flex items-center justify-end gap-1">
-                        <span className="font-mono text-[11px] text-[var(--color-text-muted)] tabular-nums">{formatTimeRange(event.startedAt, event.endedAt)}</span>
+                        <span className="font-mono text-[11px] text-[var(--color-text-muted)] tabular-nums">{formatTimeRange(event.startedAt, event.endedAt, onlineDevices ? !onlineDevices.has(deviceId) : undefined)}</span>
                         {canOpen && (
                           <span className="text-[10px] text-[var(--color-text-muted)] opacity-0 group-hover:opacity-100 transition-opacity">{isOpen ? "▲" : "▼"}</span>
                         )}
@@ -102,7 +104,7 @@ export default function Timeline({ segments, currentAppByDevice, loading }: Prop
                         {compactChildren(event.children).map((child, index) => (
                           <div key={`${child.started_at}-${index}`} className="text-xs">
                             <div className="flex items-center justify-between gap-3">
-                              <span className="font-mono text-[10px] text-[var(--color-text-muted)]">{formatClock(child.started_at)}{child.ended_at ? ` – ${formatClock(child.ended_at)}` : " – Now"}</span>
+                              <span className="font-mono text-[10px] text-[var(--color-text-muted)]">{formatClock(child.started_at)}{child.ended_at ? ` – ${formatClock(child.ended_at)}` : (onlineDevices && !onlineDevices.has(deviceId) ? " – 刚刚" : " – Now")}</span>
                             </div>
                             <div className="mt-0.5 truncate text-[var(--color-text)] text-xs" title={describeChild(child)}>{describeChild(child)}</div>
                           </div>
@@ -120,7 +122,7 @@ export default function Timeline({ segments, currentAppByDevice, loading }: Prop
   );
 }
 
-function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Record<string, string>) {
+function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Record<string, string>, onlineDevices?: Set<string>) {
   const byDevice = new Map<string, { deviceName: string; segments: TimelineSegment[] }>();
   for (const seg of segments) {
     if (!isUsefulSegment(seg)) continue;
@@ -144,10 +146,10 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
 
       // Then: check if this merged group is part of a rapid-switch cluster
       const cluster = collectSwitchCluster(sorted, i);
-      if (cluster.length >= 3) {
+      if (cluster.length >= MIN_CLUSTER_SIZE) {
         const first = cluster[0]!;
         const last = cluster[cluster.length - 1]!;
-        events.push({ key: `${deviceId}:switch:${first.started_at}`, kind: "switching", appName: "切来切去", appId: "switching", title: "正在切来切去喵~", startedAt: first.started_at, endedAt: last.ended_at, durationSeconds: spanSeconds(cluster), isCurrent: cluster.some((seg) => currentAppByDevice[deviceId] === seg.app_name), children: cluster });
+          events.push({ key: `${deviceId}:switch:${first.started_at}`, kind: "switching", appName: "切来切去", appId: "switching", title: "正在切来切去喵~", startedAt: first.started_at, endedAt: last.ended_at, durationSeconds: spanSeconds(cluster), isCurrent: (!onlineDevices || onlineDevices.has(deviceId)) && cluster.some((seg) => currentAppByDevice[deviceId] === seg.app_name), children: cluster });
         i += cluster.length;
         continue;
       }
@@ -162,7 +164,7 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
         startedAt: first.started_at,
         endedAt: last.ended_at,
         durationSeconds: spanSeconds(merged),
-        isCurrent: currentAppByDevice[deviceId] === first.app_name,
+        isCurrent: (!onlineDevices || onlineDevices.has(deviceId)) && currentAppByDevice[deviceId] === first.app_name,
         children: merged.length > 1 ? compactChildren(merged) : (meaningfulDetailTitle(first) ? [first] : []),
       });
       i += merged.length;
@@ -176,19 +178,22 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
 function collectSwitchCluster(segments: TimelineSegment[], startIndex: number) {
   const first = segments[startIndex]!;
   const cluster = [first];
-  const startMs = new Date(first.started_at).getTime();
   let previousApp = first.app_name;
+  let previousEndMs = new Date(first.ended_at || first.started_at).getTime();
   let changed = false;
   for (let i = startIndex + 1; i < segments.length; i += 1) {
     const next = segments[i]!;
     const nextStart = new Date(next.started_at).getTime();
-    if (Number.isNaN(nextStart) || nextStart - startMs > SWITCH_WINDOW_SECONDS * 1000) break;
+    // Sliding window: gap between this segment and previous must be within window
+    const gap = nextStart - previousEndMs;
+    if (Number.isNaN(nextStart) || gap > SWITCH_WINDOW_SECONDS * 1000) break;
     if (durationSeconds(next) >= SWITCH_WINDOW_SECONDS) break;
     if (next.app_name !== previousApp) changed = true;
     previousApp = next.app_name;
+    previousEndMs = new Date(next.ended_at || next.started_at).getTime();
     cluster.push(next);
   }
-  return changed ? cluster : [first];
+  return changed && cluster.length >= MIN_CLUSTER_SIZE ? cluster : [first];
 }
 
 function isUsefulSegment(seg: TimelineSegment) {
@@ -268,8 +273,8 @@ function getAppColor(appName: string, colorMap: Map<string, string>): string {
   return color;
 }
 
-function formatTimeRange(startedAt: string, endedAt: string | null) {
-  return `${formatClock(startedAt)} – ${endedAt ? formatClock(endedAt) : "Now"}`;
+function formatTimeRange(startedAt: string, endedAt: string | null, isOffline?: boolean) {
+  return `${formatClock(startedAt)} – ${endedAt ? formatClock(endedAt) : (isOffline ? "刚刚" : "Now")}`;
 }
 
 function formatClock(value: string) {
