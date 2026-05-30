@@ -245,7 +245,7 @@ async function handleCachedRead(request, origin, pathname, env) {
   const cacheKey = `http://edge-cache${pathname}${new URL(request.url).search}`;
 
   try {
-    const cache = caches.default;
+    // ESA Cache API uses global `cache` object
     const cached = await cache.match(cacheKey);
     if (cached) {
       return cached;
@@ -279,7 +279,6 @@ async function handleCachedRead(request, origin, pathname, env) {
 
   // 写入缓存
   try {
-    const cache = caches.default;
     await cache.put(cacheKey, response.clone());
   } catch {
     // 忽略缓存写入错误
