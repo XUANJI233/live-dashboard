@@ -178,7 +178,7 @@ const server = Bun.serve<WsData>({
         server.requestIP(req)?.address ||
         "";
       if (pathname === "/api/ws") {
-        const wsInfo = getWsInfo(req);
+        const wsInfo = await getWsInfo(req);
         if (wsInfo instanceof Response) return wsInfo;
         if (server.upgrade(req, { data: wsInfo })) {
           return undefined;
