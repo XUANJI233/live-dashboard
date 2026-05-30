@@ -99,7 +99,7 @@ echo "Token: $TOKEN  ← Agent 配置用"
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `DEVICE_TOKEN_2` | - | 第二个设备令牌，格式同上 |
+| `DEVICE_TOKEN_X` | - | 第X个设备令牌，格式同上 |
 | `DISPLAY_NAME` | 空 | 站点显示名称 |
 | `SITE_TITLE` | 空 | HTML 标题 |
 | `SITE_DESC` | 空 | HTML meta 描述 |

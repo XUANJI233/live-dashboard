@@ -28,7 +28,7 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 
 | Key | 值 |
 |-----|---|
-| `origin` | `https://live.myallinone.online`（你的源站域名） |
+| `origin` | `https://live.myallinone.online`（你的域名/加速域名） |
 | `secret` | 和服务器 `.env` 的 `HASH_SECRET` 一样 |
 
 ### 4. 配置路由
