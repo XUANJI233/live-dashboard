@@ -1,3 +1,4 @@
+| `ORIGIN_URL` | `https://live.myallinone.online` | 源站域名（边缘函数在 CDN 节点运行，访问不到内网 IP） |
 # 边缘函数
 
 把 API 请求搬到边缘节点处理，减少回源量和响应延迟。支持阿里云 ESA 和腾讯云 EdgeOne。
