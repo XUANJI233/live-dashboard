@@ -103,7 +103,8 @@ async function ensureViewerToken(onStatus?: (s: string) => void): Promise<{ toke
   // Step 1: Get PoW challenge
   onStatus?.("正在验证身份...");
     onStatus?.("pow");
-  const powRes = await fetch(`${API_BASE}/api/pow/challenge`);
+  // Cache-bust: CDN ignores no-store headers, unique URL forces fresh response
+  const powRes = await fetch(`${API_BASE}/api/pow/challenge?_=${Date.now()}`);
   if (!powRes.ok) throw new Error("获取 PoW 挑战失败");
   const powData = await powRes.json();
 
