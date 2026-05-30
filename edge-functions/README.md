@@ -15,24 +15,26 @@
 
 ## 效果
 
-# ESA 边缘函数
+# 边缘函数
 
-把 API 请求搬到阿里云 ESA 边缘节点处理，解决 CDN 缓存 PoW 导致的 403 问题，同时减少 80-90% 的服务器请求。
+把 API 请求搬到边缘节点处理，减少服务器请求量和响应延迟。适用于阿里云 ESA 和腾讯云 EdgeOne。
+
+## 做什么
+
+- PoW 挑战在边缘生成和验证，不用回源
+- 读取接口（设备状态、时间线等）在边缘缓存几秒，减少回源
+- 身份验证在边缘完成，无效请求直接拒绝
 
 ## 效果
 
 | 指标 | 之前 | 之后 |
 |------|------|------|
-| PoW 403 | 100% | 0% |
 | 服务器请求量 | 全部回源 | 降低 80-90% |
 
-## 部署
+## 部署（阿里云 ESA）
 
-### 1. 上传代码
-
-[ESA 控制台](https://esa.console.aliyun.com/) → 边缘函数 → 创建函数 → 名称 `live-dashboard-edge` → 粘贴 `edge-router.js`
-
-### 2. 环境变量
+1. [ESA 控制台](https://esa.console.aliyun.com/) → 边缘函数 → 创建函数 → 名称 `live-dashboard-edge` → 粘贴 `edge-router.js`
+2. 环境变量：
 
 | 变量 | 值 |
 |------|---|
@@ -40,15 +42,19 @@
 | `HASH_SECRET` | 和服务器的 `.env` 一致 |
 | `EDGE_KV_NAMESPACE` | `live-dashboard` |
 
-### 3. 边缘存储
+3. 边缘存储 → 创建命名空间 `live-dashboard`
+4. 函数路由 → 添加 `live.myallinone.online/api/*` → 选择函数
 
-ESA 控制台 → 边缘存储 → 创建命名空间 → 名称 `live-dashboard`
+## 部署（腾讯云 EdgeOne）
 
-### 4. 路由
+1. [EdgeOne 控制台](https://console.cloud.tencent.com/edgeone) → 边缘函数 → 创建函数 → 粘贴 `edge-router.js`
+2. 环境变量同上
+3. KV 存储 → 创建命名空间 `live-dashboard`
+4. 触发规则 → 添加 `live.myallinone.online/api/*`
 
-ESA 控制台 → 函数路由 → 添加 `live.myallinone.online/api/*` → 选择函数
+> 注意：EdgeOne CPU 限制 200ms，PoW 验证（SHA-256 计算）可能需要优化。读取缓存和 Token 验证没问题。
 
-### 5. 源站
+## 源站
 
 不需要改配置。源站自动检测边缘请求，`HASH_SECRET` 保持一致就行。
 
