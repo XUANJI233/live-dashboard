@@ -42,6 +42,10 @@ const LISTEN_PORT = isNaN(PORT) || PORT < 1 || PORT > 65535 ? 3000 : PORT;
 
 const STATIC_ROOT = resolve(process.env.STATIC_DIR || "./public");
 
+import { hmacTitle } from "./db";
+
+const REQUIRE_EDGE = /^(1|true|yes)$/i.test(process.env.REQUIRE_EDGE || "");
+
 // Cache realpath of static root at startup (avoids per-request sync IO)
 let REAL_STATIC_ROOT = "";
 let staticEnabled = false;
@@ -75,6 +79,18 @@ const server = Bun.serve<WsData>({
     const isDirectIp = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(host);
     if (isDirectIp && !isLocalhost) {
       return Response.json({ error: "Direct IP access not allowed" }, { status: 403 });
+    }
+
+    // 边缘模式：只接受来自边缘函数的请求（健康检查和 OPTIONS 除外）
+    if (REQUIRE_EDGE && pathname !== "/api/health" && req.method !== "OPTIONS") {
+      const edgeSig = req.headers.get("x-edge-internal");
+      if (!edgeSig) {
+        return Response.json({ error: "必须通过边缘函数访问" }, { status: 403 });
+      }
+      const expected = hmacTitle("edge-internal");
+      if (edgeSig !== expected) {
+        return Response.json({ error: "边缘签名无效" }, { status: 403 });
+      }
     }
 
     // CORS headers: public endpoints allow wildcard, sensitive endpoints require explicit origins
