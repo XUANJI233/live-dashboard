@@ -32,7 +32,13 @@ function unbase64url(input: string): string {
   return Buffer.from(input.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
 }
 function sign(payload: string): string {
-  return base64url(hmacTitle(payload));
+  const hex = hmacTitle(payload);
+  // 将 hex 字符串解码为字节，再转 Base64url
+  return Buffer.from(hex, "hex")
+    .toString("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
 }
 function cleanFingerprint(value: unknown): string {
   if (typeof value !== "string") return "";
