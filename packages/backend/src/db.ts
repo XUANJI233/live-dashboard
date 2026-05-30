@@ -231,6 +231,11 @@ if (!HASH_SECRET) {
   console.error("[db] Generate one with: openssl rand -hex 32");
   process.exit(1);
 }
+if (!/^[0-9a-f]{32,128}$/i.test(HASH_SECRET)) {
+  console.error("[db] FATAL: HASH_SECRET must be a hex string (32-128 chars).");
+  console.error("[db] Generate one with: openssl rand -hex 32");
+  process.exit(1);
+}
 
 export function hmacTitle(title: string): string {
   const hmac = new Bun.CryptoHasher("sha256", HASH_SECRET);
