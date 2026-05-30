@@ -284,8 +284,11 @@ const nsfwDisabled = process.env.NSFW_FILTER_DISABLED === "true";
 const messageBoard = process.env.MESSAGE_BOARD_ENABLED !== "false";
 const privateChat = process.env.PRIVATE_CHAT_ENABLED !== "false";
 const aiEnabled = !!(process.env.AI_API_URL && process.env.AI_API_KEY);
+const aiModel = process.env.AI_MODEL || "";
 const corsOrigins = process.env.CORS_ALLOWED_ORIGINS?.split(",").filter(Boolean).length || 0;
 const displayName = process.env.DISPLAY_NAME || "";
+const siteTitle = process.env.SITE_TITLE || "";
+const dbPath = process.env.DB_PATH || "./data.db";
 
 // 终端颜色
 const Y = "\x1b[33m"; // 黄色
@@ -320,12 +323,15 @@ console.log("  ╭" + "─".repeat(W + 2) + "╮");
 console.log("  │" + padR("  Live Dashboard 启动", W + 2) + "│");
 console.log("  ├" + "─".repeat(W + 2) + "┤");
 console.log(line("地址:     ", `http://localhost:${server.port}`));
+if (siteTitle) console.log(line("站点:     ", siteTitle));
 console.log(line("模式:     ", cdnMode ? `${G}CDN 加速${R}` : "直连"));
+console.log(line("数据库:   ", dbPath));
 console.log(line("静态文件: ", staticEnabled ? "已加载" : `${Y}未找到${R}`));
 console.log("  ├" + "─".repeat(W + 2) + "┤");
 console.log(line("留言板:   ", messageBoard ? "开启" : "关闭"));
 console.log(line("私聊:     ", privateChat ? "开启" : "关闭"));
 console.log(line("AI 总结:  ", aiEnabled ? "开启" : "关闭"));
+if (aiEnabled && aiModel) console.log(line("AI 模型:  ", aiModel));
 console.log(line("NSFW 过滤:", nsfwDisabled ? `${Y}已关闭${R}` : "开启"));
 console.log(line("PoW 验证: ", powDisabled ? `${RD}已关闭${R}` : "开启"));
 console.log(line("TLS 检查: ", tlsCheckDisabled ? `${RD}已关闭${R}` : "开启"));
@@ -333,17 +339,29 @@ console.log(line("CORS:     ", corsOrigins ? `${corsOrigins} 个域名` : "仅�
 if (displayName) console.log(line("显示名:   ", displayName));
 console.log("  ╰" + "─".repeat(W + 2) + "╯");
 
+const validPlatforms = new Set(["windows", "android", "macos", "zepp"]);
 // 设备令牌汇总
 const envTokens = Object.entries(process.env).filter(([k]) => k.startsWith("DEVICE_TOKEN_") && k.match(/^DEVICE_TOKEN_\d+$/));
-const loadedCount = envTokens.filter(([, v]) => v && v.split(":").length >= 4).length;
-const invalidCount = envTokens.length - loadedCount;
-if (envTokens.length > 0) {
-  console.log(`  设备令牌: ${G}${loadedCount} 个已加载${R}${invalidCount > 0 ? `，${RD}${invalidCount} 个格式错误${R}` : ""}`);
-  for (const [key, value] of envTokens) {
-    if (value && value.split(":").length < 4) {
-      console.log(`  ${RD}✗ ${key}: 格式错误，需要 密钥:设备ID:显示名:平台${R}`);
+let loadedCount = 0;
+let invalidCount = 0;
+for (const [key, value] of envTokens) {
+  if (!value) continue;
+  const parts = value.split(":");
+  if (parts.length < 4) {
+    invalidCount++;
+    console.log(`  ${RD}✗ ${key}: 格式错误，需要 密钥:设备ID:显示名:平台${R}`);
+  } else {
+    const platform = parts[parts.length - 1];
+    if (!platform || !validPlatforms.has(platform)) {
+      invalidCount++;
+      console.log(`  ${RD}✗ ${key}: 平台 "${platform}" 无效，必须是 windows/android/macos/zepp${R}`);
+    } else {
+      loadedCount++;
     }
   }
+}
+if (envTokens.length > 0) {
+  console.log(`  设备令牌: ${G}${loadedCount} 个已加载${R}${invalidCount > 0 ? `，${RD}${invalidCount} 个错误${R}` : ""}`);
 } else {
   console.log(`  ${RD}✗ 未配置设备令牌，Agent 无法连接${R}`);
 }
