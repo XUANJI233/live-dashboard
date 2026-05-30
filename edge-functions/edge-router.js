@@ -68,12 +68,16 @@ export default {
 
       // PoW 挑战 — 完全边缘处理
       if (pathname === "/api/pow/challenge" && method === "GET") {
-        return handlePowChallenge(clientIp, secret);
+        const powResp = await handlePowChallenge(clientIp, secret);
+        if (powResp) return powResp;
+        return passthroughSigned(request, origin, clientIp, secret);
       }
 
       // Token 签发 — 边缘验证 PoW + 签发
       if (pathname === "/api/token/issue" && method === "POST") {
-        return handleTokenIssue(request, clientIp, secret);
+        const tokenResp = await handleTokenIssue(request, clientIp, secret);
+        if (tokenResp) return tokenResp;
+        return passthroughSigned(request, origin, clientIp, secret);
       }
 
       // 可缓存读取
@@ -108,7 +112,7 @@ async function handlePowChallenge(clientIp, secret) {
     return jsonResponse({ skip: true, message: "本地 IP 无需 PoW" });
   }
   const kv = getEdgeKV();
-  if (!kv) return null; // 回源
+  if (!kv) return null; // caller will fallback to passthrough
 
   // 限流 30/min
   const rate = await kvGetNumber(kv, `pr:${clientIp}`);
@@ -242,11 +246,13 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
       headers.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
 
       const resp = await fetch(`${origin}${pathname(request)}${new URL(request.url).search}`, {
+          const resp = await fetch(`${origin}${getPath(request)}${new URL(request.url).search}`, {
         method: request.method, headers,
         body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
       });
 
       const ttl = getCacheTTL(pathname(request));
+        const ttl = getCacheTTL(getPath(request));
       if (ttl && resp.ok) {
         const h = new Headers(resp.headers);
         h.set("Cache-Control", `public, max-age=${ttl}, s-maxage=${ttl}`);
@@ -258,6 +264,7 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
   }
 
   const path = pathname(request);
+    const path = getPath(request);
   if (path === "/api/health-data" || path === "/api/location") {
     return jsonResponse({ error: "需要 viewer token" }, 403);
   }
@@ -290,7 +297,7 @@ async function handleWebSocket(request, origin, clientIp, secret) {
 // 工具函数
 // ══════════════════════════════════════════════════════════════
 
-function pathname(request) { return new URL(request.url).pathname; }
+function getPath(request) { return new URL(request.url).pathname; }
 
 function passthrough(request, origin, clientIp) {
   const url = new URL(request.url);
@@ -306,7 +313,7 @@ function passthroughSigned(request, origin, clientIp, secret) {
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
   if (clientIp) headers.set("X-Real-IP", clientIp);
-  if (secret) headers.set("X-Edge-Internal", ""); // will be set async by callers
+  // Note: internal signature is set async by callers where needed
   return fetch(`${origin}${url.pathname}${url.search}`, {
     method: request.method, headers,
     body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
