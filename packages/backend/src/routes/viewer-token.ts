@@ -1,3 +1,6 @@
+const POW_DISABLED = /^(1|true|yes)$/i.test(process.env.POW_DISABLED || "");
+const TLS_CHECK_DISABLED = /^(1|true|yes)$/i.test(process.env.TLS_CHECK_DISABLED || "");
+
 import { issueViewerToken, issuePowChallenge, verifyPowSolution, getTlsFingerprint, isLocalIp } from "../services/viewer-auth";
 import { noStore } from "../services/cdn";
 
@@ -30,7 +33,7 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
   // JA3/JA4 check: reject non-browser TLS fingerprints (non-local only)
   const tlsFp = getTlsFingerprint(req);
   const ipKnown2 = ipHint && ipHint !== "unknown";
-  if (ipKnown2 && !isLocalIp(ipHint) && tlsFp) {
+  if (!TLS_CHECK_DISABLED && ipKnown2 && !isLocalIp(ipHint) && tlsFp) {
     // Known bot TLS fingerprints (empty or suspicious)
     const knownBotFps = ["", "no-tls"];
     if (knownBotFps.includes(tlsFp.toLowerCase())) {
@@ -43,7 +46,7 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
   const ipKnown = ipHint && ipHint !== "unknown";
   // Skip PoW if already verified by ESA edge function
   const edgeVerified = req.headers.get("x-edge-verified") === "true";
-  if (ipKnown && !isLocalIp(ipHint) && !edgeVerified) {
+  if (!POW_DISABLED && ipKnown && !isLocalIp(ipHint) && !edgeVerified) {
     const { pow_challenge, pow_nonce } = body;
     if (!pow_challenge || !pow_nonce) {
       return Response.json({ error: "PoW challenge and nonce required", code: "POW_REQUIRED" }, { status: 403 });

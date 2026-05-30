@@ -279,7 +279,6 @@ const server = Bun.serve<WsData>({
 });
 
 // ── 启动信息 ──
-// ── 启动信息 ──
 const cdnMode = /^(1|true|yes)$/i.test(process.env.CDN_MODE || "");
 const nsfwDisabled = process.env.NSFW_FILTER_DISABLED === "true";
 const messageBoard = process.env.MESSAGE_BOARD_ENABLED !== "false";
@@ -291,6 +290,7 @@ const displayName = process.env.DISPLAY_NAME || "";
 // 终端颜色
 const Y = "\x1b[33m"; // 黄色
 const G = "\x1b[32m"; // 绿色
+const RD = "\x1b[31m"; // 红色
 const R = "\x1b[0m";  // 重置
 
 // 计算字符串在终端的显示宽度（中文=2，ASCII=1）
@@ -312,18 +312,23 @@ const W = 40; // 内容区宽度
 const line = (label: string, value: string, color = "") =>
   `  │ ${color}${padR(label + value, W)}${color ? R : ""}│`;
 
+const powDisabled = /^(1|true|yes)$/i.test(process.env.POW_DISABLED || "");
+const tlsCheckDisabled = /^(1|true|yes)$/i.test(process.env.TLS_CHECK_DISABLED || "");
+
 console.log("");
 console.log("  ╭" + "─".repeat(W + 2) + "╮");
 console.log("  │" + padR("  Live Dashboard 启动", W + 2) + "│");
 console.log("  ├" + "─".repeat(W + 2) + "┤");
 console.log(line("地址:     ", `http://localhost:${server.port}`));
-console.log(line("模式:     ", cdnMode ? "CDN 加速" : "直连"));
+console.log(line("模式:     ", cdnMode ? `${G}CDN 加速${R}` : "直连"));
 console.log(line("静态文件: ", staticEnabled ? "已加载" : `${Y}未找到${R}`));
 console.log("  ├" + "─".repeat(W + 2) + "┤");
 console.log(line("留言板:   ", messageBoard ? "开启" : "关闭"));
 console.log(line("私聊:     ", privateChat ? "开启" : "关闭"));
 console.log(line("AI 总结:  ", aiEnabled ? "开启" : "关闭"));
 console.log(line("NSFW 过滤:", nsfwDisabled ? `${Y}已关闭${R}` : "开启"));
+console.log(line("PoW 验证: ", powDisabled ? `${RD}已关闭${R}` : "开启"));
+console.log(line("TLS 检查: ", tlsCheckDisabled ? `${RD}已关闭${R}` : "开启"));
 console.log(line("CORS:     ", corsOrigins ? `${corsOrigins} 个域名` : "仅同源"));
 if (displayName) console.log(line("显示名:   ", displayName));
 console.log("  ╰" + "─".repeat(W + 2) + "╯");
@@ -333,9 +338,14 @@ const envTokens = Object.entries(process.env).filter(([k]) => k.startsWith("DEVI
 const loadedCount = envTokens.filter(([, v]) => v && v.split(":").length >= 4).length;
 const invalidCount = envTokens.length - loadedCount;
 if (envTokens.length > 0) {
-  console.log(`  设备令牌: ${G}${loadedCount} 个已加载${R}${invalidCount > 0 ? `，${Y}${invalidCount} 个格式错误${R}` : ""}`);
+  console.log(`  设备令牌: ${G}${loadedCount} 个已加载${R}${invalidCount > 0 ? `，${RD}${invalidCount} 个格式错误${R}` : ""}`);
+  for (const [key, value] of envTokens) {
+    if (value && value.split(":").length < 4) {
+      console.log(`  ${RD}✗ ${key}: 格式错误，需要 密钥:设备ID:显示名:平台${R}`);
+    }
+  }
 } else {
-  console.log(`  ${Y}未配置设备令牌，Agent 无法连接${R}`);
+  console.log(`  ${RD}✗ 未配置设备令牌，Agent 无法连接${R}`);
 }
 
 // 修复建议
@@ -344,8 +354,13 @@ if (!displayName) tips.push("设置 DISPLAY_NAME 自定义显示名称");
 if (nsfwDisabled) tips.push("NSFW 过滤已关闭，敏感内容将直接显示");
 if (!cdnMode) tips.push("设置 CDN_MODE=true 启用 CDN 加速");
 if (invalidCount > 0) tips.push("检查 DEVICE_TOKEN 格式: 密钥:设备ID:显示名:平台");
+if (powDisabled) tips.push("PoW 验证已关闭，任何人都可以获取访客令牌");
+if (tlsCheckDisabled) tips.push("TLS 检查已关闭，机器人请求不会被拦截");
 if (tips.length > 0) {
   console.log("");
-  for (const tip of tips) console.log(`  ${Y}💡 ${tip}${R}`);
+  for (const tip of tips) {
+    const isSecurity = tip.includes("已关闭") || tip.includes("格式错误");
+    console.log(`  ${isSecurity ? Y : Y}💡 ${tip}${R}`);
+  }
 }
 console.log("");
