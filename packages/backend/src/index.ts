@@ -82,8 +82,8 @@ const server = Bun.serve<WsData>({
     }
 
     // 边缘模式：只接受来自边缘函数的请求（健康检查和 OPTIONS 除外）
-    // WS 排除：ESA 无法代理 WebSocket，浏览器直连源站
-    const isWs = req.headers.get("upgrade")?.toLowerCase() === "websocket";
+    // WS 排除：ESA CDN 可能剥离 upgrade 头，同时检查路径
+    const isWs = req.headers.get("upgrade")?.toLowerCase() === "websocket" || pathname === "/api/ws";
     // 只对 API 路径检查边缘签名，静态文件不受影响
     const isApi = pathname.startsWith("/api/");
     if (REQUIRE_EDGE && isApi && pathname !== "/api/health" && req.method !== "OPTIONS" && !isWs) {
