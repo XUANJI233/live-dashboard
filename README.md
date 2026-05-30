@@ -84,6 +84,48 @@ echo "Token: $TOKEN  ← Agent 配置用"
 | 部署 | Docker 多阶段构建 + Nginx |
 | 边缘计算 | ESA Edge Functions（PoW 边缘处理 + 读取缓存） |
 
+## 环境变量
+
+### 必填
+
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| `HASH_SECRET` | HMAC 签名密钥，≥64 位 hex | `openssl rand -hex 32` |
+| `DEVICE_TOKEN_1` | 设备令牌，格式: `密钥:设备ID:显示名:平台` | `openssl rand -hex 16 \| xargs -I{} echo "{}:my-pc:我的电脑:windows"` |
+
+平台可选: `windows` / `android` / `macos` / `zepp`
+
+### 可选
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `DEVICE_TOKEN_2` | - | 第二个设备令牌，格式同上 |
+| `DISPLAY_NAME` | 空 | 站点显示名称 |
+| `SITE_TITLE` | 空 | HTML 标题 |
+| `SITE_DESC` | 空 | HTML meta 描述 |
+| `SITE_FAVICON` | 空 | 自定义 favicon 路径 |
+| `CDN_MODE` | `true` | CDN 加速模式 |
+| `NSFW_FILTER_DISABLED` | `false` | 禁用 NSFW 过滤 |
+| `POW_DISABLED` | `false` | 禁用 PoW 验证（不推荐） |
+| `TLS_CHECK_DISABLED` | `false` | 禁用 TLS 检查（不推荐） |
+| `MESSAGE_BOARD_ENABLED` | `true` | 留言板 |
+| `PRIVATE_CHAT_ENABLED` | `true` | 私聊功能 |
+| `CORS_ALLOWED_ORIGINS` | 空 | CORS 允许的域名，逗号分隔 |
+| `AI_API_URL` | 空 | AI 每日总结 API 地址 |
+| `AI_API_KEY` | 空 | AI API 密钥 |
+| `AI_MODEL` | `gpt-4o-mini` | AI 模型名称 |
+
+### 边缘函数配置
+
+边缘函数配置存在 EdgeKV 里（ESA 不支持环境变量）：
+
+| Key | 说明 |
+|-----|------|
+| `origin` | 源站地址，如 `https://live.myallinone.online` |
+| `secret` | 和服务器 `HASH_SECRET` 一样 |
+
+详见 [edge-functions/README.md](edge-functions/README.md)。
+
 ## 文档
 
 完整文档见 [GitHub Wiki](https://github.com/Monika-Dream/live-dashboard/wiki)：
