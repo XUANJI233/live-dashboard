@@ -227,13 +227,15 @@ db.run(`
 
 const HASH_SECRET = process.env.HASH_SECRET || "";
 if (!HASH_SECRET) {
-  console.error("[db] FATAL: HASH_SECRET not set. This is required for privacy-safe title hashing.");
-  console.error("[db] Generate one with: openssl rand -hex 32");
+  console.error("[启动失败] HASH_SECRET 未设置");
+  console.error("[启动失败] 这是必要的安全密钥，请在 .env 中配置");
+  console.error("[启动失败] 生成方式: openssl rand -hex 32");
   process.exit(1);
 }
 if (!/^[0-9a-f]{32,128}$/i.test(HASH_SECRET)) {
-  console.error("[db] FATAL: HASH_SECRET must be a hex string (32-128 chars).");
-  console.error("[db] Generate one with: openssl rand -hex 32");
+  console.error(`[启动失败] HASH_SECRET 格式无效: "${HASH_SECRET.slice(0, 8)}..."`);
+  console.error("[启动失败] 要求: 32-128 位十六进制字符串 (0-9, a-f)");
+  console.error("[启动失败] 生成方式: openssl rand -hex 32");
   process.exit(1);
 }
 

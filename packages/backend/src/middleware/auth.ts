@@ -20,16 +20,28 @@ for (const [key, value] of Object.entries(process.env)) {
         (platform === "windows" || platform === "android" || platform === "macos" || platform === "zepp")
       ) {
         tokenMap.set(token, { device_id, device_name, platform });
+      } else {
+        const validPlatforms = "windows / android / macos / zepp";
+        if (!platform || !["windows", "android", "macos", "zepp"].includes(platform)) {
+          console.warn(`[auth] ${key}: 平台 "${platform}" 无效，必须是 ${validPlatforms}`);
+        } else {
+          console.warn(`[auth] ${key}: 格式不完整，缺少必要字段`);
+        }
       }
+    } else if (value) {
+      console.warn(`[auth] ${key}: 格式错误，需要 4 个部分用 : 分隔`);
+      console.warn(`[auth] 正确格式: 密钥:设备ID:显示名:平台`);
+      console.warn(`[auth] 示例: openssl rand -hex 16 | xargs -I{} echo "{}:my-pc:我的电脑:windows"`);
     }
   }
 }
 
 if (tokenMap.size === 0) {
-  console.warn("[auth] No device tokens configured. Set DEVICE_TOKEN_N env vars.");
+  console.warn("[auth] 未配置设备令牌，请设置 DEVICE_TOKEN_1 等环境变量");
+  console.warn("[auth] 格式: 密钥:设备ID:显示名:平台 (平台: windows/android/macos/zepp)");
 }
 
-console.log(`[auth] Loaded ${tokenMap.size} device token(s)`);
+console.log(`[auth] 已加载 ${tokenMap.size} 个设备令牌`);
 
 export function authenticateToken(authHeader: string | null): DeviceInfo | null {
   if (!authHeader) return null;
