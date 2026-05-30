@@ -82,7 +82,8 @@ const server = Bun.serve<WsData>({
     }
 
     // 边缘模式：只接受来自边缘函数的请求（健康检查和 OPTIONS 除外）
-    if (REQUIRE_EDGE && pathname !== "/api/health" && req.method !== "OPTIONS") {
+    const isWs = req.headers.get("upgrade")?.toLowerCase() === "websocket";
+    if (REQUIRE_EDGE && pathname !== "/api/health" && req.method !== "OPTIONS" && !isWs) {
       const edgeSig = req.headers.get("x-edge-internal");
       if (!edgeSig) {
         return Response.json({ error: "必须通过边缘函数访问" }, { status: 403 });
