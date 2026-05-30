@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { verifyViewerToken, viewerTokenFromRequest } from "../services/viewer-auth";
+import { verifyViewerToken, viewerTokenFromRequest, edgeViewerIdentity } from "../services/viewer-auth";
 import type { LocationRecord } from "../types";
 
 function timezoneModifier(url: URL): string | null {
@@ -17,7 +17,7 @@ function timezoneModifier(url: URL): string | null {
 }
 
 export function handleLocationQuery(url: URL, req: Request): Response {
-  const viewer = verifyViewerToken(viewerTokenFromRequest(req));
+  const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
   if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
   const date = url.searchParams.get("date");
   const deviceId = url.searchParams.get("device_id");

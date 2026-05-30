@@ -182,6 +182,21 @@ export function getTlsFingerprint(req: Request): string | null {
 }
 
 // ── Token extraction ──
+// ── Edge mode ──
+const EDGE_MODE = /^(1|true|yes)$/i.test(process.env.EDGE_MODE || "");
+
+export function isEdgeMode(): boolean { return EDGE_MODE; }
+
+export function edgeViewerIdentity(req: Request): ViewerIdentity | null {
+  if (!EDGE_MODE) return null;
+  const verified = req.headers.get("x-edge-verified");
+  if (verified !== "true") return null;
+  const viewerId = req.headers.get("x-edge-viewer-id");
+  if (!viewerId || !/^fp_[a-f0-9]{32}$/.test(viewerId)) return null;
+  return { viewerId, exp: Math.floor(Date.now() / 1000) + 3600, ipHash: "" };
+}
+
+// ── Token extraction ──
 export function viewerTokenFromRequest(req: Request): string | null {
   const auth = req.headers.get("authorization");
   const match = auth?.match(/^Bearer\s+(.+)$/i);

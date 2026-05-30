@@ -15,7 +15,7 @@ export function globalIpRateLimit(ip: string): boolean {
 import { db } from "../db";
 import { authenticateToken } from "../middleware/auth";
 import { currentHourWindow, currentMessageSlot, withCdnHeaders } from "./cdn";
-import { verifyViewerToken, viewerTokenFromRequest, viewerTokenRateLimit } from "./viewer-auth";
+import { verifyViewerToken, viewerTokenFromRequest, viewerTokenRateLimit, edgeViewerIdentity } from "./viewer-auth";
 import { processReportPayload } from "./device-status-handler";
 import type { DeviceInfo } from "../types";
 import type { ServerWebSocket } from "bun";
@@ -300,7 +300,7 @@ export function getWsInfo(req: Request): WsData | Response {
   }
 
   if (role === "viewer") {
-    const viewer = verifyViewerToken(viewerTokenFromRequest(req));
+    const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
     if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
     return { role: "viewer", id: viewer.viewerId };
   }
@@ -524,7 +524,7 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
 }
 
 export function handlePublicMessages(req: Request): Response {
-  const viewer = verifyViewerToken(viewerTokenFromRequest(req));
+  const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
   if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
   if (!viewerTokenRateLimit(viewer.viewerId)) {
     return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
