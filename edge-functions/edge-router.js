@@ -27,7 +27,7 @@ const CACHE_TTL = {
 const POW_DIFFICULTY = 4;
 const POW_CHALLENGE_TTL = 300; // 5 分钟
 const RATE_LIMIT_WINDOW = 60;  // 1 分钟
-const RATE_LIMIT_MAX = 120;    // 每窗口最大请求数
+const RATE_LIMIT_MAX = 300;    // 每窗口最大请求数（边缘放宽，源站 120）
 
 export default {
   async fetch(request, env) {
@@ -50,6 +50,17 @@ export default {
     try {
       // ── 路由分发 ──
 
+      // Global per-IP rate limit (300/min, relaxed vs origin's 120/min)
+      const kv = getEdgeKV(env);
+      if (kv && clientIp !== "unknown") {
+        const globalRateKey = `global_rate:${clientIp}`;
+        const globalCount = await kvGetNumber(kv, globalRateKey);
+        if (globalCount >= RATE_LIMIT_MAX) {
+          return jsonResponse({ error: "Rate limit exceeded", retryAfter: 60 }, 429);
+        }
+        // Increment (fire-and-forget to avoid blocking)
+        kvPut(kv, globalRateKey, String((globalCount || 0) + 1), RATE_LIMIT_WINDOW);
+      }
       // 1. PoW 挑战：完全在边缘处理
       if (pathname === "/api/pow/challenge" && method === "GET") {
         return handlePowChallenge(clientIp, env);
@@ -292,6 +303,16 @@ async function handleAuthenticatedRequest(request, origin, clientIp, env) {
   if (token) {
     const verified = await verifyViewerTokenEdge(token, secret, clientIp);
     if (verified) {
+      // Per-viewer rate limit for authenticated endpoints (60/min, relaxed)
+      const kv = getEdgeKV(env);
+      if (kv) {
+        const viewerRateKey = `viewer_rate:${verified.viewerId}`;
+        const viewerCount = await kvGetNumber(kv, viewerRateKey);
+        if (viewerCount >= 60) {
+          return jsonResponse({ error: "Rate limit exceeded", retryAfter: 60 }, 429);
+        }
+        kvPut(kv, viewerRateKey, String((viewerCount || 0) + 1), RATE_LIMIT_WINDOW);
+      }
       // Token 有效：添加验证头，穿透到源站
       const headers = new Headers(request.headers);
       const edgeSig = await hmacHex(secret, "edge:" + verified.viewerId);
@@ -459,19 +480,32 @@ function getEdgeKV(env) {
 
 async function kvGetNumber(kv, key) {
   const val = await kvGet(kv, key);
-  return val ? parseInt(val, 10) || 0 : 0;
+  if (!val) return 0;
+  // Check TTL: format is "value:timestamp"
+  const parts = val.split(":");
+  const num = parseInt(parts[0], 10);
+  const ts = parseInt(parts[1], 10) || 0;
+  if (ts && Date.now() - ts > RATE_LIMIT_WINDOW * 1000) return 0; // expired
+  return num || 0;
 }
 
 async function kvGetJson(kv, key) {
   try {
     const val = await kv.get(key, { type: "text" });
-    return val ? JSON.parse(val) : null;
+    if (!val) return null;
+    const data = JSON.parse(val);
+    // Check TTL from createdAt field
+    if (data.createdAt && Date.now() - data.createdAt > POW_CHALLENGE_TTL * 1000) {
+      await kvDelete(kv, key); // clean up expired
+      return null;
+    }
+    return data;
   } catch {
     return null;
   }
 }
 
-async kvGet(kv, key) {
+async function kvGet(kv, key) {
   try {
     return await kv.get(key, { type: "text" }) || null;
   } catch {
@@ -479,15 +513,14 @@ async kvGet(kv, key) {
   }
 }
 
-async kvPut(kv, key, value, ttlSeconds) {
+async function kvPut(kv, key, value, ttlSeconds) {
   try {
-    await kv.put(key, value);
-    // Edge KV TTL 通过 Cache-Control 或平台配置设置
-    // 这里 put 后通过 cleanup 机制过期
+    // Store with timestamp for TTL checking
+    await kv.put(key, `${value}:${Date.now()}`);
   } catch {}
 }
 
-async kvDelete(kv, key) {
+async function kvDelete(kv, key) {
   try {
     await kv.delete(key);
   } catch {}
