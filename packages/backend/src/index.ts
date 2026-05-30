@@ -279,29 +279,73 @@ const server = Bun.serve<WsData>({
 });
 
 // ── 启动信息 ──
+// ── 启动信息 ──
 const cdnMode = /^(1|true|yes)$/i.test(process.env.CDN_MODE || "");
 const nsfwDisabled = process.env.NSFW_FILTER_DISABLED === "true";
 const messageBoard = process.env.MESSAGE_BOARD_ENABLED !== "false";
 const privateChat = process.env.PRIVATE_CHAT_ENABLED !== "false";
 const aiEnabled = !!(process.env.AI_API_URL && process.env.AI_API_KEY);
-const deviceTokens = [process.env.DEVICE_TOKEN_1, process.env.DEVICE_TOKEN_2].filter(Boolean).length;
-const displayName = process.env.DISPLAY_NAME || "未设置";
 const corsOrigins = process.env.CORS_ALLOWED_ORIGINS?.split(",").filter(Boolean).length || 0;
+const displayName = process.env.DISPLAY_NAME || "";
+
+// 终端颜色
+const Y = "\x1b[33m"; // 黄色
+const G = "\x1b[32m"; // 绿色
+const R = "\x1b[0m";  // 重置
+
+// 计算字符串在终端的显示宽度（中文=2，ASCII=1）
+function strWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) {
+    const code = ch.codePointAt(0)!;
+    w += (code > 0x7F && code < 0x10000) ? 2 : 1;
+  }
+  return w;
+}
+
+// 右侧补空格到指定显示宽度
+function padR(s: string, target: number): string {
+  return s + " ".repeat(Math.max(0, target - strWidth(s)));
+}
+
+const W = 40; // 内容区宽度
+const line = (label: string, value: string, color = "") =>
+  `  │ ${color}${padR(label + value, W)}${color ? R : ""}│`;
 
 console.log("");
-console.log("  ╭─────────────────────────────────────╮");
-console.log("  │         Live Dashboard 启动          │");
-console.log("  ├─────────────────────────────────────┤");
-console.log(`  │ 地址: http://localhost:${server.port}`.padEnd(38) + "│");
-console.log(`  │ CDN:  ${cdnMode ? "已开启" : "已关闭"}`.padEnd(38) + "│");
-console.log(`  │ 设备: ${deviceTokens} 个令牌已配置`.padEnd(38) + "│");
-console.log(`  │ 显示: ${displayName}`.padEnd(38) + "│");
-console.log("  ├─────────────────────────────────────┤");
-console.log(`  │ 留言板: ${messageBoard ? "开启" : "关闭"}`.padEnd(38) + "│");
-console.log(`  │ 私聊:   ${privateChat ? "开启" : "关闭"}`.padEnd(38) + "│");
-console.log(`  │ AI 总结: ${aiEnabled ? "开启" : "关闭"}`.padEnd(38) + "│");
-console.log(`  │ NSFW 过滤: ${nsfwDisabled ? "已关闭 ⚠️" : "开启"}`.padEnd(38) + "│");
-console.log(`  │ CORS 允许: ${corsOrigins ? corsOrigins + " 个域名" : "仅同源"}`.padEnd(38) + "│");
-console.log(`  │ 静态文件: ${staticEnabled ? "已加载" : "未找到"}`.padEnd(38) + "│");
-console.log("  ╰─────────────────────────────────────╯");
+console.log("  ╭" + "─".repeat(W + 2) + "╮");
+console.log("  │" + padR("  Live Dashboard 启动", W + 2) + "│");
+console.log("  ├" + "─".repeat(W + 2) + "┤");
+console.log(line("地址:     ", `http://localhost:${server.port}`));
+console.log(line("模式:     ", cdnMode ? "CDN 加速" : "直连"));
+console.log(line("静态文件: ", staticEnabled ? "已加载" : `${Y}未找到${R}`));
+console.log("  ├" + "─".repeat(W + 2) + "┤");
+console.log(line("留言板:   ", messageBoard ? "开启" : "关闭"));
+console.log(line("私聊:     ", privateChat ? "开启" : "关闭"));
+console.log(line("AI 总结:  ", aiEnabled ? "开启" : "关闭"));
+console.log(line("NSFW 过滤:", nsfwDisabled ? `${Y}已关闭${R}` : "开启"));
+console.log(line("CORS:     ", corsOrigins ? `${corsOrigins} 个域名` : "仅同源"));
+if (displayName) console.log(line("显示名:   ", displayName));
+console.log("  ╰" + "─".repeat(W + 2) + "╯");
+
+// 设备令牌汇总
+const envTokens = Object.entries(process.env).filter(([k]) => k.startsWith("DEVICE_TOKEN_") && k.match(/^DEVICE_TOKEN_\d+$/));
+const loadedCount = envTokens.filter(([, v]) => v && v.split(":").length >= 4).length;
+const invalidCount = envTokens.length - loadedCount;
+if (envTokens.length > 0) {
+  console.log(`  设备令牌: ${G}${loadedCount} 个已加载${R}${invalidCount > 0 ? `，${Y}${invalidCount} 个格式错误${R}` : ""}`);
+} else {
+  console.log(`  ${Y}未配置设备令牌，Agent 无法连接${R}`);
+}
+
+// 修复建议
+const tips: string[] = [];
+if (!displayName) tips.push("设置 DISPLAY_NAME 自定义显示名称");
+if (nsfwDisabled) tips.push("NSFW 过滤已关闭，敏感内容将直接显示");
+if (!cdnMode) tips.push("设置 CDN_MODE=true 启用 CDN 加速");
+if (invalidCount > 0) tips.push("检查 DEVICE_TOKEN 格式: 密钥:设备ID:显示名:平台");
+if (tips.length > 0) {
+  console.log("");
+  for (const tip of tips) console.log(`  ${Y}💡 ${tip}${R}`);
+}
 console.log("");
