@@ -82,6 +82,7 @@ echo "Token: $TOKEN  ← Agent 配置用"
 | macOS Agent | Python + AppleScript + pystray |
 | Android App | Kotlin + Jetpack Compose + Health Connect |
 | 部署 | Docker 多阶段构建 + Nginx |
+| 边缘计算 | ESA Edge Functions（PoW 边缘处理 + 读取缓存） |
 
 ## 文档
 
@@ -95,6 +96,7 @@ echo "Token: $TOKEN  ← Agent 配置用"
 - [API 参考](https://github.com/Monika-Dream/live-dashboard/wiki/API-参考) — 端点、请求体、响应格式
 - [环境变量](https://github.com/Monika-Dream/live-dashboard/wiki/环境变量) — 配置项一览
 - [安全设计](https://github.com/Monika-Dream/live-dashboard/wiki/安全设计) — 安全特性
+- [边缘计算](edge-functions/README.md) — ESA 边缘函数部署指南
 - [自定义](https://github.com/Monika-Dream/live-dashboard/wiki/自定义) — 显示名、元数据、主题色
 - [本地开发](https://github.com/Monika-Dream/live-dashboard/wiki/本地开发) — 从源码构建
 
