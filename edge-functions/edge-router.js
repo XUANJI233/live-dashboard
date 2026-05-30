@@ -87,7 +87,26 @@ export default {
 
       // WebSocket — 穿透
       if (pathname === "/api/ws") {
-        return handleWebSocket(request, origin, clientIp, secret);
+        // ESA 不支持 WebSocket 代理，但可以在边缘验证 token
+        // 无效 token 直接拒绝，有效才穿透
+        if (secret) {
+          const token = extractViewerToken(request);
+          if (!token) {
+            return jsonResponse({ error: "需要 viewer token" }, 403);
+          }
+          const verified = await verifyViewerToken(token, secret, clientIp);
+          if (!verified) {
+            return jsonResponse({ error: "token 无效" }, 403);
+          }
+          // 全局限流
+          const kv = getEdgeKV();
+          if (kv) {
+            const rate = await kvGetNumber(kv, `vr:${verified.viewerId}`);
+            if (rate >= RATE_VIEWER) return jsonResponse({ error: "限流" }, 429);
+            kvPut(kv, `vr:${verified.viewerId}`, String((rate || 0) + 1), RATE_WINDOW);
+          }
+        }
+        return passthrough(request, origin, clientIp);
       }
 
       // 需要 token 的端点 — 边缘验证后穿透
