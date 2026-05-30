@@ -33,22 +33,15 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 
 ### 4. 配置路由
 
-函数路由 → 按以下顺序添加规则（**不要用 `api/*` 通配符**）：
+函数路由 → 添加一条规则：
 
-| 路径模式 | 说明 |
-|---------|------|
-| `/api/pow/*` | PoW 挑战 |
-| `/api/token/*` | Token 签发 |
-| `/api/current` | 设备状态 |
-| `/api/timeline` | 时间线 |
-| `/api/config` | 站点配置 |
-| `/api/health` | 健康检查 |
-| `/api/messages/*` | 留言 |
-| `/api/health-data` | 健康数据 |
-| `/api/location` | 位置 |
-| `/api/daily-summary` | 日报 |
+```
+(http.host in {"live.myallinone.online"} and not lower(http.request.uri.path) contains "/api/ws" and lower(http.request.uri.path) contains "/api/")
+```
 
-**不要**把 `/api/ws` 加入路由。ESA 的 `upgrade` 头在黑名单里，WS 请求经过边缘函数会直接失败。WS 请求需要绕过边缘函数直达源站。
+这条规则把所有 `/api/*` 请求路由到边缘函数，但排除 `/api/ws`（WebSocket）。
+
+**为什么排除 WS**：ESA 的 `upgrade` 头在黑名单里，WS 请求经过边缘函数会直接失败，必须直达源站。
 
 ## 源站要改什么
 
