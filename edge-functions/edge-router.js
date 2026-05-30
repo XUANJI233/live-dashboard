@@ -47,6 +47,11 @@ export default {
       });
     }
 
+    // ── 内部请求旁路：边缘函数回源的请求直接穿透，避免循环 ──
+    if (request.headers.get("x-edge-internal") === "true") {
+      return passthrough(request, origin, clientIp);
+    }
+
     try {
       // ── 路由分发 ──
 
@@ -260,6 +265,7 @@ async function handleCachedRead(request, origin, pathname, env) {
       "X-Forwarded-For": request.headers.get("x-real-ip") || request.headers.get("x-forwarded-for") || "",
       "X-Real-IP": request.headers.get("x-real-ip") || "",
       "Accept": request.headers.get("accept") || "*/*",
+      "X-Edge-Internal": "true",
     },
   });
 
@@ -319,6 +325,7 @@ async function handleAuthenticatedRequest(request, origin, clientIp, env) {
       headers.set("X-Edge-Viewer-Id", verified.viewerId);
       headers.set("X-Edge-Signature", edgeSig);
       headers.set("X-Real-IP", clientIp);
+      headers.set("X-Edge-Internal", "true");
 
       const newRequest = new Request(request.url, {
         method: request.method,
@@ -386,6 +393,7 @@ async function handleWebSocket(request, origin, clientIp, env) {
   // WebSocket 验证 token 后穿透
   const headers = new Headers(request.headers);
   headers.set("X-Real-IP", clientIp);
+  headers.set("X-Edge-Internal", "true");
 
   const secret = env.HASH_SECRET;
   if (secret) {
@@ -415,6 +423,7 @@ function passthrough(request, origin, clientIp) {
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
   if (clientIp) headers.set("X-Real-IP", clientIp);
+  headers.set("X-Edge-Internal", "true");
 
   return fetch(`${origin}${url.pathname}${url.search}`, {
     method: request.method,
