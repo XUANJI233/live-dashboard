@@ -245,13 +245,13 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
       headers.set("X-Real-IP", clientIp);
       headers.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
 
-      const resp = await fetch(`${origin}${pathname(request)}${new URL(request.url).search}`, {
+      const resp = await fetch(`${origin}${getPath(request)}${new URL(request.url).search}`, {
           const resp = await fetch(`${origin}${getPath(request)}${new URL(request.url).search}`, {
         method: request.method, headers,
         body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
       });
 
-      const ttl = getCacheTTL(pathname(request));
+      const ttl = getCacheTTL(getPath(request));
         const ttl = getCacheTTL(getPath(request));
       if (ttl && resp.ok) {
         const h = new Headers(resp.headers);
@@ -263,7 +263,7 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
     return jsonResponse({ error: "token 无效" }, 403);
   }
 
-  const path = pathname(request);
+  const path = getPath(request);
     const path = getPath(request);
   if (path === "/api/health-data" || path === "/api/location") {
     return jsonResponse({ error: "需要 viewer token" }, 403);
