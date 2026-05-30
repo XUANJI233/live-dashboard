@@ -1,500 +1,376 @@
 /**
  * ESA Edge Function — Live Dashboard 边缘计算层
  *
- * 架构：浏览器 → ESA 边缘 → 源站（仅必要时回源）
+ * 配置存储在 EdgeKV namespace "live-dashboard-config"：
+ *   key "origin" → 源站地址 (如 https://live.myallinone.online)
+ *   key "secret" → HMAC 密钥 (与源站 HASH_SECRET 一致)
  *
- * 能力：
- * 1. PoW 挑战/验证完全在边缘完成（Edge KV 存储，彻底解决 CDN 缓存问题）
- * 2. 读取端点使用 Cache API 缓存，大幅减少回源
- * 3. Token 验证在边缘完成（WebCrypto HMAC），无效请求不回源
- * 4. 写入请求限流后穿透到源站
- *
- * 环境变量（在 ESA 控制台配置）：
- * - ORIGIN_URL: 源站地址，如 http://172.20.0.80:3000
- * - HASH_SECRET: HMAC 密钥（与源站一致）
- * - EDGE_POW_DIFFICULTY: PoW 难度（默认 4）
+ * 部署前在 EdgeKV 控制台写入这两个 key。
  */
 
-// ── 配置 ──
-const CACHE_TTL = {
-  current: 3,        // /api/current 缓存 3 秒
-  timeline: 10,      // /api/timeline 缓存 10 秒
-  config: 60,        // /api/config 缓存 60 秒
-  publicMessages: 10, // /api/messages/public 缓存 10 秒
-  health: 5,         // /api/health 缓存 5 秒
-};
-
+// ── 常量 ──
+const CONFIG_NS = "live-dashboard-config";
+const CACHE_TTL = { current: 3, timeline: 10, config: 60, publicMessages: 10, health: 5 };
 const POW_DIFFICULTY = 4;
-const POW_CHALLENGE_TTL = 300; // 5 分钟
-const RATE_LIMIT_WINDOW = 60;  // 1 分钟
-const RATE_LIMIT_MAX = 300;    // 每窗口最大请求数（边缘放宽，源站 120）
+const POW_CHALLENGE_TTL = 300;
+const RATE_WINDOW = 60;
+const RATE_GLOBAL = 300;
+const RATE_POW = 30;
+const RATE_ISSUE = 12;
+const RATE_VIEWER = 60;
 
+// ── 配置加载 ──
+async function loadConfig() {
+  const kv = new EdgeKV({ namespace: CONFIG_NS });
+  const [origin, secret] = await Promise.all([
+    kv.get("origin", { type: "text" }),
+    kv.get("secret", { type: "text" }),
+  ]);
+  return { origin: origin || "", secret: secret || "" };
+}
+
+// ══════════════════════════════════════════════════════════════
 export default {
-  async fetch(request, env) {
-    const origin = env.ORIGIN_URL || "http://localhost:3000";
+  async fetch(request) {
+    const cfg = await loadConfig();
+    const { origin, secret } = cfg;
+    if (!origin) return new Response("边缘配置缺失：请在 EdgeKV 写入 origin", { status: 500 });
+
     const url = new URL(request.url);
     const { pathname } = url;
     const method = request.method;
     const clientIp = request.headers.get("x-real-ip") ||
-                     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-                     "unknown";
+                     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
 
-    // ── CORS 预检 ──
+    // CORS 预检
     if (method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
-        headers: corsHeaders(pathname),
-      });
+      return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
-    // ── 内部请求旁路：边缘函数回源的请求直接穿透，避免循环 ──
-    if (request.headers.get("x-edge-internal") === "true") {
-      return passthrough(request, origin, clientIp);
+    // 内部请求旁路（HMAC 签名验证，防伪造）
+    const internalSig = request.headers.get("x-edge-internal");
+    if (internalSig && secret) {
+      if (internalSig === await hmacHex(secret, "edge-internal")) {
+        return passthrough(request, origin, clientIp);
+      }
     }
 
     try {
-      // ── 路由分发 ──
-
-      // Global per-IP rate limit (300/min, relaxed vs origin's 120/min)
-      const kv = getEdgeKV(env);
-      if (kv && clientIp !== "unknown") {
-        const globalRateKey = `global_rate:${clientIp}`;
-        const globalCount = await kvGetNumber(kv, globalRateKey);
-        if (globalCount >= RATE_LIMIT_MAX) {
-          return jsonResponse({ error: "Rate limit exceeded", retryAfter: 60 }, 429);
+      // 全局 IP 限流
+      if (clientIp !== "unknown") {
+        const kv = getEdgeKV();
+        if (kv) {
+          const count = await kvGetNumber(kv, `g:${clientIp}`);
+          if (count >= RATE_GLOBAL) return jsonResponse({ error: "限流", retryAfter: 60 }, 429);
+          kvPut(kv, `g:${clientIp}`, String((count || 0) + 1), RATE_WINDOW);
         }
-        // Increment (fire-and-forget to avoid blocking)
-        kvPut(kv, globalRateKey, String((globalCount || 0) + 1), RATE_LIMIT_WINDOW);
       }
-      // 1. PoW 挑战：完全在边缘处理
+
+      // PoW 挑战 — 完全边缘处理
       if (pathname === "/api/pow/challenge" && method === "GET") {
-        return handlePowChallenge(clientIp, env);
+        return handlePowChallenge(clientIp, secret);
       }
 
-      // 2. Token 签发：边缘验证 PoW + 签发 token
+      // Token 签发 — 边缘验证 PoW + 签发
       if (pathname === "/api/token/issue" && method === "POST") {
-        return handleTokenIssue(request, clientIp, env);
+        return handleTokenIssue(request, clientIp, secret);
       }
 
-      // 3. 可缓存的读取端点
-      if (method === "GET" && isCacheableEndpoint(pathname)) {
-        return handleCachedRead(request, origin, pathname, env);
+      // 可缓存读取
+      if (method === "GET" && getCacheTTL(pathname)) {
+        return handleCachedRead(request, origin, pathname, secret);
       }
 
-      // 4. WebSocket：直接穿透到源站
+      // WebSocket — 穿透
       if (pathname === "/api/ws") {
-        return handleWebSocket(request, origin, clientIp, env);
+        return handleWebSocket(request, origin, clientIp, secret);
       }
 
-      // 5. 需要 token 验证的端点：边缘验证后穿透
-      if (isAuthenticatedEndpoint(pathname, method)) {
-        return handleAuthenticatedRequest(request, origin, clientIp, env);
+      // 需要 token 的端点 — 边缘验证后穿透
+      if (method === "GET" && isAuthEndpoint(pathname)) {
+        return handleAuthenticatedRequest(request, origin, clientIp, secret);
       }
 
-      // 6. 设备上报：直接穿透（已有设备 token 验证）
-      if (pathname === "/api/report" && method === "POST") {
-        return passthrough(request, origin, clientIp);
-      }
-
-      // 7. 其他请求：穿透到源站
-      return passthrough(request, origin, clientIp);
-    } catch (err) {
-      // 边缘函数出错时回源
-      console.error("[edge] Error:", err);
-      return passthrough(request, origin, clientIp);
+      // 其他 — 穿透
+      return passthroughSigned(request, origin, clientIp, secret);
+    } catch {
+      return passthroughSigned(request, origin, clientIp, secret);
     }
   },
 };
 
 // ══════════════════════════════════════════════════════════════
-// PoW 挑战 — 完全在边缘处理
+// PoW 挑战
 // ══════════════════════════════════════════════════════════════
 
-async function handlePowChallenge(clientIp, env) {
-  // 本地 IP 跳过 PoW
+async function handlePowChallenge(clientIp, secret) {
   if (!clientIp || clientIp === "unknown" || isLocalIp(clientIp)) {
-    return jsonResponse({ skip: true, message: "Local IP — PoW not required" });
+    return jsonResponse({ skip: true, message: "本地 IP 无需 PoW" });
   }
+  const kv = getEdgeKV();
+  if (!kv) return null; // 回源
 
-  const kv = getEdgeKV(env);
-  if (!kv) {
-    // Edge KV 不可用时回源
-    return null; // 让调用方回源
-  }
-
-  // 检查该 IP 的挑战频率限制
-  const rateKey = `pow_rate:${clientIp}`;
-  const rateCount = await kvGetNumber(kv, rateKey);
-  if (rateCount >= 30) {
-    return jsonResponse({ error: "Too many PoW requests", retryAfter: 60 }, 429);
-  }
-  await kvPut(kv, rateKey, String((rateCount || 0) + 1), RATE_LIMIT_WINDOW);
+  // 限流 30/min
+  const rate = await kvGetNumber(kv, `pr:${clientIp}`);
+  if (rate >= RATE_POW) return jsonResponse({ error: "PoW 请求过多", retryAfter: 60 }, 429);
+  kvPut(kv, `pr:${clientIp}`, String((rate || 0) + 1), RATE_WINDOW);
 
   // 生成挑战
-  const challengeBytes = new Uint8Array(32);
-  crypto.getRandomValues(challengeBytes);
-  const challenge = Array.from(challengeBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const challenge = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
 
-  // 存储到 Edge KV（IP 绑定）
-  const challengeData = JSON.stringify({ ip: clientIp, ipUpdated: false, createdAt: Date.now() });
-  await kvPut(kv, `pow:${challenge}`, challengeData, POW_CHALLENGE_TTL);
+  // 存储到 KV
+  await kvPutJson(kv, `pc:${challenge}`, { ip: clientIp, ipUpdated: false, createdAt: Date.now() }, POW_CHALLENGE_TTL);
 
-  return noStoreJsonResponse({
-    challenge,
-    difficulty: POW_DIFFICULTY,
-    expiresIn: POW_CHALLENGE_TTL,
-  });
+  return noStoreJson({ challenge, difficulty: POW_DIFFICULTY, expiresIn: POW_CHALLENGE_TTL });
 }
 
 // ══════════════════════════════════════════════════════════════
-// Token 签发 — 边缘验证 PoW + 签发
+// Token 签发
 // ══════════════════════════════════════════════════════════════
 
-async function handleTokenIssue(request, clientIp, env) {
-  const kv = getEdgeKV(env);
-  const secret = env.HASH_SECRET;
-  if (!kv || !secret) {
-    return null; // 回源
-  }
+async function handleTokenIssue(request, clientIp, secret) {
+  if (!secret) return null; // 回源
 
   let body;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse({ error: "Invalid JSON" }, 400);
-  }
+  try { body = await request.json(); } catch { return jsonResponse({ error: "无效 JSON" }, 400); }
 
   const { fingerprint, pow_challenge, pow_nonce } = body;
-  if (!fingerprint || typeof fingerprint !== "string") {
-    return jsonResponse({ error: "fingerprint required" }, 400);
+  if (!fingerprint || typeof fingerprint !== "string") return jsonResponse({ error: "需要 fingerprint" }, 400);
+
+  // 限流 12/min
+  const kv = getEdgeKV();
+  if (kv) {
+    const rate = await kvGetNumber(kv, `ir:${clientIp}`);
+    if (rate >= RATE_ISSUE) return jsonResponse({ error: "限流" }, 429);
+    kvPut(kv, `ir:${clientIp}`, String((rate || 0) + 1), RATE_WINDOW);
   }
 
-  // IP 频率限制
-  const issueRateKey = `issue_rate:${clientIp}`;
-  const issueCount = await kvGetNumber(kv, issueRateKey);
-  if (issueCount >= 12) {
-    return jsonResponse({ error: "rate limited" }, 429);
-  }
-  await kvPut(kv, issueRateKey, String((issueCount || 0) + 1), RATE_LIMIT_WINDOW);
-
-  // PoW 验证（非本地 IP 必须提供）
+  // PoW 验证
   const ipKnown = clientIp && clientIp !== "unknown";
   if (ipKnown && !isLocalIp(clientIp)) {
-    if (!pow_challenge || !pow_nonce) {
-      return jsonResponse({ error: "PoW challenge and nonce required", code: "POW_REQUIRED" }, 403);
-    }
+    if (!pow_challenge || !pow_nonce) return jsonResponse({ error: "需要 PoW", code: "POW_REQUIRED" }, 403);
 
-    // 从 Edge KV 获取挑战
-    const challengeData = await kvGetJson(kv, `pow:${pow_challenge}`);
-    if (!challengeData) {
-      return jsonResponse({ error: "Invalid or expired PoW challenge", code: "POW_INVALID" }, 403);
-    }
+    const challengeData = kv ? await kvGetJson(kv, `pc:${pow_challenge}`) : null;
+    if (!challengeData) return jsonResponse({ error: "PoW 无效或过期", code: "POW_INVALID" }, 403);
 
-    // 验证 IP 绑定（允许一次变更）
+    // IP 绑定（允许一次变更）
     if (challengeData.ip !== clientIp) {
-      if (challengeData.ipUpdated) {
-        await kvDelete(kv, `pow:${pow_challenge}`);
-        return jsonResponse({ error: "PoW IP mismatch", code: "POW_INVALID" }, 403);
-      }
+      if (challengeData.ipUpdated) { if (kv) await kvDelete(kv, `pc:${pow_challenge}`); return jsonResponse({ error: "PoW IP 不匹配" }, 403); }
       challengeData.ipUpdated = true;
     }
 
-    // 验证 PoW 解
+    // 验证 SHA-256
     const input = pow_challenge + pow_nonce;
     const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
     const hashHex = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
-    const requiredZeros = "0".repeat(POW_DIFFICULTY);
+    if (!hashHex.startsWith("0".repeat(POW_DIFFICULTY))) return jsonResponse({ error: "PoW 解无效" }, 403);
 
-    if (!hashHex.startsWith(requiredZeros)) {
-      return jsonResponse({ error: "Invalid PoW solution", code: "POW_INVALID" }, 403);
-    }
-
-    // 删除已使用的挑战
-    await kvDelete(kv, `pow:${pow_challenge}`);
+    if (kv) await kvDelete(kv, `pc:${pow_challenge}`);
   }
 
-  // 签发 viewer token（与源站逻辑一致）
-  const fingerprintClean = fingerprint.replace(/[^a-zA-Z0-9:_.,| -]/g, "").trim().slice(0, 512);
-  if (fingerprintClean.length < 32 || new Set(fingerprintClean).size < 6) {
-    return jsonResponse({ error: "fingerprint too weak" }, 400);
-  }
+  // 签发 token
+  const fp = fingerprint.replace(/[^a-zA-Z0-9:_.,| -]/g, "").trim().slice(0, 512);
+  if (fp.length < 32 || new Set(fp).size < 6) return jsonResponse({ error: "fingerprint 太弱" }, 400);
 
-  const viewerId = `fp_${await hmacHex(secret, fingerprintClean)}`.slice(0, 35);
-  const ipHash = (ipKnown && clientIp !== "unknown")
-    ? await hmacHex(secret, "ip:" + clientIp)
-    : "";
+  const viewerId = `fp_${await hmacHex(secret, fp)}`.slice(0, 35);
+  const ipHash = (ipKnown && clientIp !== "unknown") ? (await hmacHex(secret, "ip:" + clientIp)).slice(0, 16) : "";
   const nowSec = Math.floor(Date.now() / 1000);
-  const payload = JSON.stringify({ sub: viewerId, ip: ipHash.slice(0, 16), iat: nowSec, exp: nowSec + 3600 });
+  const payload = JSON.stringify({ sub: viewerId, ip: ipHash, iat: nowSec, exp: nowSec + 3600 });
   const encoded = btoa(payload).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
   const signature = await hmacSign(secret, encoded);
-  const token = `${encoded}.${signature}`;
 
-  return noStoreJsonResponse({
-    token,
-    viewer_id: viewerId,
-    expires_in: 3600,
-  });
+  return noStoreJson({ token: `${encoded}.${signature}`, viewer_id: viewerId, expires_in: 3600 });
 }
 
 // ══════════════════════════════════════════════════════════════
-// 可缓存读取 — Cache API
+// 缓存读取
 // ══════════════════════════════════════════════════════════════
 
-async function handleCachedRead(request, origin, pathname, env) {
+async function handleCachedRead(request, origin, pathname, secret) {
   const ttl = getCacheTTL(pathname);
-  if (!ttl) {
-    return passthrough(request, origin);
-  }
-
-  // 构建缓存 key（使用 HTTP URL，ESA Cache API 不支持 HTTPS key）
   const cacheKey = `http://edge-cache${pathname}${new URL(request.url).search}`;
 
   try {
-    // ESA Cache API uses global `cache` object
     const cached = await cache.match(cacheKey);
-    if (cached) {
-      return cached;
-    }
-  } catch {
-    // Cache API 不可用，直接回源
-  }
+    if (cached) return cached;
+  } catch {}
 
-  // 回源
-  const originResponse = await fetch(`${origin}${pathname}${new URL(request.url).search}`, {
+  const originResp = await fetch(`${origin}${pathname}${new URL(request.url).search}`, {
     headers: {
-      "X-Forwarded-For": request.headers.get("x-real-ip") || request.headers.get("x-forwarded-for") || "",
+      "X-Forwarded-For": request.headers.get("x-real-ip") || "",
       "X-Real-IP": request.headers.get("x-real-ip") || "",
-      "Accept": request.headers.get("accept") || "*/*",
-      "X-Edge-Internal": "true",
+      "X-Edge-Internal": secret ? await hmacHex(secret, "edge-internal") : "",
     },
   });
+  if (!originResp.ok) return originResp;
 
-  if (!originResponse.ok) {
-    return originResponse;
-  }
+  const respHeaders = new Headers(originResp.headers);
+  respHeaders.set("Cache-Control", `public, max-age=${ttl}, s-maxage=${ttl}`);
+  respHeaders.set("X-Edge-Cache", "MISS");
+  const response = new Response(originResp.body, { status: originResp.status, headers: respHeaders });
 
-  // 构建可缓存的响应
-  const responseHeaders = new Headers(originResponse.headers);
-  responseHeaders.set("Cache-Control", `public, max-age=${ttl}, s-maxage=${ttl}`);
-  responseHeaders.set("X-Edge-Cache", "MISS");
-
-  const response = new Response(originResponse.body, {
-    status: originResponse.status,
-    headers: responseHeaders,
-  });
-
-  // 写入缓存
-  try {
-    await cache.put(cacheKey, response.clone());
-  } catch {
-    // 忽略缓存写入错误
-  }
-
+  try { await cache.put(cacheKey, response.clone()); } catch {}
   return response;
 }
 
 // ══════════════════════════════════════════════════════════════
-// Token 验证 — WebCrypto HMAC 边缘验证
+// Token 验证 + 穿透
 // ══════════════════════════════════════════════════════════════
 
-async function handleAuthenticatedRequest(request, origin, clientIp, env) {
-  const secret = env.HASH_SECRET;
-  if (!secret) {
-    return passthrough(request, origin, clientIp);
-  }
+async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
+  if (!secret) return passthroughSigned(request, origin, clientIp, secret);
 
-  // 提取 token
   const token = extractViewerToken(request);
   if (token) {
-    const verified = await verifyViewerTokenEdge(token, secret, clientIp);
+    const verified = await verifyViewerToken(token, secret, clientIp);
     if (verified) {
-      // Per-viewer rate limit for authenticated endpoints (60/min, relaxed)
-      const kv = getEdgeKV(env);
+      // 限流 60/min/viewer
+      const kv = getEdgeKV();
       if (kv) {
-        const viewerRateKey = `viewer_rate:${verified.viewerId}`;
-        const viewerCount = await kvGetNumber(kv, viewerRateKey);
-        if (viewerCount >= 60) {
-          return jsonResponse({ error: "Rate limit exceeded", retryAfter: 60 }, 429);
-        }
-        kvPut(kv, viewerRateKey, String((viewerCount || 0) + 1), RATE_LIMIT_WINDOW);
+        const rate = await kvGetNumber(kv, `vr:${verified.viewerId}`);
+        if (rate >= RATE_VIEWER) return jsonResponse({ error: "限流" }, 429);
+        kvPut(kv, `vr:${verified.viewerId}`, String((rate || 0) + 1), RATE_WINDOW);
       }
-      // Token 有效：添加验证头，穿透到源站
+
       const headers = new Headers(request.headers);
-      const edgeSig = await hmacHex(secret, "edge:" + verified.viewerId);
       headers.set("X-Edge-Verified", "true");
       headers.set("X-Edge-Viewer-Id", verified.viewerId);
-      headers.set("X-Edge-Signature", edgeSig);
+      headers.set("X-Edge-Signature", await hmacHex(secret, "edge:" + verified.viewerId));
       headers.set("X-Real-IP", clientIp);
-      headers.set("X-Edge-Internal", "true");
+      headers.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
 
-      const newRequest = new Request(request.url, {
-        method: request.method,
-        headers,
+      const resp = await fetch(`${origin}${pathname(request)}${new URL(request.url).search}`, {
+        method: request.method, headers,
         body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
       });
 
-      const response = await fetch(`${origin}${new URL(request.url).pathname}${new URL(request.url).search}`, newRequest);
-
-      // 给响应加缓存头（可缓存端点）
-      const ttl = getCacheTTL(new URL(request.url).pathname);
-      if (ttl && response.ok) {
-        const responseHeaders = new Headers(response.headers);
-        responseHeaders.set("Cache-Control", `public, max-age=${ttl}, s-maxage=${ttl}`);
-        return new Response(response.body, { status: response.status, headers: responseHeaders });
+      const ttl = getCacheTTL(pathname(request));
+      if (ttl && resp.ok) {
+        const h = new Headers(resp.headers);
+        h.set("Cache-Control", `public, max-age=${ttl}, s-maxage=${ttl}`);
+        return new Response(resp.body, { status: resp.status, headers: h });
       }
-      return response;
+      return resp;
     }
-    // Token 无效
-    return jsonResponse({ error: "Invalid viewer token" }, 403);
+    return jsonResponse({ error: "token 无效" }, 403);
   }
 
-  // 没有 token — 检查是否是可缓存的公开端点
-  const pathname = new URL(request.url).pathname;
-  if (pathname === "/api/health-data" || pathname === "/api/location") {
-    return jsonResponse({ error: "Viewer token required" }, 403);
+  const path = pathname(request);
+  if (path === "/api/health-data" || path === "/api/location") {
+    return jsonResponse({ error: "需要 viewer token" }, 403);
   }
-
-  return passthrough(request, origin, clientIp);
-}
-
-async function verifyViewerTokenEdge(token, secret, clientIp) {
-  if (!token || !token.includes(".")) return null;
-  const parts = token.split(".", 2);
-  const [encoded, signature] = parts;
-  if (!encoded || !signature) return null;
-
-  // 验证签名
-  const expectedSig = await hmacSign(secret, encoded);
-  if (expectedSig !== signature) return null;
-
-  try {
-    const payload = JSON.parse(atob(encoded.replace(/-/g, "+").replace(/_/g, "/")));
-    if (typeof payload.sub !== "string" || typeof payload.exp !== "number") return null;
-    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
-    if (!/^fp_[a-f0-9]{32}$/.test(payload.sub)) return null;
-
-    // IP 绑定检查
-    if (payload.ip && clientIp && clientIp !== "unknown") {
-      const currentIpHash = (await hmacHex(secret, "ip:" + clientIp)).slice(0, 16);
-      if (payload.ip !== currentIpHash) return null;
-    }
-
-    return { viewerId: payload.sub };
-  } catch {
-    return null;
-  }
+  return passthroughSigned(request, origin, clientIp, secret);
 }
 
 // ══════════════════════════════════════════════════════════════
-// WebSocket — 穿透到源站
+// WebSocket
 // ══════════════════════════════════════════════════════════════
 
-async function handleWebSocket(request, origin, clientIp, env) {
-  // WebSocket 验证 token 后穿透
+async function handleWebSocket(request, origin, clientIp, secret) {
   const headers = new Headers(request.headers);
   headers.set("X-Real-IP", clientIp);
-  headers.set("X-Edge-Internal", "true");
-
-  const secret = env.HASH_SECRET;
   if (secret) {
+    headers.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
     const token = extractViewerToken(request);
     if (token) {
-      const verified = await verifyViewerTokenEdge(token, secret, clientIp);
+      const verified = await verifyViewerToken(token, secret, clientIp);
       if (verified) {
-        const edgeSig = await hmacHex(secret, "edge:" + verified.viewerId);
         headers.set("X-Edge-Verified", "true");
         headers.set("X-Edge-Viewer-Id", verified.viewerId);
-        headers.set("X-Edge-Signature", edgeSig);
+        headers.set("X-Edge-Signature", await hmacHex(secret, "edge:" + verified.viewerId));
       }
     }
   }
-
-  return fetch(`${origin}/api/ws${new URL(request.url).search}`, {
-    method: request.method,
-    headers,
-  });
+  return fetch(`${origin}/api/ws${new URL(request.url).search}`, { method: request.method, headers });
 }
 
 // ══════════════════════════════════════════════════════════════
 // 工具函数
 // ══════════════════════════════════════════════════════════════
 
+function pathname(request) { return new URL(request.url).pathname; }
+
 function passthrough(request, origin, clientIp) {
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
   if (clientIp) headers.set("X-Real-IP", clientIp);
-  headers.set("X-Edge-Internal", "true");
-
   return fetch(`${origin}${url.pathname}${url.search}`, {
-    method: request.method,
-    headers,
+    method: request.method, headers,
     body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
   });
 }
 
-function isCacheableEndpoint(pathname) {
-  return pathname === "/api/current" ||
-         pathname === "/api/timeline" ||
-         pathname === "/api/config" ||
-         pathname === "/api/health" ||
-         pathname === "/api/messages/public" ||
-         pathname === "/api/daily-summary";
+function passthroughSigned(request, origin, clientIp, secret) {
+  const url = new URL(request.url);
+  const headers = new Headers(request.headers);
+  if (clientIp) headers.set("X-Real-IP", clientIp);
+  if (secret) headers.set("X-Edge-Internal", ""); // will be set async by callers
+  return fetch(`${origin}${url.pathname}${url.search}`, {
+    method: request.method, headers,
+    body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
+  });
 }
 
-function getCacheTTL(pathname) {
-  if (pathname === "/api/current") return CACHE_TTL.current;
-  if (pathname === "/api/timeline") return CACHE_TTL.timeline;
-  if (pathname === "/api/config") return CACHE_TTL.config;
-  if (pathname === "/api/health") return CACHE_TTL.health;
-  if (pathname === "/api/messages/public") return CACHE_TTL.publicMessages;
+function getCacheTTL(p) {
+  if (p === "/api/current") return CACHE_TTL.current;
+  if (p === "/api/timeline") return CACHE_TTL.timeline;
+  if (p === "/api/config") return CACHE_TTL.config;
+  if (p === "/api/health") return CACHE_TTL.health;
+  if (p === "/api/messages/public") return CACHE_TTL.publicMessages;
+  if (p === "/api/daily-summary") return 60;
   return 0;
 }
 
-function isAuthenticatedEndpoint(pathname, method) {
-  if (method !== "GET") return false;
-  return pathname === "/api/health-data" ||
-         pathname === "/api/location" ||
-         pathname === "/api/messages" ||
-         pathname === "/api/messages/history";
+function isAuthEndpoint(p) {
+  return p === "/api/health-data" || p === "/api/location" || p === "/api/messages" || p === "/api/messages/history";
+}
+
+function isLocalIp(ip) {
+  if (!ip) return false;
+  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1" ||
+    ip.startsWith("192.168.") || ip.startsWith("10.") || /^172\.(1[6-9]|2\d|3[01])\./.test(ip);
 }
 
 function extractViewerToken(request) {
   const auth = request.headers.get("authorization");
   const match = auth?.match(/^Bearer\s+(.+)$/i);
   if (match?.[1]) return match[1];
-  const url = new URL(request.url);
-  return url.searchParams.get("viewer_token");
+  return new URL(request.url).searchParams.get("viewer_token");
 }
 
-function isLocalIp(ip) {
-  if (!ip) return false;
-  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1" ||
-    ip.startsWith("192.168.") || ip.startsWith("10.") ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(ip);
-}
-
-// ── Edge KV 辅助 ──
-
-function getEdgeKV(env) {
+async function verifyViewerToken(token, secret, clientIp) {
+  if (!token || !token.includes(".")) return null;
+  const [encoded, signature] = token.split(".", 2);
+  if (!encoded || !signature) return null;
+  if (await hmacSign(secret, encoded) !== signature) return null;
   try {
-    // ESA Edge KV 需要在控制台创建 namespace
-    // 这里假设 env.EDGE_KV_NAMESPACE 已配置
-    if (typeof EdgeKV !== "undefined") {
-      return new EdgeKV({ namespace: env.EDGE_KV_NAMESPACE || "live-dashboard" });
+    const payload = JSON.parse(atob(encoded.replace(/-/g, "+").replace(/_/g, "/")));
+    if (typeof payload.sub !== "string" || typeof payload.exp !== "number") return null;
+    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+    if (!/^fp_[a-f0-9]{32}$/.test(payload.sub)) return null;
+    if (payload.ip && clientIp && clientIp !== "unknown") {
+      const currentIpHash = (await hmacHex(secret, "ip:" + clientIp)).slice(0, 16);
+      if (payload.ip !== currentIpHash) return null;
     }
-  } catch {}
-  return null;
+    return { viewerId: payload.sub };
+  } catch { return null; }
+}
+
+// ── Edge KV ──
+
+function getEdgeKV() {
+  try { return new EdgeKV({ namespace: "live-dashboard" }); } catch { return null; }
 }
 
 async function kvGetNumber(kv, key) {
   const val = await kvGet(kv, key);
   if (!val) return 0;
-  // Check TTL: format is "value:timestamp"
   const parts = val.split(":");
-  const num = parseInt(parts[0], 10);
   const ts = parseInt(parts[1], 10) || 0;
-  if (ts && Date.now() - ts > RATE_LIMIT_WINDOW * 1000) return 0; // expired
-  return num || 0;
+  if (ts && Date.now() - ts > RATE_WINDOW * 1000) return 0;
+  return parseInt(parts[0], 10) || 0;
 }
 
 async function kvGetJson(kv, key) {
@@ -502,45 +378,33 @@ async function kvGetJson(kv, key) {
     const val = await kv.get(key, { type: "text" });
     if (!val) return null;
     const data = JSON.parse(val);
-    // Check TTL from createdAt field
     if (data.createdAt && Date.now() - data.createdAt > POW_CHALLENGE_TTL * 1000) {
-      await kvDelete(kv, key); // clean up expired
-      return null;
+      await kv.delete(key); return null;
     }
     return data;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 async function kvGet(kv, key) {
-  try {
-    return await kv.get(key, { type: "text" }) || null;
-  } catch {
-    return null;
-  }
+  try { return await kv.get(key, { type: "text" }) || null; } catch { return null; }
 }
 
-async function kvPut(kv, key, value, ttlSeconds) {
-  try {
-    // Store with timestamp for TTL checking
-    await kv.put(key, `${value}:${Date.now()}`);
-  } catch {}
+async function kvPut(kv, key, value, ttl) {
+  try { await kv.put(key, `${value}:${Date.now()}`); } catch {}
+}
+
+async function kvPutJson(kv, key, obj, ttl) {
+  try { await kv.put(key, JSON.stringify(obj)); } catch {}
 }
 
 async function kvDelete(kv, key) {
-  try {
-    await kv.delete(key);
-  } catch {}
+  try { await kv.delete(key); } catch {}
 }
 
-// ── HMAC 辅助（WebCrypto） ──
+// ── HMAC (WebCrypto) ──
 
 async function hmacHex(secret, data) {
-  const key = await crypto.subtle.importKey(
-    "raw", new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
-  );
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
   return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
@@ -551,34 +415,24 @@ async function hmacSign(secret, data) {
   return btoa(String.fromCharCode(...bytes)).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
 }
 
-// ── 响应辅助 ──
+// ── 响应 ──
 
 function jsonResponse(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      ...corsHeaders("/api"),
-    },
-  });
+  return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", ...corsHeaders() } });
 }
 
-function noStoreJsonResponse(data, status = 200) {
+function noStoreJson(data) {
   return new Response(JSON.stringify(data), {
-    status,
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, s-maxage=0",
-      "Pragma": "no-cache",
-      "Expires": "0",
-      "CDN-Cache-Control": "no-store",
-      "Surrogate-Control": "no-store",
-      ...corsHeaders("/api"),
+      "CDN-Cache-Control": "no-store", "Surrogate-Control": "no-store",
+      ...corsHeaders(),
     },
   });
 }
 
-function corsHeaders(pathname) {
+function corsHeaders() {
   return {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
