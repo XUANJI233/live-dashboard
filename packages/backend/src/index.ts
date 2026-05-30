@@ -278,7 +278,30 @@ const server = Bun.serve<WsData>({
   websocket: realtimeWebSocket,
 });
 
-console.log(`[server] Live Dashboard backend running on http://localhost:${server.port}`);
-if (process.env.NSFW_FILTER_DISABLED === "true") {
-  console.warn("[server] ⚠️  NSFW FILTER IS DISABLED — content filtering is OFF. Set NSFW_FILTER_DISABLED=false to re-enable.");
-}
+// ── 启动信息 ──
+const cdnMode = /^(1|true|yes)$/i.test(process.env.CDN_MODE || "");
+const nsfwDisabled = process.env.NSFW_FILTER_DISABLED === "true";
+const messageBoard = process.env.MESSAGE_BOARD_ENABLED !== "false";
+const privateChat = process.env.PRIVATE_CHAT_ENABLED !== "false";
+const aiEnabled = !!(process.env.AI_API_URL && process.env.AI_API_KEY);
+const deviceTokens = [process.env.DEVICE_TOKEN_1, process.env.DEVICE_TOKEN_2].filter(Boolean).length;
+const displayName = process.env.DISPLAY_NAME || "未设置";
+const corsOrigins = process.env.CORS_ALLOWED_ORIGINS?.split(",").filter(Boolean).length || 0;
+
+console.log("");
+console.log("  ╭─────────────────────────────────────╮");
+console.log("  │         Live Dashboard 启动          │");
+console.log("  ├─────────────────────────────────────┤");
+console.log(`  │ 地址: http://localhost:${server.port}`.padEnd(38) + "│");
+console.log(`  │ CDN:  ${cdnMode ? "已开启" : "已关闭"}`.padEnd(38) + "│");
+console.log(`  │ 设备: ${deviceTokens} 个令牌已配置`.padEnd(38) + "│");
+console.log(`  │ 显示: ${displayName}`.padEnd(38) + "│");
+console.log("  ├─────────────────────────────────────┤");
+console.log(`  │ 留言板: ${messageBoard ? "开启" : "关闭"}`.padEnd(38) + "│");
+console.log(`  │ 私聊:   ${privateChat ? "开启" : "关闭"}`.padEnd(38) + "│");
+console.log(`  │ AI 总结: ${aiEnabled ? "开启" : "关闭"}`.padEnd(38) + "│");
+console.log(`  │ NSFW 过滤: ${nsfwDisabled ? "已关闭 ⚠️" : "开启"}`.padEnd(38) + "│");
+console.log(`  │ CORS 允许: ${corsOrigins ? corsOrigins + " 个域名" : "仅同源"}`.padEnd(38) + "│");
+console.log(`  │ 静态文件: ${staticEnabled ? "已加载" : "未找到"}`.padEnd(38) + "│");
+console.log("  ╰─────────────────────────────────────╯");
+console.log("");
