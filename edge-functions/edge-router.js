@@ -87,8 +87,17 @@ export default {
 
       // WebSocket — 穿透
       if (pathname === "/api/ws") {
-        // ESA 不支持 WebSocket 代理，应在路由配置中排除此路径
-        // 如果请求到达这里，直接穿透（源站有 token 验证）
+        // ESA 不支持 WebSocket 代理，直接穿透
+        // 带签名以支持 REQUIRE_EDGE 模式
+        if (secret) {
+          const headers = new Headers(request.headers);
+          if (clientIp) headers.set("X-Real-IP", clientIp);
+          headers.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
+          return fetch(`${origin}${pathname}${url.search}`, {
+            method, headers,
+            body: method !== "GET" && method !== "HEAD" ? request.body : undefined,
+          });
+        }
         return passthrough(request, origin, clientIp);
       }
 
@@ -271,28 +280,6 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// WebSocket
-// ══════════════════════════════════════════════════════════════
-
-async function handleWebSocket(request, origin, clientIp, secret) {
-  const headers = new Headers(request.headers);
-  headers.set("X-Real-IP", clientIp);
-  if (secret) {
-    headers.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
-    const token = extractViewerToken(request);
-    if (token) {
-      const verified = await verifyViewerToken(token, secret, clientIp);
-      if (verified) {
-        headers.set("X-Edge-Verified", "true");
-        headers.set("X-Edge-Viewer-Id", verified.viewerId);
-        headers.set("X-Edge-Signature", await hmacHex(secret, "edge:" + verified.viewerId));
-      }
-    }
-  }
-  return fetch(`${origin}/api/ws${new URL(request.url).search}`, { method: request.method, headers });
-}
-
-// ══════════════════════════════════════════════════════════════
 // 工具函数
 // ══════════════════════════════════════════════════════════════
 
@@ -307,17 +294,17 @@ function passthrough(request, origin, clientIp) {
     body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
   });
 }
-
-function passthroughSigned(request, origin, clientIp, secret) {
+async function passthroughSigned(request, origin, clientIp, secret) {
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
   if (clientIp) headers.set("X-Real-IP", clientIp);
-  // Note: internal signature is set async by callers where needed
+  if (secret) headers.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
   return fetch(`${origin}${url.pathname}${url.search}`, {
     method: request.method, headers,
     body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
   });
 }
+
 
 function getCacheTTL(p) {
   if (p === "/api/current") return CACHE_TTL.current;
