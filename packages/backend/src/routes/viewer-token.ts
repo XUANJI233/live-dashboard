@@ -1,10 +1,10 @@
-import { issueViewerToken, issuePowChallenge, verifyPowSolution, getTlsFingerprint, isLocalIp, isEdgeMode } from "../services/viewer-auth";
+import { issueViewerToken, issuePowChallenge, verifyPowSolution, getTlsFingerprint, isLocalIp } from "../services/viewer-auth";
 import { noStore } from "../services/cdn";
 
 // GET /api/pow/challenge — issue a PoW challenge
 export function handlePowChallenge(req: Request, ipHint: string): Response {
-  // Edge mode: PoW handled by ESA edge function, return skip
-  if (isEdgeMode()) {
+  // Auto-detect: if request already came through ESA edge function, skip PoW
+  if (req.headers.get("x-edge-verified") === "true") {
     return Response.json({ skip: true, message: "Edge mode — PoW handled at edge" });
   }
   // Skip PoW for local IPs and unknown IPs (PoW is IP-bound, can't work without valid IP)
@@ -41,7 +41,9 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
   // PoW verification: required for non-local IPs with known IP
   // Skip PoW when IP is unknown (empty/unknown) since PoW is IP-bound and can't be verified
   const ipKnown = ipHint && ipHint !== "unknown";
-  if (ipKnown && !isLocalIp(ipHint) && !isEdgeMode()) {
+  // Skip PoW if already verified by ESA edge function
+  const edgeVerified = req.headers.get("x-edge-verified") === "true";
+  if (ipKnown && !isLocalIp(ipHint) && !edgeVerified) {
     const { pow_challenge, pow_nonce } = body;
     if (!pow_challenge || !pow_nonce) {
       return Response.json({ error: "PoW challenge and nonce required", code: "POW_REQUIRED" }, { status: 403 });

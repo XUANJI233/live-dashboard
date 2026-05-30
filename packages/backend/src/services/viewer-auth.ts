@@ -182,17 +182,20 @@ export function getTlsFingerprint(req: Request): string | null {
 }
 
 // ── Token extraction ──
-// ── Edge mode ──
-const EDGE_MODE = /^(1|true|yes)$/i.test(process.env.EDGE_MODE || "");
-
-export function isEdgeMode(): boolean { return EDGE_MODE; }
+// ── Edge verification (auto-detected, HMAC-signed) ──
+// No env var needed: if X-Edge-Verified header is present and HMAC-valid, trust it.
+// The edge function signs headers with HASH_SECRET, origin verifies.
 
 export function edgeViewerIdentity(req: Request): ViewerIdentity | null {
-  if (!EDGE_MODE) return null;
   const verified = req.headers.get("x-edge-verified");
   if (verified !== "true") return null;
   const viewerId = req.headers.get("x-edge-viewer-id");
-  if (!viewerId || !/^fp_[a-f0-9]{32}$/.test(viewerId)) return null;
+  const edgeSig = req.headers.get("x-edge-signature");
+  if (!viewerId || !edgeSig) return null;
+  if (!/^fp_[a-f0-9]{32}$/.test(viewerId)) return null;
+  // Verify HMAC signature: edge signs "viewerId:timestamp" with HASH_SECRET
+  const expectedSig = hmacTitle("edge:" + viewerId);
+  if (edgeSig !== expectedSig) return null;
   return { viewerId, exp: Math.floor(Date.now() / 1000) + 3600, ipHash: "" };
 }
 

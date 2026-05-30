@@ -24,7 +24,6 @@ services:
       - NSFW_FILTER_DISABLED=${NSFW_FILTER_DISABLED:-false}
       - MESSAGE_BOARD_ENABLED=${MESSAGE_BOARD_ENABLED:-true}
       - PRIVATE_CHAT_ENABLED=${PRIVATE_CHAT_ENABLED:-true}
-      - EDGE_MODE=${EDGE_MODE:-false}
     volumes:
       - dashboard_data:/data
     networks:

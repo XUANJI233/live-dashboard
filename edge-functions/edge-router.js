@@ -294,8 +294,10 @@ async function handleAuthenticatedRequest(request, origin, clientIp, env) {
     if (verified) {
       // Token 有效：添加验证头，穿透到源站
       const headers = new Headers(request.headers);
+      const edgeSig = await hmacHex(secret, "edge:" + verified.viewerId);
       headers.set("X-Edge-Verified", "true");
       headers.set("X-Edge-Viewer-Id", verified.viewerId);
+      headers.set("X-Edge-Signature", edgeSig);
       headers.set("X-Real-IP", clientIp);
 
       const newRequest = new Request(request.url, {
@@ -371,8 +373,10 @@ async function handleWebSocket(request, origin, clientIp, env) {
     if (token) {
       const verified = await verifyViewerTokenEdge(token, secret, clientIp);
       if (verified) {
+        const edgeSig = await hmacHex(secret, "edge:" + verified.viewerId);
         headers.set("X-Edge-Verified", "true");
         headers.set("X-Edge-Viewer-Id", verified.viewerId);
+        headers.set("X-Edge-Signature", edgeSig);
       }
     }
   }
