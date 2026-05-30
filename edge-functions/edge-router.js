@@ -322,13 +322,12 @@ function getCacheTTL(p) {
   if (p === "/api/timeline") return CACHE_TTL.timeline;
   if (p === "/api/config") return CACHE_TTL.config;
   if (p === "/api/health") return CACHE_TTL.health;
-  if (p === "/api/messages/public") return CACHE_TTL.publicMessages;
   if (p === "/api/daily-summary") return 60;
   return 0;
 }
 
 function isAuthEndpoint(p) {
-  return p === "/api/health-data" || p === "/api/location" || p === "/api/messages" || p === "/api/messages/history";
+  return p === "/api/health-data" || p === "/api/location" || p === "/api/messages" || p === "/api/messages/history" || p === "/api/messages/public";
 }
 
 function isLocalIp(ip) {
