@@ -1,25 +1,37 @@
 // ────────────────────────────────────────────
-//  Live Watch — App Event Handler (Zepp OS v3)
-//
-//  处理系统事件（alarm 唤醒、app 生命周期）
-//  与 app-service 分离，避免入口冲突
-//
-//  参考: https://docs.zepp.com/zh-cn/docs/guides/framework/device/system-event/
+//  Live Watch — App Event Handler
+//  alarm 唤醒时检查配置，仅 enabled=true 时启动 app-service
 // ────────────────────────────────────────────
 
 AppEvent({
   onInit() {
-    console.log('[LiveWatch:event] System event init')
-    // alarm 唤醒时，重新启动 app-service 执行数据采集
+    console.log('[LiveWatch:event] init')
+
     try {
-      const { startAppService } = require('@zos/app-service')
-      startAppService({ url: 'app-service/live-watch' })
+      var storage = require('@zos/settings').settingsStorage
+      var raw = storage.getItem('livewatch_config')
+      if (raw) {
+        var cfg = JSON.parse(raw)
+        if (cfg && cfg.enabled && cfg.serverUrl && cfg.token) {
+          console.log('[LiveWatch:event] enabled, starting app-service')
+          var as = require('@zos/app-service')
+          as.start({
+            url: 'app-service/live-watch',
+            param: 'source=app-event',
+            complete_func: function (info) {
+              console.log('[LiveWatch:event] start result=' + JSON.stringify(info))
+            },
+          })
+        } else {
+          console.log('[LiveWatch:event] disabled or no config, skip')
+        }
+      }
     } catch (e) {
-      console.warn('[LiveWatch:event] Failed to start app-service: ' + e.message)
+      console.log('[LiveWatch:event] error: ' + (e && e.message ? e.message : e))
     }
   },
 
   onDestroy() {
-    console.log('[LiveWatch:event] System event destroy')
+    console.log('[LiveWatch:event] destroy')
   },
 })

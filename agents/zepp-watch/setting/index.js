@@ -10,6 +10,10 @@
 // Note: TextInput, Toggle, Section, View are globally available in Zepp OS settings page
 // context — do NOT import from @zos/settings-ui (causes white screen)
 
+function cleanToken(value) {
+  return String(value || '').replace(/^Bearer\s+/i, '').trim()
+}
+
 AppSettingsPage({
   build(props) {
     const storage = props.settingsStorage
@@ -43,8 +47,8 @@ AppSettingsPage({
       TextInput({
         label: '设备令牌',
         value: get('token', ''),
-        placeholder: 'Bearer Token',
-        onChange: (value) => writeConfig({ token: String(value || '').trim() }),
+        placeholder: 'DEVICE_TOKEN 值，不含 Bearer',
+        onChange: (value) => writeConfig({ token: cleanToken(value) }),
       }),
       TextInput({
         label: '同步间隔 (秒)',
@@ -102,6 +106,23 @@ AppSettingsPage({
           label: '压力',
           value: Boolean(get('sensorStress', false)),
           onChange: (value) => writeConfig({ sensorStress: Boolean(value) }),
+        }),
+      ]),
+      // ── 调试 ──
+      View({ style: { marginTop: '16px' } }, [
+        TextInput({
+          label: '调试信息',
+          value: get('_debug', ''),
+          placeholder: '无',
+        }),
+        TextInput({
+          label: '测试URL',
+          value: (function () {
+            var cfg = readConfig()
+            var u = (cfg.serverUrl || '') + '/api/report'
+            return u
+          })(),
+          placeholder: '',
         }),
       ]),
     ])

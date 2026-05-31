@@ -12,6 +12,10 @@
 
 import { BaseSideService } from '@zeppos/zml/base-side'
 
+function cleanToken(value) {
+  return String(value || '').replace(/^Bearer\s+/i, '').trim()
+}
+
 AppSideService(
   BaseSideService({
     state: {
@@ -19,11 +23,13 @@ AppSideService(
       token: '',
       syncInterval: 300,
       enabled: false,
+      bleListenerReady: false,
     },
 
     onInit() {
-      console.log('[LiveWatch:companion] init')
+      console.log('[COMPANION] init')
       this.restoreConfig()
+      this.initBleListener()
     },
 
     onRun() {
@@ -35,12 +41,23 @@ AppSideService(
     },
 
     onRequest(req, res) {
-      const { method, params } = req
+      var method = req.method
+      var params = req.params || {}
+      console.log('[COMPANION] onRequest method=' + method)
       switch (method) {
+        case 'GET_CONFIG': {
+          res(null, {
+            serverUrl: this.state.serverUrl || '',
+            token: this.state.token || '',
+            syncInterval: this.state.syncInterval || 300,
+            enabled: this.state.enabled || false,
+          })
+          break
+        }
         case 'START': {
-          this.state.serverUrl = params?.serverUrl || this.state.serverUrl
-          this.state.token = params?.token || this.state.token
-          this.state.syncInterval = Number(params?.syncInterval) || 300
+          this.state.serverUrl = (params && params.serverUrl) || this.state.serverUrl
+          this.state.token = cleanToken((params && params.token) || this.state.token)
+          this.state.syncInterval = Number((params && params.syncInterval) || 300)
           this.state.enabled = true
           this.persistConfig()
           res(null, { ok: true, status: 'started' })
@@ -52,31 +69,20 @@ AppSideService(
           res(null, { ok: true, status: 'stopped' })
           break
         }
-        case 'CONFIG': {
-          if (params?.serverUrl !== undefined) this.state.serverUrl = params.serverUrl
-          if (params?.token !== undefined) this.state.token = params.token
-          if (params?.syncInterval !== undefined) {
-            const interval = Number(params.syncInterval)
-            if (!isNaN(interval) && interval >= 60 && interval <= 3600) {
-              this.state.syncInterval = interval
-            }
-          }
-          this.persistConfig()
-          res(null, { ok: true })
+        case 'UPLOAD_NOW': {
+          var url = (params && params.serverUrl) || this.state.serverUrl
+          var tok = (params && params.token) || this.state.token
+          if (!url || !tok) { res(null, { ok: false, reason: 'no config' }); break }
+          var self = this
+          this.doUpload(url, tok, { app_id: 'zepp_watch', window_title: '手表在线', timestamp: new Date().toISOString(), extra: { device: { platform: 'zepp', capability_mode: 'normal', device_kind: 'watch', last_sample_at: new Date().toISOString() } } }, res)
           break
         }
         case 'BATCH_DATA': {
-          // 设置关闭时，拒绝处理并通知手表端
-          if (!this.state.enabled) {
-            console.log('[LiveWatch:companion] Upload disabled, reject BATCH_DATA')
-            res(null, { ok: false, reason: 'disabled' })
-            break
-          }
-          // 接收手表端批量数据，进行插值后上传
-          this.handleBatchData(params, res)
+          this.handleBatchData((params && params.payload) || params, res)
           break
         }
         default:
+          console.log('[COMPANION] unknown method: ' + method)
           res({ error: 'unknown method' }, null)
       }
     },
@@ -87,7 +93,7 @@ AppSideService(
         try {
           const cfg = JSON.parse(newValue)
           if (cfg.serverUrl !== undefined) this.state.serverUrl = cfg.serverUrl
-          if (cfg.token !== undefined) this.state.token = cfg.token
+          if (cfg.token !== undefined) this.state.token = cleanToken(cfg.token)
           if (cfg.syncInterval !== undefined) this.state.syncInterval = Number(cfg.syncInterval)
           if (cfg.enabled !== undefined) {
             this.state.enabled = Boolean(cfg.enabled)
@@ -99,18 +105,45 @@ AppSideService(
       }
     },
 
+    initBleListener() {
+      if (this.state.bleListenerReady) return
+      try {
+        if (typeof messaging === 'undefined' || !messaging.peerSocket) {
+          console.warn('[LiveWatch:companion] messaging.peerSocket unavailable')
+          return
+        }
+        var self = this
+        messaging.peerSocket.addListener('message', function (payload) {
+          try {
+            var msg = JSON.parse(Buffer.from(payload).toString('utf-8'))
+            if (msg && msg.type === 'batch_data') {
+              console.log('[LiveWatch:companion] BLE batch received')
+              self.handleBatchData(msg.payload, function () {})
+            }
+          } catch (e) {
+            console.warn('[LiveWatch:companion] BLE payload parse failed: ' + ((e && e.message) || e))
+          }
+        })
+        this.state.bleListenerReady = true
+        console.log('[LiveWatch:companion] BLE listener ready')
+      } catch (e) {
+        console.warn('[LiveWatch:companion] BLE listener init failed: ' + ((e && e.message) || e))
+      }
+    },
+
     // ── 处理手表端批量数据 ──
 
     handleBatchData(params, res) {
       if (!params || !this.state.serverUrl || !this.state.token) {
-        res({ error: 'invalid params or config' }, null)
+        if (res) res({ error: 'invalid params or config' }, null)
         return
       }
 
-      // Expand compact format to verbose
-      const expanded = this.expandCompact(params)
+      // Compact payload is the BLE format. Verbose payload is accepted for
+      // compatibility with older manual/debug senders.
+      const expanded = params.status ? params : this.expandCompact(params)
       if (!expanded) {
-        res(null, { ok: false, reason: 'invalid compact payload' })
+        if (res) res(null, { ok: false, reason: 'invalid compact payload' })
         return
       }
 
@@ -139,7 +172,7 @@ AppSideService(
         this.uploadHealthData(body_temp_history, 'body_temp')
       }
 
-      res(null, { ok: true, message: 'processing' })
+      if (res) res(null, { ok: true, message: 'processing' })
     },
 
     // ── Expand compact format to verbose ──
@@ -166,7 +199,7 @@ AppSideService(
         if (cs.hrr) extraFields.heart_rate_resting = cs.hrr
 
         const verboseStatus = {
-          app_id: 'zepp-watch',
+          app_id: 'zepp_watch',
           window_title: '手表在线',
           timestamp: nowISO,
           extra: {
@@ -190,7 +223,7 @@ AppSideService(
 
         // SpO2: [value, timeSec] → verbose
         const verboseSpo2 = (compact.o || []).map(([v, ts]) => ({
-          type: 'spo2',
+          type: 'oxygen_saturation',
           value: v,
           unit: '%',
           timestamp: new Date(ts * 1000).toISOString(),
@@ -198,7 +231,7 @@ AppSideService(
 
         // Temp: [value, minuteOffset] → verbose
         const verboseTemp = (compact.t || []).map(([v, m]) => ({
-          type: 'body_temp',
+          type: 'body_temperature',
           value: v,
           unit: '°C',
           timestamp: new Date(todayMs + m * 60000).toISOString(),
@@ -321,6 +354,23 @@ AppSideService(
         console.error('[LiveWatch:companion] Status upload failed: ' + (err.message || err))
       })
     },
+    // 无视 enabled 的上传（手动触发用）
+    async doUpload(url, token, data, res) {
+      var apiUrl = url.replace(/\/+$/, '') + '/api/report'
+      var bearerToken = cleanToken(token)
+      try {
+        var r = await fetch({
+          url: apiUrl, method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + bearerToken },
+          body: JSON.stringify(data),
+        })
+        var body = typeof r.body === 'string' ? r.body : JSON.stringify(r.body)
+        var ok = r.status >= 200 && r.status < 300
+        if (res) res(null, { ok: ok, status: r.status, body: body.substring(0, 200) })
+      } catch (err) {
+        if (res) res(null, { ok: false, error: (err && err.message) || String(err) })
+      }
+    },
 
     // ── 上传心率历史 ──
 
@@ -388,7 +438,7 @@ AppSideService(
         if (raw) {
           const saved = JSON.parse(raw)
           if (saved.serverUrl) this.state.serverUrl = saved.serverUrl
-          if (saved.token) this.state.token = saved.token
+          if (saved.token) this.state.token = cleanToken(saved.token)
           if (saved.syncInterval) this.state.syncInterval = Number(saved.syncInterval)
           if (saved.enabled !== undefined) this.state.enabled = Boolean(saved.enabled)
         }

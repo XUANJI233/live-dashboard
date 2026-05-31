@@ -18,6 +18,7 @@ import { Sleep } from '@zos/sensor'
 import { BloodOxygen } from '@zos/sensor'
 import { BodyTemperature } from '@zos/sensor'
 import { set as setAlarm, cancel as cancelAlarm, getAllAlarms } from '@zos/alarm'
+import { createConnect, send as bleSend } from '@zos/ble'
 import { LocalStorage } from '@zos/storage'
 import { settingsStorage } from '@zos/settings'
 import { readFileSync } from '@zos/fs'
@@ -43,6 +44,10 @@ let lastTempSyncIndex = -1 // 上次同步的体温索引 (每5分钟一个, 共
 let lastTempSyncDate = '' // 上次同步日期，跨日重置用
 let sleepSkipCounter = 0 // 睡眠状态下跳过传输的计数器
 
+const MAX_HR_RECORDS_PER_SYNC = 30
+const MAX_SPO2_RECORDS_PER_SYNC = 12
+const MAX_TEMP_RECORDS_PER_SYNC = 24
+
 // ── Persist sleepSkipCounter (survives alarm wakeups) ──
 // 使用 @zos/storage LocalStorage (API_LEVEL 3.0+, 官方推荐)
 const _localStorage = new LocalStorage()
@@ -59,7 +64,39 @@ function writeSleepSkipCounter(value) {
   try {
     _localStorage.setItem('lw_skip', value)
   } catch (e) {
-    console.warn('[LiveWatch:device] Failed to persist sleepSkipCounter: ' + e.message)
+    console.log('[LiveWatch:device] Failed to persist sleepSkipCounter: ' + e.message)
+  }
+}
+
+function readNumber(key, fallback) {
+  try {
+    const val = _localStorage.getItem(key, fallback)
+    return typeof val === 'number' ? val : fallback
+  } catch (e) {}
+  return fallback
+}
+
+function writeNumber(key, value) {
+  try {
+    _localStorage.setItem(key, value)
+  } catch (e) {
+    console.log('[LiveWatch:device] Failed to persist ' + key + ': ' + e.message)
+  }
+}
+
+function readString(key, fallback) {
+  try {
+    const val = _localStorage.getItem(key, fallback)
+    return typeof val === 'string' ? val : fallback
+  } catch (e) {}
+  return fallback
+}
+
+function writeString(key, value) {
+  try {
+    _localStorage.setItem(key, value)
+  } catch (e) {
+    console.log('[LiveWatch:device] Failed to persist ' + key + ': ' + e.message)
   }
 }
 
@@ -76,7 +113,7 @@ function writeLastSpo2SyncTime(value) {
   try {
     _localStorage.setItem('lw_spo2_time', value)
   } catch (e) {
-    console.warn('[LiveWatch:device] Failed to persist lastSpo2SyncTime: ' + e.message)
+    console.log('[LiveWatch:device] Failed to persist lastSpo2SyncTime: ' + e.message)
   }
 }
 
@@ -91,6 +128,11 @@ AppService({
 
     // Restore lastSpo2SyncTime from file
     lastSpo2SyncTime = readLastSpo2SyncTime()
+    lastSpo2SyncDate = readString('lw_spo2_date', '')
+    lastHrSyncIndex = readNumber('lw_hr_index', -1)
+    lastHrSyncDate = readString('lw_hr_date', '')
+    lastTempSyncIndex = readNumber('lw_temp_index', -1)
+    lastTempSyncDate = readString('lw_temp_date', '')
     console.log('[LiveWatch:device] lastSpo2SyncTime restored: ' + lastSpo2SyncTime)
 
     // Read config
@@ -152,7 +194,7 @@ function collectAndUpload() {
     isSleeping = (sleepStatus === 1)
     console.log('[LiveWatch:device] Sleep status: ' + (isSleeping ? 'sleeping' : 'awake'))
   } catch (e) {
-    console.warn('[LiveWatch:device] Sleep detection failed: ' + e.message)
+    console.log('[LiveWatch:device] Sleep detection failed: ' + e.message)
   }
 
   // 2. 智能传输策略：首次检测到睡眠时必须上传（让服务端立即知道），
@@ -240,41 +282,39 @@ function collectAndUpload() {
   }
 
   const compactSize = JSON.stringify(compactPayload).length
-  const verbosePayload = expandToVerbose(compactPayload, now)
-  const verboseSize = JSON.stringify(verbosePayload).length
-  const saved = verboseSize > 0 ? Math.round((1 - compactSize / verboseSize) * 100) : 0
-  console.log('[LiveWatch:device] Compact: ' + compactSize + ' bytes, Verbose: ' + verboseSize + ' bytes (saved ' + saved + '%)')
+  console.log('[LiveWatch:device] Compact payload: ' + compactSize + ' bytes')
 
-  // Upload via httpRequest (expand back to verbose for server compatibility)
-  if (typeof httpRequest !== 'function') {
-    console.warn('[LiveWatch:device] httpRequest not available')
-    return
+  // Send compact data to side-service over BLE. Side-service expands and uploads.
+  sendToCompanion(compactPayload)
+}
+
+function sendToCompanion(payload) {
+  // 手表端不直接 HTTP 上传，交给伴生应用处理。@zos/messaging 是 side-service API；
+  // device/app-service 侧应使用 @zos/ble，把 JSON 编码成二进制发送。
+  try {
+    createConnect(function () {})
+    const msg = { type: 'batch_data', payload: payload }
+    const bytes = utf8Encode(JSON.stringify(msg))
+    const ok = bleSend(bytes.buffer, bytes.byteLength)
+    console.log('[LiveWatch:device] BLE send ' + (ok ? 'ok' : 'failed') + ', bytes=' + bytes.byteLength)
+  } catch (e) {
+    console.log('[LiveWatch:device] BLE send failed: ' + ((e && e.message) || e))
   }
+}
 
-  const body = JSON.stringify(verbosePayload)
-
-  httpRequest({
-    method: 'POST',
-    url: serverUrl.replace(/\/+$/, '') + '/api/zepp-batch',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + token,
-    },
-    body: body,
-    timeout: 10_000,
-  }).then(res => {
-    if (res.status >= 200 && res.status < 300) {
-      console.log('[LiveWatch:device] Batch upload OK')
-      // Update sync index after successful upload
-      if (compactHr.length > 0) {
-        updateHrSyncIndex(now)
-      }
+function utf8Encode(str) {
+  const escaped = encodeURIComponent(str)
+  const bytes = []
+  for (let i = 0; i < escaped.length; i++) {
+    const ch = escaped.charAt(i)
+    if (ch === '%') {
+      bytes.push(parseInt(escaped.substr(i + 1, 2), 16))
+      i += 2
     } else {
-      console.warn('[LiveWatch:device] HTTP ' + res.status)
+      bytes.push(ch.charCodeAt(0))
     }
-  }).catch(err => {
-    console.error('[LiveWatch:device] Upload failed: ' + (err.message || err))
-  })
+  }
+  return new Uint8Array(bytes)
 }
 
 // ── Heart Rate History Collection (O(N), only non-zero values) ──
@@ -292,6 +332,8 @@ function collectHeartRateHistory(now) {
     if (todayStr !== lastHrSyncDate) {
       lastHrSyncIndex = -1
       lastHrSyncDate = todayStr
+      writeNumber('lw_hr_index', lastHrSyncIndex)
+      writeString('lw_hr_date', lastHrSyncDate)
     }
 
     // Collect only non-zero values (compact: [value, minuteIndex])
@@ -308,9 +350,17 @@ function collectHeartRateHistory(now) {
       records.push([hr, i])  // compact: [value, minuteIndex]
     }
 
-    return records
+    if (todayData.length > 0) {
+      lastHrSyncIndex = todayData.length - 1
+      writeNumber('lw_hr_index', lastHrSyncIndex)
+      writeString('lw_hr_date', lastHrSyncDate)
+    }
+
+    return records.length > MAX_HR_RECORDS_PER_SYNC
+      ? records.slice(records.length - MAX_HR_RECORDS_PER_SYNC)
+      : records
   } catch (e) {
-    console.warn('[LiveWatch:device] getToday() failed: ' + e.message)
+    console.log('[LiveWatch:device] getToday() failed: ' + e.message)
     return []
   }
 }
@@ -342,6 +392,8 @@ function collectSpo2History(hours) {
     if (todayStr !== lastSpo2SyncDate) {
       lastSpo2SyncTime = 0
       lastSpo2SyncDate = todayStr
+      writeLastSpo2SyncTime(0)
+      writeString('lw_spo2_date', todayStr)
     }
 
     const records = []
@@ -364,11 +416,14 @@ function collectSpo2History(hours) {
     if (maxTime > lastSpo2SyncTime) {
       lastSpo2SyncTime = maxTime
       writeLastSpo2SyncTime(maxTime)
+      writeString('lw_spo2_date', todayStr)
     }
 
-    return records
+    return records.length > MAX_SPO2_RECORDS_PER_SYNC
+      ? records.slice(records.length - MAX_SPO2_RECORDS_PER_SYNC)
+      : records
   } catch (e) {
-    console.warn('[LiveWatch:device] getLastFewHour() failed: ' + e.message)
+    console.log('[LiveWatch:device] getLastFewHour() failed: ' + e.message)
     return []
   }
 }
@@ -389,6 +444,8 @@ function collectTempHistory(now) {
     if (todayStr !== lastTempSyncDate) {
       lastTempSyncIndex = -1
       lastTempSyncDate = todayStr
+      writeNumber('lw_temp_index', lastTempSyncIndex)
+      writeString('lw_temp_date', lastTempSyncDate)
     }
 
     // 只采集新数据
@@ -408,11 +465,15 @@ function collectTempHistory(now) {
     // 更新同步索引
     if (todayData.length > 0) {
       lastTempSyncIndex = todayData.length - 1
+      writeNumber('lw_temp_index', lastTempSyncIndex)
+      writeString('lw_temp_date', lastTempSyncDate)
     }
 
-    return records
+    return records.length > MAX_TEMP_RECORDS_PER_SYNC
+      ? records.slice(records.length - MAX_TEMP_RECORDS_PER_SYNC)
+      : records
   } catch (e) {
-    console.warn('[LiveWatch:device] bodyTemperature.getToday() failed: ' + e.message)
+    console.log('[LiveWatch:device] bodyTemperature.getToday() failed: ' + e.message)
     return []
   }
 }
@@ -442,7 +503,7 @@ function expandToVerbose(compact, now) {
   if (cs.hrr) extraFields.heart_rate_resting = cs.hrr
 
   const verboseStatus = {
-    app_id: 'zepp-watch',
+    app_id: 'zepp_watch',
     window_title: '手表在线',
     timestamp: nowISO,
     extra: {
@@ -466,7 +527,7 @@ function expandToVerbose(compact, now) {
 
   // Expand SpO2: [value, timeSec] → verbose
   const verboseSpo2 = (compact.o || []).map(([v, ts]) => ({
-    type: 'spo2',
+    type: 'oxygen_saturation',
     value: v,
     unit: '%',
     timestamp: new Date(ts * 1000).toISOString(),
@@ -474,7 +535,7 @@ function expandToVerbose(compact, now) {
 
   // Expand Temp: [value, minuteOffset] → verbose
   const verboseTemp = (compact.t || []).map(([v, m]) => ({
-    type: 'body_temp',
+    type: 'body_temperature',
     value: v,
     unit: '°C',
     timestamp: isoFromMinuteOffset(m),
@@ -498,20 +559,20 @@ function setupNextAlarm() {
     const alarms = getAllAlarms()
     if (alarms && alarms.length > 0) {
       alarms.forEach(a => {
-        if (a.url === 'app-event/index') cancelAlarm(a.id)
+        cancelAlarm(a)
       })
     }
 
     // Setup next alarm (persistent, survives reboot)
     const alarmId = setAlarm({
-      url: 'app-event/index',
+      url: 'app-service/live-watch',
       delay: Math.ceil(syncIntervalMs / 1000),
       store: true,
     })
 
     console.log('[LiveWatch:device] Next alarm set, id=' + alarmId + ', delay=' + Math.ceil(syncIntervalMs / 1000) + 's')
   } catch (e) {
-    console.warn('[LiveWatch:device] Alarm setup failed: ' + e.message)
+    console.log('[LiveWatch:device] Alarm setup failed: ' + e.message)
   }
 }
 
@@ -532,7 +593,7 @@ function stopSync() {
     const alarms = getAllAlarms()
     if (alarms) {
       alarms.forEach(a => {
-        if (a.url === 'app-service/live-watch.js') cancelAlarm(a.id)
+        cancelAlarm(a)
       })
     }
   } catch (e) {}

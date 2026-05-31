@@ -1,189 +1,140 @@
-// ────────────────────────────────────────────
-//  Live Watch — Device Page (Zepp OS v3 / API 4.0)
-//
-//  使用 @zos/ui 模块化 API（v3 推荐），不依赖 hmUI 全局变量
-//  onInit 时从 settingsStorage 加载配置，确保设置页修改后手表端同步
-// ────────────────────────────────────────────
-
-import { BasePage } from '@zeppos/zml/base-page'
+import * as hmUI from '@zos/ui'
 import { px } from '@zos/utils'
-import { getDeviceInfo, SCREEN_SHAPE_ROUND } from '@zos/device'
-import { createWidget, prop, align } from '@zos/ui'
-import { TEXT, BUTTON } from '@zos/ui/page_widget'
-import { startAppService, stopAppService } from '@zos/app-service'
-import { settingsStorage } from '@zos/settings'
+import { set as setAlarm, getAllAlarms, cancel as cancelAlarm } from '@zos/alarm'
+import { BasePage } from '@zeppos/zml/base-page'
 
-const SERVICE_PATH = 'app-service/live-watch'
+var gUrl = '', gToken = '', gRunning = false, gInterval = 300, gPage = null
+var gWUrl = null, gWBtn = null, gWUpload = null, gWStatus = null, gWDebug = null
 
-const deviceInfo = getDeviceInfo()
-const IS_ROUND = deviceInfo.screenShape === SCREEN_SHAPE_ROUND
-
-const MARGIN_X = IS_ROUND ? 78 : 24
-const MARGIN_TOP = IS_ROUND ? 90 : 60
-const FIELD_W = IS_ROUND ? 324 : 432
-const FIELD_H = 56
-const BTN_W = IS_ROUND ? 324 : 432
-const BTN_H = 64
-const GAP = 12
+function log(msg) { console.log('[WATCH] ' + msg) }
 
 Page(
   BasePage({
-    state: {
-      serverUrl: '',
-      token: '',
-      syncInterval: 300,
-      enabled: false,
-      status: '未启动',
-      statusColor: 0x999999,
-    },
-
     onInit() {
-      // 从 settingsStorage 加载配置（与设置页同步）
-      this.loadConfig()
-      this.buildUI()
+      gPage = this
+      log('onInit')
+      this.request({ method: 'GET_CONFIG' }).then(function (r) {
+        gUrl = r.serverUrl || ''
+        gToken = r.token || ''
+        gRunning = r.enabled || false
+        gInterval = Number(r.syncInterval || 300)
+        updateUI()
+      }).catch(function () {})
     },
 
-    loadConfig() {
-      try {
-        const raw = settingsStorage.getItem('livewatch_config')
-        if (raw) {
-          const cfg = JSON.parse(raw)
-          if (cfg.serverUrl) this.state.serverUrl = cfg.serverUrl
-          if (cfg.token) this.state.token = cfg.token
-          if (cfg.syncInterval) this.state.syncInterval = cfg.syncInterval
-          if (cfg.enabled !== undefined) this.state.enabled = cfg.enabled
-        }
-      } catch (e) {
-        console.warn('[LiveWatch:page] loadConfig failed: ' + e.message)
-      }
-    },
-
-    buildUI() {
-      let y = MARGIN_TOP
-
-      // 标题
-      createWidget(TEXT, {
-        x: px(MARGIN_X), y: px(y),
-        w: px(FIELD_W), h: px(36),
-        text: 'Live Watch',
-        text_size: px(28),
-        color: 0xffffff,
-        align_h: align.CENTER_H,
+    build() {
+      log('build')
+      hmUI.createWidget(hmUI.widget.TEXT, {
+        x: px(42), y: px(40), w: px(396), h: px(24),
+        text: 'Live Watch', text_size: px(22), color: 0xffffff, align_h: hmUI.align.CENTER_H,
       })
-      y += 44
 
-      // 服务器地址
-      createWidget(TEXT, {
-        x: px(MARGIN_X), y: px(y),
-        w: px(FIELD_W), h: px(24),
-        text: '服务器地址',
-        text_size: px(20),
-        color: 0xaaaaaa,
+      gWUrl = hmUI.createWidget(hmUI.widget.TEXT, {
+        x: px(24), y: px(72), w: px(432), h: px(18),
+        text: '', text_size: px(14), color: 0xaaaaaa, align_h: hmUI.align.CENTER_H,
       })
-      y += 26
 
-      // 显示截断的 URL
-      const displayUrl = this.state.serverUrl
-        ? this.state.serverUrl.replace(/^https?:\/\//, '').substring(0, 24)
-        : '未设置（请在手机端配置）'
-
-      this._urlText = createWidget(TEXT, {
-        x: px(MARGIN_X), y: px(y),
-        w: px(FIELD_W), h: px(FIELD_H),
-        text: displayUrl,
-        text_size: px(22),
-        color: this.state.serverUrl ? 0xffffff : 0xff6600,
+      gWBtn = hmUI.createWidget(hmUI.widget.BUTTON, {
+        x: px(42), y: px(110), w: px(396), h: px(50),
+        text: '启动同步', text_size: px(22), radius: px(10),
+        normal_color: 0x00aa55, press_color: 0x008844,
+        click_func: onToggle,
       })
-      y += FIELD_H + GAP
 
-      // 同步间隔
-      this._intervalText = createWidget(TEXT, {
-        x: px(MARGIN_X), y: px(y),
-        w: px(FIELD_W), h: px(FIELD_H),
-        text: '间隔 ' + this.state.syncInterval + ' 秒',
-        text_size: px(22),
-        color: 0xcccccc,
+      gWUpload = hmUI.createWidget(hmUI.widget.BUTTON, {
+        x: px(42), y: px(168), w: px(396), h: px(50),
+        text: '手动上传', text_size: px(22), radius: px(10),
+        normal_color: 0x3388cc, press_color: 0x226699,
+        click_func: onManualUpload,
       })
-      y += FIELD_H + GAP * 2
 
-      // 启动按钮
-      this._startBtn = createWidget(BUTTON, {
-        x: px(MARGIN_X), y: px(y),
-        w: px(BTN_W), h: px(BTN_H),
-        text: '启动同步',
-        text_size: px(26),
-        radius: px(12),
-        normal_color: 0x00aa55,
-        press_color: 0x008844,
-        click_func: () => this.onStartClick(),
+      gWStatus = hmUI.createWidget(hmUI.widget.TEXT, {
+        x: px(42), y: px(230), w: px(396), h: px(20),
+        text: '', text_size: px(14), color: 0x888888, align_h: hmUI.align.CENTER_H,
       })
-      y += BTN_H + GAP
 
-      // 停止按钮
-      this._stopBtn = createWidget(BUTTON, {
-        x: px(MARGIN_X), y: px(y),
-        w: px(BTN_W), h: px(BTN_H),
-        text: '停止同步',
-        text_size: px(26),
-        radius: px(12),
-        normal_color: 0xcc3333,
-        press_color: 0x992222,
-        click_func: () => this.onStopClick(),
-      })
-      y += BTN_H + GAP * 2
-
-      // 状态文本
-      this._statusText = createWidget(TEXT, {
-        x: px(MARGIN_X), y: px(y),
-        w: px(FIELD_W), h: px(36),
-        text: this.state.enabled ? '同步已启动' : this.state.status,
-        text_size: px(18),
-        color: this.state.enabled ? 0x00aa55 : this.state.statusColor,
-        align_h: align.CENTER_H,
+      // Debug line on screen
+      gWDebug = hmUI.createWidget(hmUI.widget.TEXT, {
+        x: px(10), y: px(260), w: px(460), h: px(180),
+        text: '', text_size: px(12), color: 0x666666,
+        text_style: hmUI.text_style.WRAP,
       })
     },
 
-    onStartClick() {
-      if (!this.state.serverUrl || !this.state.token) {
-        this.setStatus('请先在手机端配置', 0xff6600)
-        return
-      }
-      const cfg = {
-        serverUrl: this.state.serverUrl,
-        token: this.state.token,
-        syncInterval: this.state.syncInterval,
-        enabled: true,
-      }
-      settingsStorage.setItem('livewatch_config', JSON.stringify(cfg))
-      startAppService({ url: SERVICE_PATH })
-      this.request({ method: 'START', params: cfg })
-      this.state.enabled = true
-      this.setStatus('同步已启动', 0x00aa55)
-    },
-
-    onStopClick() {
-      const cfg = {
-        serverUrl: this.state.serverUrl,
-        token: this.state.token,
-        syncInterval: this.state.syncInterval,
-        enabled: false,
-      }
-      settingsStorage.setItem('livewatch_config', JSON.stringify(cfg))
-      stopAppService({ url: SERVICE_PATH })
-      this.request({ method: 'STOP' })
-      this.state.enabled = false
-      this.setStatus('同步已停止', 0x999999)
-    },
-
-    setStatus(text, color) {
-      this.state.status = text
-      this.state.statusColor = color || 0x999999
-      if (this._statusText) {
-        this._statusText.setProperty(prop.MORE, {
-          text,
-          color: color || 0x999999,
-        })
-      }
-    },
+    onDestroy() { log('destroy') },
   }),
 )
+
+function dbg(msg) {
+  log(msg)
+  if (gWDebug) gWDebug.setProperty(hmUI.prop.MORE, { text: msg })
+}
+
+function onToggle() {
+  dbg('toggle running=' + gRunning)
+  if (!gUrl || !gToken) return
+  var next = !gRunning
+  var method = next ? 'START' : 'STOP'
+  gPage.request({ method: method, params: { serverUrl: gUrl, token: gToken, syncInterval: gInterval } })
+    .then(function (r) {
+      if (next) {
+        var alarmId = setAlarm({
+          url: 'app-service/live-watch',
+          delay: 1,
+          store: true,
+        })
+        dbg('start ok alarm=' + alarmId + ' ' + JSON.stringify(r))
+      } else {
+        try {
+          var alarms = getAllAlarms()
+          if (alarms && alarms.length) {
+            alarms.forEach(function (id) { cancelAlarm(id) })
+          }
+        } catch (e) {}
+        dbg('stop ok ' + JSON.stringify(r))
+      }
+      gRunning = next
+      updateUI()
+    })
+    .catch(function (e) {
+      dbg('toggle failed: ' + e)
+      hmUI.showToast({ text: '切换失败' })
+    })
+}
+
+function onManualUpload() {
+  if (!gUrl || !gToken) { hmUI.showToast({ text: '请先配置' }); return }
+  hmUI.showToast({ text: '发送中...' })
+  gPage.request({ method: 'UPLOAD_NOW', params: { serverUrl: gUrl, token: gToken } })
+    .then(function (r) { hmUI.showToast({ text: 'OK: ' + JSON.stringify(r) }) })
+    .catch(function (e) { hmUI.showToast({ text: 'FAIL: ' + e }) })
+}
+
+function updateUI() {
+  var has = gUrl && gToken
+  if (gWUrl) {
+    var u = has ? gUrl.replace(/^https?:\/\//, '') : '未配置'
+    if (u.length > 36) u = u.substring(0, 34) + '..'
+    gWUrl.setProperty(hmUI.prop.MORE, { text: u, color: has ? 0xaaaaaa : 0xff6600 })
+  }
+  // 重建按钮实现切换
+  if (gWBtn) { hmUI.deleteWidget(gWBtn) }
+  if (gWUpload) { hmUI.deleteWidget(gWUpload) }
+  gWBtn = hmUI.createWidget(hmUI.widget.BUTTON, {
+    x: px(42), y: px(150), w: px(396), h: px(55),
+    text: gRunning ? '停止同步' : '启动同步', text_size: px(24), radius: px(12),
+    normal_color: gRunning ? 0xcc3333 : 0x00aa55,
+    press_color: gRunning ? 0x992222 : 0x008844,
+    click_func: onToggle,
+  })
+  gWUpload = hmUI.createWidget(hmUI.widget.BUTTON, {
+    x: px(42), y: px(215), w: px(396), h: px(55),
+    text: '手动上传', text_size: px(24), radius: px(12),
+    normal_color: 0x3388cc, press_color: 0x226699,
+    click_func: onManualUpload,
+  })
+  gWStatus.setProperty(hmUI.prop.MORE, {
+    text: gRunning ? '正在后台同步' : (has ? '已配置，点击启动' : '请在手机端设置'),
+    color: gRunning ? 0x00aa55 : (has ? 0xaaaaaa : 0x888888)
+  })
+}
