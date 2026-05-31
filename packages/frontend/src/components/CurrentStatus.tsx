@@ -15,7 +15,7 @@ export default function CurrentStatus({ devices }: Props) {
 
   const isOnline = !!active;
   const description = active
-    ? getAppDescription(active.app_name, active.display_title)
+    ? getAppDescription(active.app_name, active.display_title, active.extra?.music)
     : null;
 
   const battery = active?.extra;
@@ -31,7 +31,7 @@ export default function CurrentStatus({ devices }: Props) {
             <div className="flex items-center justify-center gap-2 mb-3">
               <span className="w-2 h-2 rounded-full bg-[var(--color-emerald)] pulse-dot" />
               <span className="text-[11px] font-medium text-[var(--color-emerald)] uppercase tracking-[0.15em]">
-                Online
+                在线
               </span>
             </div>
 
@@ -64,7 +64,7 @@ export default function CurrentStatus({ devices }: Props) {
               )}
               {onlineDevices.length > 1 && (
                 <span className="text-[11px] text-[var(--color-text-muted)]">
-                  {onlineDevices.length} devices
+                  {onlineDevices.length} 台设备在线
                 </span>
               )}
             </div>

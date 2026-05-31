@@ -4,8 +4,10 @@
  * 配置存储在 EdgeKV namespace "live-dashboard-config"：
  *   key "origin" → 源站地址 (如 https://live.myallinone.online)
  *   key "secret" → HMAC 密钥 (与源站 HASH_SECRET 一致)
+ *   key "device_tokens" → 可选，设备密钥白名单，逗号/空白分隔
+ *   key "device_token_hashes" → 可选，HMAC(secret, "device:" + token) 白名单
  *
- * 部署前在 EdgeKV 控制台写入这两个 key。
+ * 部署前至少在 EdgeKV 控制台写入 origin 和 secret。
  */
 
 // ── 常量 ──
@@ -30,18 +32,25 @@ function withTimeout(promise, ms, fallback) {
 // ── 配置加载 ──
 async function loadConfig() {
   const kv = new EdgeKV({ namespace: CONFIG_NS });
-  const [origin, secret] = await Promise.all([
+  const [origin, secret, deviceTokens, deviceTokenHashes] = await Promise.all([
     withTimeout(kv.get("origin", { type: "text" }), 2000, ""),
     withTimeout(kv.get("secret", { type: "text" }), 2000, ""),
+    withTimeout(kv.get("device_tokens", { type: "text" }), 2000, ""),
+    withTimeout(kv.get("device_token_hashes", { type: "text" }), 2000, ""),
   ]);
-  return { origin: origin || "", secret: secret || "" };
+  return {
+    origin: origin || "",
+    secret: secret || "",
+    deviceTokens: deviceTokens || "",
+    deviceTokenHashes: deviceTokenHashes || "",
+  };
 }
 
 // ══════════════════════════════════════════════════════════════
 export default {
   async fetch(request) {
     const cfg = await loadConfig();
-    const { origin, secret } = cfg;
+    const { origin, secret, deviceTokens, deviceTokenHashes } = cfg;
     if (!origin) return new Response("边缘配置缺失：请在 EdgeKV 写入 origin", { status: 500 });
 
     const url = new URL(request.url);
@@ -64,8 +73,14 @@ export default {
     }
 
     try {
+      // 可信设备请求直接签名回源。放在边缘限流和访客鉴权前，避免管理员设备被误限或误判为 viewer token。
+      const isTrustedDevice = await isDeviceTokenRequest(request, secret, deviceTokens, deviceTokenHashes);
+      if (isTrustedDevice && isDeviceEndpoint(pathname)) {
+        return passthroughSigned(request, origin, clientIp, secret);
+      }
+
       // 全局 IP 限流
-      if (clientIp !== "unknown") {
+      if (clientIp !== "unknown" && !isTrustedDevice) {
         const kv = getEdgeKV();
         if (kv) {
           const count = await kvGetNumber(kv, `g:${clientIp}`);
@@ -221,7 +236,14 @@ async function handleCachedRead(request, origin, pathname, secret) {
   if (!originResp.ok) return originResp;
 
   const respHeaders = new Headers(originResp.headers);
-  respHeaders.set("Cache-Control", `public, max-age=${ttl}, s-maxage=${ttl}`);
+  const publicMessageMeta = pathname === "/api/messages/public"
+    ? getPublicMessageCacheMeta(new URL(request.url))
+    : null;
+  const effectiveTtl = publicMessageMeta?.ttl ?? ttl;
+  respHeaders.set("Cache-Control", `public, max-age=${effectiveTtl}, s-maxage=${effectiveTtl}, stale-while-revalidate=30`);
+  if (publicMessageMeta?.tags?.length) {
+    respHeaders.set("Cache-Tag", publicMessageMeta.tags.join(","));
+  }
   respHeaders.set("X-Edge-Cache", "MISS");
   const response = new Response(originResp.body, { status: originResp.status, headers: respHeaders });
 
@@ -310,12 +332,13 @@ function getCacheTTL(p) {
   if (p === "/api/timeline") return CACHE_TTL.timeline;
   if (p === "/api/config") return CACHE_TTL.config;
   if (p === "/api/health") return CACHE_TTL.health;
+  if (p === "/api/messages/public") return CACHE_TTL.publicMessages;
   if (p === "/api/daily-summary") return 60;
   return 0;
 }
 
 function isAuthEndpoint(p) {
-  return p === "/api/health-data" || p === "/api/location" || p === "/api/messages" || p === "/api/messages/history" || p === "/api/messages/public";
+  return p === "/api/health-data" || p === "/api/location" || p === "/api/messages/public";
 }
 
 function isLocalIp(ip) {
@@ -331,13 +354,100 @@ function extractViewerToken(request) {
   return new URL(request.url).searchParams.get("viewer_token");
 }
 
+function extractBearerToken(request) {
+  const auth = request.headers.get("authorization");
+  const match = auth?.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || "";
+}
+
+function parseDeviceTokenList(raw) {
+  if (!raw) return [];
+  return raw
+    .split(/[\s,]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => entry.includes(":") ? entry.split(":")[0] : entry)
+    .filter(Boolean);
+}
+
+function isDeviceEndpoint(p) {
+  return p === "/api/report" ||
+    p === "/api/health-data" ||
+    p === "/api/location" ||
+    p === "/api/messages" ||
+    p === "/api/messages/history" ||
+    p === "/api/messages/reply" ||
+    p === "/api/messages/delete" ||
+    p === "/api/messages/remark" ||
+    p === "/api/messages/block" ||
+    p === "/api/messages/unblock" ||
+    p === "/api/messages/blocks" ||
+    p === "/api/device";
+}
+
+async function isDeviceTokenRequest(request, secret, rawTokens, rawHashes) {
+  const token = extractBearerToken(request);
+  if (!token) return false;
+
+  const tokens = parseDeviceTokenList(rawTokens);
+  if (tokens.includes(token)) return true;
+
+  if (!secret || !rawHashes) return false;
+  const expected = new Set(rawHashes.split(/[\s,]+/).map((v) => v.trim()).filter(Boolean));
+  if (expected.size === 0) return false;
+  const hash = await hmacHex(secret, "device:" + token);
+  return expected.has(hash) || expected.has(hash.slice(0, 32));
+}
+
+function base64UrlDecode(input) {
+  const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+  return atob(padded);
+}
+
+function currentHourWindow(date = new Date()) {
+  return date.toISOString().slice(0, 13).replace(/[-T:]/g, "");
+}
+
+function currentMessageSlot(date = new Date(), slotMinutes = 10) {
+  const roundedMinute = Math.floor(date.getUTCMinutes() / slotMinutes) * slotMinutes;
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const hour = String(date.getUTCHours()).padStart(2, "0");
+  const minute = String(roundedMinute).padStart(2, "0");
+  return `${year}${month}${day}${hour}${minute}`;
+}
+
+function getPublicMessageCacheMeta(url) {
+  const slot = url.searchParams.get("slot");
+  if (slot && /^\d{12}$/.test(slot)) {
+    const isCurrent = slot === currentMessageSlot();
+    return {
+      ttl: isCurrent ? CACHE_TTL.publicMessages : 60 * 60 * 24 * 30,
+      tags: ["public-messages", `public-messages-slot-${slot}`],
+    };
+  }
+
+  const hourWindow = url.searchParams.get("window") || currentHourWindow();
+  if (/^\d{10}$/.test(hourWindow)) {
+    const isCurrent = hourWindow === currentHourWindow();
+    return {
+      ttl: isCurrent ? 15 : 60 * 60 * 24 * 30,
+      tags: ["public-messages", `public-messages-${hourWindow}`],
+    };
+  }
+
+  return { ttl: CACHE_TTL.publicMessages, tags: ["public-messages"] };
+}
+
 async function verifyViewerToken(token, secret, clientIp) {
   if (!token || !token.includes(".")) return null;
   const [encoded, signature] = token.split(".", 2);
   if (!encoded || !signature) return null;
   if (await hmacSign(secret, encoded) !== signature) return null;
   try {
-    const payload = JSON.parse(atob(encoded.replace(/-/g, "+").replace(/_/g, "/")));
+    const payload = JSON.parse(base64UrlDecode(encoded));
     if (typeof payload.sub !== "string" || typeof payload.exp !== "number") return null;
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;
     if (!/^fp_[a-f0-9]{32}$/.test(payload.sub)) return null;

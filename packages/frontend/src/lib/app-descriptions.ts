@@ -347,6 +347,9 @@ const descriptions: Record<string, string> = {
   淘宝: "正在逛淘宝剁手喵~",
   京东: "正在逛京东剁手喵~",
   拼多多: "正在拼多多砍一刀喵~",
+  Amazon: "正在Amazon逛逛喵~",
+  亚马逊: "正在亚马逊逛逛喵~",
+  "Amazon Shopping": "正在Amazon逛逛喵~",
   唯品会: "正在唯品会逛特卖喵~",
   美团: "正在美团点外卖喵~",
   饿了么: "正在饿了么点外卖喵~",
@@ -376,6 +379,24 @@ const DEFAULT_DESCRIPTION = "正在忙别的喵~";
 const lowerIndex = new Map<string, string>();
 for (const [key, value] of Object.entries(descriptions)) {
   lowerIndex.set(key.toLowerCase(), value);
+}
+
+const ACTION_PREFIX_RE = /^(正在|在)(用|玩|看|听|浏览|阅读|写|剪|修|画|搞|开|聊|搜|刷|逛|下载|同步|办公|调|管理)/;
+
+function withCuteSuffix(text: string): string {
+  const cleaned = text.trim().replace(/[~～。.!！]+$/g, "");
+  return cleaned.endsWith("喵") ? `${cleaned}~` : `${cleaned}喵~`;
+}
+
+function normalizeDisplayTitle(appName: string, displayTitle?: string): string {
+  const title = (displayTitle || "").trim().replace(/\s+/g, " ");
+  if (!title) return "";
+
+  const normalized = title.toLowerCase();
+  const app = appName.trim().toLowerCase();
+  if (normalized === app || normalized === "android" || normalized.endsWith("activity")) return "";
+  if (title === `正在用${appName}` || title.startsWith("正在用系统桌面")) return "";
+  return title;
 }
 
 // Music app names (lowercase) — used to avoid duplicate music info in descriptions
@@ -722,27 +743,27 @@ registerTemplate(
 // Browser — when display_title is available (video site page, generic page title)
 registerTemplate(
   ["Google Chrome", "Chrome"],
-  (t) => `正在用Chrome看「${t}」喵~`
+  (t) => `正在用Chrome浏览「${t}」喵~`
 );
 registerTemplate(
   ["Microsoft Edge"],
-  (t) => `正在用Edge看「${t}」喵~`
+  (t) => `正在用Edge浏览「${t}」喵~`
 );
 registerTemplate(
   ["Firefox"],
-  (t) => `正在用Firefox看「${t}」喵~`
+  (t) => `正在用Firefox浏览「${t}」喵~`
 );
 registerTemplate(
   ["Safari", "Opera", "Arc"],
-  (t) => `正在看「${t}」喵~`
+  (t) => `正在浏览「${t}」喵~`
 );
 registerTemplate(
   ["Brave"],
-  (t) => `正在用Brave看「${t}」喵~`
+  (t) => `正在用Brave浏览「${t}」喵~`
 );
 registerTemplate(
   ["Vivaldi"],
-  (t) => `正在用Vivaldi看「${t}」喵~`
+  (t) => `正在用Vivaldi浏览「${t}」喵~`
 );
 
 export function getAppDescription(appName: string, displayTitle?: string, music?: { title?: string; artist?: string; app?: string }): string {
@@ -750,16 +771,20 @@ export function getAppDescription(appName: string, displayTitle?: string, music?
 
   const appLower = appName.toLowerCase();
   const isMusicAppForeground = _musicAppNames.has(appLower);
+  const title = normalizeDisplayTitle(appName, displayTitle);
 
   // Base description (with or without display title)
   let base: string | undefined;
 
   // If we have a display_title, try to use a rich template
   // BUT skip template for music apps when music extra is present (♪ line handles song info)
-  if (displayTitle && !(isMusicAppForeground && music?.title)) {
+  if (title && !(isMusicAppForeground && music?.title)) {
+    if (ACTION_PREFIX_RE.test(title)) {
+      base = withCuteSuffix(title);
+    }
     const template = titleTemplates.get(appLower);
-    if (template) {
-      base = template(displayTitle);
+    if (!base && template) {
+      base = template(title);
     }
   }
 
@@ -773,10 +798,8 @@ export function getAppDescription(appName: string, displayTitle?: string, music?
 
   if (!base) {
     // Unknown app with a display title → show it
-    if (displayTitle) {
-      // Avoid duplicate "正在用" — if displayTitle already starts with it, just wrap the rest
-      const clean = displayTitle.replace(/^正在用/, "").replace(/^在用/, "");
-      base = `正在用${clean}喵~`;
+    if (title) {
+      base = ACTION_PREFIX_RE.test(title) ? withCuteSuffix(title) : `正在看「${title}」喵~`;
     } else {
       base = DEFAULT_DESCRIPTION;
     }

@@ -81,7 +81,7 @@ export default function Timeline({ segments, currentAppByDevice, onlineDevices, 
                     <button type="button" className="flex w-full items-center text-left group" onClick={() => { if (canOpen) setOpenKeys((prev) => ({ ...prev, [event.key]: !prev[event.key] })); }}>
                       <div className="flex w-12 flex-shrink-0 items-center justify-center px-2 py-2.5">
                         {event.isCurrent ? (
-                          <span className="text-[10px] font-bold text-[var(--color-accent)] uppercase tracking-wider">Now</span>
+                          <span className="text-[10px] font-bold text-[var(--color-accent)] tracking-wider">当前</span>
                         ) : (
                           <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full" style={{ backgroundColor: color }} />
                         )}
@@ -93,7 +93,7 @@ export default function Timeline({ segments, currentAppByDevice, onlineDevices, 
                         )}
                       </div>
                       <div className="w-28 flex-shrink-0 px-2 py-2.5 text-right flex items-center justify-end gap-1">
-                        <span className="font-mono text-[11px] text-[var(--color-text-muted)] tabular-nums">{formatTimeRange(event.startedAt, event.endedAt, onlineDevices ? !onlineDevices.has(deviceId) : undefined)}</span>
+                        <span className="font-mono text-[11px] text-[var(--color-text-muted)] tabular-nums">{formatTimeRange(event.startedAt, event.endedAt, isDeviceOffline(deviceId, onlineDevices))}</span>
                         {canOpen && (
                           <span className="text-[10px] text-[var(--color-text-muted)] opacity-0 group-hover:opacity-100 transition-opacity">{isOpen ? "▲" : "▼"}</span>
                         )}
@@ -104,7 +104,7 @@ export default function Timeline({ segments, currentAppByDevice, onlineDevices, 
                         {compactChildren(event.children).map((child, index) => (
                           <div key={`${child.started_at}-${index}`} className="text-xs">
                             <div className="flex items-center justify-between gap-3">
-                              <span className="font-mono text-[10px] text-[var(--color-text-muted)]">{formatClock(child.started_at)}{child.ended_at ? ` – ${formatClock(child.ended_at)}` : (onlineDevices && !onlineDevices.has(deviceId) ? " – 刚刚" : " – Now")}</span>
+                              <span className="font-mono text-[10px] text-[var(--color-text-muted)]">{formatTimeRange(child.started_at, child.ended_at, isDeviceOffline(deviceId, onlineDevices))}</span>
                             </div>
                             <div className="mt-0.5 truncate text-[var(--color-text)] text-xs" title={describeChild(child)}>{describeChild(child)}</div>
                           </div>
@@ -149,7 +149,7 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
       if (cluster.length >= MIN_CLUSTER_SIZE) {
         const first = cluster[0]!;
         const last = cluster[cluster.length - 1]!;
-          events.push({ key: `${deviceId}:switch:${first.started_at}`, kind: "switching", appName: "切来切去", appId: "switching", title: "正在切来切去喵~", startedAt: first.started_at, endedAt: last.ended_at, durationSeconds: spanSeconds(cluster), isCurrent: (!onlineDevices || onlineDevices.has(deviceId)) && cluster.some((seg) => currentAppByDevice[deviceId] === seg.app_name), children: cluster });
+          events.push({ key: `${deviceId}:switch:${first.started_at}`, kind: "switching", appName: "切来切去", appId: "switching", title: "正在切来切去喵~", startedAt: first.started_at, endedAt: last.ended_at, durationSeconds: spanSeconds(cluster), isCurrent: isCurrentEvent(deviceId, last.ended_at, onlineDevices) && cluster.some((seg) => currentAppByDevice[deviceId] === seg.app_name), children: cluster });
         i += cluster.length;
         continue;
       }
@@ -164,7 +164,7 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
         startedAt: first.started_at,
         endedAt: last.ended_at,
         durationSeconds: spanSeconds(merged),
-        isCurrent: (!onlineDevices || onlineDevices.has(deviceId)) && currentAppByDevice[deviceId] === first.app_name,
+        isCurrent: isCurrentEvent(deviceId, last.ended_at, onlineDevices) && currentAppByDevice[deviceId] === first.app_name,
         children: merged.length > 1 ? compactChildren(merged) : (meaningfulDetailTitle(first) ? [first] : []),
       });
       i += merged.length;
@@ -273,8 +273,16 @@ function getAppColor(appName: string, colorMap: Map<string, string>): string {
   return color;
 }
 
+function isDeviceOffline(deviceId: string, onlineDevices?: Set<string>) {
+  return onlineDevices ? !onlineDevices.has(deviceId) : false;
+}
+
+function isCurrentEvent(deviceId: string, endedAt: string | null, onlineDevices?: Set<string>) {
+  return !endedAt && !isDeviceOffline(deviceId, onlineDevices);
+}
+
 function formatTimeRange(startedAt: string, endedAt: string | null, isOffline?: boolean) {
-  return `${formatClock(startedAt)} – ${endedAt ? formatClock(endedAt) : (isOffline ? "刚刚" : "Now")}`;
+  return `${formatClock(startedAt)} – ${endedAt ? formatClock(endedAt) : (isOffline ? "已离线" : "现在")}`;
 }
 
 function formatClock(value: string) {

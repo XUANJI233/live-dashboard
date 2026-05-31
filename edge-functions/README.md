@@ -4,7 +4,8 @@
 
 ## 能干嘛
 
-- 读取接口（设备状态、时间线、配置）在边缘缓存几秒，不用每次都回源
+- 读取接口（设备状态、时间线、配置、公开留言）在边缘缓存几秒，不用每次都回源
+- 公开留言按 `slot` URL 分片缓存；当前窗口短缓存，历史窗口可由 CDN 按 URL 命中
 - PoW 挑战在边缘生成和验证，不走 CDN
 - 无效的 token 请求在边缘直接拒绝，不打到服务器
 
@@ -30,6 +31,10 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 |-----|---|
 | `origin` | `https://live.myallinone.online`（你的域名/加速域名） |
 | `secret` | 和服务器 `.env` 的 `HASH_SECRET` 一样 |
+| `device_tokens` | 可选。设备密钥白名单，逗号/空白分隔；也兼容 `token:device_id:name:platform` 这种服务端配置行 |
+| `device_token_hashes` | 可选。`HMAC-SHA256(secret, "device:" + token)` 的 hex 列表，适合不想在 EdgeKV 存明文密钥 |
+
+配置 `device_tokens` 或 `device_token_hashes` 后，带有效 `Authorization: Bearer <token>` 的设备/API 管理请求会在边缘直接签名回源，不走访客 token 校验，也不吃边缘全局 IP 限流。源站仍会继续校验设备密钥。
 
 ### 4. 配置路由
 

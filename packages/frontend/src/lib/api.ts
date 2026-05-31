@@ -1,3 +1,5 @@
+import { ensureViewerToken, getCachedViewerToken } from "@/lib/viewer-token";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 
 export interface DeviceState {
@@ -186,8 +188,7 @@ export async function fetchHealthData(date: string, signal?: AbortSignal, device
   const tz = new Date().getTimezoneOffset();
   let url = `${API_BASE}/api/health-data?date=${encodeURIComponent(date)}&tz=${tz}`;
   if (deviceId) url += `&device_id=${encodeURIComponent(deviceId)}`;
-  // Include viewer token for authentication
-  const viewerToken = typeof window !== "undefined" ? localStorage.getItem("live-dashboard-viewer-token") : null;
+  const viewerToken = getCachedViewerToken() || (typeof window !== "undefined" ? (await ensureViewerToken()).token : null);
   if (viewerToken) url += `&viewer_token=${encodeURIComponent(viewerToken)}`;
   const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);

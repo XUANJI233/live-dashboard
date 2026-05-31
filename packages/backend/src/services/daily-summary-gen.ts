@@ -100,7 +100,9 @@ export async function generateDailySummary(): Promise<void> {
       return;
     }
 
-    const data = await res.json();
+    const data = await res.json() as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
     const summary = data?.choices?.[0]?.message?.content?.trim();
     if (!summary) {
       console.error("[ai-summary] Empty response from AI");

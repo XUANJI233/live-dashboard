@@ -31,7 +31,7 @@ export default function Header({ serverTime, viewerCount = 0 }: HeaderProps) {
         {/* Left: title */}
         <div>
           <h1 className="text-3xl font-semibold font-[var(--font-display)] gradient-text leading-tight tracking-tight">
-            Monika Now
+            Monika 现在
           </h1>
           <p suppressHydrationWarning className="text-sm text-[var(--color-text-muted)] mt-2 font-light tracking-wide">
             {greeting.text}
@@ -46,7 +46,7 @@ export default function Header({ serverTime, viewerCount = 0 }: HeaderProps) {
           {viewerCount > 0 && (
             <p className="text-[11px] text-[var(--color-text-muted)]">
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-emerald)] mr-1.5 relative top-[-1px]" />
-              {viewerCount} watching
+              {viewerCount} 人正在看喵~
             </p>
           )}
         </div>

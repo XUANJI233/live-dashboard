@@ -11,13 +11,13 @@ function timeAgo(isoStr: string): string {
   const ts = new Date(isoStr).getTime();
   if (isNaN(ts)) return "";
   const diff = Date.now() - ts;
-  if (diff < 0) return "just now";
+  if (diff < 0) return "刚刚";
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m`;
+  if (mins < 1) return "刚刚";
+  if (mins < 60) return `${mins} 分钟前`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  return `${Math.floor(hrs / 24)}d`;
+  if (hrs < 24) return `${hrs} 小时前`;
+  return `${Math.floor(hrs / 24)} 天前`;
 }
 
 type Props = {
@@ -56,7 +56,7 @@ export default function DeviceCard({ device, selected = false, onSelect }: Props
           )}
         </div>
         <span className="text-[11px] text-[var(--color-text-muted)]">
-          {isOnline ? timeAgo(device.last_seen_at) : "offline"}
+          {isOnline ? timeAgo(device.last_seen_at) : "离线"}
         </span>
       </div>
 

@@ -8,6 +8,7 @@ import {
   type DeviceState,
   type TimelineResponse,
 } from "@/lib/api";
+import { ensureViewerToken } from "@/lib/viewer-token";
 
 const TIMELINE_POLL_INTERVAL = 30 * 1000;
 const DEVICE_POLL_INTERVAL = 15 * 1000; // slower fallback polling for devices
@@ -17,20 +18,6 @@ const WS_RECONNECT_MAX = 30000;
 function todayStr(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function getViewerToken(): string | null {
-  if (typeof window === "undefined") return null;
-  const token = localStorage.getItem("live-dashboard-viewer-token");
-  const exp = Number(localStorage.getItem("live-dashboard-viewer-token-exp") || 0);
-  if (token && Date.now() < exp - 60_000) return token;
-  // Token expired or missing — clear it so VisitorMessages can re-trigger PoW
-  if (token && Date.now() >= exp - 60_000) {
-    localStorage.removeItem("live-dashboard-viewer-token");
-    localStorage.removeItem("live-dashboard-viewer-id");
-    localStorage.removeItem("live-dashboard-viewer-token-exp");
-  }
-  return null;
 }
 
 /**
@@ -122,13 +109,16 @@ export function useDashboard() {
     let reconnectDelay = WS_RECONNECT_BASE;
     let disposed = false;
 
-    function connect() {
-      const token = getViewerToken();
-      if (!token) {
-        // No token yet (PoW not done) — retry shortly
-        if (!disposed) reconnectTimer = setTimeout(connect, 2000);
+    async function connect() {
+      let token = "";
+      try {
+        token = (await ensureViewerToken()).token;
+      } catch {
+        if (!disposed) reconnectTimer = setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, WS_RECONNECT_MAX);
         return;
       }
+      if (disposed) return;
 
       ws = new WebSocket(getRealtimeUrl(token));
 
@@ -232,7 +222,7 @@ export function useDashboard() {
         }
       } catch (e) {
         if (!controller.signal.aborted && thisRequest === currentRequestId) {
-          setError(e instanceof Error ? e.message : "Failed to fetch data");
+          setError(e instanceof Error ? e.message : "数据拉取失败，正在重试");
         }
       } finally {
         if (!controller.signal.aborted && thisRequest === currentRequestId) {

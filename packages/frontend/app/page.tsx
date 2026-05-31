@@ -171,10 +171,14 @@ function HomeInner() {
     return () => { document.body.classList.remove("night-mode"); };
   }, [allOffline]);
 
+  const refreshText = wsConnected
+    ? "实时同步中，时间线每 30 秒轻轻补一次"
+    : "实时连接恢复中，暂用 15 秒备用刷新";
+
   return (
     <>
       <main className="relative z-10 max-w-6xl mx-auto px-4 py-8">
-        <div className="flex gap-4">
+        <div className="flex flex-col gap-4 lg:flex-row">
         <div className="flex-1 min-w-0">
       <Header serverTime={current?.server_time} viewerCount={viewerCount} />
 
@@ -308,7 +312,7 @@ function HomeInner() {
 
       {/* Right sidebar: visitor messages (collapsible) */}
       {current && selectedDevice && (
-        <div className={`hidden lg:block flex-shrink-0 transition-all duration-300 ${messagesCollapsed ? "w-10" : "w-72"}`}>
+        <div className={`flex-shrink-0 transition-all duration-300 ${messagesCollapsed ? "w-full lg:w-10" : "w-full lg:w-72"}`}>
           {messagesCollapsed ? (
             <button
               onClick={() => setMessagesCollapsed(false)}
@@ -336,17 +340,10 @@ function HomeInner() {
 
       </div>
 
-      {/* Mobile: visitor messages at bottom */}
-      {current && selectedDevice && (
-        <div className="lg:hidden mt-5">
-          <VisitorMessages device={selectedDevice} />
-        </div>
-      )}
-
       {/* Footer */}
       <footer className="mt-12 pt-4 separator-dashed text-center">
             <p className="text-[10px] text-[var(--color-text-muted)]">
-          {displayName} 现在在做什么 · 每 10 秒自动刷新一次 · 喵~
+          {displayName} 现在在做什么 · {refreshText} · 喵~
         </p>
       </footer>
       </main>

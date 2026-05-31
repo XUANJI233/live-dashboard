@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import FingerprintJS from "@fingerprintjs/fingerprintjs";
 import type { DeviceState } from "@/lib/api";
 import { getRealtimeUrl } from "@/lib/api";
+import { ensureViewerToken, getCachedViewerToken, type TokenStatus } from "@/lib/viewer-token";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 
@@ -24,17 +24,6 @@ interface PublicLine {
   viewer_name?: string;
   text: string;
   created_at: string;
-}
-
-// FingerprintJS-based fingerprint (Canvas, WebGL, Audio, Fonts, etc.)
-let fpPromise: Promise<string> | null = null;
-function fingerprint(): Promise<string> {
-  if (!fpPromise) {
-    fpPromise = FingerprintJS.load()
-      .then(fp => fp.get())
-      .then(result => result.visitorId);
-  }
-  return fpPromise;
 }
 
 function currentMessageSlot() {
@@ -77,65 +66,6 @@ function messageStatusText(status?: string) {
   return map[status] || status;
 }
 
-// Solve SHA-256 hashcash PoW challenge
-// difficulty = number of leading hex zeros required (same unit as server)
-async function solvePow(challenge: string, difficulty: number): Promise<string | null> {
-  const targetZeros = difficulty; // server sends hex zeros count directly
-  const deadline = Date.now() + 10_000; // 10 second timeout
-  for (let nonce = 0; nonce < 10_000_000; nonce++) {
-    if (Date.now() > deadline) return null; // timeout
-    const input = challenge + String(nonce);
-    const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-    const hashHex = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
-    if (hashHex.startsWith("0".repeat(targetZeros))) return String(nonce);
-  }
-  return null; // failed to solve
-}
-
-async function ensureViewerToken(onStatus?: (s: string) => void): Promise<{ token: string; viewerId: string }> {
-  const stored = localStorage.getItem("live-dashboard-viewer-token");
-  const storedId = localStorage.getItem("live-dashboard-viewer-id");
-  const storedExp = Number(localStorage.getItem("live-dashboard-viewer-token-exp") || 0);
-  if (stored && storedId && Date.now() < storedExp - 60_000) {
-    return { token: stored, viewerId: storedId };
-  }
-
-  // Step 1: Get PoW challenge
-  onStatus?.("正在验证身份...");
-    onStatus?.("pow");
-  // Cache-bust: CDN ignores no-store headers, unique URL forces fresh response
-  const powRes = await fetch(`${API_BASE}/api/pow/challenge?_=${Date.now()}`);
-  if (!powRes.ok) throw new Error("获取 PoW 挑战失败");
-  const powData = await powRes.json();
-
-  // Step 2: Solve PoW (required unless server says skip for local IPs)
-  const body: Record<string, string> = { fingerprint: await fingerprint() };
-  if (powData.challenge && !powData.skip) {
-    onStatus?.("pow");
-    const nonce = await solvePow(powData.challenge, powData.difficulty || 4);
-    if (!nonce) throw new Error("PoW 计算超时，请重试");
-    body.pow_challenge = powData.challenge;
-    body.pow_nonce = nonce;
-  }
-
-  // Step 3: Request token
-  onStatus?.("token");
-  const res = await fetch(`${API_BASE}/api/token/issue`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || "访客令牌领取失败");
-  }
-  const data = await res.json();
-  localStorage.setItem("live-dashboard-viewer-token", data.token);
-  localStorage.setItem("live-dashboard-viewer-id", data.viewer_id);
-  localStorage.setItem("live-dashboard-viewer-token-exp", String(Date.now() + Number(data.expires_in || 3600) * 1000));
-  return { token: data.token, viewerId: data.viewer_id };
-}
-
 export default function VisitorMessages({ device }: Props) {
   const [connected, setConnected] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState<"idle" | "pow" | "token" | "connecting">("idle");
@@ -160,20 +90,21 @@ export default function VisitorMessages({ device }: Props) {
   useEffect(() => {
     let closed = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
+    let statusTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const showSlowStatus = (status: TokenStatus) => {
+      if (statusTimer) clearTimeout(statusTimer);
+      statusTimer = setTimeout(() => {
+        if (!closed) setLoadingStatus(status);
+      }, 700);
+    };
 
     const connect = async () => {
       try {
-        // Check if token is already cached to avoid flash
-        const cachedToken = localStorage.getItem("live-dashboard-viewer-token");
-        const cachedExp = Number(localStorage.getItem("live-dashboard-viewer-token-exp") || 0);
-        const hasCachedToken = cachedToken && Date.now() < cachedExp - 60_000;
-        if (!hasCachedToken) setLoadingStatus("pow");
-        const identity = await ensureViewerToken((s) => {
-          if (s === "pow" && !hasCachedToken) setLoadingStatus("pow");
-          else if (s === "token") setLoadingStatus("token");
-          else setLoadingStatus("connecting");
-        });
+        const hadCachedToken = Boolean(getCachedViewerToken());
+        const identity = await ensureViewerToken(hadCachedToken ? undefined : showSlowStatus);
         if (closed) return;
+        if (statusTimer) clearTimeout(statusTimer);
         tokenRef.current = identity.token;
         setViewerId(identity.viewerId);
 
@@ -239,6 +170,7 @@ export default function VisitorMessages({ device }: Props) {
     return () => {
       closed = true;
       if (retry) clearTimeout(retry);
+      if (statusTimer) clearTimeout(statusTimer);
       socketRef.current?.close();
     };
   }, [device?.device_id]);
