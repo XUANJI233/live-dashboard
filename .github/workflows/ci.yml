@@ -77,4 +77,4 @@ jobs:
             agents/android-app/**/build/reports/**
             agents/android-app/**/build/outputs/logs/**
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
