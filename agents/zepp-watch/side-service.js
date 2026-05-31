@@ -16,6 +16,14 @@ function cleanToken(value) {
   return String(value || '').replace(/^Bearer\s+/i, '').trim()
 }
 
+function cleanServerUrl(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/api\/(?:report|health-data)$/i, '')
+    .replace(/\/api$/i, '')
+}
+
 AppSideService(
   BaseSideService({
     state: {
@@ -55,7 +63,7 @@ AppSideService(
           break
         }
         case 'START': {
-          this.state.serverUrl = (params && params.serverUrl) || this.state.serverUrl
+          this.state.serverUrl = cleanServerUrl((params && params.serverUrl) || this.state.serverUrl)
           this.state.token = cleanToken((params && params.token) || this.state.token)
           this.state.syncInterval = Number((params && params.syncInterval) || 300)
           this.state.enabled = true
@@ -92,7 +100,7 @@ AppSideService(
       if (key === 'livewatch_config' && newValue) {
         try {
           const cfg = JSON.parse(newValue)
-          if (cfg.serverUrl !== undefined) this.state.serverUrl = cfg.serverUrl
+          if (cfg.serverUrl !== undefined) this.state.serverUrl = cleanServerUrl(cfg.serverUrl)
           if (cfg.token !== undefined) this.state.token = cleanToken(cfg.token)
           if (cfg.syncInterval !== undefined) this.state.syncInterval = Number(cfg.syncInterval)
           if (cfg.enabled !== undefined) {
@@ -148,6 +156,7 @@ AppSideService(
       }
 
       const { status, heart_rate_history, spo2_history, body_temp_history } = expanded
+      const healthRecords = this.statusToHealthRecords(status)
 
       // 1. Status report
       if (status) {
@@ -158,21 +167,47 @@ AppSideService(
       if (heart_rate_history && heart_rate_history.length > 0) {
         const interpolated = this.interpolateHeartRate(heart_rate_history)
         if (interpolated.length > 0) {
-          this.uploadHeartRateHistory(interpolated)
+          healthRecords.push(...interpolated)
         }
       }
 
       // 3. Upload SpO2 history (no interpolation needed)
       if (spo2_history && spo2_history.length > 0) {
-        this.uploadHealthData(spo2_history, 'spo2')
+        healthRecords.push(...spo2_history)
       }
 
       // 4. Upload body temp history (no interpolation needed)
       if (body_temp_history && body_temp_history.length > 0) {
-        this.uploadHealthData(body_temp_history, 'body_temp')
+        healthRecords.push(...body_temp_history)
+      }
+
+      if (healthRecords.length > 0) {
+        this.uploadHealthRecords(healthRecords)
       }
 
       if (res) res(null, { ok: true, message: 'processing' })
+    },
+
+    statusToHealthRecords(status) {
+      if (!status || !status.extra) return []
+      const ts = status.timestamp || new Date().toISOString()
+      const out = []
+      if (typeof status.extra.heart_rate === 'number' && status.extra.heart_rate > 0) {
+        out.push({ type: 'heart_rate', value: status.extra.heart_rate, unit: 'bpm', timestamp: ts })
+      }
+      if (typeof status.extra.heart_rate_resting === 'number' && status.extra.heart_rate_resting > 0) {
+        out.push({ type: 'resting_heart_rate', value: status.extra.heart_rate_resting, unit: 'bpm', timestamp: ts })
+      }
+      if (typeof status.extra.steps === 'number' && status.extra.steps >= 0) {
+        out.push({ type: 'steps', value: status.extra.steps, unit: 'count', timestamp: ts })
+      }
+      if (typeof status.extra.battery_percent === 'number' && status.extra.battery_percent >= 0) {
+        out.push({ type: 'battery_percent', value: status.extra.battery_percent, unit: '%', timestamp: ts })
+      }
+      if (typeof status.extra.sleeping === 'boolean') {
+        out.push({ type: 'sleep_status', value: status.extra.sleeping ? 1 : 0, unit: 'state', timestamp: ts })
+      }
+      return out
     },
 
     // ── Expand compact format to verbose ──
@@ -356,7 +391,7 @@ AppSideService(
     },
     // 无视 enabled 的上传（手动触发用）
     async doUpload(url, token, data, res) {
-      var apiUrl = url.replace(/\/+$/, '') + '/api/report'
+      var apiUrl = cleanServerUrl(url) + '/api/report'
       var bearerToken = cleanToken(token)
       try {
         var r = await fetch({
@@ -372,12 +407,12 @@ AppSideService(
       }
     },
 
-    // ── 上传心率历史 ──
+    // ── 上传健康数据（心率/血氧/体温/状态派生数据） ──
 
-    uploadHeartRateHistory(records) {
+    uploadHealthRecords(records) {
       if (!this.state.serverUrl || !this.state.token) return
       if (!this.state.enabled) {
-        console.log('[LiveWatch:companion] Upload disabled, skip HR history')
+        console.log('[LiveWatch:companion] Upload disabled, skip health records')
         return
       }
 
@@ -393,42 +428,12 @@ AppSideService(
         body: JSON.stringify(payload),
       }).then(res => {
         if (res.status >= 200 && res.status < 300) {
-          console.log('[LiveWatch:companion] HR history upload OK: ' + records.length + ' records')
+          console.log('[LiveWatch:companion] Health upload OK: ' + records.length + ' records')
         } else {
-          console.warn('[LiveWatch:companion] HR history upload HTTP ' + res.status)
+          console.warn('[LiveWatch:companion] Health upload HTTP ' + res.status)
         }
       }).catch(err => {
-        console.error('[LiveWatch:companion] HR history upload failed: ' + (err.message || err))
-      })
-    },
-
-    // ── 上传健康数据（SpO2/体温等） ──
-
-    uploadHealthData(records, type) {
-      if (!this.state.serverUrl || !this.state.token) return
-      if (!this.state.enabled) {
-        console.log('[LiveWatch:companion] Upload disabled, skip ' + type)
-        return
-      }
-
-      const payload = { records: records }
-
-      fetch({
-        url: this.state.serverUrl.replace(/\/+$/, '') + '/api/health-data',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + this.state.token,
-        },
-        body: JSON.stringify(payload),
-      }).then(res => {
-        if (res.status >= 200 && res.status < 300) {
-          console.log('[LiveWatch:companion] ' + type + ' upload OK: ' + records.length + ' records')
-        } else {
-          console.warn('[LiveWatch:companion] ' + type + ' upload HTTP ' + res.status)
-        }
-      }).catch(err => {
-        console.error('[LiveWatch:companion] ' + type + ' upload failed: ' + (err.message || err))
+        console.error('[LiveWatch:companion] Health upload failed: ' + (err.message || err))
       })
     },
 
@@ -437,7 +442,7 @@ AppSideService(
         const raw = settings.settingsStorage.getItem('livewatch_config')
         if (raw) {
           const saved = JSON.parse(raw)
-          if (saved.serverUrl) this.state.serverUrl = saved.serverUrl
+          if (saved.serverUrl) this.state.serverUrl = cleanServerUrl(saved.serverUrl)
           if (saved.token) this.state.token = cleanToken(saved.token)
           if (saved.syncInterval) this.state.syncInterval = Number(saved.syncInterval)
           if (saved.enabled !== undefined) this.state.enabled = Boolean(saved.enabled)

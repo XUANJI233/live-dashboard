@@ -18,7 +18,7 @@ import { Sleep } from '@zos/sensor'
 import { BloodOxygen } from '@zos/sensor'
 import { BodyTemperature } from '@zos/sensor'
 import { set as setAlarm, cancel as cancelAlarm, getAllAlarms } from '@zos/alarm'
-import { createConnect, send as bleSend } from '@zos/ble'
+import { createConnect, send as bleSend, connectStatus } from '@zos/ble'
 import { LocalStorage } from '@zos/storage'
 import { settingsStorage } from '@zos/settings'
 import { readFileSync } from '@zos/fs'
@@ -43,6 +43,12 @@ let lastSpo2SyncDate = '' // 上次同步日期，跨日重置用
 let lastTempSyncIndex = -1 // 上次同步的体温索引 (每5分钟一个, 共288个)
 let lastTempSyncDate = '' // 上次同步日期，跨日重置用
 let sleepSkipCounter = 0 // 睡眠状态下跳过传输的计数器
+let sensorHeartRate = true
+let sensorBattery = true
+let sensorStep = true
+let sensorSleep = true
+let sensorBodyTemp = true
+let sensorSpo2 = false
 
 const MAX_HR_RECORDS_PER_SYNC = 30
 const MAX_SPO2_RECORDS_PER_SYNC = 12
@@ -159,20 +165,22 @@ function restoreConfig() {
     const raw = settingsStorage.getItem('livewatch_config')
     if (raw) {
       const cfg = JSON.parse(raw)
-      serverUrl = cfg.serverUrl || ''
+      serverUrl = cleanServerUrl(cfg.serverUrl || '')
       token = cfg.token || ''
-      syncIntervalMs = Math.max(60_000, (cfg.syncInterval || 300) * 1000)
+      syncIntervalMs = Math.max(60_000, Math.min(3600_000, (cfg.syncInterval || 300) * 1000))
       enabled = cfg.enabled || false
+      restoreSensorConfig(cfg)
     }
   } catch (e) {
     try {
       const data = readFileSync({ path: 'data://livewatch_config.json' })
       if (data) {
         const cfg = JSON.parse(data)
-        serverUrl = cfg.serverUrl || ''
+        serverUrl = cleanServerUrl(cfg.serverUrl || '')
         token = cfg.token || ''
-        syncIntervalMs = Math.max(60_000, (cfg.syncInterval || 300) * 1000)
+        syncIntervalMs = Math.max(60_000, Math.min(3600_000, (cfg.syncInterval || 300) * 1000))
         enabled = cfg.enabled || false
+        restoreSensorConfig(cfg)
       }
     } catch (e2) {
       // No config available
@@ -189,12 +197,14 @@ function collectAndUpload() {
 
   // 1. 先检测睡眠状态 (API_LEVEL 3.0+)
   let isSleeping = false
-  try {
-    const sleepStatus = sleep.getSleepingStatus()
-    isSleeping = (sleepStatus === 1)
-    console.log('[LiveWatch:device] Sleep status: ' + (isSleeping ? 'sleeping' : 'awake'))
-  } catch (e) {
-    console.log('[LiveWatch:device] Sleep detection failed: ' + e.message)
+  if (sensorSleep) {
+    try {
+      const sleepStatus = sleep.getSleepingStatus()
+      isSleeping = (sleepStatus === 1)
+      console.log('[LiveWatch:device] Sleep status: ' + (isSleeping ? 'sleeping' : 'awake'))
+    } catch (e) {
+      console.log('[LiveWatch:device] Sleep detection failed: ' + e.message)
+    }
   }
 
   // 2. 智能传输策略：首次检测到睡眠时必须上传（让服务端立即知道），
@@ -226,29 +236,35 @@ function collectAndUpload() {
 
   // 3. 清醒状态（或睡眠第6次）才获取传感器数据
   // Battery
-  try {
-    const level = battery.getCurrent()
-    if (level != null && level >= 0) extra.battery_percent = level
-  } catch (e) {}
+  if (sensorBattery) {
+    try {
+      const level = battery.getCurrent()
+      if (level != null && level >= 0) extra.battery_percent = level
+    } catch (e) {}
+  }
 
   // Steps
-  try {
-    const currentSteps = step.getCurrent()
-    const targetSteps = step.getTarget()
-    if (currentSteps != null) extra.steps = currentSteps
-    if (targetSteps != null) extra.steps_target = targetSteps
-  } catch (e) {}
+  if (sensorStep) {
+    try {
+      const currentSteps = step.getCurrent()
+      const targetSteps = step.getTarget()
+      if (currentSteps != null) extra.steps = currentSteps
+      if (targetSteps != null) extra.steps_target = targetSteps
+    } catch (e) {}
+  }
 
   // Heart rate (current)
-  try {
-    const lastHr = heartRate.getLast()
-    if (lastHr != null && lastHr > 0) extra.heart_rate = lastHr
-    const restingHr = heartRate.getResting?.()
-    if (restingHr != null && restingHr > 0) extra.heart_rate_resting = restingHr
-  } catch (e) {}
+  if (sensorHeartRate) {
+    try {
+      const lastHr = heartRate.getLast()
+      if (lastHr != null && lastHr > 0) extra.heart_rate = lastHr
+      const restingHr = heartRate.getResting?.()
+      if (restingHr != null && restingHr > 0) extra.heart_rate_resting = restingHr
+    } catch (e) {}
+  }
 
   // 4. 把睡眠状态也包含在上报数据中（服务器端可以看到睡眠历史）
-  extra.sleeping = isSleeping
+  if (sensorSleep) extra.sleeping = isSleeping
 
   // ── Build compact payload (short keys, reduced ~84%) ──
   // Compact format: sends minimal data over BLE/HTTP, side-service expands to verbose
@@ -262,16 +278,16 @@ function collectAndUpload() {
     b: extra.battery_percent ?? 0, // battery
     se: extra.steps ?? 0,          // steps
     st: extra.steps_target ?? 0,   // steps_target
-    sp: isSleeping,                // sleeping
+    sp: sensorSleep ? isSleeping : undefined, // sleeping
     hr: extra.heart_rate ?? 0,     // current heart rate
     hrr: extra.heart_rate_resting ?? 0, // resting HR
     d: { p: 'zp' },                // device: { platform: 'zepp' }
   }
 
   // Compact data arrays (each 85% smaller than verbose)
-  const compactHr = collectHeartRateHistory(now)
-  const compactSpo2 = collectSpo2History(6)
-  const compactTemp = collectTempHistory(now)
+  const compactHr = sensorHeartRate ? collectHeartRateHistory(now) : []
+  const compactSpo2 = sensorSpo2 ? collectSpo2History(6) : []
+  const compactTemp = sensorBodyTemp ? collectTempHistory(now) : []
 
   // Compact payload (short keys for ~84% size reduction)
   const compactPayload = {
@@ -295,11 +311,32 @@ function sendToCompanion(payload) {
     createConnect(function () {})
     const msg = { type: 'batch_data', payload: payload }
     const bytes = utf8Encode(JSON.stringify(msg))
-    const ok = bleSend(bytes.buffer, bytes.byteLength)
-    console.log('[LiveWatch:device] BLE send ' + (ok ? 'ok' : 'failed') + ', bytes=' + bytes.byteLength)
+    bleSend(bytes.buffer, bytes.byteLength)
+    console.log('[LiveWatch:device] BLE send queued, connected=' + connectStatus() + ', bytes=' + bytes.byteLength)
   } catch (e) {
     console.log('[LiveWatch:device] BLE send failed: ' + ((e && e.message) || e))
   }
+}
+
+function cleanServerUrl(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/api\/(?:report|health-data)$/i, '')
+    .replace(/\/api$/i, '')
+}
+
+function readBool(cfg, key, fallback) {
+  return cfg[key] === undefined ? fallback : Boolean(cfg[key])
+}
+
+function restoreSensorConfig(cfg) {
+  sensorHeartRate = readBool(cfg, 'sensorHeartRate', true)
+  sensorBattery = readBool(cfg, 'sensorBattery', true)
+  sensorStep = readBool(cfg, 'sensorStep', true)
+  sensorSleep = readBool(cfg, 'sensorSleep', true)
+  sensorBodyTemp = readBool(cfg, 'sensorBodyTemp', true)
+  sensorSpo2 = readBool(cfg, 'sensorSpo2', false)
 }
 
 function utf8Encode(str) {

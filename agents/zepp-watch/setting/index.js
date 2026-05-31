@@ -14,6 +14,14 @@ function cleanToken(value) {
   return String(value || '').replace(/^Bearer\s+/i, '').trim()
 }
 
+function cleanServerUrl(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/api\/(?:report|health-data)$/i, '')
+    .replace(/\/api$/i, '')
+}
+
 AppSettingsPage({
   build(props) {
     const storage = props.settingsStorage
@@ -42,7 +50,7 @@ AppSettingsPage({
         label: '服务器地址',
         value: get('serverUrl', ''),
         placeholder: 'https://your-dashboard.example.com',
-        onChange: (value) => writeConfig({ serverUrl: String(value || '').trim() }),
+        onChange: (value) => writeConfig({ serverUrl: cleanServerUrl(value) }),
       }),
       TextInput({
         label: '设备令牌',
