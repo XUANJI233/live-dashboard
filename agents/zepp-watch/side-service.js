@@ -57,7 +57,6 @@ AppSideService(
       token: '',
       syncInterval: 300,
       enabled: false,
-      bleListenerReady: false,
       sensorHeartRate: true,
       sensorBattery: true,
       sensorStep: true,
@@ -70,7 +69,6 @@ AppSideService(
     onInit() {
       console.log('[COMPANION] init')
       this.restoreConfig()
-      this.initBleListener()
     },
 
     onRun() {
@@ -135,6 +133,14 @@ AppSideService(
       }
     },
 
+    onCall(req) {
+      var method = req && req.method
+      var params = (req && req.params) || {}
+      if (method === 'BATCH_DATA') {
+        this.handleBatchData((params && params.payload) || params)
+      }
+    },
+
     // ── 设置变更实时同步（来自设置应用） ──
     onSettingsChange({ key, newValue }) {
       if (key === 'livewatch_config' && newValue) {
@@ -150,38 +156,10 @@ AppSideService(
             this.state.enabled = Boolean(cfg.enabled)
             console.log('[LiveWatch:companion] Settings changed, enabled=' + this.state.enabled)
           }
+          this.persistConfig()
         } catch (e) {
           console.warn('[LiveWatch:companion] Failed to parse settings change: ' + e.message)
         }
-      }
-    },
-
-    initBleListener() {
-      if (this.state.bleListenerReady) return
-      try {
-        if (typeof messaging === 'undefined' || !messaging.peerSocket) {
-          console.warn('[LiveWatch:companion] messaging.peerSocket unavailable')
-          return
-        }
-        var self = this
-        messaging.peerSocket.addListener('message', function (payload) {
-          try {
-            var buf = Buffer.from(payload)
-            var first = buf && buf.length ? buf[0] : 0
-            if (first !== 123 && first !== 91) return
-            var msg = JSON.parse(buf.toString('utf-8'))
-            if (msg && msg.type === 'batch_data') {
-              console.log('[LiveWatch:companion] BLE batch received')
-              self.handleBatchData(msg.payload, function () {})
-            }
-          } catch (e) {
-            console.warn('[LiveWatch:companion] BLE payload parse failed: ' + ((e && e.message) || e))
-          }
-        })
-        this.state.bleListenerReady = true
-        console.log('[LiveWatch:companion] BLE listener ready')
-      } catch (e) {
-        console.warn('[LiveWatch:companion] BLE listener init failed: ' + ((e && e.message) || e))
       }
     },
 
@@ -193,12 +171,25 @@ AppSideService(
         return
       }
 
+      const payloads = Array.isArray(params.payloads) ? params.payloads : [params]
+      let accepted = 0
+      for (const payload of payloads) {
+        if (this.handleSingleBatchData(payload)) accepted += 1
+      }
+
+      if (res) {
+        res(null, accepted > 0
+          ? { ok: true, message: 'processing', batches: accepted }
+          : { ok: false, reason: 'invalid compact payload' })
+      }
+    },
+
+    handleSingleBatchData(params) {
       // Compact payload is the BLE format. Verbose payload is accepted for
       // compatibility with older manual/debug senders.
       const expanded = params.status ? params : this.expandCompact(params)
       if (!expanded) {
-        if (res) res(null, { ok: false, reason: 'invalid compact payload' })
-        return
+        return false
       }
 
       const { status, heart_rate_history, spo2_history, body_temp_history } = expanded
@@ -233,7 +224,7 @@ AppSideService(
         this.uploadHealthRecords(healthRecords)
       }
 
-      if (res) res(null, { ok: true, message: 'processing' })
+      return true
     },
 
     flushPendingUploads() {
@@ -368,7 +359,7 @@ AppSideService(
         const verboseTemp = (compact.t || []).map(([v, m]) => ({
           type: 'body_temperature',
           value: v,
-          unit: '°C',
+          unit: 'celsius',
           timestamp: new Date(todayMs + m * 60000).toISOString(),
         }))
 

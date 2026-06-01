@@ -2,7 +2,7 @@
 
 ## 环境要求
 
-- **JDK**: 17+
+- **JDK**: 21（CI 使用 Temurin 21；Android 字节码目标仍保持 Java 17）
 - **Android SDK**: compileSdk 36, minSdk 26
 - **Gradle**: 使用项目自带的 `gradlew` wrapper
 - **IDE** (可选): Android Studio Hedgehog (2023.1.1) 或更新

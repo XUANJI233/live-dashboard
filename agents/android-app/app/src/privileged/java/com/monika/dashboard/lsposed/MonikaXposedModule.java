@@ -15,12 +15,16 @@ import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.telephony.TelephonyManager;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -47,10 +51,12 @@ import javax.net.ssl.SSLSocketFactory;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.IOException;
+import java.io.ByteArrayOutputStream;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 public final class MonikaXposedModule extends XposedModule {
@@ -139,6 +145,9 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile long directIntervalMs = 30000L;
     private volatile boolean directUploadForeground = true;
     private volatile boolean directUploadMedia = true;
+    private volatile boolean directUploadNetwork = true;
+    private volatile boolean directUploadVpn = false;
+    private volatile boolean directUploadInput = false;
     private volatile long lastDirectUploadAt = 0L;
     private volatile LspWebSocketClient wsClient = null;
     private volatile String foregroundPackage = "";
@@ -146,6 +155,7 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String foregroundActivity = "";
     private volatile String foregroundTitle = "";
     private volatile boolean mediaPlaying = false;
+    private volatile boolean inputActive = false;
     private volatile String mediaPackage = "";
     private volatile String mediaApp = "";
     private volatile String mediaTitle = "";
@@ -173,6 +183,7 @@ public final class MonikaXposedModule extends XposedModule {
         ClassLoader cl = param.getClassLoader();
         initUploadThread();
         installForegroundSampler(cl);
+        installInputMethodHooks(cl);
     }
 
     @Override
@@ -243,6 +254,39 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable t) {
             log(Log.WARN, TAG, "foreground sampler hook skipped: " + t.getClass().getSimpleName());
             startForegroundSampler();
+        }
+    }
+
+    private void installInputMethodHooks(ClassLoader cl) {
+        try {
+            Class<?> clazz = Class.forName("com.android.server.inputmethod.InputMethodManagerService", false, cl);
+            int hooked = 0;
+            for (Method method : clazz.getDeclaredMethods()) {
+                String name = method.getName();
+                if (name == null) continue;
+                boolean marksActive = name.contains("showSoftInput") ||
+                        name.contains("showCurrentInput") ||
+                        name.contains("startInputOrWindowGainedFocus");
+                boolean marksInactive = name.contains("hideSoftInput") ||
+                        name.contains("hideCurrentInput");
+                if (!marksActive && !marksInactive) continue;
+                hook(method)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            boolean nextActive = marksActive && !marksInactive;
+                            if (inputActive != nextActive) {
+                                inputActive = nextActive;
+                                try { maybeDirectUpload(true); } catch (Throwable ignored) {}
+                                try { broadcastSnapshot(); } catch (Throwable ignored) {}
+                            }
+                            return result;
+                        });
+                hooked++;
+            }
+            log(Log.INFO, TAG, "hooked InputMethodManagerService methods: " + hooked);
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "input method hooks skipped: " + t.getClass().getSimpleName());
         }
     }
 
@@ -749,6 +793,7 @@ public final class MonikaXposedModule extends XposedModule {
                 sleepIntent.putExtra("app_name", "sleeping");
                 sleepIntent.putExtra("activity", "");
                 sleepIntent.putExtra("input_active", false);
+                inputActive = false;
                 Context ctx = getSystemContext();
                 if (ctx != null) {
                     long token = Binder.clearCallingIdentity();
@@ -830,12 +875,12 @@ public final class MonikaXposedModule extends XposedModule {
                 intent.putExtra("package_name", "idle");
                 intent.putExtra("app_name", "idle");
                 intent.putExtra("activity", "");
-                intent.putExtra("input_active", false);
+                intent.putExtra("input_active", inputActive);
             } else {
                 intent.putExtra("package_name", foregroundPackage);
                 intent.putExtra("app_name", foregroundApp);
                 intent.putExtra("activity", foregroundActivity);
-                intent.putExtra("input_active", false);
+                intent.putExtra("input_active", inputActive);
                 if (foregroundTitle.length() > 0) {
                     intent.putExtra("title", foregroundTitle);
                 }
@@ -1086,6 +1131,9 @@ public final class MonikaXposedModule extends XposedModule {
                         directIntervalMs = Math.max(MIN_DIRECT_UPLOAD_MS, dps.getLong("interval_ms", 30000L));
                         directUploadForeground = dps.getBoolean("upload_foreground", true);
                         directUploadMedia = dps.getBoolean("upload_media", true);
+                        directUploadNetwork = dps.getBoolean("upload_network", true);
+                        directUploadVpn = dps.getBoolean("upload_vpn", false);
+                        directUploadInput = dps.getBoolean("upload_input", false);
                         log(Log.INFO, TAG, "config loaded from DPS: enabled=" + directUploadEnabled);
                         return;
                     }
@@ -1099,6 +1147,9 @@ public final class MonikaXposedModule extends XposedModule {
             directIntervalMs = Math.max(MIN_DIRECT_UPLOAD_MS, prefs.getLong("interval_ms", 30000L));
             directUploadForeground = prefs.getBoolean("upload_foreground", true);
             directUploadMedia = prefs.getBoolean("upload_media", true);
+            directUploadNetwork = prefs.getBoolean("upload_network", true);
+            directUploadVpn = prefs.getBoolean("upload_vpn", false);
+            directUploadInput = prefs.getBoolean("upload_input", false);
             log(Log.INFO, TAG, "config loaded from remote prefs: enabled=" + directUploadEnabled);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "load config failed: " + Log.getStackTraceString(t));
@@ -1113,6 +1164,9 @@ public final class MonikaXposedModule extends XposedModule {
             int intervalSec = intent.getIntExtra("interval_sec", 30);
             boolean uploadForeground = intent.getBooleanExtra("upload_foreground", true);
             boolean uploadMedia = intent.getBooleanExtra("upload_media", true);
+            boolean uploadNetwork = intent.getBooleanExtra("upload_network", true);
+            boolean uploadVpn = intent.getBooleanExtra("upload_vpn", false);
+            boolean uploadInput = intent.getBooleanExtra("upload_input", false);
 
             // Disconnect old WS before changing config (URL/token may have changed)
             boolean configChanged = !serverUrl.equals(directServerUrl) || !token.equals(directToken) || enabled != directUploadEnabled;
@@ -1137,6 +1191,9 @@ public final class MonikaXposedModule extends XposedModule {
                         .putLong("interval_ms", Math.max(MIN_DIRECT_UPLOAD_MS, intervalSec * 1000L))
                         .putBoolean("upload_foreground", uploadForeground)
                         .putBoolean("upload_media", uploadMedia)
+                        .putBoolean("upload_network", uploadNetwork)
+                        .putBoolean("upload_vpn", uploadVpn)
+                        .putBoolean("upload_input", uploadInput)
                         .commit();
             } catch (Throwable ignored) {}
 
@@ -1150,6 +1207,9 @@ public final class MonikaXposedModule extends XposedModule {
             directIntervalMs = Math.max(MIN_DIRECT_UPLOAD_MS, intervalSec * 1000L);
             directUploadForeground = uploadForeground;
             directUploadMedia = uploadMedia;
+            directUploadNetwork = uploadNetwork;
+            directUploadVpn = uploadVpn;
+            directUploadInput = uploadInput;
             log(Log.INFO, TAG, "config applied from broadcast: enabled=" + enabled + " url=" + serverUrl + " token=" + (token.length() > 0 ? "set" : "empty"));
 
             maybeDirectUpload(true);
@@ -1228,6 +1288,7 @@ public final class MonikaXposedModule extends XposedModule {
             device.put("device_kind", getDeviceFormFactor());
             String wm = getWindowingMode();
             if (wm != null) device.put("window_mode", wm);
+            fillNetworkExtras(device);
             extra.put("device", device);
             extra.put("sleeping", "sleeping".equals(foregroundPackage));
             if (directUploadForeground && foregroundPackage.length() > 0 && !"idle".equals(foregroundPackage)) {
@@ -1252,6 +1313,13 @@ public final class MonikaXposedModule extends XposedModule {
                 media.put("source", "lsposed");
                 extra.put("media", media);
             }
+            if (directUploadInput) {
+                JSONObject input = new JSONObject();
+                input.put("input_active", inputActive);
+                input.put("is_typing", inputActive);
+                input.put("source", "lsposed");
+                extra.put("input", input);
+            }
             return new JSONObject()
                     .put("app_id", appId)
                     .put("window_title", windowTitle)
@@ -1261,6 +1329,101 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable t) {
             log(Log.WARN, TAG, "build direct body failed: " + t.getClass().getSimpleName());
             return null;
+        }
+    }
+
+    private void fillNetworkExtras(JSONObject device) {
+        if (!directUploadNetwork && !directUploadVpn) return;
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return;
+            ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return;
+
+            boolean vpnActive = false;
+            String activeType = "";
+            String cellularGeneration = "";
+            boolean connected = false;
+
+            Network active = cm.getActiveNetwork();
+            if (active != null) {
+                NetworkCapabilities caps = cm.getNetworkCapabilities(active);
+                if (caps != null) {
+                    connected = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+                    activeType = networkType(caps);
+                    if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                        cellularGeneration = cellularGeneration();
+                    }
+                    vpnActive = caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
+                }
+            }
+
+            if (directUploadVpn) {
+                for (Network network : cm.getAllNetworks()) {
+                    NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+                    if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                        vpnActive = true;
+                        break;
+                    }
+                }
+                device.put("vpn_active", vpnActive);
+            }
+            if (directUploadNetwork) {
+                device.put("network_connected", connected);
+                if (activeType.length() > 0) device.put("network_type", activeType);
+                if (cellularGeneration.length() > 0) device.put("cellular_generation", cellularGeneration);
+            }
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "network extras skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private String networkType(NetworkCapabilities caps) {
+        if (caps == null) return "";
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "Wi-Fi";
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+            String gen = cellularGeneration();
+            return gen.length() > 0 ? gen : "Cellular";
+        }
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return "Ethernet";
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH)) return "Bluetooth";
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return "VPN";
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ? "Online" : "offline";
+    }
+
+    private String cellularGeneration() {
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return "";
+            TelephonyManager tm = (TelephonyManager) ctx.getSystemService(Context.TELEPHONY_SERVICE);
+            if (tm == null) return "";
+            switch (tm.getDataNetworkType()) {
+                case TelephonyManager.NETWORK_TYPE_NR:
+                    return "5G";
+                case TelephonyManager.NETWORK_TYPE_LTE:
+                case TelephonyManager.NETWORK_TYPE_IWLAN:
+                    return "4G";
+                case TelephonyManager.NETWORK_TYPE_HSPAP:
+                case TelephonyManager.NETWORK_TYPE_HSPA:
+                case TelephonyManager.NETWORK_TYPE_HSDPA:
+                case TelephonyManager.NETWORK_TYPE_HSUPA:
+                case TelephonyManager.NETWORK_TYPE_UMTS:
+                case TelephonyManager.NETWORK_TYPE_EVDO_0:
+                case TelephonyManager.NETWORK_TYPE_EVDO_A:
+                case TelephonyManager.NETWORK_TYPE_EVDO_B:
+                case TelephonyManager.NETWORK_TYPE_EHRPD:
+                    return "3G";
+                case TelephonyManager.NETWORK_TYPE_EDGE:
+                case TelephonyManager.NETWORK_TYPE_GPRS:
+                case TelephonyManager.NETWORK_TYPE_CDMA:
+                case TelephonyManager.NETWORK_TYPE_1xRTT:
+                case TelephonyManager.NETWORK_TYPE_IDEN:
+                    return "2G";
+                default:
+                    return "Cellular";
+            }
+        } catch (Throwable ignored) {
+            return "";
         }
     }
 
@@ -1284,11 +1447,61 @@ public final class MonikaXposedModule extends XposedModule {
             } else {
                 log(Log.WARN, TAG, "http upload HTTP " + code);
             }
+            pollQueuedMessagesFallback();
         } catch (Throwable t) {
             log(Log.WARN, TAG, "http fallback upload failed: " + t.getClass().getSimpleName());
         } finally {
             if (connection != null) connection.disconnect();
         }
+    }
+
+    private void pollQueuedMessagesFallback() {
+        HttpURLConnection connection = null;
+        try {
+            if (!directUploadEnabled || directServerUrl.length() == 0 || directToken.length() == 0) return;
+            URL url = new URL(directServerUrl + "/api/messages");
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(8000);
+            connection.setReadTimeout(8000);
+            connection.setRequestMethod("GET");
+            connection.setRequestProperty("Authorization", "Bearer " + directToken);
+            int code = connection.getResponseCode();
+            if (code < 200 || code >= 300) {
+                log(Log.DEBUG, TAG, "message poll HTTP " + code);
+                return;
+            }
+            String body = readUtf8(connection.getInputStream());
+            JSONArray messages = new JSONObject(body).optJSONArray("messages");
+            if (messages == null || messages.length() == 0) return;
+            for (int i = 0; i < messages.length(); i++) {
+                JSONObject item = messages.optJSONObject(i);
+                if (item == null) continue;
+                JSONObject data = new JSONObject()
+                        .put("type", "viewer_message")
+                        .put("message_id", item.optString("id", ""))
+                        .put("viewer_id", item.optString("viewer_id", ""))
+                        .put("viewer_name", item.optString("viewer_name", ""))
+                        .put("kind", item.optString("kind", "private"))
+                        .put("text", item.optString("text", ""));
+                forwardViewerMessageToApp(data.toString());
+            }
+            log(Log.DEBUG, TAG, "message poll delivered " + messages.length());
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "message poll skipped: " + t.getClass().getSimpleName());
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    private String readUtf8(InputStream input) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buffer = new byte[4096];
+        int read;
+        while ((read = input.read(buffer)) >= 0) {
+            out.write(buffer, 0, read);
+            if (out.size() > 256 * 1024) break;
+        }
+        return new String(out.toByteArray(), StandardCharsets.UTF_8);
     }
 
     private void ensureWsConnected(String serverUrl, String token) {

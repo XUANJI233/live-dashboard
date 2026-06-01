@@ -18,7 +18,6 @@ import { Sleep } from '@zos/sensor'
 import { BloodOxygen } from '@zos/sensor'
 import { BodyTemperature } from '@zos/sensor'
 import { set as setAlarm, cancel as cancelAlarm, getAllAlarms } from '@zos/alarm'
-import { createConnect, send as bleSend, connectStatus } from '@zos/ble'
 import { LocalStorage } from '@zos/storage'
 import { readFileSync } from '@zos/fs'
 
@@ -57,6 +56,7 @@ const DEFAULT_SYNC_INTERVAL_SECONDS = 300
 const MAX_SYNC_INTERVAL_SECONDS = 900 // server marks Zepp offline after 20 minutes
 const MAX_SLEEP_UPLOAD_GAP_MS = 15 * 60_000
 const CONFIG_KEY = 'lw_cfg'
+const PREVIOUS_PAYLOAD_KEY = 'lw_prev_payload'
 
 // ── Persist sleepSkipCounter (survives alarm wakeups) ──
 // 使用 @zos/storage LocalStorage (API_LEVEL 3.0+, 官方推荐)
@@ -205,6 +205,21 @@ function writeLocalConfig(cfg) {
   } catch (e) {}
 }
 
+function readPreviousPayload() {
+  try {
+    const raw = _localStorage.getItem(PREVIOUS_PAYLOAD_KEY, '')
+    if (!raw) return null
+    return typeof raw === 'string' ? JSON.parse(raw) : raw
+  } catch (e) {}
+  return null
+}
+
+function writePreviousPayload(payload) {
+  try {
+    _localStorage.setItem(PREVIOUS_PAYLOAD_KEY, JSON.stringify(payload))
+  } catch (e) {}
+}
+
 function applyConfig(cfg) {
   serverUrl = cleanServerUrl(cfg.serverUrl || '')
   token = cleanToken(cfg.token || '')
@@ -326,50 +341,38 @@ function collectAndUpload() {
   const compactSize = JSON.stringify(compactPayload).length
   console.log('[LiveWatch:device] Compact payload: ' + compactSize + ' bytes')
 
-  // Send compact data to side-service over BLE. Side-service expands and uploads.
-  sendToCompanion(compactPayload)
+  // Retry the previous compact payload once. The server dedupes health rows by
+  // device/type/time, so this protects against a missed BLE handoff without
+  // forcing the watch to wait for a response.
+  const previousPayload = readPreviousPayload()
+  const payloads = previousPayload && previousPayload.s && previousPayload.s.ts !== compactPayload.s.ts
+    ? [previousPayload, compactPayload]
+    : [compactPayload]
+
+  // Send compact data to side-service over ZML BLE. Side-service expands and uploads.
+  sendToCompanion({ payloads: payloads })
+  writePreviousPayload(compactPayload)
 }
 
 function sendToCompanion(payload) {
-  // Prefer ZML's request protocol because BaseSideService installs the same
-  // protocol listener on the phone side. Raw BLE is only a compatibility
-  // fallback when the app-level messaging object is unavailable.
-  if (sendToCompanionViaZml(payload)) return
-  sendToCompanionRaw(payload)
+  sendToCompanionViaZml(payload)
 }
 
 function sendToCompanionViaZml(payload) {
   try {
     const app = typeof getApp === 'function' ? getApp() : null
     const messaging = app && app._options && app._options.globalData && app._options.globalData.messaging
-    if (!messaging || typeof messaging.request !== 'function') return false
+    if (!messaging || typeof messaging.call !== 'function') return false
 
-    messaging.request({
+    messaging.call({
       method: 'BATCH_DATA',
       params: { payload: payload },
-    }, { timeout: 15000 }).then(function () {
-      console.log('[LiveWatch:device] ZML batch sent')
-    }).catch(function (e) {
-      console.log('[LiveWatch:device] ZML batch send failed: ' + ((e && e.message) || e))
     })
     console.log('[LiveWatch:device] ZML batch queued')
     return true
   } catch (e) {
     console.log('[LiveWatch:device] ZML messaging unavailable: ' + ((e && e.message) || e))
     return false
-  }
-}
-
-function sendToCompanionRaw(payload) {
-  // @zos/messaging is side-service API; device/app-service side uses @zos/ble.
-  try {
-    createConnect(function () {})
-    const msg = { type: 'batch_data', payload: payload }
-    const bytes = utf8Encode(JSON.stringify(msg))
-    bleSend(bytes.buffer, bytes.byteLength)
-    console.log('[LiveWatch:device] BLE send queued, connected=' + connectStatus() + ', bytes=' + bytes.byteLength)
-  } catch (e) {
-    console.log('[LiveWatch:device] BLE send failed: ' + ((e && e.message) || e))
   }
 }
 
@@ -396,21 +399,6 @@ function restoreSensorConfig(cfg) {
   sensorSleep = readBool(cfg, 'sensorSleep', true)
   sensorBodyTemp = readBool(cfg, 'sensorBodyTemp', true)
   sensorSpo2 = readBool(cfg, 'sensorSpo2', false)
-}
-
-function utf8Encode(str) {
-  const escaped = encodeURIComponent(str)
-  const bytes = []
-  for (let i = 0; i < escaped.length; i++) {
-    const ch = escaped.charAt(i)
-    if (ch === '%') {
-      bytes.push(parseInt(escaped.substr(i + 1, 2), 16))
-      i += 2
-    } else {
-      bytes.push(ch.charCodeAt(0))
-    }
-  }
-  return new Uint8Array(bytes)
 }
 
 // ── Heart Rate History Collection (O(N), only non-zero values) ──
@@ -633,7 +621,7 @@ function expandToVerbose(compact, now) {
   const verboseTemp = (compact.t || []).map(([v, m]) => ({
     type: 'body_temperature',
     value: v,
-    unit: '°C',
+    unit: 'celsius',
     timestamp: isoFromMinuteOffset(m),
   }))
 

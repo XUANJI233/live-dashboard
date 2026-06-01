@@ -19,6 +19,9 @@ object LsposedConfigBridge {
         val interval = settings.reportInterval.first()
         val uploadFg = settings.uploadForeground.first()
         val uploadMedia = settings.uploadMedia.first()
+        val uploadNetwork = settings.uploadNetwork.first()
+        val uploadVpn = settings.uploadVpnStatus.first()
+        val uploadInput = settings.uploadInputState.first()
 
         // Write to standard SharedPreferences so LSPosed module can read it on boot via getRemotePreferences
         try {
@@ -30,6 +33,9 @@ object LsposedConfigBridge {
                 .putLong("interval_ms", interval * 1000L)
                 .putBoolean("upload_foreground", uploadFg)
                 .putBoolean("upload_media", uploadMedia)
+                .putBoolean("upload_network", uploadNetwork)
+                .putBoolean("upload_vpn", uploadVpn)
+                .putBoolean("upload_input", uploadInput)
                 .apply()
         } catch (e: Exception) {
             DebugLog.log("LSPosed", "Failed to write shared prefs: ${e.message}")
@@ -42,6 +48,9 @@ object LsposedConfigBridge {
             putExtra("interval_sec", interval)
             putExtra("upload_foreground", uploadFg)
             putExtra("upload_media", uploadMedia)
+            putExtra("upload_network", uploadNetwork)
+            putExtra("upload_vpn", uploadVpn)
+            putExtra("upload_input", uploadInput)
         }
         try {
             context.sendBroadcast(intent, PERMISSION)
