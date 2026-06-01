@@ -6,6 +6,8 @@ import type { ActivityRecord, TimelineSegment } from "../types";
 import { db } from "../db";
 import { noStore, withCdnHeaders } from "../services/cdn";
 
+const GAP_THRESHOLD_MS = 2 * 60 * 1000;
+
 export function handleTimeline(url: URL): Response {
   const date = url.searchParams.get("date");
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -31,7 +33,6 @@ export function handleTimeline(url: URL): Response {
     const absM = Math.round((Math.abs(offsetHours) - absH) * 60);
     const modifier = `${sign}${String(absH).padStart(2, "0")}:${String(absM).padStart(2, "0")}`;
 
-    // Query with timezone adjustment: convert started_at to user's local date
     const query = deviceId
       ? db.prepare(`SELECT * FROM activities WHERE date(started_at, '${modifier}') = ? AND device_id = ? ORDER BY started_at ASC LIMIT 10000`)
       : db.prepare(`SELECT * FROM activities WHERE date(started_at, '${modifier}') = ? ORDER BY started_at ASC LIMIT 10000`);
@@ -40,70 +41,21 @@ export function handleTimeline(url: URL): Response {
       ? (query.all(date, deviceId) as ActivityRecord[])
       : (query.all(date) as ActivityRecord[]);
   } else {
-    // No timezone offset — use UTC (backwards compatible)
     activities = deviceId
       ? (getTimelineByDateAndDevice.all(date, deviceId) as ActivityRecord[])
       : (getTimelineByDate.all(date) as ActivityRecord[]);
   }
 
-  // Build timeline segments with duration
-  // Gap threshold: if time between two consecutive activities exceeds this,
-  // the device was likely offline (sleep/shutdown). Agent heartbeats every 60s,
-  // so a 2-minute gap means the device went away.
-  const GAP_THRESHOLD_MS = 2 * 60 * 1000;
+  const segments = buildTimelineSegments(activities);
 
-  const segments: TimelineSegment[] = [];
-  for (let i = 0; i < activities.length; i++) {
-    const a = activities[i]!;
-    // Find next activity on same device to compute end time
-    let endedAt: string | null = null;
-    for (let j = i + 1; j < activities.length; j++) {
-      const next = activities[j];
-      if (next && next.device_id === a.device_id) {
-        endedAt = next.started_at;
-        break;
-      }
-    }
-
-    const startMs = new Date(a.started_at).getTime();
-    if (isNaN(startMs)) continue; // skip malformed timestamps
-
-    let endMs = endedAt ? new Date(endedAt).getTime() : startMs;
-    if (isNaN(endMs)) endMs = startMs;
-
-    // If the gap to the next activity exceeds the threshold, the device was
-    // offline in between. Cap this segment's end to 1 minute after its start
-    // (approximate last heartbeat window) instead of spanning the full gap.
-    if (endedAt && endMs - startMs > GAP_THRESHOLD_MS) {
-      endMs = startMs + 60_000;
-      endedAt = new Date(endMs).toISOString();
-    }
-
-    const durationSeconds = Math.max(0, Math.round((endMs - startMs) / 1000));
-    const durationMinutes = Math.max(0, Math.round(durationSeconds / 60));
-
-    segments.push({
-      app_name: a.app_name,
-      app_id: a.app_id,
-      display_title: a.display_title || "",
-      started_at: a.started_at,
-      ended_at: endedAt,
-      duration_seconds: durationSeconds,
-      duration_minutes: durationMinutes,
-      device_id: a.device_id,
-      device_name: a.device_name,
-    });
-  }
-
-  // Build summary: total minutes per app per device
   const summaryNested = new Map<string, Map<string, number>>();
-  for (const s of segments) {
-    let appMap = summaryNested.get(s.device_id);
+  for (const segment of segments) {
+    let appMap = summaryNested.get(segment.device_id);
     if (!appMap) {
       appMap = new Map();
-      summaryNested.set(s.device_id, appMap);
+      summaryNested.set(segment.device_id, appMap);
     }
-    appMap.set(s.app_name, (appMap.get(s.app_name) || 0) + s.duration_minutes);
+    appMap.set(segment.app_name, (appMap.get(segment.app_name) || 0) + segment.duration_minutes);
   }
 
   const summary: Record<string, Record<string, number>> = {};
@@ -120,6 +72,54 @@ export function handleTimeline(url: URL): Response {
     ["timeline", `timeline-${date}`, ...(deviceId ? [`timeline-device-${deviceId}`] : [])],
     60 * 60 * 24 * 30,
   );
+}
+
+function buildTimelineSegments(activities: ActivityRecord[]): TimelineSegment[] {
+  const byDevice = new Map<string, ActivityRecord[]>();
+  for (const activity of activities) {
+    const list = byDevice.get(activity.device_id) || [];
+    list.push(activity);
+    byDevice.set(activity.device_id, list);
+  }
+
+  const segments: TimelineSegment[] = [];
+  for (const deviceActivities of byDevice.values()) {
+    deviceActivities.sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime());
+
+    for (let i = 0; i < deviceActivities.length; i += 1) {
+      const current = deviceActivities[i]!;
+      const next = deviceActivities[i + 1];
+      const startMs = new Date(current.started_at).getTime();
+      if (Number.isNaN(startMs)) continue;
+
+      let endedAt: string | null = next?.started_at || null;
+      let endMs = endedAt ? new Date(endedAt).getTime() : startMs;
+      if (Number.isNaN(endMs)) endMs = startMs;
+
+      if (endedAt && endMs - startMs > GAP_THRESHOLD_MS) {
+        endMs = startMs + 60_000;
+        endedAt = new Date(endMs).toISOString();
+      }
+
+      const durationSeconds = Math.max(0, Math.round((endMs - startMs) / 1000));
+      const durationMinutes = Math.max(0, Math.round(durationSeconds / 60));
+
+      segments.push({
+        app_name: current.app_name,
+        app_id: current.app_id,
+        display_title: current.display_title || "",
+        started_at: current.started_at,
+        ended_at: next ? endedAt : null,
+        duration_seconds: durationSeconds,
+        duration_minutes: durationMinutes,
+        device_id: current.device_id,
+        device_name: current.device_name,
+      });
+    }
+  }
+
+  segments.sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime());
+  return segments;
 }
 
 function isTodayForOffset(date: string, tzOffsetMinutes: number): boolean {
