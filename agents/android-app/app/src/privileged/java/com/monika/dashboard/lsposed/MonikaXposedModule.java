@@ -8,6 +8,7 @@ import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Intent;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.ComponentName;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
@@ -26,7 +27,9 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.telephony.TelephonyManager;
+import android.text.InputType;
 import android.util.Log;
+import android.view.inputmethod.EditorInfo;
 
 import androidx.annotation.NonNull;
 
@@ -75,7 +78,7 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
     private static final long MIN_DIRECT_UPLOAD_MS = 5000L;
     private static final long MAX_DIRECT_UPLOAD_MS = 45_000L;
-    private static final long IDLE_DEBOUNCE_COUNT = 2; // 2 consecutive heartbeats (~10 min) before reporting idle
+    private static final long IDLE_DEBOUNCE_COUNT = 2; // 2 consecutive heartbeats before reporting idle
     private static final long WS_RETRY_BASE_MS = 30_000L;  // first retry delay
     private static final long WS_RETRY_MAX_MS = 300_000L;  // max retry delay (5 min)
     
@@ -157,6 +160,7 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile boolean directUploadVpn = false;
     private volatile boolean directUploadInput = false;
     private volatile long lastDirectUploadAt = 0L;
+    private volatile String pendingDirectBody = "";
     private volatile LspWebSocketClient wsClient = null;
     private volatile String foregroundPackage = "";
     private volatile String foregroundApp = "";
@@ -198,14 +202,35 @@ public final class MonikaXposedModule extends XposedModule {
     public void onPackageReady(@NonNull XposedModuleInterface.PackageReadyParam param) {
         String packageName = param.getPackageName();
         if (!isBrowserPackage(packageName)) return;
-        // Only hook browser main process — skip renderer, sandbox, GPU, service processes
-        // PackageReadyParam doesn't have getProcessName(); use stored process name from onModuleLoaded
+        // Hook likely browser UI processes only. Some OEM/system browsers keep their UI in
+        // a named process, while renderer/gpu/sandbox/service processes must be ignored.
         String processName = currentProcessName;
-        if (processName != null && !processName.isEmpty() && !packageName.equals(processName)) {
+        if (!shouldHookBrowserProcess(packageName, processName)) {
             log(Log.DEBUG, TAG, "skip browser non-main process: " + packageName + "/" + processName);
             return;
         }
         installActivityTitleHooks(param.getClassLoader(), packageName);
+    }
+
+    private boolean shouldHookBrowserProcess(String packageName, String processName) {
+        if (processName == null || processName.length() == 0 || packageName.equals(processName)) {
+            return true;
+        }
+        if (!processName.startsWith(packageName + ":")) {
+            return false;
+        }
+        String suffix = processName.substring(packageName.length() + 1).toLowerCase(Locale.US);
+        if (suffix.length() == 0) return true;
+        return !suffix.contains("renderer")
+                && !suffix.contains("sandbox")
+                && !suffix.contains("gpu")
+                && !suffix.contains("zygote")
+                && !suffix.contains("privileged_process")
+                && !suffix.contains("utility")
+                && !suffix.contains("crash")
+                && !suffix.contains("download")
+                && !suffix.contains("push")
+                && !suffix.contains("service");
     }
 
     private void installForegroundSampler(ClassLoader cl) {
@@ -283,6 +308,9 @@ public final class MonikaXposedModule extends XposedModule {
                         .intercept(chain -> {
                             Object result = chain.proceed();
                             boolean nextActive = marksActive && !marksInactive;
+                            if (name.contains("startInputOrWindowGainedFocus")) {
+                                nextActive = hasTextEditorInfo(chain.getArgs());
+                            }
                             if (inputActive != nextActive) {
                                 inputActive = nextActive;
                                 try { maybeDirectUpload(true); } catch (Throwable ignored) {}
@@ -295,6 +323,22 @@ public final class MonikaXposedModule extends XposedModule {
             log(Log.INFO, TAG, "hooked InputMethodManagerService methods: " + hooked);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "input method hooks skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private boolean hasTextEditorInfo(List<Object> args) {
+        try {
+            boolean sawEditorInfo = false;
+            for (Object arg : args) {
+                if (arg instanceof EditorInfo) {
+                    sawEditorInfo = true;
+                    int inputType = ((EditorInfo) arg).inputType;
+                    if (inputType != InputType.TYPE_NULL) return true;
+                }
+            }
+            return !sawEditorInfo;
+        } catch (Throwable ignored) {
+            return true;
         }
     }
 
@@ -686,8 +730,9 @@ public final class MonikaXposedModule extends XposedModule {
                                     Object windowObj = chain.getThisObject();
                                     java.lang.reflect.Method getContext = windowObj.getClass().getMethod("getContext");
                                     Object ctx = getContext.invoke(windowObj);
-                                    if (ctx instanceof Activity) {
-                                        publishBrowserTitle((Activity) ctx, packageName, title);
+                                    Activity activityCtx = findActivityContext(ctx);
+                                    if (activityCtx != null) {
+                                        publishBrowserTitle(activityCtx, packageName, title);
                                     }
                                 }
                             } catch (Throwable ignored) {}
@@ -712,8 +757,9 @@ public final class MonikaXposedModule extends XposedModule {
                                     Object webView = args.get(0);
                                     java.lang.reflect.Method getContext = webView.getClass().getMethod("getContext");
                                     Object ctx = getContext.invoke(webView);
-                                    if (ctx instanceof Activity) {
-                                        publishBrowserTitle((Activity) ctx, packageName, title);
+                                    Activity activityCtx = findActivityContext(ctx);
+                                    if (activityCtx != null) {
+                                        publishBrowserTitle(activityCtx, packageName, title);
                                     } else {
                                         // WebView context is not an Activity — use it directly as send context
                                         Context sendCtx = ctx instanceof Context ? (Context) ctx : null;
@@ -725,9 +771,191 @@ public final class MonikaXposedModule extends XposedModule {
                         });
             } catch (Throwable ignored) {}
 
+            installWebViewTitleHooks(cl, packageName);
+            installAospBrowserTitleHooks(cl, packageName);
+
             log(Log.INFO, TAG, "installed browser title hooks for " + packageName);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "activity title hook failed for " + packageName + ": " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void installWebViewTitleHooks(ClassLoader cl, String packageName) {
+        try {
+            Class<?> webView = Class.forName("android.webkit.WebView", false, cl);
+            hookWebViewNavigation(webView, packageName, "loadUrl", String.class);
+            hookWebViewNavigation(webView, packageName, "loadUrl", String.class, java.util.Map.class);
+            hookWebViewNavigation(webView, packageName, "postUrl", String.class, byte[].class);
+            hookWebViewNavigation(webView, packageName, "reload");
+            hookWebViewNavigation(webView, packageName, "goBack");
+            hookWebViewNavigation(webView, packageName, "goForward");
+            hookWebChromeTitle(cl, webView, packageName);
+            hookWebViewClientPageFinished(cl, webView, packageName);
+        } catch (Throwable ignored) {}
+    }
+
+    private void hookWebChromeTitle(ClassLoader cl, Class<?> webView, String packageName) {
+        try {
+            Class<?> chromeClient = Class.forName("android.webkit.WebChromeClient", false, cl);
+            Method method = findMethod(chromeClient, "onReceivedTitle", webView, String.class);
+            if (method == null) return;
+            try { deoptimize(method); } catch (Throwable ignored) {}
+            hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            List<Object> args = chain.getArgs();
+                            if (args.size() > 1 && args.get(1) instanceof String) {
+                                publishTitleFromWebView(args.get(0), packageName, (String) args.get(1));
+                            }
+                        } catch (Throwable ignored) {}
+                        return result;
+                    });
+            log(Log.INFO, TAG, "hooked WebChromeClient#onReceivedTitle for " + packageName);
+        } catch (Throwable ignored) {}
+    }
+
+    private void hookWebViewClientPageFinished(ClassLoader cl, Class<?> webView, String packageName) {
+        try {
+            Class<?> viewClient = Class.forName("android.webkit.WebViewClient", false, cl);
+            Method method = findMethod(viewClient, "onPageFinished", webView, String.class);
+            if (method == null) return;
+            try { deoptimize(method); } catch (Throwable ignored) {}
+            hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            List<Object> args = chain.getArgs();
+                            if (args.size() > 0) {
+                                scheduleWebViewTitleRead(args.get(0), packageName, 150L);
+                                scheduleWebViewTitleRead(args.get(0), packageName, 900L);
+                            }
+                        } catch (Throwable ignored) {}
+                        return result;
+                    });
+            log(Log.INFO, TAG, "hooked WebViewClient#onPageFinished for " + packageName);
+        } catch (Throwable ignored) {}
+    }
+
+    private void installAospBrowserTitleHooks(ClassLoader cl, String packageName) {
+        if (!"com.android.browser".equals(packageName)) return;
+        try {
+            Class<?> browserActivity = Class.forName("com.android.browser.BrowserActivity", false, cl);
+            for (Method method : browserActivity.getDeclaredMethods()) {
+                if (!"setUrlTitle".equals(method.getName())) continue;
+                Class<?>[] params = method.getParameterTypes();
+                if (params.length != 2 || params[0] != String.class || params[1] != String.class) continue;
+                try { method.setAccessible(true); } catch (Throwable ignored) {}
+                try { deoptimize(method); } catch (Throwable ignored) {}
+                hook(method)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            try {
+                                Object owner = chain.getThisObject();
+                                List<Object> args = chain.getArgs();
+                                if (owner instanceof Activity && args.size() > 1 && args.get(1) instanceof String) {
+                                    publishBrowserTitle((Activity) owner, packageName, (String) args.get(1));
+                                }
+                            } catch (Throwable ignored) {}
+                            return result;
+                        });
+                log(Log.INFO, TAG, "hooked AOSP BrowserActivity#setUrlTitle");
+            }
+
+            Class<?> webView = Class.forName("android.webkit.WebView", false, cl);
+            hookAospBrowserPageCallback(browserActivity, packageName, "onPageFinished", webView, String.class);
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "AOSP browser title hooks skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void hookAospBrowserPageCallback(Class<?> browserActivity, String packageName, String methodName, Class<?>... paramTypes) {
+        Method method = findMethod(browserActivity, methodName, paramTypes);
+        if (method == null) return;
+        try { method.setAccessible(true); } catch (Throwable ignored) {}
+        try { deoptimize(method); } catch (Throwable ignored) {}
+        try {
+            hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            List<Object> args = chain.getArgs();
+                            if (args.size() > 0) {
+                                scheduleWebViewTitleRead(args.get(0), packageName, 150L);
+                                scheduleWebViewTitleRead(args.get(0), packageName, 900L);
+                            }
+                        } catch (Throwable ignored) {}
+                        return result;
+                    });
+            log(Log.INFO, TAG, "hooked AOSP BrowserActivity#" + methodName);
+        } catch (Throwable ignored) {}
+    }
+
+    private void hookWebViewNavigation(Class<?> webView, String packageName, String methodName, Class<?>... paramTypes) {
+        Method method = findMethod(webView, methodName, paramTypes);
+        if (method == null) return;
+        try { deoptimize(method); } catch (Throwable ignored) {}
+        try {
+            hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        Object owner = chain.getThisObject();
+                        scheduleWebViewTitleRead(owner, packageName, 900L);
+                        scheduleWebViewTitleRead(owner, packageName, 2500L);
+                        return result;
+                    });
+        } catch (Throwable ignored) {}
+    }
+
+    private void scheduleWebViewTitleRead(Object webView, String packageName, long delayMs) {
+        if (webView == null) return;
+        try {
+            Method postDelayed = webView.getClass().getMethod("postDelayed", Runnable.class, long.class);
+            postDelayed.invoke(webView, (Runnable) () -> publishTitleFromWebView(webView, packageName), delayMs);
+        } catch (Throwable ignored) {}
+    }
+
+    private void publishTitleFromWebView(Object webView, String packageName) {
+        publishTitleFromWebView(webView, packageName, "");
+    }
+
+    private void publishTitleFromWebView(Object webView, String packageName, String explicitTitle) {
+        try {
+            Object rawTitle = explicitTitle != null && explicitTitle.trim().length() > 0 ? explicitTitle : null;
+            if (rawTitle == null) {
+                Method getTitle = webView.getClass().getMethod("getTitle");
+                rawTitle = getTitle.invoke(webView);
+            }
+            if (!(rawTitle instanceof String)) return;
+            String title = (String) rawTitle;
+            Method getContext = webView.getClass().getMethod("getContext");
+            Object ctx = getContext.invoke(webView);
+            Activity activityCtx = findActivityContext(ctx);
+            if (activityCtx != null) {
+                publishBrowserTitle(activityCtx, packageName, title);
+            } else {
+                publishBrowserTitleFromProcess(ctx instanceof Context ? (Context) ctx : null, packageName, title, "");
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private Activity findActivityContext(Object value) {
+        try {
+            Object current = value;
+            int depth = 0;
+            while (current instanceof ContextWrapper && depth < 8) {
+                if (current instanceof Activity) return (Activity) current;
+                current = ((ContextWrapper) current).getBaseContext();
+                depth++;
+            }
+            return current instanceof Activity ? (Activity) current : null;
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 
@@ -1249,28 +1477,42 @@ public final class MonikaXposedModule extends XposedModule {
         final String url = directServerUrl;
         final String tok = directToken;
         getUploadHandler().post(() -> {
-            ensureWsConnected(url, tok);
-            final LspWebSocketClient client = wsClient;
-            if (client != null && client.isConnected()) {
-                try {
-                    String msg = new org.json.JSONObject()
-                            .put("type", "device_status")
-                            .put("payload", new org.json.JSONObject(body))
-                            .toString();
-                    if (client.sendText(msg)) {
-                        log(Log.DEBUG, TAG, "ws upload OK");
-                    } else {
-                        postDirectReportFallback(body);
-                    }
-                } catch (Throwable t) {
-                    log(Log.WARN, TAG, "ws send failed: " + t.getClass().getSimpleName());
-                    postDirectReportFallback(body);
+            String pending = pendingDirectBody;
+            if (pending.length() > 0 && !pending.equals(body)) {
+                if (sendDirectReport(url, tok, pending)) {
+                    pendingDirectBody = "";
+                } else {
+                    return;
                 }
+            }
+            if (sendDirectReport(url, tok, body)) {
+                if (body.equals(pendingDirectBody)) pendingDirectBody = "";
             } else {
-                postDirectReportFallback(body);
-                log(Log.INFO, TAG, "http fallback upload attempted");
+                pendingDirectBody = body;
             }
         });
+    }
+
+    private boolean sendDirectReport(String url, String tok, String body) {
+        ensureWsConnected(url, tok);
+        final LspWebSocketClient client = wsClient;
+        if (client != null && client.isConnected()) {
+            try {
+                String msg = new org.json.JSONObject()
+                        .put("type", "device_status")
+                        .put("payload", new org.json.JSONObject(body))
+                        .toString();
+                if (client.sendText(msg)) {
+                    log(Log.DEBUG, TAG, "ws upload OK");
+                    return true;
+                }
+            } catch (Throwable t) {
+                log(Log.WARN, TAG, "ws send failed: " + t.getClass().getSimpleName());
+            }
+        }
+        boolean ok = postDirectReportFallback(body);
+        log(Log.INFO, TAG, "http fallback upload " + (ok ? "OK" : "failed"));
+        return ok;
     }
 
     private long clampDirectInterval(long intervalMs) {
@@ -1463,7 +1705,7 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
-    private void postDirectReportFallback(String body) {
+    private boolean postDirectReportFallback(String body) {
         HttpURLConnection connection = null;
         try {
             URL url = new URL(directServerUrl + "/api/report");
@@ -1480,15 +1722,17 @@ public final class MonikaXposedModule extends XposedModule {
             int code = connection.getResponseCode();
             if (code >= 200 && code < 300) {
                 log(Log.DEBUG, TAG, "http upload OK");
+                pollQueuedMessagesFallback();
+                return true;
             } else {
                 log(Log.WARN, TAG, "http upload HTTP " + code);
             }
-            pollQueuedMessagesFallback();
         } catch (Throwable t) {
             log(Log.WARN, TAG, "http fallback upload failed: " + t.getClass().getSimpleName());
         } finally {
             if (connection != null) connection.disconnect();
         }
+        return false;
     }
 
     private void pollQueuedMessagesFallback() {
