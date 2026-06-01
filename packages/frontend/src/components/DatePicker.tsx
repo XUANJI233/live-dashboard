@@ -15,12 +15,6 @@ function todayStr(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-function formatDisplay(dateStr: string): string {
-  const d = parseLocalDate(dateStr);
-  if (!d) return dateStr;
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
 function parseLocalDate(dateStr: string): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
   if (!match) return null;
@@ -29,21 +23,28 @@ function parseLocalDate(dateStr: string): Date | null {
 }
 
 export default function DatePicker({ selectedDate, onChange }: Props) {
-  const isToday = selectedDate === todayStr();
+  const today = todayStr();
+  const isToday = selectedDate === today;
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2 flex-wrap">
       <button
         className="btn-glass"
         onClick={() => onChange(offsetDate(selectedDate, -1))}
-        aria-label="Previous day"
+          aria-label="Previous day"
       >
         &larr;
       </button>
 
-      <span suppressHydrationWarning className={`text-sm font-mono tabular-nums px-2 min-w-[80px] text-center ${isToday ? "text-[var(--color-accent)] font-semibold" : "text-[var(--color-text-secondary)]"}`}>
-        {isToday ? "Today" : formatDisplay(selectedDate)}
+      <span suppressHydrationWarning className="text-sm font-mono tabular-nums px-2 min-w-[120px] text-center text-[var(--color-text-secondary)]">
+        {parseLocalDate(selectedDate)?.toLocaleDateString("zh-CN", { month: "short", day: "numeric", weekday: "short" }) || selectedDate}
       </span>
+
+      {isToday && (
+        <span className="rounded-full border border-[var(--color-primary)] px-2 py-0.5 text-[10px] text-[var(--color-primary)]">
+          今天
+        </span>
+      )}
 
       <button
         className="btn-glass"
@@ -57,9 +58,9 @@ export default function DatePicker({ selectedDate, onChange }: Props) {
       {!isToday && (
         <button
           className="btn-glass text-[var(--color-accent)]"
-          onClick={() => onChange(todayStr())}
+          onClick={() => onChange(today)}
         >
-          Today
+          回到今天
         </button>
       )}
     </div>

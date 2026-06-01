@@ -4,6 +4,8 @@ import { visitors } from "../services/visitors";
 import { edgeViewerIdentity, verifyViewerToken, viewerTokenFromRequest } from "../services/viewer-auth";
 
 const CURRENT_SNAPSHOT_TTL_MS = 2_000;
+const ANON_CURRENT_WINDOW_MS = 60_000;
+const ANON_CURRENT_LIMIT = 240;
 
 let currentSnapshotCache:
   | {
@@ -13,14 +15,22 @@ let currentSnapshotCache:
     }
   | null = null;
 
-// Prepare records for public API: strip window_title, parse extra JSON
+const anonymousCurrentRate = new Map<string, { count: number; resetAt: number }>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of anonymousCurrentRate) {
+    if (entry.resetAt < now) anonymousCurrentRate.delete(ip);
+  }
+}, 300_000).unref();
+
 function preparePublicDevices(devices: DeviceState[]) {
   return devices.map(({ window_title, extra, ...rest }) => {
     let parsedExtra: Record<string, unknown> = {};
     try {
       parsedExtra = extra ? JSON.parse(extra) : {};
     } catch {
-      // Malformed JSON — ignore
+      // Malformed JSON is ignored for the public snapshot.
     }
     if (parsedExtra.foreground && typeof parsedExtra.foreground === "object" && !Array.isArray(parsedExtra.foreground)) {
       const foreground = { ...(parsedExtra.foreground as Record<string, unknown>) };
@@ -43,18 +53,32 @@ function getSnapshot() {
     return currentSnapshotCache;
   }
 
-  const devices = preparePublicDevices(getAllDeviceStates.all() as DeviceState[]);
-  const recentActivities = stripWindowTitle(getRecentActivities.all() as ActivityRecord[]);
   currentSnapshotCache = {
     expiresAt: now + CURRENT_SNAPSHOT_TTL_MS,
-    devices,
-    recentActivities,
+    devices: preparePublicDevices(getAllDeviceStates.all() as DeviceState[]),
+    recentActivities: stripWindowTitle(getRecentActivities.all() as ActivityRecord[]),
   };
   return currentSnapshotCache;
 }
 
+function allowAnonymousCurrent(ip: string): boolean {
+  if (!ip) return true;
+  const now = Date.now();
+  const current = anonymousCurrentRate.get(ip);
+  if (!current || current.resetAt <= now) {
+    anonymousCurrentRate.set(ip, { count: 1, resetAt: now + ANON_CURRENT_WINDOW_MS });
+    return true;
+  }
+  if (current.count >= ANON_CURRENT_LIMIT) return false;
+  current.count += 1;
+  return true;
+}
+
 export function handleCurrent(req: Request, clientIp: string, userAgent?: string): Response {
   const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req), clientIp);
+  if (!viewer && !allowAnonymousCurrent(clientIp)) {
+    return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
   visitors.heartbeat(clientIp, userAgent, viewer?.viewerId);
 
   const snapshot = getSnapshot();

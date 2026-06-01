@@ -38,18 +38,14 @@ function HomeInner() {
   // Tab state (lifted from RightPanelTabs for conditional rendering)
   const [tab, setTab] = useState<"activity" | "health">("activity");
 
-  // Check if health data exists for the selected date
-  const [hasHealthData, setHasHealthData] = useState(false);
-  const [healthRecords, setHealthRecords] = useState<HealthRecord[]>([]);
-  const [watchHealthRecords, setWatchHealthRecords] = useState<HealthRecord[]>([]);
-  const [otherHealthRecords, setOtherHealthRecords] = useState<HealthRecord[]>([]);
+  const [allHealthRecords, setAllHealthRecords] = useState<HealthRecord[]>([]);
 
   // Reset tab to activity if health data disappears
   useEffect(() => {
-    if (!hasHealthData && watchHealthRecords.length === 0 && otherHealthRecords.length === 0 && tab === "health") {
+    if (allHealthRecords.length === 0 && tab === "health") {
       setTab("activity");
     }
-  }, [hasHealthData, watchHealthRecords.length, otherHealthRecords.length, tab]);
+  }, [allHealthRecords.length, tab]);
 
   // Build currentAppByDevice map for Timeline
   const currentAppByDevice = useMemo(() => {
@@ -76,37 +72,18 @@ function HomeInner() {
     return [...arr].sort((a, b) => a.device_id.localeCompare(b.device_id));
   }, [current?.devices]);
 
-  const watchDevice = useMemo(() => devices.find(isWatchDevice), [devices]);
-
-  // Auto-select: default to first online device, fallback to first device
+  // Auto-select: default to the device that is actively reporting current work.
+  // This keeps the timeline aligned with the hero status when multiple devices are online.
   const selectedDevice = useMemo(() => {
     if (devices.length === 0) return undefined;
     if (selectedDeviceId) {
       const found = devices.find((d) => d.device_id === selectedDeviceId);
       if (found) return found;
     }
-    return devices.find((d) => d.is_online === 1) || devices[0];
+    return [...devices].sort(deviceDefaultSort)[0];
   }, [devices, selectedDeviceId]);
 
-  const activeHealthRecords = useMemo(() => {
-    if (!selectedDevice) return healthRecords;
-    if (watchDevice && selectedDevice.device_id === watchDevice.device_id) {
-      return watchHealthRecords;
-    }
-    return healthRecords;
-  }, [healthRecords, selectedDevice, watchDevice, watchHealthRecords]);
-
-  const separateHealthRecords = watchHealthRecords.length > 0 ? watchHealthRecords : otherHealthRecords;
-  const separateHealthDevice = watchHealthRecords.length > 0 ? watchDevice : undefined;
-  const hasSeparateWatchHealth = Boolean(
-    selectedDevice && selectedDevice.device_id !== separateHealthDevice?.device_id && separateHealthRecords.length > 0,
-  );
-  const hasAnyHealthData = hasHealthData || watchHealthRecords.length > 0 || otherHealthRecords.length > 0;
-  const healthTabDeviceId = hasHealthData
-    ? selectedDevice?.device_id
-    : watchHealthRecords.length > 0
-      ? watchDevice?.device_id
-      : undefined;
+  const hasAnyHealthData = allHealthRecords.some((record) => record.type !== "battery_percent");
 
   // Set of online device IDs for Timeline offline detection
   const onlineDevices = useMemo(() => {
@@ -118,64 +95,21 @@ function HomeInner() {
     }
     return set;
   }, [current?.devices]);
-  // Check if health data exists for the selected date + device
-  const selectedDeviceIdResolved = selectedDevice?.device_id;
   useEffect(() => {
-    // Don't fetch until we have both a date and a resolved device
-    if (!selectedDate || !selectedDeviceIdResolved) {
-      setHasHealthData(false);
-      setHealthRecords([]);
-      return;
-    }
-    setHasHealthData(false); // reset immediately on device/date change
-    setHealthRecords([]);
-    const controller = new AbortController();
-    fetchHealthData(selectedDate, controller.signal, selectedDeviceIdResolved)
-      .then((d) => {
-        if (!controller.signal.aborted) {
-          setHasHealthData(d.records.length > 0);
-          setHealthRecords(d.records);
-        }
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setHasHealthData(false);
-      });
-    return () => controller.abort();
-  }, [selectedDate, selectedDeviceIdResolved]);
-
-  useEffect(() => {
-    if (!selectedDate || !watchDevice?.device_id) {
-      setWatchHealthRecords([]);
-      return;
-    }
-    const controller = new AbortController();
-    fetchHealthData(selectedDate, controller.signal, watchDevice.device_id)
-      .then((d) => {
-        if (!controller.signal.aborted) setWatchHealthRecords(d.records);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setWatchHealthRecords([]);
-      });
-    return () => controller.abort();
-  }, [selectedDate, watchDevice?.device_id]);
-
-  useEffect(() => {
-    if (!selectedDate || watchDevice?.device_id) {
-      setOtherHealthRecords([]);
+    if (!selectedDate) {
+      setAllHealthRecords([]);
       return;
     }
     const controller = new AbortController();
     fetchHealthData(selectedDate, controller.signal)
       .then((d) => {
-        if (controller.signal.aborted) return;
-        const selectedId = selectedDevice?.device_id || "";
-        setOtherHealthRecords(d.records.filter((record) => record.device_id && record.device_id !== selectedId));
+        if (!controller.signal.aborted) setAllHealthRecords(d.records);
       })
       .catch(() => {
-        if (!controller.signal.aborted) setOtherHealthRecords([]);
+        if (!controller.signal.aborted) setAllHealthRecords([]);
       });
     return () => controller.abort();
-  }, [selectedDate, selectedDevice?.device_id, watchDevice?.device_id]);
+  }, [selectedDate]);
 
   // Filter timeline data by selected device
   const filteredTimeline = useMemo(() => {
@@ -201,8 +135,8 @@ function HomeInner() {
   }, [allOffline]);
 
   const refreshText = wsConnected
-    ? "实时同步中，时间线每 30 秒轻轻补一次"
-    : "实时连接恢复中，暂用 15 秒备用刷新";
+    ? "实时通道已连接，时间线每 30 秒补一次"
+    : "实时通道暂未连上，正在用 15 秒刷新兜底";
 
   return (
     <>
@@ -238,16 +172,10 @@ function HomeInner() {
 
       {current && (
         <>
-          <BodySnapshot
-            device={selectedDevice}
-            records={activeHealthRecords}
-            title="身体信息"
-          />
+          <DeviceSnapshot selectedDevice={selectedDevice} devices={devices} />
 
-          {hasSeparateWatchHealth && (
-            <div className="mb-4">
-              <BodySnapshot device={separateHealthDevice} records={separateHealthRecords} title={separateHealthDevice ? "手表健康" : "其他健康设备"} />
-            </div>
+          {hasAnyHealthData && (
+            <HealthSnapshot devices={devices} records={allHealthRecords} />
           )}
 
           {devices.length > 0 && <CurrentStatus devices={devices} />}
@@ -330,7 +258,7 @@ function HomeInner() {
                   ) : null}
                 </>
               ) : (
-                <HealthData selectedDate={selectedDate} deviceId={healthTabDeviceId} />
+                <HealthData selectedDate={selectedDate} records={allHealthRecords} />
               )}
             </div>
           </div>
@@ -385,6 +313,34 @@ const platformIcons: Record<string, string> = {
   zepp: "\u231A",
 };
 
+function deviceDefaultSort(a: DeviceState, b: DeviceState) {
+  const score = (device: DeviceState) => {
+    const lastSeen = device.last_seen_at ? Date.parse(device.last_seen_at) : 0;
+    return [
+      device.is_online === 1 ? 1 : 0,
+      isActivePrimaryDevice(device) ? 1 : 0,
+      isWatchDevice(device) ? 0 : 1,
+      Number.isFinite(lastSeen) ? lastSeen : 0,
+    ];
+  };
+  const as = score(a);
+  const bs = score(b);
+  for (let i = 0; i < as.length; i += 1) {
+    const delta = (bs[i] ?? 0) - (as[i] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  return a.device_id.localeCompare(b.device_id);
+}
+
+function isActivePrimaryDevice(device: DeviceState) {
+  if (device.is_online !== 1 || isWatchDevice(device)) return false;
+  if (device.extra?.sleeping) return false;
+  const combined = `${device.app_id} ${device.app_name}`.toLowerCase();
+  if (!combined.trim() || combined.includes("idle") || combined.includes("sleeping")) return false;
+  const lastSeen = device.last_seen_at ? Date.parse(device.last_seen_at) : 0;
+  return Number.isFinite(lastSeen) && Date.now() - lastSeen <= 2 * 60_000;
+}
+
 function isWatchDevice(device: DeviceState) {
   return device.platform === "zepp" || device.extra?.device?.device_kind === "watch";
 }
@@ -416,72 +372,26 @@ function deviceInlineMeta(device: DeviceState) {
   return parts.length > 0 ? ` · ${parts.join("/")}` : "";
 }
 
-function BodySnapshot({ device, records, title = "身体状态" }: { device: DeviceState | undefined; records: HealthRecord[]; title?: string }) {
+function DeviceSnapshot({ selectedDevice, devices }: { selectedDevice: DeviceState | undefined; devices: DeviceState[] }) {
   const [expanded, setExpanded] = useState(false);
-  type BodyMetric = { label: string; value: string; unit: string; at?: string };
-  const latest = new Map<string, HealthRecord>();
-  for (const record of records) {
-    const prev = latest.get(record.type);
-    if (!prev || record.recorded_at > prev.recorded_at) latest.set(record.type, record);
-  }
-  const extra = device?.extra || {};
-  const standCount = latest.get("stand_count");
-  const standTarget = latest.get("stand_target");
-  const standMetric = standCount
-    ? {
-        label: "站立提醒",
-        value: standTarget ? `${Math.round(standCount.value)}/${Math.round(standTarget.value)}` : String(Math.round(standCount.value)),
-        unit: "次",
-        at: standCount.recorded_at,
-      }
-    : metric("站立", latest.get("stand_hours"), "小时");
-
-  const sleepStatus = latest.get("sleep_status");
-  const sleepDuration = latest.get("sleep_duration");
-  const wearStatus = latest.get("wear_status");
-  const napDuration = latest.get("nap_duration");
-
-  const heartRateHistory = records
-    .filter((record) => record.type === "heart_rate" && Number.isFinite(record.value))
-    .sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime());
-  const items = ([
-    metric("心率", latest.get("heart_rate"), "bpm"),
-    metric("血氧", latest.get("oxygen_saturation"), "%"),
-    metric("体表温度", latest.get("body_temperature"), "℃"),
-    sleepStatus ? { label: "睡眠", value: sleepStatus.value > 0 ? "睡着了" : "醒着", unit: "", at: sleepStatus.recorded_at } : null,
-    metric("睡眠时长", sleepDuration, "分钟"),
-    metric("小睡时长", napDuration, "分钟"),
-    wearStatus ? { label: "佩戴", value: wearStatus.value > 0 ? "佩戴中" : "未佩戴", unit: "", at: wearStatus.recorded_at } : null,
-    metric("压力", latest.get("stress"), ""),
-    metric("步数", latest.get("steps"), "步"),
-    metric("活动热量", latest.get("active_calories"), "kcal"),
-    standMetric,
-    metric("气压", latest.get("air_pressure"), "hPa"),
-    metric("海拔", latest.get("altitude"), "m"),
-    metric("手表电量", latest.get("battery_percent"), "%"),
-    typeof extra.battery_percent === "number"
-      ? { label: "电量", value: String(extra.battery_percent), unit: "%", at: device?.last_seen_at }
-      : null,
-    extra.device?.network_type
-      ? { label: "网络", value: extra.device.network_type, unit: extra.device.cellular_generation || "", at: device?.last_seen_at }
-      : null,
-  ].filter(Boolean) as BodyMetric[]);
-
-  if (items.length === 0) return null;
+  const primary = selectedDevice ? deviceInfoItems(selectedDevice) : [];
+  const others = devices.filter((device) => device.device_id !== selectedDevice?.device_id);
+  if (!selectedDevice && devices.length === 0) return null;
+  const items = primary.length > 0 ? primary : selectedDevice ? [{ label: "状态", value: selectedDevice.is_online === 1 ? "在线" : "离线" }] : [];
   const preview = items.slice(0, 5);
 
   return (
     <section className="mb-4 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <div className="text-xs font-semibold text-[var(--color-text-muted)]">{title}</div>
-          {device && (
+          <div className="text-xs font-semibold text-[var(--color-text-muted)]">设备信息</div>
+          {selectedDevice && (
             <div className="truncate text-[10px] text-[var(--color-text-muted)]">
-              {device.device_name} · {device.is_online === 1 ? "在线" : "手表离线"}
+              {selectedDevice.device_name} · {selectedDevice.is_online === 1 ? "在线" : "离线"} · {formatShortTime(selectedDevice.last_seen_at)}
             </div>
           )}
         </div>
-        {items.length > preview.length && (
+        {(items.length > preview.length || others.length > 0) && (
           <button type="button" className="pill-btn px-3 py-1 text-xs" onClick={() => setExpanded((v) => !v)}>
             {expanded ? "收起" : "详情"}
           </button>
@@ -489,52 +399,205 @@ function BodySnapshot({ device, records, title = "身体状态" }: { device: Dev
       </div>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
         {preview.map((item) => (
-          <div key={item.label} className="rounded border border-dashed border-[var(--color-border)] px-3 py-2">
-            <div className="text-[10px] text-[var(--color-text-muted)]">{item.label}</div>
-            <div className="font-mono text-sm text-[var(--color-primary)]">
-              {item.value}
-              {item.unit && <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">{item.unit}</span>}
-            </div>
-          </div>
+          <DeviceInfoCard key={item.label} item={item} />
         ))}
       </div>
       {expanded && (
         <>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {items.length > preview.length && (
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
             {items.slice(preview.length).map((item) => (
-              <div key={item.label} className="rounded border border-[var(--color-border)] px-3 py-2">
-                <div className="text-[10px] text-[var(--color-text-muted)]">{item.label}</div>
-                <div className="font-mono text-sm text-[var(--color-primary)]">
-                  {item.value}
-                  {item.unit && <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">{item.unit}</span>}
-                </div>
-              </div>
+              <DeviceInfoCard key={item.label} item={item} />
             ))}
-          </div>
-          {heartRateHistory.length > 1 && (
-            <div className="mt-3 rounded border border-[var(--color-border)] px-3 py-2">
-              <div className="mb-2 flex items-center justify-between text-[10px] text-[var(--color-text-muted)]">
-                <span>历史心率</span>
-                <span>{heartRateHistory.length} 条</span>
-              </div>
-              <div className="flex h-16 items-end gap-[2px] overflow-hidden">
-                {sampleRecords(heartRateHistory, 80).map((record, index) => {
-                  const height = Math.max(8, Math.min(100, ((record.value - 45) / 90) * 100));
-                  return (
-                    <span
-                      key={`${record.recorded_at}-${index}`}
-                      title={`${formatShortTime(record.recorded_at)} ${Math.round(record.value)} bpm`}
-                      className="min-w-[2px] flex-1 rounded-sm bg-[var(--color-primary)] opacity-70"
-                      style={{ height: `${height}%` }}
-                    />
-                  );
-                })}
-              </div>
+            </div>
+          )}
+          {others.length > 0 && (
+            <div className="mt-3 space-y-1 rounded border border-[var(--color-border)] px-3 py-2 text-xs">
+              {others.map((device) => (
+                <div key={device.device_id} className="flex items-center justify-between gap-3">
+                  <span className="truncate text-[var(--color-text-muted)]">{platformIcons[device.platform] || "\u{1F4BB}"} {device.device_name}</span>
+                  <span className="truncate text-right font-mono text-[var(--color-text)]">{compactDeviceInfo(device)}</span>
+                </div>
+              ))}
             </div>
           )}
         </>
       )}
     </section>
+  );
+}
+
+function HealthSnapshot({ devices, records }: { devices: DeviceState[]; records: HealthRecord[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const deviceById = useMemo(() => new Map(devices.map((device) => [device.device_id, device])), [devices]);
+  const grouped = useMemo(() => groupHealth(records), [records]);
+  const items = healthItems(grouped, deviceById);
+  if (items.length === 0) return null;
+  const preview = items.slice(0, 6);
+  const histories = ["heart_rate", "oxygen_saturation", "body_temperature"]
+    .map((type) => ({ type, entry: grouped.get(type) }))
+    .filter((item) => item.entry && item.entry.all.length > 1) as { type: string; entry: HealthGroup }[];
+
+  return (
+    <section className="mb-4 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-semibold text-[var(--color-text-muted)]">健康</div>
+          <div className="truncate text-[10px] text-[var(--color-text-muted)]">
+            已聚合 {new Set(records.map((record) => record.device_id).filter(Boolean)).size || 1} 个来源
+          </div>
+        </div>
+        {(items.length > preview.length || histories.length > 0) && (
+          <button type="button" className="pill-btn px-3 py-1 text-xs" onClick={() => setExpanded((v) => !v)}>
+            {expanded ? "收起" : "详情"}
+          </button>
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+        {preview.map((item) => (
+          <HealthMetricCard key={item.label} item={item} />
+        ))}
+      </div>
+      {expanded && (
+        <>
+          {items.length > preview.length && (
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {items.slice(preview.length).map((item) => (
+                <HealthMetricCard key={item.label} item={item} />
+              ))}
+            </div>
+          )}
+          {histories.length > 0 && (
+            <div className="mt-3 grid gap-2 lg:grid-cols-3">
+              {histories.map(({ type, entry }) => (
+                <div key={type} className="rounded border border-[var(--color-border)] px-3 py-2">
+                  <div className="mb-2 flex items-center justify-between text-[10px] text-[var(--color-text-muted)]">
+                    <span>{healthLabel(type)}历史</span>
+                    <span>{entry.all.length} 条</span>
+                  </div>
+                  <Sparkline records={entry.all} type={type} />
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+type DeviceInfoItem = { label: string; value: string; unit?: string };
+type HealthItem = { label: string; value: string; unit: string; source: string; records: HealthRecord[] };
+type HealthGroup = { latest: HealthRecord; all: HealthRecord[] };
+
+function DeviceInfoCard({ item }: { item: DeviceInfoItem }) {
+  return (
+    <div className="rounded border border-dashed border-[var(--color-border)] px-3 py-2">
+      <div className="text-[10px] text-[var(--color-text-muted)]">{item.label}</div>
+      <div className="font-mono text-sm text-[var(--color-primary)]">
+        {item.value}
+        {item.unit && <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">{item.unit}</span>}
+      </div>
+    </div>
+  );
+}
+
+function HealthMetricCard({ item }: { item: HealthItem }) {
+  return (
+    <div className="relative rounded border border-dashed border-[var(--color-border)] px-3 py-2 pb-5">
+      <div className="text-[10px] text-[var(--color-text-muted)]">{item.label}</div>
+      <div className="font-mono text-sm text-[var(--color-primary)]">
+        {item.value}
+        {item.unit && <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">{item.unit}</span>}
+      </div>
+      <div className="pointer-events-none absolute bottom-1 right-2 max-w-[70%] truncate text-[9px] text-[var(--color-text-muted)] opacity-55">
+        {item.source}
+      </div>
+    </div>
+  );
+}
+
+function deviceInfoItems(device: DeviceState): DeviceInfoItem[] {
+  const extra = device.extra;
+  const info: DeviceInfoItem[] = [];
+  if (typeof extra?.battery_percent === "number") info.push({ label: "电量", value: String(extra.battery_percent), unit: "%" });
+  if (extra?.device?.network_type) info.push({ label: "网络", value: extra.device.network_type, unit: extra.device.cellular_generation || "" });
+  if (typeof extra?.device?.network_connected === "boolean") info.push({ label: "联网", value: extra.device.network_connected ? "在线" : "断开" });
+  if (typeof extra?.device?.vpn_active === "boolean") info.push({ label: "VPN", value: extra.device.vpn_active ? "开启" : "关闭" });
+  if (extra?.device?.capability_mode) info.push({ label: "采集", value: extra.device.uploader || extra.device.capability_mode });
+  if (extra?.device?.window_mode && extra.device.window_mode !== "fullscreen") info.push({ label: "窗口", value: extra.device.window_mode });
+  if (extra?.input?.input_active || extra?.input?.is_typing) info.push({ label: "输入", value: extra.input.is_typing ? "输入中" : "输入框活跃" });
+  if (extra?.sleeping) info.push({ label: "状态", value: "息屏/睡眠" });
+  return info;
+}
+
+function compactDeviceInfo(device: DeviceState) {
+  const parts = deviceInfoItems(device).slice(0, 3).map((item) => `${item.label}:${item.value}${item.unit || ""}`);
+  return parts.length > 0 ? parts.join(" / ") : (device.is_online === 1 ? "在线" : "离线");
+}
+
+function groupHealth(records: HealthRecord[]) {
+  const ignoredTypes = new Set(["battery_percent"]);
+  const map = new Map<string, HealthGroup>();
+  for (const record of records) {
+    if (ignoredTypes.has(record.type)) continue;
+    const existing = map.get(record.type);
+    if (existing) {
+      existing.all.push(record);
+      if (record.recorded_at > existing.latest.recorded_at) existing.latest = record;
+    } else {
+      map.set(record.type, { latest: record, all: [record] });
+    }
+  }
+  for (const entry of map.values()) {
+    entry.all.sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime());
+  }
+  return map;
+}
+
+function healthItems(grouped: Map<string, HealthGroup>, deviceById: Map<string, DeviceState>): HealthItem[] {
+  const order = [
+    "heart_rate", "oxygen_saturation", "body_temperature", "sleep_status", "sleep_duration",
+    "wear_status", "stress", "steps", "active_calories", "stand_count", "air_pressure", "altitude",
+  ];
+  return Array.from(grouped.entries())
+    .sort(([a], [b]) => (order.indexOf(a) < 0 ? 99 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 99 : order.indexOf(b)))
+    .map(([type, entry]) => ({
+      label: healthLabel(type),
+      value: formatHealthValue(entry.latest.value, type),
+      unit: friendlyUnit(entry.latest.unit),
+      source: sourceLabel(entry.latest.device_id, deviceById),
+      records: entry.all,
+    }));
+}
+
+function sourceLabel(deviceId: string, deviceById: Map<string, DeviceState>) {
+  const device = deviceById.get(deviceId);
+  if (!device) return deviceId || "未知来源";
+  if (device.platform === "zepp" || device.extra?.device?.device_kind === "watch") return `来自 ${device.device_name || "手表"}`;
+  return `来自 ${device.device_name || "设备"}`;
+}
+
+function Sparkline({ records, type }: { records: HealthRecord[]; type: string }) {
+  const sampled = sampleRecords(records, 80);
+  const values = sampled.map((record) => record.value).filter(Number.isFinite);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(1, max - min);
+  return (
+    <div className="flex h-16 items-end gap-[2px] overflow-hidden">
+      {sampled.map((record, index) => {
+        const height = Math.max(8, Math.min(100, ((record.value - min) / span) * 86 + 8));
+        return (
+          <span
+            key={`${record.recorded_at}-${index}`}
+            title={`${formatShortTime(record.recorded_at)} ${formatHealthValue(record.value, type)} ${friendlyUnit(record.unit)}`}
+            className="min-w-[2px] flex-1 rounded-sm bg-[var(--color-primary)] opacity-70"
+            style={{ height: `${height}%` }}
+          />
+        );
+      })}
+    </div>
   );
 }
 
@@ -554,10 +617,36 @@ function formatShortTime(value: string) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function metric(label: string, record: HealthRecord | undefined, fallbackUnit: string) {
-  if (!record) return null;
-  const value = Number.isInteger(record.value) ? String(record.value) : record.value.toFixed(1);
-  return { label, value, unit: friendlyUnit(record.unit || fallbackUnit), at: record.recorded_at };
+function healthLabel(type: string) {
+  const labels: Record<string, string> = {
+    heart_rate: "心率",
+    resting_heart_rate: "静息心率",
+    oxygen_saturation: "血氧",
+    body_temperature: "体表温度",
+    sleep_status: "睡眠",
+    sleep_duration: "睡眠时长",
+    nap_duration: "小睡时长",
+    wear_status: "佩戴",
+    stress: "压力",
+    steps: "步数",
+    active_calories: "活动热量",
+    stand_count: "站立提醒",
+    air_pressure: "气压",
+    altitude: "海拔",
+  };
+  return labels[type] || type;
+}
+
+function formatHealthValue(value: number, type: string) {
+  if (type === "sleep_status") return value > 0 ? "睡着了" : "醒着";
+  if (type === "wear_status") return value > 0 ? "佩戴中" : "未佩戴";
+  if (type === "sleep_duration" || type === "nap_duration") {
+    const h = Math.floor(value / 60);
+    const m = Math.round(value % 60);
+    return h > 0 ? `${h}小时${m}分` : `${m}分`;
+  }
+  if (Number.isInteger(value)) return String(value);
+  return value.toFixed(1);
 }
 
 function friendlyUnit(unit: string) {

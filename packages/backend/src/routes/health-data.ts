@@ -1,6 +1,6 @@
 import { authenticateToken } from "../middleware/auth";
 import { db } from "../db";
-import { verifyViewerToken, viewerTokenFromRequest, edgeViewerIdentity } from "../services/viewer-auth";
+import { verifyViewerToken, viewerTokenFromRequest, edgeViewerIdentity, viewerTokenRateLimit } from "../services/viewer-auth";
 import type { HealthRecord } from "../types";
 import { noStore, withCdnHeaders } from "../services/cdn";
 
@@ -102,6 +102,9 @@ export async function handleHealthData(req: Request): Promise<Response> {
 export function handleHealthDataQuery(url: URL, req: Request): Response {
   const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
   if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
+  if (!viewerTokenRateLimit(viewer.viewerId)) {
+    return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
   const date = url.searchParams.get("date");
   const deviceId = url.searchParams.get("device_id");
 

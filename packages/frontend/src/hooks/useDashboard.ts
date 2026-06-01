@@ -10,18 +10,13 @@ import {
 import { subscribeRealtime, subscribeRealtimeState } from "@/lib/realtime-client";
 
 const TIMELINE_POLL_INTERVAL = 30 * 1000;
-const DEVICE_POLL_INTERVAL = 15 * 1000; // slower fallback polling for devices
+const DEVICE_POLL_INTERVAL = 15 * 1000;
 
 function todayStr(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-/**
- * Merge a raw device_update payload into an existing DeviceState.
- * The payload is the server-sanitized device update, not the full DeviceState
- * shape, so we only overwrite fields that are present.
- */
 function mergeDevicePayload(
   existing: DeviceState,
   payload: Record<string, unknown>,
@@ -151,7 +146,7 @@ export function useDashboard() {
           });
         }
       } catch {
-        // timeline fetch errors are non-critical
+        // Timeline fetch errors are non-critical.
       } finally {
         if (!controller.signal.aborted && thisRequest === timelineRequestId) {
           setTimelineLoading(false);

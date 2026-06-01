@@ -123,9 +123,15 @@ export async function fetchCurrent(signal?: AbortSignal): Promise<CurrentRespons
 export async function fetchTimeline(date: string, signal?: AbortSignal): Promise<TimelineResponse> {
   const tz = new Date().getTimezoneOffset(); // e.g. -480 for UTC+8
   const url = `${API_BASE}/api/timeline?date=${encodeURIComponent(date)}&tz=${tz}`;
-  const res = await fetch(url, { signal, cache: "no-store" });
+  const res = await fetch(url, { signal, cache: isTodayForClientTimezone(date) ? "no-store" : "default" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+function isTodayForClientTimezone(date: string): boolean {
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return date === today;
 }
 
 // Health data types

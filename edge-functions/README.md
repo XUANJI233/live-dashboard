@@ -4,7 +4,7 @@
 
 ## 能干嘛
 
-- 读取接口（配置、历史时间线、历史健康数据、历史公开留言）在边缘缓存，不用每次都回源
+- 读取接口（配置、历史时间线、历史健康数据、历史位置轨迹、历史公开留言）在边缘缓存，不用每次都回源
 - 公开留言按 `slot` URL 分片缓存；当前窗口不缓存，历史窗口可由 CDN 按 URL 命中
 - 缓存响应会同时写入 `Cache-Tag` 和 `ESA-Cache-Tag`，便于按标签刷新 CDN
 - PoW 挑战在边缘生成和验证，不走 CDN
@@ -83,6 +83,7 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 |------|------|
 | `/api/timeline?date=YYYY-MM-DD` | `timeline`, `timeline-YYYY-MM-DD`，带 `device_id` 时追加 `timeline-device-<device_id>` |
 | `/api/health-data?date=YYYY-MM-DD` | `health-data`, `health-data-YYYY-MM-DD`，带 `device_id` 时追加 `health-device-<device_id>` |
+| `/api/location?date=YYYY-MM-DD` | `location`, `location-YYYY-MM-DD`，带 `device_id` 时追加 `location-device-<device_id>` |
 | `/api/messages/public?slot=YYYYMMDDHHmm` | `public-messages`, `public-messages-slot-YYYYMMDDHHmm` |
 | `/api/messages/public?window=YYYYMMDDHH` | `public-messages`, `public-messages-YYYYMMDDHH` |
 | `/api/config` | `config` |

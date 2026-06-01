@@ -1,7 +1,7 @@
 import { db } from "../db";
-import { verifyViewerToken, viewerTokenFromRequest, edgeViewerIdentity } from "../services/viewer-auth";
+import { verifyViewerToken, viewerTokenFromRequest, edgeViewerIdentity, viewerTokenRateLimit } from "../services/viewer-auth";
 import type { LocationRecord } from "../types";
-import { noStore } from "../services/cdn";
+import { noStore, withCdnHeaders } from "../services/cdn";
 
 function timezoneModifier(url: URL): string | null {
   const tzParam = url.searchParams.get("tz");
@@ -20,6 +20,9 @@ function timezoneModifier(url: URL): string | null {
 export function handleLocationQuery(url: URL, req: Request): Response {
   const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
   if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
+  if (!viewerTokenRateLimit(viewer.viewerId)) {
+    return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
   const date = url.searchParams.get("date");
   const deviceId = url.searchParams.get("device_id");
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -76,9 +79,33 @@ export function handleLocationQuery(url: URL, req: Request): Response {
       }
     }
 
-    return noStore(Response.json({ date, records }));
+    return locationQueryResponse(date, deviceId, records, url);
   } catch (e: any) {
     console.error("[location] Query error:", e.message);
     return Response.json({ error: "Internal error" }, { status: 500 });
   }
+}
+
+function locationQueryResponse(date: string, deviceId: string | null, records: LocationRecord[], url: URL): Response {
+  const response = Response.json({ date, records });
+  if (isTodayForOffset(date, timezoneOffsetMinutes(url))) {
+    return noStore(response);
+  }
+  return withCdnHeaders(
+    response,
+    ["location", `location-${date}`, ...(deviceId ? [`location-device-${deviceId}`] : [])],
+    60 * 60 * 24 * 30,
+  );
+}
+
+function timezoneOffsetMinutes(url: URL): number {
+  const tzParam = url.searchParams.get("tz");
+  const value = tzParam ? parseInt(tzParam, 10) : 0;
+  return Number.isFinite(value) && Math.abs(value) <= 840 ? value : 0;
+}
+
+function isTodayForOffset(date: string, tzOffsetMinutes: number): boolean {
+  const now = new Date(Date.now() - tzOffsetMinutes * 60_000);
+  const today = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
+  return date === today;
 }

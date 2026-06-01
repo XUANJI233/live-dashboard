@@ -410,6 +410,12 @@ function getCacheMeta(p, request) {
     const deviceId = url.searchParams.get("device_id") || "";
     return { ttl, tags: ttl ? ["health-data", `health-data-${date}`, deviceId ? `health-device-${deviceId}` : ""].filter(Boolean) : [] };
   }
+  if (p === "/api/location") {
+    const date = url.searchParams.get("date") || "";
+    const ttl = isCurrentTimelineRequest(url) ? 0 : 60 * 60 * 24 * 30;
+    const deviceId = url.searchParams.get("device_id") || "";
+    return { ttl, tags: ttl ? ["location", `location-${date}`, deviceId ? `location-device-${deviceId}` : ""].filter(Boolean) : [] };
+  }
   if (p === "/api/config") return { ttl: CACHE_TTL.config, tags: ["config"] };
   if (p === "/api/health") return { ttl: CACHE_TTL.health, tags: ["health"] };
   if (p === "/api/messages/public") return getPublicMessageCacheMeta(url);

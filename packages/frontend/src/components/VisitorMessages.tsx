@@ -79,7 +79,7 @@ function safeTime(value: string) {
 
 export default function VisitorMessages({ device }: Props) {
   const [connected, setConnected] = useState(false);
-  const [loadingStatus, setLoadingStatus] = useState<"idle" | "pow" | "token">("idle");
+  const [loadingStatus, setLoadingStatus] = useState<"idle" | TokenStatus>("idle");
   const [privateText, setPrivateText] = useState("");
   const [privateSending, setPrivateSending] = useState(false);
   const [publicText, setPublicText] = useState("");
@@ -351,6 +351,7 @@ export default function VisitorMessages({ device }: Props) {
         {error && <div className="text-[10px] text-red-400">{error}</div>}
         {loadingStatus === "pow" && <div className="text-[10px] text-[var(--color-accent)]">正在计算工作证明，请稍候...</div>}
         {loadingStatus === "token" && <div className="text-[10px] text-[var(--color-accent)]">正在获取访客令牌...</div>}
+        {loadingStatus === "connecting" && <div className="text-[10px] text-[var(--color-accent)]">正在连接实时通道...</div>}
       </div>
 
       <div className="mb-4">

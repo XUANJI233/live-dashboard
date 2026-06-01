@@ -1,0 +1,19 @@
+{
+  "name": "Live Dashboard",
+  "short_name": "Dashboard",
+  "description": "轻轻看一眼 Monika 此刻的动态",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fff7ed",
+  "theme_color": "#f97316",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

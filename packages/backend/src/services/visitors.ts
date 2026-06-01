@@ -10,8 +10,8 @@
  * - Same IP and same fingerprint naturally share one live slot.
  */
 
-const TIMEOUT_MS = 30_000; // 30s — if no heartbeat, visitor is gone
-const MAX_ENTRIES = 10_000; // hard cap to prevent memory DoS
+const TIMEOUT_MS = 30_000;
+const MAX_ENTRIES = 10_000;
 const CLEANUP_INTERVAL_MS = 30_000;
 
 type VisitorEntry = {
@@ -20,7 +20,6 @@ type VisitorEntry = {
   ip: string;
 };
 
-// Common bot User-Agent substrings (case-insensitive match)
 const BOT_PATTERNS = [
   "bot", "crawl", "spider", "slurp", "mediapartners",
   "facebookexternalhit", "linkedinbot", "twitterbot",
@@ -46,7 +45,7 @@ class VisitorTracker {
 
   constructor() {
     const timer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);
-    timer.unref(); // don't block graceful shutdown
+    timer.unref();
   }
 
   heartbeat(ip: string, userAgent?: string, viewerId?: string): void {
@@ -79,9 +78,16 @@ class VisitorTracker {
     return this.seen.size;
   }
 
+  private cleanupThrottled(): void {
+    const now = Date.now();
+    if (now - this.lastCleanup >= 5_000) {
+      this.cleanup();
+    }
+  }
+
   private resolveIdentity(ip: string, viewerId: string): string {
-    const viewerKey = viewerId ? this.viewerIndex.get(viewerId) : "";
-    const ipKey = ip ? this.ipIndex.get(ip) : "";
+    const viewerKey = viewerId ? this.viewerIndex.get(viewerId) || "" : "";
+    const ipKey = ip ? this.ipIndex.get(ip) || "" : "";
 
     if (viewerKey && this.seen.has(viewerKey)) {
       if (ipKey && ipKey !== viewerKey) this.deleteKey(ipKey);
@@ -122,14 +128,6 @@ class VisitorTracker {
     }
     if (entry.ip && this.ipIndex.get(entry.ip) === key) {
       this.ipIndex.delete(entry.ip);
-    }
-  }
-
-  /** Only run cleanup if at least 5s since last run */
-  private cleanupThrottled(): void {
-    const now = Date.now();
-    if (now - this.lastCleanup >= 5_000) {
-      this.cleanup();
     }
   }
 

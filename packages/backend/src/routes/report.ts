@@ -24,7 +24,10 @@ export async function handleReport(req: Request): Promise<Response> {
   }
 
   const appId = typeof body.app_id === "string" ? body.app_id.trim() : "";
-  if (!appId) {
+  const sleeping = body.extra && typeof body.extra === "object" && !Array.isArray(body.extra)
+    ? (body.extra as Record<string, unknown>).sleeping === true
+    : false;
+  if (!appId && !sleeping) {
     return Response.json({ error: "app_id required" }, { status: 400 });
   }
 

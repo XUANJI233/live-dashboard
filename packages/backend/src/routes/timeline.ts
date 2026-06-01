@@ -17,16 +17,13 @@ export function handleTimeline(url: URL): Response {
     );
   }
 
-  // Accept timezone offset in minutes (e.g. -480 for UTC+8)
   const tzParam = url.searchParams.get("tz");
   const tzOffsetMinutes = tzParam ? parseInt(tzParam, 10) : 0;
-
   const deviceId = url.searchParams.get("device_id");
 
   let activities: ActivityRecord[];
 
   if (tzOffsetMinutes && !isNaN(tzOffsetMinutes) && Math.abs(tzOffsetMinutes) <= 840) {
-    // Convert offset minutes to SQLite time modifier format (e.g. "+08:00" for tz=-480)
     const offsetHours = -tzOffsetMinutes / 60;
     const sign = offsetHours >= 0 ? "+" : "-";
     const absH = Math.floor(Math.abs(offsetHours));
@@ -77,22 +74,21 @@ export function handleTimeline(url: URL): Response {
 function buildTimelineSegments(activities: ActivityRecord[]): TimelineSegment[] {
   const byDevice = new Map<string, ActivityRecord[]>();
   for (const activity of activities) {
-    const list = byDevice.get(activity.device_id) || [];
-    list.push(activity);
-    byDevice.set(activity.device_id, list);
+    const rows = byDevice.get(activity.device_id) || [];
+    rows.push(activity);
+    byDevice.set(activity.device_id, rows);
   }
 
   const segments: TimelineSegment[] = [];
-  for (const deviceActivities of byDevice.values()) {
-    deviceActivities.sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime());
-
-    for (let i = 0; i < deviceActivities.length; i += 1) {
-      const current = deviceActivities[i]!;
-      const next = deviceActivities[i + 1];
-      const startMs = new Date(current.started_at).getTime();
+  for (const rows of byDevice.values()) {
+    rows.sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime());
+    for (let i = 0; i < rows.length; i += 1) {
+      const activity = rows[i]!;
+      const next = rows[i + 1];
+      const startMs = new Date(activity.started_at).getTime();
       if (Number.isNaN(startMs)) continue;
 
-      let endedAt: string | null = next?.started_at || null;
+      let endedAt: string | null = next?.started_at ?? null;
       let endMs = endedAt ? new Date(endedAt).getTime() : startMs;
       if (Number.isNaN(endMs)) endMs = startMs;
 
@@ -102,24 +98,21 @@ function buildTimelineSegments(activities: ActivityRecord[]): TimelineSegment[] 
       }
 
       const durationSeconds = Math.max(0, Math.round((endMs - startMs) / 1000));
-      const durationMinutes = Math.max(0, Math.round(durationSeconds / 60));
-
       segments.push({
-        app_name: current.app_name,
-        app_id: current.app_id,
-        display_title: current.display_title || "",
-        started_at: current.started_at,
+        app_name: activity.app_name,
+        app_id: activity.app_id,
+        display_title: activity.display_title || "",
+        started_at: activity.started_at,
         ended_at: next ? endedAt : null,
         duration_seconds: durationSeconds,
-        duration_minutes: durationMinutes,
-        device_id: current.device_id,
-        device_name: current.device_name,
+        duration_minutes: Math.max(0, Math.round(durationSeconds / 60)),
+        device_id: activity.device_id,
+        device_name: activity.device_name,
       });
     }
   }
 
-  segments.sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime());
-  return segments;
+  return segments.sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime());
 }
 
 function isTodayForOffset(date: string, tzOffsetMinutes: number): boolean {

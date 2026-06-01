@@ -29,18 +29,23 @@ export interface WsData {
 }
 
 const MAX_TEXT_LENGTH = 500;
+const MAX_MESSAGE_JSON_BYTES = 4096;
 const MESSAGE_TTL_MINUTES = 30;
 const VIEWER_RATE_LIMIT = 10;
 const VIEWER_API_RATE_LIMIT = 60;
+const VIEWER_WS_RATE_LIMIT = 30;
 const RATE_WINDOW_MS = 60_000;
 const PING_INTERVAL_MS = 25_000;
 const PONG_TIMEOUT_MS = 35_000;
+const MAX_VIEWER_SOCKETS_PER_VIEWER = 4;
+const MAX_VIEWER_SOCKETS_TOTAL = 1000;
 
 const deviceSockets = new Map<string, ServerWebSocket<WsData>>();
-const viewerSockets = new Map<string, ServerWebSocket<WsData>>();
+const viewerSockets = new Map<string, Set<ServerWebSocket<WsData>>>();
 const devicePongTimes = new Map<string, number>();
 const viewerRate = new Map<string, { count: number; resetAt: number }>();
 const viewerApiRate = new Map<string, { count: number; resetAt: number }>();
+const viewerWsRate = new Map<string, { count: number; resetAt: number }>();
 
 // ── Prepared statement: mark a single device offline immediately ──
 const markDeviceOffline = db.prepare(`
@@ -70,6 +75,9 @@ const rateCleanupTimer = setInterval(() => {
   }
   for (const [key, val] of viewerApiRate) {
     if (val.resetAt < now) viewerApiRate.delete(key);
+  }
+  for (const [key, val] of viewerWsRate) {
+    if (val.resetAt < now) viewerWsRate.delete(key);
   }
   for (const [key, val] of globalIpRate) {
     if (val.resetAt < now) globalIpRate.delete(key);
@@ -181,9 +189,69 @@ function send(ws: ServerWebSocket<WsData>, payload: unknown) {
   ws.send(JSON.stringify(payload));
 }
 
+function addViewerSocket(viewerId: string, ws: ServerWebSocket<WsData>) {
+  const sockets = viewerSockets.get(viewerId) ?? new Set<ServerWebSocket<WsData>>();
+  if (sockets.size >= MAX_VIEWER_SOCKETS_PER_VIEWER) {
+    const oldest = sockets.values().next().value as ServerWebSocket<WsData> | undefined;
+    if (oldest) {
+      sockets.delete(oldest);
+      try { oldest.close(1013, "viewer socket limit"); } catch { /* ignore */ }
+    }
+  }
+  sockets.add(ws);
+  viewerSockets.set(viewerId, sockets);
+}
+
+function removeViewerSocket(viewerId: string, ws: ServerWebSocket<WsData>) {
+  const sockets = viewerSockets.get(viewerId);
+  if (!sockets) return;
+  sockets.delete(ws);
+  if (sockets.size === 0) {
+    viewerSockets.delete(viewerId);
+  }
+}
+
+function forEachViewerSocket(callback: (ws: ServerWebSocket<WsData>) => void) {
+  for (const sockets of viewerSockets.values()) {
+    for (const viewerWs of sockets) callback(viewerWs);
+  }
+}
+
+function sendToViewerSockets(viewerId: string, payload: unknown): number {
+  const sockets = viewerSockets.get(viewerId);
+  if (!sockets || sockets.size === 0) return 0;
+  let delivered = 0;
+  const encoded = JSON.stringify(payload);
+  for (const viewerWs of sockets) {
+    try {
+      viewerWs.send(encoded);
+      delivered += 1;
+    } catch {
+      // The close callback will remove dead sockets; ignore transient send errors here.
+    }
+  }
+  return delivered;
+}
+
+function viewerSocketCount() {
+  let count = 0;
+  for (const sockets of viewerSockets.values()) count += sockets.size;
+  return count;
+}
+
+function requestIp(req: Request): string {
+  const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return forwarded ||
+    req.headers.get("x-real-ip") ||
+    req.headers.get("cf-connecting-ip") ||
+    "unknown";
+}
+
 function parseJson(raw: string | Buffer): any | null {
   try {
-    return JSON.parse(typeof raw === "string" ? raw : raw.toString("utf8"));
+    const text = typeof raw === "string" ? raw : raw.toString("utf8");
+    if (text.length > MAX_MESSAGE_JSON_BYTES) return null;
+    return JSON.parse(text);
   } catch {
     return null;
   }
@@ -192,6 +260,37 @@ function parseJson(raw: string | Buffer): any | null {
 function cleanText(value: unknown): string {
   if (typeof value !== "string") return "";
   return value.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/g, "").trim().slice(0, MAX_TEXT_LENGTH);
+}
+
+function cleanMessageId(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 80);
+  return /^[a-zA-Z0-9_.:-]{1,80}$/.test(cleaned) ? cleaned : "";
+}
+
+async function readMessageJson(req: Request): Promise<{ ok: true; body: any } | { ok: false; response: Response }> {
+  const length = Number(req.headers.get("content-length") || 0);
+  if (Number.isFinite(length) && length > MAX_MESSAGE_JSON_BYTES) {
+    return { ok: false, response: Response.json({ error: "Request too large" }, { status: 413 }) };
+  }
+  const contentType = req.headers.get("content-type") || "";
+  if (contentType && !contentType.toLowerCase().includes("application/json")) {
+    return { ok: false, response: Response.json({ error: "Content-Type must be application/json" }, { status: 415 }) };
+  }
+  let text = "";
+  try {
+    text = await req.text();
+  } catch {
+    return { ok: false, response: Response.json({ error: "Invalid body" }, { status: 400 }) };
+  }
+  if (text.length > MAX_MESSAGE_JSON_BYTES) {
+    return { ok: false, response: Response.json({ error: "Request too large" }, { status: 413 }) };
+  }
+  try {
+    return { ok: true, body: JSON.parse(text) };
+  } catch {
+    return { ok: false, response: Response.json({ error: "Invalid JSON" }, { status: 400 }) };
+  }
 }
 
 function rateLimit(viewerId: string): boolean {
@@ -266,6 +365,18 @@ function queueMessage(deviceId: string, viewerId: string, text: string, messageI
   } catch {
     // Duplicate client-supplied message ids are ignored; the sender still gets an ack.
   }
+}
+
+function wsRateLimit(viewerId: string): boolean {
+  const now = Date.now();
+  const current = viewerWsRate.get(viewerId);
+  if (!current || current.resetAt <= now) {
+    viewerWsRate.set(viewerId, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return true;
+  }
+  if (current.count >= VIEWER_WS_RATE_LIMIT) return false;
+  current.count += 1;
+  return true;
 }
 
 function messageTargets(preferredDeviceId = ""): string[] {
@@ -346,6 +457,15 @@ export function getWsInfo(req: Request): WsData | Response {
   if (role === "viewer") {
     const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
     if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
+    if (!globalIpRateLimit(requestIp(req))) {
+      return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+    }
+    if (!wsRateLimit(viewer.viewerId)) {
+      return Response.json({ error: "Too many WebSocket reconnects" }, { status: 429 });
+    }
+    if (viewerSocketCount() >= MAX_VIEWER_SOCKETS_TOTAL) {
+      return Response.json({ error: "Too many WebSocket connections" }, { status: 503 });
+    }
     return { role: "viewer", id: viewer.viewerId };
   }
 
@@ -361,12 +481,7 @@ export const realtimeWebSocket = {
       deliverQueuedMessages(ws.data.id, ws);
       return;
     }
-    // Close existing socket for this viewer if any (prevents socket leak on reconnect)
-    const existingViewerWs = viewerSockets.get(ws.data.id);
-    if (existingViewerWs && existingViewerWs !== ws) {
-      try { existingViewerWs.close(1000, "replaced by new connection"); } catch { /* ignore */ }
-    }
-    viewerSockets.set(ws.data.id, ws);
+    addViewerSocket(ws.data.id, ws);
     send(ws, { type: "ack", status: "connected", role: "viewer", viewer_id: ws.data.id });
   },
 
@@ -383,6 +498,11 @@ export const realtimeWebSocket = {
       return;
     }
 
+    if (ws.data.role === "viewer" && data.type === "viewer_ping") {
+      send(ws, { type: "viewer_pong", at: new Date().toISOString() });
+      return;
+    }
+
     if (ws.data.role === "viewer" && data.type === "viewer_message") {
       if (!rateLimit(ws.data.id)) {
         send(ws, { type: "error", error: "Rate limit exceeded" });
@@ -393,9 +513,7 @@ export const realtimeWebSocket = {
       const text = cleanText(data.text);
       const kind = cleanKind(data.kind);
       const viewerName = cleanViewerName(data.viewer_name);
-      const messageId = typeof data.message_id === "string" && data.message_id
-        ? data.message_id.slice(0, 80)
-        : crypto.randomUUID();
+      const messageId = cleanMessageId(data.message_id) || crypto.randomUUID();
       if (!targetDeviceId || !text) {
         if (kind === "private") {
           send(ws, { type: "error", message_id: messageId, error: "target_device_id and text required" });
@@ -437,27 +555,22 @@ export const realtimeWebSocket = {
     if (ws.data.role === "device" && data.type === "device_reply") {
       const targetViewerId = typeof data.target_viewer_id === "string" ? data.target_viewer_id : "";
       const text = cleanText(data.text);
-      const messageId = typeof data.message_id === "string" ? data.message_id.slice(0, 80) : "";
-      const replyId = typeof data.reply_id === "string" && data.reply_id
-        ? data.reply_id.slice(0, 80)
-        : crypto.randomUUID();
+      const messageId = cleanMessageId(data.message_id);
+      const replyId = cleanMessageId(data.reply_id) || crypto.randomUUID();
       if (!targetViewerId || !text) {
         send(ws, { type: "error", message_id: messageId, error: "target_viewer_id and text required" });
         return;
       }
       if (messageId) markMessageReplied.run(messageId);
       recordMessage(replyId, ws.data.id, targetViewerId, "", "reply", "device", text);
-      const viewerWs = viewerSockets.get(targetViewerId);
-      if (viewerWs) {
-        send(viewerWs, {
-          type: "device_reply",
-          message_id: replyId,
-          in_reply_to: messageId,
-          device_id: ws.data.id,
-          text,
-          created_at: new Date().toISOString(),
-        });
-      }
+      sendToViewerSockets(targetViewerId, {
+        type: "device_reply",
+        message_id: replyId,
+        in_reply_to: messageId,
+        device_id: ws.data.id,
+        text,
+        created_at: new Date().toISOString(),
+      });
       send(ws, { type: "ack", message_id: messageId, status: "reply_sent" });
       return;
     }
@@ -485,9 +598,9 @@ export const realtimeWebSocket = {
             timestamp: receivedAt,
           };
           const updateMsg = JSON.stringify(deviceUpdate);
-          for (const [, viewerWs] of viewerSockets) {
+          forEachViewerSocket((viewerWs) => {
             try { viewerWs.send(updateMsg); } catch { /* ignore send errors */ }
-          }
+          });
         }
       }
       send(ws, { type: "ack", status: "status_received" });
@@ -503,10 +616,8 @@ export const realtimeWebSocket = {
       devicePongTimes.delete(ws.data.id);
       // Immediately mark device offline so dashboard reflects disconnection
       try { markDeviceOffline.run(ws.data.id); } catch { /* ignore */ }
-    } else if (viewerSockets.get(ws.data.id) === ws) {
-      viewerSockets.delete(ws.data.id);
-        viewerRate.delete(ws.data.id);
-        viewerApiRate.delete(ws.data.id);
+    } else {
+      removeViewerSocket(ws.data.id, ws);
     }
   },
 };
@@ -544,38 +655,30 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
   const device = authenticateToken(req.headers.get("authorization"));
   if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const parsed = await readMessageJson(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
 
   const viewerId = typeof body.target_viewer_id === "string" ? body.target_viewer_id : "";
-  const messageId = typeof body.message_id === "string" ? body.message_id.slice(0, 80) : "";
+  const messageId = cleanMessageId(body.message_id);
   const text = cleanText(body.text);
   if (!viewerId || !text) {
     return Response.json({ error: "target_viewer_id and text required" }, { status: 400 });
   }
 
   if (messageId) markMessageReplied.run(messageId);
-  const replyId = typeof body.reply_id === "string" && body.reply_id
-    ? body.reply_id.slice(0, 80)
-    : crypto.randomUUID();
+  const replyId = cleanMessageId(body.reply_id) || crypto.randomUUID();
   recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text);
-  const viewerWs = viewerSockets.get(viewerId);
-  if (viewerWs) {
-    send(viewerWs, {
-      type: "device_reply",
-      message_id: replyId,
-      in_reply_to: messageId,
-      device_id: device.device_id,
-      text,
-      created_at: new Date().toISOString(),
-    });
-  }
+  const delivered = sendToViewerSockets(viewerId, {
+    type: "device_reply",
+    message_id: replyId,
+    in_reply_to: messageId,
+    device_id: device.device_id,
+    text,
+    created_at: new Date().toISOString(),
+  });
 
-  return Response.json({ ok: true, delivered: Boolean(viewerWs) });
+  return Response.json({ ok: true, delivered: delivered > 0, delivered_sockets: delivered });
 }
 
 export async function handlePublicMessagePost(req: Request): Promise<Response> {
@@ -585,20 +688,15 @@ export async function handlePublicMessagePost(req: Request): Promise<Response> {
     return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const parsed = await readMessageJson(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
 
   const text = cleanText(body.text);
   if (!text) return Response.json({ error: "text required" }, { status: 400 });
   const preferredDeviceId = cleanDeviceId(body.target_device_id);
   const viewerName = cleanViewerName(body.viewer_name);
-  const messageId = typeof body.message_id === "string" && body.message_id
-    ? body.message_id.slice(0, 80)
-    : crypto.randomUUID();
+  const messageId = cleanMessageId(body.message_id) || crypto.randomUUID();
   const createdAt = new Date().toISOString();
   const targets = messageTargets(preferredDeviceId)
     .filter((deviceId) => !isViewerBlocked(deviceId, viewer.viewerId));
@@ -623,9 +721,9 @@ export async function handlePublicMessagePost(req: Request): Promise<Response> {
       created_at: createdAt,
     },
   });
-  for (const [, viewerWs] of viewerSockets) {
+  forEachViewerSocket((viewerWs) => {
     try { viewerWs.send(payload); } catch { /* ignore */ }
-  }
+  });
 
   return Response.json({ ok: true, message_id: messageId, sent, queued });
 }
@@ -637,19 +735,14 @@ export async function handlePrivateMessagePost(req: Request): Promise<Response> 
     return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const parsed = await readMessageJson(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
 
   const targetDeviceId = cleanDeviceId(body.target_device_id);
   const text = cleanText(body.text);
   const viewerName = cleanViewerName(body.viewer_name);
-  const messageId = typeof body.message_id === "string" && body.message_id
-    ? body.message_id.slice(0, 80)
-    : crypto.randomUUID();
+  const messageId = cleanMessageId(body.message_id) || crypto.randomUUID();
   if (!targetDeviceId || !text) {
     return Response.json({ error: "target_device_id and text required", message_id: messageId }, { status: 400 });
   }
@@ -725,12 +818,9 @@ export async function handleBlockViewer(req: Request): Promise<Response> {
   const device = authenticateToken(req.headers.get("authorization"));
   if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const parsed = await readMessageJson(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
 
   const viewerId = cleanViewerId(body.viewer_id);
   if (!viewerId) {
@@ -745,12 +835,9 @@ export async function handleUnblockViewer(req: Request): Promise<Response> {
   const device = authenticateToken(req.headers.get("authorization"));
   if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const parsed = await readMessageJson(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
 
   const viewerId = cleanViewerId(body.viewer_id);
   if (!viewerId) {
@@ -765,14 +852,11 @@ export async function handleDeleteMessage(req: Request): Promise<Response> {
   const device = authenticateToken(req.headers.get("authorization"));
   if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const parsed = await readMessageJson(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
 
-  const messageId = typeof body.message_id === "string" ? body.message_id : "";
+  const messageId = cleanMessageId(body.message_id);
   if (!messageId) {
     return Response.json({ error: "message_id required" }, { status: 400 });
   }
@@ -785,12 +869,9 @@ export async function handleSetRemark(req: Request): Promise<Response> {
   const device = authenticateToken(req.headers.get("authorization"));
   if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const parsed = await readMessageJson(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
 
   const viewerId = cleanViewerId(body.viewer_id);
   const remark = cleanText(body.remark); // Use cleanText to prevent huge inputs

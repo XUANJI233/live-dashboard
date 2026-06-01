@@ -384,7 +384,7 @@ const descriptions: Record<string, string> = {
 descriptions["sleeping"] = "(-.-)zzZ";
 descriptions["idle"] = "暂时离开喵~";
 
-const DEFAULT_DESCRIPTION = "正在忙别的喵~";
+const DEFAULT_DESCRIPTION = "暂时看不到具体活动喵~";
 
 // Pre-build lowercase index for O(1) lookups
 const lowerIndex = new Map<string, string>();
@@ -407,7 +407,28 @@ function normalizeDisplayTitle(appName: string, displayTitle?: string): string {
   const app = appName.trim().toLowerCase();
   if (normalized === app || normalized === "android" || normalized.endsWith("activity")) return "";
   if (title === `正在用${appName}` || title.startsWith("正在用系统桌面")) return "";
+  if (isRedundantGeneratedTitle(appName, title)) return "";
   return title;
+}
+
+function isRedundantGeneratedTitle(appName: string, title: string): boolean {
+  const stripped = title.trim().replace(/[~～。.!！]+$/g, "");
+  const app = appName.trim();
+  if (!app) return false;
+  const patterns = [
+    `正在用${app}看${app}`,
+    `正在用${app}浏览${app}`,
+    `正在用${app}看「${app}」`,
+    `正在用${app}浏览「${app}」`,
+  ];
+  if (patterns.includes(stripped)) return true;
+  if (app.includes("浏览器")) {
+    return stripped === "正在用浏览器看浏览器" ||
+      stripped === "正在用浏览器浏览浏览器" ||
+      stripped === "正在用浏览器看「浏览器」" ||
+      stripped === "正在用浏览器浏览「浏览器」";
+  }
+  return false;
 }
 
 // Music app names (lowercase) — used to avoid duplicate music info in descriptions

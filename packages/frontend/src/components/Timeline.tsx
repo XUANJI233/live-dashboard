@@ -209,6 +209,7 @@ function segmentSignature(seg: TimelineSegment) {
 function isSwitchNoiseSegment(seg: TimelineSegment) {
   if (isIdleSegment(seg) || isLauncherSegment(seg)) return false;
   if (meaningfulDetailTitle(seg)) return false;
+  if (isBrowserLikeSegment(seg) && (seg.display_title || "").trim()) return false;
   const seconds = durationSeconds(seg);
   return seconds > 0 && seconds <= SWITCH_MAX_SEGMENT_SECONDS;
 }
@@ -251,7 +252,28 @@ function meaningfulDetailTitle(seg: TimelineSegment) {
   const app = seg.app_name.toLowerCase();
   if (normalized === app || normalized === "android" || normalized.endsWith("activity")) return "";
   if (title === `正在用${seg.app_name}` || title.startsWith("正在用系统桌面")) return "";
+  if (isRedundantGeneratedTitle(seg.app_name, title)) return "";
   return title;
+}
+
+function isRedundantGeneratedTitle(appName: string, title: string) {
+  const stripped = title.trim().replace(/[~～。.!！]+$/g, "");
+  const app = appName.trim();
+  if (!app) return false;
+  const patterns = [
+    `正在用${app}看${app}`,
+    `正在用${app}浏览${app}`,
+    `正在用${app}看「${app}」`,
+    `正在用${app}浏览「${app}」`,
+  ];
+  if (patterns.includes(stripped)) return true;
+  if (app.includes("浏览器")) {
+    return stripped === "正在用浏览器看浏览器" ||
+      stripped === "正在用浏览器浏览浏览器" ||
+      stripped === "正在用浏览器看「浏览器」" ||
+      stripped === "正在用浏览器浏览「浏览器」";
+  }
+  return false;
 }
 
 function compactChildren(children: TimelineSegment[]) {
@@ -281,6 +303,16 @@ function isIdleSegment(seg: TimelineSegment) {
 function isLauncherSegment(seg: TimelineSegment) {
   const app = `${seg.app_name} ${seg.app_id} ${seg.display_title || ""}`.toLowerCase();
   return app.includes("launcher") || app.includes("systemui") || app.includes("桌面") || app.includes("主屏幕") || app.includes("home screen");
+}
+
+function isBrowserLikeSegment(seg: TimelineSegment) {
+  const value = `${seg.app_name} ${seg.app_id}`.toLowerCase();
+  return value.includes("browser") ||
+    value.includes("chrome") ||
+    value.includes("firefox") ||
+    value.includes("edge") ||
+    value.includes("safari") ||
+    value.includes("浏览器");
 }
 
 function getAppColor(appName: string, colorMap: Map<string, string>): string {

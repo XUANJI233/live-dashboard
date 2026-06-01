@@ -6,7 +6,7 @@ const MIN_FINGERPRINT_LENGTH = 32; // FingerprintJS visitorId is 32-char hex
 const MIN_FINGERPRINT_UNIQUE = 6;  // hex has 16 chars, 6 is reasonable
 const POW_DIFFICULTY_HEX = 4;      // 4 leading hex zeros = 16 bits of work
 const POW_CHALLENGE_TTL_MS = 5 * 60 * 1000;
-const VIEWER_TOKEN_RATE_LIMIT = 120;
+const VIEWER_TOKEN_RATE_LIMIT = 600;
 const MAX_POW_CHALLENGES = 10000;  // limit memory usage
 
 // ── In-memory stores ──

@@ -3,13 +3,14 @@ import { isNSFW } from "./nsfw-filter";
 // NSFW filter can be disabled via environment variable (default: enabled)
 const NSFW_FILTER_ENABLED = process.env.NSFW_FILTER_DISABLED !== "true";
 import { processDisplayTitle } from "./privacy-tiers";
-import { insertActivity, insertLocationRecord, upsertDeviceState, hmacTitle } from "../db";
+import { db, insertActivity, insertLocationRecord, upsertDeviceState, hmacTitle } from "../db";
 import type { DeviceInfo } from "../types";
 
 const MAX_TITLE_LENGTH = 256;
 const MAX_SHORT_LENGTH = 64;
 const MAX_MEDIUM_LENGTH = 256;
 const VALID_SOURCES = new Set(["normal", "root", "lsposed", "accessibility", "notification"]);
+const getPreviousDeviceExtra = db.prepare("SELECT extra FROM device_states WHERE device_id = ?");
 
 export interface PublicDeviceUpdate {
   app_id: string;
@@ -47,7 +48,17 @@ function cleanFiniteNumber(value: unknown, min: number, max: number): number | u
  * Does NOT perform auth — caller must already have a verified DeviceInfo.
  */
 export function processReportPayload(body: Record<string, unknown>, device: DeviceInfo): PublicDeviceUpdate | null {
-  const appId = typeof body.app_id === "string" ? body.app_id.trim() : "";
+  const rawExtra = body.extra && typeof body.extra === "object" && !Array.isArray(body.extra)
+    ? (body.extra as Record<string, unknown>)
+    : null;
+  const rawForeground = rawExtra?.foreground && typeof rawExtra.foreground === "object" && !Array.isArray(rawExtra.foreground)
+    ? (rawExtra.foreground as Record<string, unknown>)
+    : null;
+  const sleepingFallback = rawExtra?.sleeping === true;
+  const foregroundPackageFallback = cleanString(rawForeground?.package_name, MAX_SHORT_LENGTH) || "";
+  const appId = typeof body.app_id === "string"
+    ? body.app_id.trim()
+    : foregroundPackageFallback || (sleepingFallback ? "sleeping" : "");
   if (!appId) return null;
 
   let windowTitle =
@@ -71,14 +82,14 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
 
   if (NSFW_FILTER_ENABLED && isNSFW(appId, windowTitle)) return null;
 
-  const rawForegroundForName = body.extra && typeof body.extra === "object" && !Array.isArray(body.extra)
-    ? (body.extra as Record<string, unknown>).foreground
-    : null;
+  const rawForegroundForName = rawExtra?.foreground ?? null;
   const reportedAppName = rawForegroundForName && typeof rawForegroundForName === "object" && !Array.isArray(rawForegroundForName)
     ? cleanString((rawForegroundForName as Record<string, unknown>).app_name, MAX_SHORT_LENGTH)
     : undefined;
 
-  const appName = device.platform === "android" && reportedAppName
+  const appName = appId === "sleeping"
+    ? "sleeping"
+    : device.platform === "android" && reportedAppName
     ? reportedAppName
     : resolveAppName(appId, device.platform);
 
@@ -88,9 +99,7 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
   const titleHash = hmacTitle(windowTitle.toLowerCase().trim());
 
   const extra: Record<string, unknown> = {};
-  if (body.extra && typeof body.extra === "object" && !Array.isArray(body.extra)) {
-    const rawExtra = body.extra as Record<string, unknown>;
-
+  if (rawExtra) {
     if (typeof rawExtra.battery_percent === "number" && Number.isFinite(rawExtra.battery_percent)) {
       extra.battery_percent = Math.max(0, Math.min(100, Math.round(rawExtra.battery_percent)));
     }
@@ -227,6 +236,7 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (Object.keys(media).length > 0) extra.media = media;
     }
   }
+  mergeStableDeviceExtra(device.device_id, extra);
   const extraJson = JSON.stringify(extra);
 
   try {
@@ -274,4 +284,33 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
     display_title: displayTitle,
     extra,
   };
+}
+
+function mergeStableDeviceExtra(deviceId: string, extra: Record<string, unknown>) {
+  const row = getPreviousDeviceExtra.get(deviceId) as { extra?: string } | undefined;
+  if (!row?.extra) return;
+
+  let previous: Record<string, unknown>;
+  try {
+    previous = JSON.parse(row.extra);
+  } catch {
+    return;
+  }
+
+  if (typeof extra.battery_percent !== "number" && typeof previous.battery_percent === "number") {
+    extra.battery_percent = previous.battery_percent;
+  }
+  if (typeof extra.battery_charging !== "boolean" && typeof previous.battery_charging === "boolean") {
+    extra.battery_charging = previous.battery_charging;
+  }
+
+  const previousDevice = previous.device && typeof previous.device === "object" && !Array.isArray(previous.device)
+    ? previous.device as Record<string, unknown>
+    : null;
+  if (!previousDevice) return;
+
+  const currentDevice = extra.device && typeof extra.device === "object" && !Array.isArray(extra.device)
+    ? extra.device as Record<string, unknown>
+    : {};
+  extra.device = { ...previousDevice, ...currentDevice };
 }

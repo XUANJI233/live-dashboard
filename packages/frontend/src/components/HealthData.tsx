@@ -8,7 +8,6 @@ import { fetchHealthData } from "@/lib/api";
 const TYPE_META: Record<string, { label: string; icon: string; priority: number }> = {
   heart_rate:             { label: "心率",     icon: "💓",  priority: 1 },
   oxygen_saturation:      { label: "血氧",     icon: "🩸", priority: 2 },
-  battery_percent:        { label: "手表电量",  icon: "▣", priority: 3 },
   wear_status:            { label: "佩戴状态",  icon: "◌", priority: 4 },
   steps:                  { label: "步数",     icon: "🚶", priority: 3 },
   active_calories:        { label: "活动卡路里", icon: "🔥", priority: 4 },
@@ -42,19 +41,26 @@ const TYPE_META: Record<string, { label: string; icon: string; priority: number 
 };
 
 // Core metrics shown as cards at top
-const CORE_TYPES = ["heart_rate", "oxygen_saturation", "body_temperature", "stand_count", "battery_percent", "steps"];
+const CORE_TYPES = ["heart_rate", "oxygen_saturation", "body_temperature", "stand_count", "steps"];
+const TREND_TYPES = ["heart_rate", "oxygen_saturation", "body_temperature"];
 
 interface Props {
   selectedDate: string;
   deviceId?: string;
+  records?: HealthRecord[];
 }
 
-export default function HealthData({ selectedDate, deviceId }: Props) {
+export default function HealthData({ selectedDate, deviceId, records }: Props) {
   const [data, setData] = useState<HealthDataResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (records) {
+      setLoading(false);
+      setError(null);
+      return;
+    }
     if (!selectedDate) return;
     const controller = new AbortController();
     setLoading(true);
@@ -74,13 +80,16 @@ export default function HealthData({ selectedDate, deviceId }: Props) {
       });
 
     return () => controller.abort();
-  }, [selectedDate, deviceId]);
+  }, [selectedDate, deviceId, records]);
+
+  const effectiveData = records ? { date: selectedDate, records } : data;
 
   // Group records by type, get latest value for each
   const grouped = useMemo(() => {
-    if (!data?.records?.length) return new Map<string, { latest: HealthRecord; all: HealthRecord[] }>();
+    if (!effectiveData?.records?.length) return new Map<string, { latest: HealthRecord; all: HealthRecord[] }>();
     const map = new Map<string, { latest: HealthRecord; all: HealthRecord[] }>();
-    for (const r of data.records) {
+    for (const r of effectiveData.records) {
+      if (r.type === "battery_percent") continue;
       const existing = map.get(r.type);
       if (existing) {
         existing.all.push(r);
@@ -92,15 +101,17 @@ export default function HealthData({ selectedDate, deviceId }: Props) {
       }
     }
     return map;
-  }, [data]);
+  }, [effectiveData]);
 
-  // Heart rate timeline for chart
-  const heartRatePoints = useMemo(() => {
-    const hrData = grouped.get("heart_rate");
-    if (!hrData || hrData.all.length < 2) return [];
-    return hrData.all
-      .map((r) => ({ time: new Date(r.recorded_at), value: r.value }))
-      .sort((a, b) => a.time.getTime() - b.time.getTime());
+  const trendSeries = useMemo(() => {
+    return TREND_TYPES.map((type) => {
+      const entry = grouped.get(type);
+      const points = entry?.all
+        .map((r) => ({ time: new Date(r.recorded_at), value: r.value, unit: r.unit }))
+        .filter((point) => Number.isFinite(point.time.getTime()) && Number.isFinite(point.value))
+        .sort((a, b) => a.time.getTime() - b.time.getTime()) ?? [];
+      return { type, points };
+    }).filter((series) => series.points.length >= 2);
   }, [grouped]);
 
   if (loading && !data) {
@@ -119,7 +130,7 @@ export default function HealthData({ selectedDate, deviceId }: Props) {
     );
   }
 
-  if (!data || data.records.length === 0) {
+  if (!effectiveData || effectiveData.records.length === 0) {
     return (
       <div className="text-center py-8">
         <p className="text-lg mb-1">(·˘ω˘·)</p>
@@ -171,11 +182,15 @@ export default function HealthData({ selectedDate, deviceId }: Props) {
         </div>
       )}
 
-      {/* Heart rate trend chart */}
-      {heartRatePoints.length >= 2 && (
-        <div className="border border-dashed border-[var(--color-border)] rounded-md p-3">
-          <p className="text-[10px] text-[var(--color-text-muted)] mb-2">今日心率趋势</p>
-          <HeartRateChart points={heartRatePoints} />
+      {/* Health trend charts */}
+      {trendSeries.length > 0 && (
+        <div className="grid gap-2">
+          {trendSeries.map((series) => (
+            <div key={series.type} className="border border-dashed border-[var(--color-border)] rounded-md p-3">
+              <p className="text-[10px] text-[var(--color-text-muted)] mb-2">今日{TYPE_META[series.type]?.label ?? series.type}趋势</p>
+              <MetricTrendChart points={series.points} type={series.type} />
+            </div>
+          ))}
         </div>
       )}
 
@@ -242,8 +257,8 @@ function displayUnit(unit: string): string {
   return unit;
 }
 
-// Pure SVG heart rate chart — responsive full-width, with hover tooltip
-function HeartRateChart({ points }: { points: { time: Date; value: number }[] }) {
+// Pure SVG metric chart — responsive full-width, with hover tooltip
+function MetricTrendChart({ points, type }: { points: { time: Date; value: number; unit: string }[]; type: string }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
@@ -321,7 +336,7 @@ function HeartRateChart({ points }: { points: { time: Date; value: number }[] })
 
   // Tooltip text
   const tooltipText = hovered
-    ? `${hovered.time.getHours().toString().padStart(2, "0")}:${hovered.time.getMinutes().toString().padStart(2, "0")}  ${Math.round(hovered.value)} bpm`
+    ? `${hovered.time.getHours().toString().padStart(2, "0")}:${hovered.time.getMinutes().toString().padStart(2, "0")}  ${formatValue(hovered.value, type)} ${displayUnit(hovered.unit)}`
     : "";
 
   // Keep tooltip inside SVG bounds
