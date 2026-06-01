@@ -1,17 +1,3 @@
-const globalIpRate = new Map<string, { count: number; resetAt: number }>();
-const GLOBAL_IP_RATE_LIMIT = 120; // 120 requests per minute per IP
-
-export function globalIpRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const current = globalIpRate.get(ip);
-  if (!current || current.resetAt <= now) {
-    globalIpRate.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    return true;
-  }
-  if (current.count >= GLOBAL_IP_RATE_LIMIT) return false;
-  current.count++;
-  return true;
-}
 import { db } from "../db";
 import { authenticateToken } from "../middleware/auth";
 import { currentHourWindow, currentMessageSlot, noStore, withCdnHeaders } from "./cdn";
@@ -39,6 +25,8 @@ const PING_INTERVAL_MS = 25_000;
 const PONG_TIMEOUT_MS = 35_000;
 const MAX_VIEWER_SOCKETS_PER_VIEWER = 4;
 const MAX_VIEWER_SOCKETS_TOTAL = 1000;
+const GLOBAL_IP_RATE_LIMIT = 120; // 120 requests per minute per IP
+const MAX_GLOBAL_IP_RATE_KEYS = 20_000;
 
 const deviceSockets = new Map<string, ServerWebSocket<WsData>>();
 const viewerSockets = new Map<string, Set<ServerWebSocket<WsData>>>();
@@ -46,6 +34,29 @@ const devicePongTimes = new Map<string, number>();
 const viewerRate = new Map<string, { count: number; resetAt: number }>();
 const viewerApiRate = new Map<string, { count: number; resetAt: number }>();
 const viewerWsRate = new Map<string, { count: number; resetAt: number }>();
+const globalIpRate = new Map<string, { count: number; resetAt: number }>();
+
+export function globalIpRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const current = globalIpRate.get(ip);
+  if (!current || current.resetAt <= now) {
+    if (!current && globalIpRate.size >= MAX_GLOBAL_IP_RATE_KEYS) {
+      cleanupGlobalIpRate(now);
+      if (globalIpRate.size >= MAX_GLOBAL_IP_RATE_KEYS) return false;
+    }
+    globalIpRate.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return true;
+  }
+  if (current.count >= GLOBAL_IP_RATE_LIMIT) return false;
+  current.count++;
+  return true;
+}
+
+function cleanupGlobalIpRate(now: number): void {
+  for (const [key, val] of globalIpRate) {
+    if (val.resetAt < now) globalIpRate.delete(key);
+  }
+}
 
 // ── Prepared statement: mark a single device offline immediately ──
 const markDeviceOffline = db.prepare(`
@@ -79,9 +90,7 @@ const rateCleanupTimer = setInterval(() => {
   for (const [key, val] of viewerWsRate) {
     if (val.resetAt < now) viewerWsRate.delete(key);
   }
-  for (const [key, val] of globalIpRate) {
-    if (val.resetAt < now) globalIpRate.delete(key);
-  }
+  cleanupGlobalIpRate(now);
 }, 300_000); // every 5 minutes
 rateCleanupTimer.unref();
 
@@ -475,6 +484,10 @@ export function getWsInfo(req: Request): WsData | Response {
 export const realtimeWebSocket = {
   open(ws: ServerWebSocket<WsData>) {
     if (ws.data.role === "device") {
+      const previous = deviceSockets.get(ws.data.id);
+      if (previous && previous !== ws) {
+        try { previous.close(4000, "replaced by new device socket"); } catch { /* ignore */ }
+      }
       deviceSockets.set(ws.data.id, ws);
       devicePongTimes.set(ws.data.id, Date.now());
       send(ws, { type: "ack", status: "connected", role: "device", device_id: ws.data.id });

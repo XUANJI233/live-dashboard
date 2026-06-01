@@ -136,7 +136,6 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
     const events: TimelineEvent[] = [];
     let i = 0;
     while (i < sorted.length) {
-      const current = sorted[i]!;
       const cluster = collectSwitchCluster(sorted, i);
       if (cluster.length >= MIN_CLUSTER_SIZE) {
         const first = cluster[0]!;

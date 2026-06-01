@@ -2,7 +2,7 @@ import { cleanupExpiredMessages, cleanupOldActivities, cleanupOldLocations, clea
 import { generateDailySummary } from "./daily-summary-gen";
 
 // Cleanup old activities + old summaries every hour
-setInterval(() => {
+const hourlyCleanupTimer = setInterval(() => {
   try {
     const result = cleanupOldActivities.run();
     if (result.changes > 0) {
@@ -39,19 +39,21 @@ setInterval(() => {
     console.error("[cleanup] Summaries cleanup failed:", e);
   }
 }, 60 * 60 * 1000);
+hourlyCleanupTimer.unref();
 
 // Mark offline devices every 60 seconds
-setInterval(() => {
+const offlineTimer = setInterval(() => {
   try {
     markOfflineDevices.run();
   } catch {
     // silent
   }
 }, 60_000);
+offlineTimer.unref();
 
 // AI daily summary — check every minute, trigger at 21:00
 let lastSummaryDate = "";
-setInterval(() => {
+const summaryTimer = setInterval(() => {
   const now = new Date();
   if (now.getHours() === 21 && now.getMinutes() === 0) {
     const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
@@ -61,5 +63,6 @@ setInterval(() => {
     }
   }
 }, 60_000);
+summaryTimer.unref();
 
 console.log("[cleanup] Scheduled: hourly cleanup, 60s offline check, 21:00 AI summary");

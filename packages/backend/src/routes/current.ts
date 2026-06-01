@@ -6,6 +6,7 @@ import { edgeViewerIdentity, verifyViewerToken, viewerTokenFromRequest } from ".
 const CURRENT_SNAPSHOT_TTL_MS = 2_000;
 const ANON_CURRENT_WINDOW_MS = 60_000;
 const ANON_CURRENT_LIMIT = 240;
+const MAX_ANON_CURRENT_KEYS = 20_000;
 
 let currentSnapshotCache:
   | {
@@ -18,10 +19,7 @@ let currentSnapshotCache:
 const anonymousCurrentRate = new Map<string, { count: number; resetAt: number }>();
 
 setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of anonymousCurrentRate) {
-    if (entry.resetAt < now) anonymousCurrentRate.delete(ip);
-  }
+  cleanupAnonymousCurrentRate(Date.now());
 }, 300_000).unref();
 
 function preparePublicDevices(devices: DeviceState[]) {
@@ -66,6 +64,10 @@ function allowAnonymousCurrent(ip: string): boolean {
   const now = Date.now();
   const current = anonymousCurrentRate.get(ip);
   if (!current || current.resetAt <= now) {
+    if (!current && anonymousCurrentRate.size >= MAX_ANON_CURRENT_KEYS) {
+      cleanupAnonymousCurrentRate(now);
+      if (anonymousCurrentRate.size >= MAX_ANON_CURRENT_KEYS) return false;
+    }
     anonymousCurrentRate.set(ip, { count: 1, resetAt: now + ANON_CURRENT_WINDOW_MS });
     return true;
   }
@@ -74,8 +76,14 @@ function allowAnonymousCurrent(ip: string): boolean {
   return true;
 }
 
+function cleanupAnonymousCurrentRate(now: number): void {
+  for (const [ip, entry] of anonymousCurrentRate) {
+    if (entry.resetAt < now) anonymousCurrentRate.delete(ip);
+  }
+}
+
 export function handleCurrent(req: Request, clientIp: string, userAgent?: string): Response {
-  const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req), clientIp);
+  const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
   if (!viewer && !allowAnonymousCurrent(clientIp)) {
     return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
   }

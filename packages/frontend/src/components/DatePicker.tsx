@@ -37,14 +37,10 @@ export default function DatePicker({ selectedDate, onChange }: Props) {
       </button>
 
       <span suppressHydrationWarning className="text-sm font-mono tabular-nums px-2 min-w-[120px] text-center text-[var(--color-text-secondary)]">
-        {parseLocalDate(selectedDate)?.toLocaleDateString("zh-CN", { month: "short", day: "numeric", weekday: "short" }) || selectedDate}
+        {isToday
+          ? "今天"
+          : parseLocalDate(selectedDate)?.toLocaleDateString("zh-CN", { month: "short", day: "numeric", weekday: "short" }) || selectedDate}
       </span>
-
-      {isToday && (
-        <span className="rounded-full border border-[var(--color-primary)] px-2 py-0.5 text-[10px] text-[var(--color-primary)]">
-          今天
-        </span>
-      )}
 
       <button
         className="btn-glass"

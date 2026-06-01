@@ -8,6 +8,8 @@ const POW_DIFFICULTY_HEX = 4;      // 4 leading hex zeros = 16 bits of work
 const POW_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const VIEWER_TOKEN_RATE_LIMIT = 600;
 const MAX_POW_CHALLENGES = 10000;  // limit memory usage
+const VIEWER_IDENTITY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_VIEWER_IDENTITY_KEYS = 50_000;
 
 // ── In-memory stores ──
 const powChallenges = new Map<string, { ip: string; ipUpdated: boolean; createdAt: number }>();
@@ -17,6 +19,9 @@ const powChallengeRate = new Map<string, { count: number; resetAt: number }>();
 const fingerprintViewerIds = new Map<string, string>();
 const ipViewerIds = new Map<string, string>();
 const viewerAliases = new Map<string, string>();
+const fingerprintSeenAt = new Map<string, number>();
+const ipSeenAt = new Map<string, number>();
+const aliasSeenAt = new Map<string, number>();
 
 // ── Cleanup (5 min) ──
 setInterval(() => {
@@ -25,6 +30,7 @@ setInterval(() => {
   for (const [k, v] of issueRate) if (v.resetAt < now) issueRate.delete(k);
   for (const [k, v] of viewerTokenRate) if (v.resetAt < now) viewerTokenRate.delete(k);
   for (const [k, v] of powChallengeRate) if (v.resetAt < now) powChallengeRate.delete(k);
+  cleanupViewerIdentityMaps(now);
 }, 300_000).unref();
 
 // ── Helpers ──
@@ -54,14 +60,41 @@ function ipHash(ip: string): string {
   return hmacTitle("ip:" + ip).slice(0, 16);
 }
 
+function cleanupViewerIdentityMaps(now: number): void {
+  cleanupLastSeenMap(fingerprintSeenAt, now, (key) => fingerprintViewerIds.delete(key));
+  cleanupLastSeenMap(ipSeenAt, now, (key) => ipViewerIds.delete(key));
+  cleanupLastSeenMap(aliasSeenAt, now, (key) => viewerAliases.delete(key));
+}
+
+function cleanupLastSeenMap(lastSeen: Map<string, number>, now: number, deleteValue: (key: string) => void): void {
+  for (const [key, seenAt] of lastSeen) {
+    if (now - seenAt > VIEWER_IDENTITY_TTL_MS) {
+      lastSeen.delete(key);
+      deleteValue(key);
+    }
+  }
+  if (lastSeen.size <= MAX_VIEWER_IDENTITY_KEYS) return;
+  const toDrop = [...lastSeen.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .slice(0, lastSeen.size - MAX_VIEWER_IDENTITY_KEYS);
+  for (const [key] of toDrop) {
+    lastSeen.delete(key);
+    deleteValue(key);
+  }
+}
+
 function canonicalViewerId(viewerId: string): string {
   let current = viewerId;
   const seen = new Set<string>();
   while (viewerAliases.has(current) && !seen.has(current)) {
     seen.add(current);
+    aliasSeenAt.set(current, Date.now());
     current = viewerAliases.get(current)!;
   }
-  for (const item of seen) viewerAliases.set(item, current);
+  for (const item of seen) {
+    viewerAliases.set(item, current);
+    aliasSeenAt.set(item, Date.now());
+  }
   return current;
 }
 
@@ -72,10 +105,12 @@ function linkViewerIds(primary: string, secondary: string): string {
   const canonical = a < b ? a : b;
   const alias = canonical === a ? b : a;
   viewerAliases.set(alias, canonical);
+  aliasSeenAt.set(alias, Date.now());
   return canonical;
 }
 
 function resolveViewerId(fingerprint: string, ip: string): { viewerId: string; ipHash: string } {
+  const now = Date.now();
   const fpId = fingerprintId(fingerprint);
   const ih = (ip && ip !== "unknown") ? ipHash(ip) : "";
   const fpViewer = fingerprintViewerIds.get(fpId);
@@ -84,7 +119,11 @@ function resolveViewerId(fingerprint: string, ip: string): { viewerId: string; i
   if (fpViewer && ipViewer) viewerId = linkViewerIds(fpViewer, ipViewer);
   viewerId = canonicalViewerId(viewerId);
   fingerprintViewerIds.set(fpId, viewerId);
-  if (ih) ipViewerIds.set(ih, viewerId);
+  fingerprintSeenAt.set(fpId, now);
+  if (ih) {
+    ipViewerIds.set(ih, viewerId);
+    ipSeenAt.set(ih, now);
+  }
   return { viewerId, ipHash: ih };
 }
 
@@ -160,7 +199,7 @@ export function powChallengeRateLimit(ip: string): boolean {
   return true;
 }
 
-export function verifyViewerToken(token: string | null | undefined, ip?: string): ViewerIdentity | null {
+export function verifyViewerToken(token: string | null | undefined): ViewerIdentity | null {
   if (!token || !token.includes(".")) return null;
   const [encoded, signature] = token.split(".", 2);
   if (!encoded || !signature || sign(encoded) !== signature) return null;

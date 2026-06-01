@@ -173,7 +173,7 @@ export default function HealthData({ selectedDate, deviceId, records }: Props) {
                     {formatValue(entry.latest.value, type)}
                   </span>
                   <span className="text-[10px] text-[var(--color-text-muted)]">
-                    {displayUnit(entry.latest.unit)}
+                    {displayUnitForType(type, entry.latest.unit)}
                   </span>
                 </div>
               </div>
@@ -214,7 +214,7 @@ export default function HealthData({ selectedDate, deviceId, records }: Props) {
                       {formatValue(entry.latest.value, type)}
                     </span>
                     <span className="text-[10px] text-[var(--color-text-muted)]">
-                      {displayUnit(entry.latest.unit)}
+                      {displayUnitForType(type, entry.latest.unit)}
                     </span>
                   </div>
                 </div>
@@ -229,18 +229,14 @@ export default function HealthData({ selectedDate, deviceId, records }: Props) {
 
 function formatValue(value: number, type: string): string {
   if (type === "sleep" || type === "exercise" || type === "sleep_duration" || type === "nap_duration") {
-    const h = Math.floor(value / 60);
-    const m = Math.round(value % 60);
-    return h > 0 ? `${h} 小时 ${m} 分钟` : `${m} 分钟`;
+    return formatDurationMinutes(value);
   }
   if (type === "sleep_status") return value > 0 ? "睡着了" : "醒着";
   if (type === "wear_status") return value > 0 ? "佩戴中" : "未佩戴";
   if (type === "sleep_start" || type === "sleep_end" || type === "nap_start" || type === "nap_end") {
-    const minutes = Math.max(0, Math.round(value));
-    const h = Math.floor(minutes / 60) % 24;
-    const m = minutes % 60;
-    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    return formatMinuteOfDay(value);
   }
+  if (type === "sleep_stage_count" || type === "stand_target" || type === "stand_count") return Math.round(value).toString();
   if (type === "steps") return value.toLocaleString();
   if (type === "distance") return (value / 1000).toFixed(1) + " 公里";
   if (type === "hydration") return Math.round(value).toString();
@@ -248,13 +244,34 @@ function formatValue(value: number, type: string): string {
   return value.toFixed(1);
 }
 
+function formatDurationMinutes(value: number): string {
+  if (!Number.isFinite(value)) return "--";
+  const h = Math.floor(value / 60);
+  const m = Math.round(value % 60);
+  return h > 0 ? `${h} 小时 ${m} 分钟` : `${m} 分钟`;
+}
+
+function formatMinuteOfDay(value: number): string {
+  if (!Number.isFinite(value)) return "--:--";
+  const minutes = ((Math.round(value) % 1440) + 1440) % 1440;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
 function displayUnit(unit: string): string {
   if (unit === "°C") return "℃";
-  if (unit === "status" || unit === "minute_of_day") return "";
+  if (unit === "status" || unit === "state" || unit === "minute_of_day") return "";
   if (unit === "count") return "次";
   if (unit === "minutes") return "分钟";
   if (unit === "celsius") return "℃";
   return unit;
+}
+
+function displayUnitForType(type: string, unit: string): string {
+  if (type === "sleep" || type === "sleep_duration" || type === "nap_duration") return "";
+  if (type === "sleep_start" || type === "sleep_end" || type === "nap_start" || type === "nap_end") return "";
+  return displayUnit(unit);
 }
 
 // Pure SVG metric chart — responsive full-width, with hover tooltip
@@ -336,7 +353,7 @@ function MetricTrendChart({ points, type }: { points: { time: Date; value: numbe
 
   // Tooltip text
   const tooltipText = hovered
-    ? `${hovered.time.getHours().toString().padStart(2, "0")}:${hovered.time.getMinutes().toString().padStart(2, "0")}  ${formatValue(hovered.value, type)} ${displayUnit(hovered.unit)}`
+    ? `${hovered.time.getHours().toString().padStart(2, "0")}:${hovered.time.getMinutes().toString().padStart(2, "0")}  ${formatValue(hovered.value, type)} ${displayUnitForType(type, hovered.unit)}`
     : "";
 
   // Keep tooltip inside SVG bounds

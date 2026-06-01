@@ -10,7 +10,6 @@ import CurrentStatus from "@/components/CurrentStatus";
 import DeviceCard from "@/components/DeviceCard";
 import DatePicker from "@/components/DatePicker";
 import Timeline from "@/components/Timeline";
-import HealthData from "@/components/HealthData";
 import SiteMetadataSync from "@/components/SiteMetadataSync";
 import VisitorMessages from "@/components/VisitorMessages";
 
@@ -27,7 +26,7 @@ export default function Home() {
 
 function HomeInner() {
   const { displayName } = useConfig();
-  const { current, timeline, selectedDate, changeDate, loading, timelineLoading, error, viewerCount, wsConnected } = useDashboard();
+  const { current, timeline, selectedDate, changeDate, loading, error, viewerCount, wsConnected } = useDashboard();
 
   // Selected device for CurrentStatus bubble
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
@@ -35,17 +34,7 @@ function HomeInner() {
   // Sidebar state for the visitor message panel
   const [messagesCollapsed, setMessagesCollapsed] = useState(false);
 
-  // Tab state (lifted from RightPanelTabs for conditional rendering)
-  const [tab, setTab] = useState<"activity" | "health">("activity");
-
   const [allHealthRecords, setAllHealthRecords] = useState<HealthRecord[]>([]);
-
-  // Reset tab to activity if health data disappears
-  useEffect(() => {
-    if (allHealthRecords.length === 0 && tab === "health") {
-      setTab("activity");
-    }
-  }, [allHealthRecords.length, tab]);
 
   // Build currentAppByDevice map for Timeline
   const currentAppByDevice = useMemo(() => {
@@ -200,33 +189,9 @@ function HomeInner() {
 
             {/* Right: timeline + health (wide) */}
             <div className="flex-1 min-w-0">
-              {/* Date picker + tab buttons on same line */}
+              {/* Date picker */}
               <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <DatePicker selectedDate={selectedDate} onChange={changeDate} />
-                {hasAnyHealthData && (
-                  <div className="flex gap-1">
-                    <button
-                      onClick={() => setTab("activity")}
-                      className={`pill-btn text-xs px-3 py-1 ${
-                        tab === "activity"
-                          ? "bg-[var(--color-primary)] text-white border-[var(--color-primary)]"
-                          : ""
-                      }`}
-                    >
-                      活动
-                    </button>
-                    <button
-                      onClick={() => setTab("health")}
-                      className={`pill-btn text-xs px-3 py-1 ${
-                        tab === "health"
-                          ? "bg-[var(--color-primary)] text-white border-[var(--color-primary)]"
-                          : ""
-                      }`}
-                    >
-                      健康
-                    </button>
-                  </div>
-                )}
               </div>
 
               <div className="separator-dashed mb-3" />
@@ -236,30 +201,23 @@ function HomeInner() {
                 <DeviceOverview devices={devices} />
               )}
 
-              {/* Tab content */}
-              {tab === "activity" ? (
-                <>
-                  {loading && filteredTimeline ? (
-                    <div className="opacity-60">
-                      <Timeline
-                        segments={filteredTimeline.segments}
-                        summary={filteredTimeline.summary}
-                        currentAppByDevice={currentAppByDevice}
-                          onlineDevices={onlineDevices}
-                      />
-                    </div>
-                  ) : filteredTimeline && hasTimelineData ? (
-                    <Timeline
-                      segments={filteredTimeline.segments}
-                      summary={filteredTimeline.summary}
-                      currentAppByDevice={currentAppByDevice}
-                        onlineDevices={onlineDevices}
-                    />
-                  ) : null}
-                </>
-              ) : (
-                <HealthData selectedDate={selectedDate} records={allHealthRecords} />
-              )}
+              {loading && filteredTimeline ? (
+                <div className="opacity-60">
+                  <Timeline
+                    segments={filteredTimeline.segments}
+                    summary={filteredTimeline.summary}
+                    currentAppByDevice={currentAppByDevice}
+                    onlineDevices={onlineDevices}
+                  />
+                </div>
+              ) : filteredTimeline && hasTimelineData ? (
+                <Timeline
+                  segments={filteredTimeline.segments}
+                  summary={filteredTimeline.summary}
+                  currentAppByDevice={currentAppByDevice}
+                  onlineDevices={onlineDevices}
+                />
+              ) : null}
             </div>
           </div>
         </>
@@ -374,11 +332,14 @@ function deviceInlineMeta(device: DeviceState) {
 
 function DeviceSnapshot({ selectedDevice, devices }: { selectedDevice: DeviceState | undefined; devices: DeviceState[] }) {
   const [expanded, setExpanded] = useState(false);
-  const primary = selectedDevice ? deviceInfoItems(selectedDevice) : [];
+  const summaryItems = selectedDevice ? deviceSummaryItems(selectedDevice) : [];
+  const detailItems = selectedDevice ? deviceInfoItems(selectedDevice) : [];
   const others = devices.filter((device) => device.device_id !== selectedDevice?.device_id);
   if (!selectedDevice && devices.length === 0) return null;
-  const items = primary.length > 0 ? primary : selectedDevice ? [{ label: "状态", value: selectedDevice.is_online === 1 ? "在线" : "离线" }] : [];
-  const preview = items.slice(0, 5);
+  const items = summaryItems.length > 0 ? summaryItems : selectedDevice ? [{ label: "状态", value: selectedDevice.is_online === 1 ? "在线" : "离线" }] : [];
+  const preview = items.slice(0, 4);
+  const previewLabels = new Set(preview.map((item) => item.label));
+  const hiddenDetails = detailItems.filter((item) => !previewLabels.has(item.label));
 
   return (
     <section className="mb-4 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3">
@@ -391,7 +352,7 @@ function DeviceSnapshot({ selectedDevice, devices }: { selectedDevice: DeviceSta
             </div>
           )}
         </div>
-        {(items.length > preview.length || others.length > 0) && (
+        {(hiddenDetails.length > 0 || others.length > 0) && (
           <button type="button" className="pill-btn px-3 py-1 text-xs" onClick={() => setExpanded((v) => !v)}>
             {expanded ? "收起" : "详情"}
           </button>
@@ -404,9 +365,9 @@ function DeviceSnapshot({ selectedDevice, devices }: { selectedDevice: DeviceSta
       </div>
       {expanded && (
         <>
-          {items.length > preview.length && (
+          {hiddenDetails.length > 0 && (
             <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            {items.slice(preview.length).map((item) => (
+            {hiddenDetails.map((item) => (
               <DeviceInfoCard key={item.label} item={item} />
             ))}
             </div>
@@ -429,14 +390,18 @@ function DeviceSnapshot({ selectedDevice, devices }: { selectedDevice: DeviceSta
 
 function HealthSnapshot({ devices, records }: { devices: DeviceState[]; records: HealthRecord[] }) {
   const [expanded, setExpanded] = useState(false);
+  const [selectedType, setSelectedType] = useState<string | null>(null);
   const deviceById = useMemo(() => new Map(devices.map((device) => [device.device_id, device])), [devices]);
   const grouped = useMemo(() => groupHealth(records), [records]);
   const items = healthItems(grouped, deviceById);
+  useEffect(() => {
+    if (selectedType && !grouped.has(selectedType)) setSelectedType(null);
+  }, [grouped, selectedType]);
   if (items.length === 0) return null;
   const preview = items.slice(0, 6);
-  const histories = ["heart_rate", "oxygen_saturation", "body_temperature"]
-    .map((type) => ({ type, entry: grouped.get(type) }))
-    .filter((item) => item.entry && item.entry.all.length > 1) as { type: string; entry: HealthGroup }[];
+  const detailItems = selectedType
+    ? items.filter((item) => isSleepType(selectedType) ? isSleepType(item.type) : item.type === selectedType)
+    : items;
 
   return (
     <section className="mb-4 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3">
@@ -447,48 +412,49 @@ function HealthSnapshot({ devices, records }: { devices: DeviceState[]; records:
             已聚合 {new Set(records.map((record) => record.device_id).filter(Boolean)).size || 1} 个来源
           </div>
         </div>
-        {(items.length > preview.length || histories.length > 0) && (
-          <button type="button" className="pill-btn px-3 py-1 text-xs" onClick={() => setExpanded((v) => !v)}>
-            {expanded ? "收起" : "详情"}
+        {items.length > 0 && (
+          <button
+            type="button"
+            className="pill-btn px-3 py-1 text-xs"
+            onClick={() => {
+              setSelectedType(null);
+              setExpanded((v) => !v);
+            }}
+          >
+            {expanded && !selectedType ? "收起" : "详情"}
           </button>
         )}
       </div>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
         {preview.map((item) => (
-          <HealthMetricCard key={item.label} item={item} />
+          <HealthMetricCard
+            key={item.type}
+            item={item}
+            onOpen={() => {
+              setSelectedType(isSleepType(item.type) ? "sleep_status" : item.type);
+              setExpanded(true);
+            }}
+          />
         ))}
       </div>
       {expanded && (
-        <>
-          {items.length > preview.length && (
-            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              {items.slice(preview.length).map((item) => (
-                <HealthMetricCard key={item.label} item={item} />
-              ))}
-            </div>
-          )}
-          {histories.length > 0 && (
-            <div className="mt-3 grid gap-2 lg:grid-cols-3">
-              {histories.map(({ type, entry }) => (
-                <div key={type} className="rounded border border-[var(--color-border)] px-3 py-2">
-                  <div className="mb-2 flex items-center justify-between text-[10px] text-[var(--color-text-muted)]">
-                    <span>{healthLabel(type)}历史</span>
-                    <span>{entry.all.length} 条</span>
-                  </div>
-                  <Sparkline records={entry.all} type={type} />
-                </div>
-              ))}
-            </div>
-          )}
-        </>
+        <HealthDetailPanel
+          grouped={grouped}
+          items={detailItems}
+          selectedType={selectedType}
+          deviceById={deviceById}
+          onShowAll={() => setSelectedType(null)}
+          onSelectType={setSelectedType}
+        />
       )}
     </section>
   );
 }
 
 type DeviceInfoItem = { label: string; value: string; unit?: string };
-type HealthItem = { label: string; value: string; unit: string; source: string; records: HealthRecord[] };
+type HealthItem = { type: string; label: string; value: string; unit: string; source: string; records: HealthRecord[] };
 type HealthGroup = { latest: HealthRecord; all: HealthRecord[] };
+const SLEEP_DETAIL_TYPES = ["sleep", "sleep_status", "sleep_start", "sleep_end", "sleep_duration", "sleep_stage_count", "nap_start", "nap_end", "nap_duration"];
 
 function DeviceInfoCard({ item }: { item: DeviceInfoItem }) {
   return (
@@ -502,9 +468,13 @@ function DeviceInfoCard({ item }: { item: DeviceInfoItem }) {
   );
 }
 
-function HealthMetricCard({ item }: { item: HealthItem }) {
+function HealthMetricCard({ item, onOpen }: { item: HealthItem; onOpen?: () => void }) {
   return (
-    <div className="relative rounded border border-dashed border-[var(--color-border)] px-3 py-2 pb-5">
+    <button
+      type="button"
+      onClick={onOpen}
+      className="relative rounded border border-dashed border-[var(--color-border)] px-3 py-2 pb-5 text-left transition-colors hover:border-[var(--color-primary)]"
+    >
       <div className="text-[10px] text-[var(--color-text-muted)]">{item.label}</div>
       <div className="font-mono text-sm text-[var(--color-primary)]">
         {item.value}
@@ -513,26 +483,228 @@ function HealthMetricCard({ item }: { item: HealthItem }) {
       <div className="pointer-events-none absolute bottom-1 right-2 max-w-[70%] truncate text-[9px] text-[var(--color-text-muted)] opacity-55">
         {item.source}
       </div>
+    </button>
+  );
+}
+
+function HealthDetailPanel({
+  grouped,
+  items,
+  selectedType,
+  deviceById,
+  onShowAll,
+  onSelectType,
+}: {
+  grouped: Map<string, HealthGroup>;
+  items: HealthItem[];
+  selectedType: string | null;
+  deviceById: Map<string, DeviceState>;
+  onShowAll: () => void;
+  onSelectType: (type: string) => void;
+}) {
+  const allItems = healthItems(grouped, deviceById);
+  const visibleItems = items.filter((item) => !isSleepType(item.type));
+  const chartItems = visibleItems.filter((item) => item.records.length > 1 && isChartableHealthType(item.type));
+  const recentRecords = visibleItems
+    .flatMap((item) => item.records.map((record) => ({ ...record, type: item.type })))
+    .sort((a, b) => new Date(b.recorded_at).getTime() - new Date(a.recorded_at).getTime())
+    .slice(0, 24);
+  const navItems = aggregateHealthNavItems(allItems);
+
+  return (
+    <div className="mt-3 rounded border border-[var(--color-border)] px-3 py-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-xs font-semibold text-[var(--color-text-muted)]">
+            {selectedType ? `${isSleepType(selectedType) ? "睡眠" : healthLabel(selectedType)}详情` : "身体数据详情"}
+          </div>
+          <div className="text-[10px] text-[var(--color-text-muted)]">
+            {selectedType ? "点击“全部”查看其他指标" : "摘要卡片可直接展开对应历史"}
+          </div>
+        </div>
+        {selectedType && (
+          <button type="button" className="pill-btn px-3 py-1 text-xs" onClick={onShowAll}>
+            全部
+          </button>
+        )}
+      </div>
+
+      {!selectedType && navItems.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-1">
+          {navItems.map((item) => (
+            <button
+              key={item.type}
+              type="button"
+              className="pill-btn px-2 py-1 text-[10px]"
+              onClick={() => onSelectType(isSleepType(item.type) ? "sleep_status" : item.type)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <SleepDetail grouped={grouped} items={items} />
+
+      {visibleItems.length > 0 && (
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {visibleItems.map((item) => (
+          <div key={item.type} className="rounded border border-dashed border-[var(--color-border)] px-3 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] text-[var(--color-text-muted)]">{item.label}</span>
+              <span className="text-[9px] text-[var(--color-text-muted)]">{item.records.length} 条</span>
+            </div>
+            <div className="mt-1 font-mono text-sm text-[var(--color-primary)]">
+              {item.value}
+              {item.unit && <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">{item.unit}</span>}
+            </div>
+            <div className="mt-1 truncate text-[9px] text-[var(--color-text-muted)]">{item.source}</div>
+          </div>
+        ))}
+        </div>
+      )}
+
+      {chartItems.length > 0 && (
+        <div className="mt-3 grid gap-2 lg:grid-cols-2">
+          {chartItems.map((item) => (
+            <div key={item.type} className="rounded border border-[var(--color-border)] px-3 py-2">
+              <div className="mb-2 flex items-center justify-between text-[10px] text-[var(--color-text-muted)]">
+                <span>{item.label}历史</span>
+                <span>{item.records.length} 条</span>
+              </div>
+              <Sparkline records={item.records} type={item.type} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {recentRecords.length > 0 && (
+        <div className="mt-3 max-h-64 overflow-auto rounded border border-[var(--color-border)]">
+          <div className="grid grid-cols-[4.5rem_1fr_1fr] gap-2 border-b border-[var(--color-border)] px-3 py-2 text-[10px] text-[var(--color-text-muted)]">
+            <span>时间</span>
+            <span>指标</span>
+            <span className="text-right">数值</span>
+          </div>
+          {recentRecords.map((record, index) => (
+            <div
+              key={`${record.type}-${record.recorded_at}-${index}`}
+              className="grid grid-cols-[4.5rem_1fr_1fr] gap-2 px-3 py-1.5 text-xs"
+            >
+              <span className="font-mono text-[var(--color-text-muted)]">{formatShortTime(record.recorded_at)}</span>
+              <span className="truncate text-[var(--color-text-muted)]">
+                {healthLabel(record.type)} · {sourceLabel(record.device_id, deviceById)}
+              </span>
+              <span className="text-right font-mono">
+                {formatHealthValue(record.value, record.type)}
+                {healthUnit(record.type, record.unit) && <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">{healthUnit(record.type, record.unit)}</span>}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
+function SleepDetail({ grouped, items }: { grouped: Map<string, HealthGroup>; items: HealthItem[] }) {
+  const selectedTypes = new Set(items.map((item) => item.type));
+  const shouldShow = selectedTypes.size === 0 || SLEEP_DETAIL_TYPES.some((type) => selectedTypes.has(type));
+  if (!shouldShow) return null;
+
+  const details = SLEEP_DETAIL_TYPES
+    .map((type) => {
+      const entry = grouped.get(type);
+      return entry ? { type, entry } : null;
+    })
+    .filter(Boolean) as { type: string; entry: HealthGroup }[];
+  if (details.length === 0) return null;
+  const current = grouped.get("sleep_status")?.latest;
+  const sleepStart = grouped.get("sleep_start")?.latest;
+  const sleepEnd = grouped.get("sleep_end")?.latest;
+  const sleepDuration = grouped.get("sleep_duration")?.latest || grouped.get("sleep")?.latest;
+  const napStart = grouped.get("nap_start")?.latest;
+  const napEnd = grouped.get("nap_end")?.latest;
+  const napDuration = grouped.get("nap_duration")?.latest;
+  const stageCount = grouped.get("sleep_stage_count")?.latest;
+
+  return (
+    <div className="mb-3 rounded border border-dashed border-[var(--color-border)] px-3 py-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-[10px] font-semibold text-[var(--color-text-muted)]">睡眠汇总</div>
+          <div className="text-[9px] text-[var(--color-text-muted)]">{details.length} 项睡眠数据</div>
+        </div>
+        {current && (
+          <div className="font-mono text-sm text-[var(--color-primary)]">
+            {formatHealthValue(current.value, "sleep_status")}
+          </div>
+        )}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <SleepSummaryItem label="夜间睡眠" value={formatSleepRange(sleepStart, sleepEnd, sleepDuration)} />
+        <SleepSummaryItem label="睡眠时长" value={sleepDuration ? formatHealthValue(sleepDuration.value, "sleep_duration") : "--"} />
+        <SleepSummaryItem label="睡眠阶段" value={stageCount ? `${formatHealthValue(stageCount.value, "sleep_stage_count")}次` : "--"} />
+        <SleepSummaryItem label="小睡" value={formatSleepRange(napStart, napEnd, napDuration)} />
+      </div>
+      {details.some(({ entry }) => entry.all.length > 1) && (
+        <div className="mt-2 text-[9px] text-[var(--color-text-muted)]">
+          多条记录已按最新值汇总，完整记录仍保留在下方时间列表。
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SleepSummaryItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-[var(--color-border)] px-3 py-2">
+      <div className="text-[10px] text-[var(--color-text-muted)]">{label}</div>
+      <div className="font-mono text-sm text-[var(--color-primary)]">{value}</div>
+    </div>
+  );
+}
+
+function formatSleepRange(start?: HealthRecord, end?: HealthRecord, duration?: HealthRecord) {
+  const parts: string[] = [];
+  if (start && end) {
+    parts.push(`${formatHealthValue(start.value, start.type)} - ${formatHealthValue(end.value, end.type)}`);
+  } else if (start) {
+    parts.push(`${formatHealthValue(start.value, start.type)} - --:--`);
+  } else if (end) {
+    parts.push(`--:-- - ${formatHealthValue(end.value, end.type)}`);
+  }
+  if (duration) parts.push(formatHealthValue(duration.value, duration.type));
+  return parts.length > 0 ? parts.join(" · ") : "--";
+}
+
 function deviceInfoItems(device: DeviceState): DeviceInfoItem[] {
   const extra = device.extra;
-  const info: DeviceInfoItem[] = [];
-  if (typeof extra?.battery_percent === "number") info.push({ label: "电量", value: String(extra.battery_percent), unit: "%" });
+  const info: DeviceInfoItem[] = [...deviceSummaryItems(device)];
   if (extra?.device?.network_type) info.push({ label: "网络", value: extra.device.network_type, unit: extra.device.cellular_generation || "" });
   if (typeof extra?.device?.network_connected === "boolean") info.push({ label: "联网", value: extra.device.network_connected ? "在线" : "断开" });
   if (typeof extra?.device?.vpn_active === "boolean") info.push({ label: "VPN", value: extra.device.vpn_active ? "开启" : "关闭" });
   if (extra?.device?.capability_mode) info.push({ label: "采集", value: extra.device.uploader || extra.device.capability_mode });
+  if (extra?.device?.relay_mode) info.push({ label: "中继", value: extra.device.relay_mode });
+  if (extra?.device?.energy_policy) info.push({ label: "节能", value: extra.device.energy_policy });
+  if (typeof extra?.device?.min_interval_ms === "number") info.push({ label: "间隔", value: formatDurationMinutes(extra.device.min_interval_ms / 60_000) });
   if (extra?.device?.window_mode && extra.device.window_mode !== "fullscreen") info.push({ label: "窗口", value: extra.device.window_mode });
   if (extra?.input?.input_active || extra?.input?.is_typing) info.push({ label: "输入", value: extra.input.is_typing ? "输入中" : "输入框活跃" });
   if (extra?.sleeping) info.push({ label: "状态", value: "息屏/睡眠" });
   return info;
 }
 
+function deviceSummaryItems(device: DeviceState): DeviceInfoItem[] {
+  const extra = device.extra;
+  const info: DeviceInfoItem[] = [];
+  if (typeof extra?.battery_percent === "number") info.push({ label: "电量", value: String(extra.battery_percent), unit: "%" });
+  if (typeof extra?.battery_charging === "boolean") info.push({ label: "充电", value: extra.battery_charging ? "充电中" : "未充电" });
+  info.push({ label: "状态", value: device.is_online === 1 ? "在线" : "离线" });
+  if (extra?.device?.last_sample_at) info.push({ label: "采样", value: formatShortTime(extra.device.last_sample_at) });
+  return info;
+}
+
 function compactDeviceInfo(device: DeviceState) {
-  const parts = deviceInfoItems(device).slice(0, 3).map((item) => `${item.label}:${item.value}${item.unit || ""}`);
+  const parts = deviceSummaryItems(device).slice(0, 3).map((item) => `${item.label}:${item.value}${item.unit || ""}`);
   return parts.length > 0 ? parts.join(" / ") : (device.is_online === 1 ? "在线" : "离线");
 }
 
@@ -557,15 +729,17 @@ function groupHealth(records: HealthRecord[]) {
 
 function healthItems(grouped: Map<string, HealthGroup>, deviceById: Map<string, DeviceState>): HealthItem[] {
   const order = [
-    "heart_rate", "oxygen_saturation", "body_temperature", "sleep_status", "sleep_duration",
-    "wear_status", "stress", "steps", "active_calories", "stand_count", "air_pressure", "altitude",
+    "heart_rate", "oxygen_saturation", "body_temperature", "sleep_status", "sleep_start", "sleep_end", "sleep_duration",
+    "nap_start", "nap_end", "nap_duration", "sleep_stage_count", "wear_status", "stress", "steps",
+    "active_calories", "stand_count", "stand_target", "air_pressure", "altitude",
   ];
   return Array.from(grouped.entries())
     .sort(([a], [b]) => (order.indexOf(a) < 0 ? 99 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 99 : order.indexOf(b)))
     .map(([type, entry]) => ({
+      type,
       label: healthLabel(type),
       value: formatHealthValue(entry.latest.value, type),
-      unit: friendlyUnit(entry.latest.unit),
+      unit: healthUnit(type, entry.latest.unit),
       source: sourceLabel(entry.latest.device_id, deviceById),
       records: entry.all,
     }));
@@ -591,7 +765,7 @@ function Sparkline({ records, type }: { records: HealthRecord[]; type: string })
         return (
           <span
             key={`${record.recorded_at}-${index}`}
-            title={`${formatShortTime(record.recorded_at)} ${formatHealthValue(record.value, type)} ${friendlyUnit(record.unit)}`}
+            title={`${formatShortTime(record.recorded_at)} ${formatHealthValue(record.value, type)} ${healthUnit(type, record.unit)}`}
             className="min-w-[2px] flex-1 rounded-sm bg-[var(--color-primary)] opacity-70"
             style={{ height: `${height}%` }}
           />
@@ -611,10 +785,48 @@ function sampleRecords(records: HealthRecord[], max: number) {
   return result;
 }
 
+function isChartableHealthType(type: string) {
+  return !isSleepType(type) && type !== "wear_status";
+}
+
+function isSleepType(type: string) {
+  return SLEEP_DETAIL_TYPES.includes(type) || type === "sleep";
+}
+
+function aggregateHealthNavItems(items: HealthItem[]) {
+  const result: HealthItem[] = [];
+  let hasSleep = false;
+  for (const item of items) {
+    if (isSleepType(item.type)) {
+      hasSleep = true;
+    } else {
+      result.push(item);
+    }
+  }
+  if (hasSleep) {
+    result.splice(Math.min(2, result.length), 0, {
+      type: "sleep_status",
+      label: "睡眠",
+      value: "",
+      unit: "",
+      source: "",
+      records: [],
+    });
+  }
+  return result;
+}
+
 function formatShortTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "--:--";
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatDurationMinutes(value: number) {
+  if (!Number.isFinite(value)) return "--";
+  const h = Math.floor(value / 60);
+  const m = Math.round(value % 60);
+  return h > 0 ? `${h}小时${m}分` : `${m}分`;
 }
 
 function healthLabel(type: string) {
@@ -623,14 +835,21 @@ function healthLabel(type: string) {
     resting_heart_rate: "静息心率",
     oxygen_saturation: "血氧",
     body_temperature: "体表温度",
+    sleep: "睡眠",
     sleep_status: "睡眠",
+    sleep_start: "入睡时间",
+    sleep_end: "起床时间",
     sleep_duration: "睡眠时长",
+    sleep_stage_count: "睡眠阶段",
+    nap_start: "小睡开始",
+    nap_end: "小睡结束",
     nap_duration: "小睡时长",
     wear_status: "佩戴",
     stress: "压力",
     steps: "步数",
     active_calories: "活动热量",
     stand_count: "站立提醒",
+    stand_target: "站立目标",
     air_pressure: "气压",
     altitude: "海拔",
   };
@@ -640,13 +859,22 @@ function healthLabel(type: string) {
 function formatHealthValue(value: number, type: string) {
   if (type === "sleep_status") return value > 0 ? "睡着了" : "醒着";
   if (type === "wear_status") return value > 0 ? "佩戴中" : "未佩戴";
-  if (type === "sleep_duration" || type === "nap_duration") {
-    const h = Math.floor(value / 60);
-    const m = Math.round(value % 60);
-    return h > 0 ? `${h}小时${m}分` : `${m}分`;
+  if (type === "sleep_duration" || type === "nap_duration" || type === "sleep") {
+    return formatDurationMinutes(value);
+  }
+  if (type === "sleep_start" || type === "sleep_end" || type === "nap_start" || type === "nap_end") {
+    return formatMinuteOfDay(value);
   }
   if (Number.isInteger(value)) return String(value);
   return value.toFixed(1);
+}
+
+function formatMinuteOfDay(value: number) {
+  if (!Number.isFinite(value)) return "--:--";
+  const minutes = ((Math.round(value) % 1440) + 1440) % 1440;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 function friendlyUnit(unit: string) {
@@ -655,4 +883,10 @@ function friendlyUnit(unit: string) {
   if (unit === "celsius" || unit === "°C") return "℃";
   if (unit === "status" || unit === "state" || unit === "minute_of_day") return "";
   return unit;
+}
+
+function healthUnit(type: string, unit: string) {
+  if (type === "sleep" || type === "sleep_duration" || type === "nap_duration") return "";
+  if (type === "sleep_start" || type === "sleep_end" || type === "nap_start" || type === "nap_end") return "";
+  return friendlyUnit(unit);
 }
