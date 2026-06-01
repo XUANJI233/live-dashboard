@@ -141,7 +141,8 @@ public final class MonikaXposedModule extends XposedModule {
     };
     private volatile boolean samplerStarted = false;
     private volatile boolean mediaListenerRegistered = false;
-        private final java.util.Set<String> registeredMediaControllers = new java.util.HashSet<>();
+    private final java.util.Set<String> registeredMediaControllers =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private MediaSessionManager mediaSessionManager;
     private volatile String currentProcessName = "";
     private volatile boolean browserTitleReceiverRegistered = false;
@@ -162,6 +163,7 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile long lastDirectUploadAt = 0L;
     private volatile String pendingDirectBody = "";
     private volatile LspWebSocketClient wsClient = null;
+    private volatile boolean wsReconnectPending = false;
     private volatile String foregroundPackage = "";
     private volatile String foregroundApp = "";
     private volatile String foregroundActivity = "";
@@ -401,6 +403,7 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private void initUploadThread() {
+        if (uploadThread != null && uploadHandler != null && uploadThread.isAlive()) return;
         try {
             uploadThread = new HandlerThread("MonikaLspUpload", android.os.Process.THREAD_PRIORITY_BACKGROUND);
             uploadThread.start();
@@ -413,9 +416,11 @@ public final class MonikaXposedModule extends XposedModule {
 
     private Handler getUploadHandler() {
         if (uploadHandler != null) return uploadHandler;
-        initUploadThread();
+        synchronized (this) {
+            if (uploadHandler == null) initUploadThread();
+        }
         if (uploadHandler != null) return uploadHandler;
-        return new Handler(Looper.getMainLooper());
+        return null;
     }
 
     private void registerBrowserTitleReceiver(Handler handler) {
@@ -536,7 +541,9 @@ public final class MonikaXposedModule extends XposedModule {
                             for (MediaController c : controllers) {
                                 activeKeys.add(c.getPackageName() + "@" + System.identityHashCode(c));
                             }
-                            registeredMediaControllers.retainAll(activeKeys);
+                            synchronized (registeredMediaControllers) {
+                                registeredMediaControllers.retainAll(activeKeys);
+                            }
                             maybeDirectUpload(false);
                         } catch (Throwable t) {
                             log(Log.WARN, TAG, "onActiveSessionsChanged failed: " + t.getClass().getSimpleName());
@@ -559,9 +566,11 @@ public final class MonikaXposedModule extends XposedModule {
     private void registerMediaControllerCallback(MediaController controller) {
         if (controller == null) return;
         String key = controller.getPackageName() + "@" + System.identityHashCode(controller);
-        if (registeredMediaControllers.contains(key)) return;
-        try {
+        synchronized (registeredMediaControllers) {
+            if (registeredMediaControllers.contains(key)) return;
             registeredMediaControllers.add(key);
+        }
+        try {
             controller.registerCallback(new MediaController.Callback() {
                 @Override
                 public void onPlaybackStateChanged(PlaybackState state) {
@@ -610,7 +619,11 @@ public final class MonikaXposedModule extends XposedModule {
                     }
                 }
             });
-        } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {
+            synchronized (registeredMediaControllers) {
+                registeredMediaControllers.remove(key);
+            }
+        }
     }
 
     private String mediaTextFromMeta(MediaMetadata metadata, String key) {
@@ -1476,7 +1489,13 @@ public final class MonikaXposedModule extends XposedModule {
         // Use dedicated upload HandlerThread (single background thread, no unbounded spawning).
         final String url = directServerUrl;
         final String tok = directToken;
-        getUploadHandler().post(() -> {
+        Handler handler = getUploadHandler();
+        if (handler == null) {
+            pendingDirectBody = body;
+            log(Log.WARN, TAG, "upload skipped: background handler unavailable");
+            return;
+        }
+        handler.post(() -> {
             String pending = pendingDirectBody;
             if (pending.length() > 0 && !pending.equals(body)) {
                 if (sendDirectReport(url, tok, pending)) {
@@ -1823,9 +1842,19 @@ public final class MonikaXposedModule extends XposedModule {
      */
     private void scheduleWsReconnect() {
         if (!directUploadEnabled || directServerUrl.length() == 0 || directToken.length() == 0 || !"system".equals(currentProcessName)) return;
+        if (wsReconnectPending) return;
+        wsReconnectPending = true;
         // Reconnect and immediately send the current snapshot. Reconnecting alone
         // would leave the dashboard stale until the next 5-minute heartbeat.
-        getUploadHandler().post(() -> maybeDirectUpload(true));
+        Handler handler = getUploadHandler();
+        if (handler == null) {
+            wsReconnectPending = false;
+            return;
+        }
+        handler.post(() -> {
+            wsReconnectPending = false;
+            maybeDirectUpload(true);
+        });
     }
 
     private void forwardViewerMessageToApp(String payloadText) {
