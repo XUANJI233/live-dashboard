@@ -2,7 +2,7 @@ import { authenticateToken } from "../middleware/auth";
 import { db } from "../db";
 import { verifyViewerToken, viewerTokenFromRequest, edgeViewerIdentity } from "../services/viewer-auth";
 import type { HealthRecord } from "../types";
-import { withCdnHeaders } from "../services/cdn";
+import { noStore, withCdnHeaders } from "../services/cdn";
 
 const MAX_RECORDS_PER_REQUEST = 1500; // supports full day of minute-level heart rate data (1440 max)
 const VALID_TYPES = new Set([
@@ -180,10 +180,14 @@ export function handleHealthDataQuery(url: URL, req: Request): Response {
 }
 
 function healthQueryResponse(date: string, deviceId: string | null, records: HealthRecord[], tzOffsetMinutes: number): Response {
+  const response = Response.json({ date, records });
+  if (isTodayForOffset(date, tzOffsetMinutes)) {
+    return noStore(response);
+  }
   return withCdnHeaders(
-    Response.json({ date, records }),
+    response,
     ["health-data", `health-data-${date}`, ...(deviceId ? [`health-device-${deviceId}`] : [])],
-    isTodayForOffset(date, tzOffsetMinutes) ? 60 : 60 * 60 * 24 * 30,
+    60 * 60 * 24 * 30,
   );
 }
 

@@ -12,7 +12,7 @@
 
 // ── 常量 ──
 const CONFIG_NS = "live-dashboard-config";
-const CACHE_TTL = { current: 3, timeline: 10, config: 60, publicMessages: 10, health: 5 };
+const CACHE_TTL = { config: 60, publicMessages: 10, health: 5 };
 const POW_DIFFICULTY = 4;
 const POW_CHALLENGE_TTL = 300;
 const RATE_WINDOW = 60;
@@ -104,7 +104,7 @@ export default {
       }
 
       // 可缓存读取
-      if (method === "GET" && getCacheTTL(pathname)) {
+      if (method === "GET" && getCacheTTL(pathname, request)) {
         return handleCachedRead(request, origin, pathname, secret);
       }
 
@@ -218,7 +218,7 @@ async function handleTokenIssue(request, clientIp, secret) {
 // ══════════════════════════════════════════════════════════════
 
 async function handleCachedRead(request, origin, pathname, secret) {
-  const ttl = getCacheTTL(pathname);
+  const ttl = getCacheTTL(pathname, request);
   const cacheKey = `http://edge-cache${pathname}${new URL(request.url).search}`;
 
   try {
@@ -327,14 +327,29 @@ async function passthroughSigned(request, origin, clientIp, secret) {
 }
 
 
-function getCacheTTL(p) {
-  if (p === "/api/current") return CACHE_TTL.current;
-  if (p === "/api/timeline") return CACHE_TTL.timeline;
+function getCacheTTL(p, request) {
+  if (p === "/api/current") return 0;
+  if (p === "/api/timeline") {
+    return isCurrentTimelineRequest(new URL(request.url)) ? 0 : 60 * 60 * 24 * 30;
+  }
   if (p === "/api/config") return CACHE_TTL.config;
   if (p === "/api/health") return CACHE_TTL.health;
   if (p === "/api/messages/public") return CACHE_TTL.publicMessages;
   if (p === "/api/daily-summary") return 60;
   return 0;
+}
+
+function isCurrentTimelineRequest(url) {
+  const date = url.searchParams.get("date");
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return true;
+  const tzRaw = url.searchParams.get("tz");
+  const tzOffsetMinutes = tzRaw ? parseInt(tzRaw, 10) : 0;
+  const safeOffset = Number.isFinite(tzOffsetMinutes) && Math.abs(tzOffsetMinutes) <= 840
+    ? tzOffsetMinutes
+    : 0;
+  const now = new Date(Date.now() - safeOffset * 60_000);
+  const today = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
+  return date === today;
 }
 
 function isAuthEndpoint(p) {

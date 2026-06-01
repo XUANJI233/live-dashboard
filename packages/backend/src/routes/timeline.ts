@@ -4,7 +4,7 @@ import {
 } from "../db";
 import type { ActivityRecord, TimelineSegment } from "../types";
 import { db } from "../db";
-import { withCdnHeaders } from "../services/cdn";
+import { noStore, withCdnHeaders } from "../services/cdn";
 
 export function handleTimeline(url: URL): Response {
   const date = url.searchParams.get("date");
@@ -111,10 +111,14 @@ export function handleTimeline(url: URL): Response {
     summary[devId] = Object.fromEntries(appMap);
   }
 
+  const response = Response.json({ date, segments, summary });
+  if (isTodayForOffset(date, tzOffsetMinutes)) {
+    return noStore(response);
+  }
   return withCdnHeaders(
-    Response.json({ date, segments, summary }),
+    response,
     ["timeline", `timeline-${date}`, ...(deviceId ? [`timeline-device-${deviceId}`] : [])],
-    isTodayForOffset(date, tzOffsetMinutes) ? 30 : 60 * 60 * 24 * 30,
+    60 * 60 * 24 * 30,
   );
 }
 

@@ -28,7 +28,7 @@ import {
   handleDeleteDevice,
   globalIpRateLimit,
 } from "./services/realtime";
-import { currentHourWindow, withCdnHeaders } from "./services/cdn";
+import { noStore } from "./services/cdn";
 import { injectSiteConfig } from "./services/site-config";
 
 // Start scheduled cleanup tasks (import triggers setInterval registration)
@@ -188,7 +188,7 @@ const server = Bun.serve<WsData>({
         response = await handleReport(req);
       } else if (pathname === "/api/current" && req.method === "GET") {
         response = handleCurrent(clientIp, req.headers.get("user-agent") || undefined);
-        response = withCdnHeaders(response, ["current", `current-${currentHourWindow()}`], 5);
+        response = noStore(response);
       } else if (pathname === "/api/timeline" && req.method === "GET") {
         response = handleTimeline(url);
       } else if (pathname === "/api/health" && req.method === "GET") {

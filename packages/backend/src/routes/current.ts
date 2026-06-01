@@ -11,6 +11,11 @@ function preparePublicDevices(devices: DeviceState[]) {
     } catch {
       // Malformed JSON — ignore
     }
+    if (parsedExtra.foreground && typeof parsedExtra.foreground === "object" && !Array.isArray(parsedExtra.foreground)) {
+      const foreground = { ...(parsedExtra.foreground as Record<string, unknown>) };
+      delete foreground.title;
+      parsedExtra = { ...parsedExtra, foreground };
+    }
     return { ...rest, extra: parsedExtra };
   });
 }

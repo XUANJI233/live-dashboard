@@ -11,6 +11,13 @@ const MAX_SHORT_LENGTH = 64;
 const MAX_MEDIUM_LENGTH = 256;
 const VALID_SOURCES = new Set(["normal", "root", "lsposed", "accessibility", "notification"]);
 
+export interface PublicDeviceUpdate {
+  app_id: string;
+  app_name: string;
+  display_title: string;
+  extra: Record<string, unknown>;
+}
+
 function cleanString(value: unknown, max: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, "").trim();
@@ -39,9 +46,9 @@ function cleanFiniteNumber(value: unknown, min: number, max: number): number | u
  * Core report processing shared by HTTP /api/report and WebSocket device_status.
  * Does NOT perform auth — caller must already have a verified DeviceInfo.
  */
-export function processReportPayload(body: Record<string, unknown>, device: DeviceInfo): void {
+export function processReportPayload(body: Record<string, unknown>, device: DeviceInfo): PublicDeviceUpdate | null {
   const appId = typeof body.app_id === "string" ? body.app_id.trim() : "";
-  if (!appId) return;
+  if (!appId) return null;
 
   let windowTitle =
     typeof body.window_title === "string" ? body.window_title : "";
@@ -62,7 +69,7 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
     startedAt = new Date().toISOString();
   }
 
-  if (NSFW_FILTER_ENABLED && isNSFW(appId, windowTitle)) return;
+  if (NSFW_FILTER_ENABLED && isNSFW(appId, windowTitle)) return null;
 
   const rawForegroundForName = body.extra && typeof body.extra === "object" && !Array.isArray(body.extra)
     ? (body.extra as Record<string, unknown>).foreground
@@ -80,10 +87,9 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
   const timeBucket = Math.floor(Date.now() / 10000);
   const titleHash = hmacTitle(windowTitle.toLowerCase().trim());
 
-  let extraJson = "{}";
+  const extra: Record<string, unknown> = {};
   if (body.extra && typeof body.extra === "object" && !Array.isArray(body.extra)) {
     const rawExtra = body.extra as Record<string, unknown>;
-    const extra: Record<string, unknown> = {};
 
     if (typeof rawExtra.battery_percent === "number" && Number.isFinite(rawExtra.battery_percent)) {
       extra.battery_percent = Math.max(0, Math.min(100, Math.round(rawExtra.battery_percent)));
@@ -167,7 +173,7 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (packageName) foreground.package_name = packageName;
       if (appNameExtra) foreground.app_name = appNameExtra;
       if (activity) foreground.activity = activity;
-      if (title) foreground.title = title;
+      if (title && displayTitle) foreground.title = displayTitle;
       if (source) foreground.source = source;
       if (typeof foregroundBody.confidence === "number" && Number.isFinite(foregroundBody.confidence)) {
         foreground.confidence = Math.max(0, Math.min(1, foregroundBody.confidence));
@@ -216,8 +222,8 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (source) media.source = source;
       if (Object.keys(media).length > 0) extra.media = media;
     }
-    extraJson = JSON.stringify(extra);
   }
+  const extraJson = JSON.stringify(extra);
 
   try {
     // Watch / IoT devices should not create activity timeline entries.
@@ -257,4 +263,11 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
   } catch (e: any) {
     console.error("[report] Device state update error:", e.message);
   }
+
+  return {
+    app_id: appId,
+    app_name: appName,
+    display_title: displayTitle,
+    extra,
+  };
 }

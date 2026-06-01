@@ -22,8 +22,8 @@ function todayStr(): string {
 
 /**
  * Merge a raw device_update payload into an existing DeviceState.
- * The payload is the device report body (app_id, window_title, extra, …),
- * NOT the full DeviceState shape, so we only overwrite fields that are present.
+ * The payload is the server-sanitized device update, not the full DeviceState
+ * shape, so we only overwrite fields that are present.
  */
 function mergeDevicePayload(
   existing: DeviceState,
@@ -33,6 +33,8 @@ function mergeDevicePayload(
   const updated: DeviceState = { ...existing };
 
   if (typeof payload.app_id === "string") updated.app_id = payload.app_id;
+  if (typeof payload.app_name === "string") updated.app_name = payload.app_name;
+  if (typeof payload.display_title === "string") updated.display_title = payload.display_title;
   if (typeof payload.window_title === "string") updated.window_title = payload.window_title;
 
   // Deep-merge extra
@@ -57,6 +59,19 @@ function mergeDevicePayload(
   updated.last_seen_at = timestamp;
 
   return updated;
+}
+
+function mergeCurrentResponse(prev: CurrentResponse | null, next: CurrentResponse): CurrentResponse {
+  if (!prev) return next;
+  const previousById = new Map(prev.devices.map((device) => [device.device_id, device]));
+  const devices = next.devices.map((device) => {
+    const previous = previousById.get(device.device_id);
+    if (!previous) return device;
+    const previousSeen = previous.last_seen_at ? Date.parse(previous.last_seen_at) : 0;
+    const nextSeen = device.last_seen_at ? Date.parse(device.last_seen_at) : 0;
+    return previousSeen > nextSeen ? previous : device;
+  });
+  return { ...next, devices };
 }
 
 /** Shallow compare two objects — returns true if equal (no re-render needed) */
@@ -211,8 +226,9 @@ export function useDashboard() {
         const cur = await fetchCurrent(controller.signal);
         if (!controller.signal.aborted && thisRequest === currentRequestId) {
           setCurrent(prev => {
-            if (prev && shallowEqual(prev.devices, cur.devices) && prev.server_time === cur.server_time) return prev;
-            return cur;
+            const merged = mergeCurrentResponse(prev, cur);
+            if (prev && shallowEqual(prev.devices, merged.devices) && prev.server_time === merged.server_time) return prev;
+            return merged;
           });
           setViewerCount(prev => {
             const next = cur.viewer_count ?? 0;

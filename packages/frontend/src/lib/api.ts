@@ -104,7 +104,7 @@ export interface TimelineResponse {
 }
 
 export async function fetchCurrent(signal?: AbortSignal): Promise<CurrentResponse> {
-  const res = await fetch(`${API_BASE}/api/current`, { signal });
+  const res = await fetch(`${API_BASE}/api/current`, { signal, cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -112,7 +112,7 @@ export async function fetchCurrent(signal?: AbortSignal): Promise<CurrentRespons
 export async function fetchTimeline(date: string, signal?: AbortSignal): Promise<TimelineResponse> {
   const tz = new Date().getTimezoneOffset(); // e.g. -480 for UTC+8
   const url = `${API_BASE}/api/timeline?date=${encodeURIComponent(date)}&tz=${tz}`;
-  const res = await fetch(url, { signal });
+  const res = await fetch(url, { signal, cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }

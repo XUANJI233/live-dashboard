@@ -416,23 +416,27 @@ export const realtimeWebSocket = {
       devicePongTimes.set(ws.data.id, Date.now());
       // If payload present, process as full report (WebSocket上报通道)
       if (data.payload && ws.data.device) {
+        const receivedAt = new Date().toISOString();
+        let publicPayload: ReturnType<typeof processReportPayload> = null;
         try {
-          processReportPayload(data.payload, ws.data.device);
+          publicPayload = processReportPayload(data.payload, ws.data.device);
         } catch (e: any) {
           console.error("[ws] device_status processing error:", e.message);
           send(ws, { type: "error", error: "status_processing_failed" });
           return;
         }
-        // Broadcast device_update to all connected viewers (real-time push)
-        const deviceUpdate = {
-          type: "device_update",
-          device_id: ws.data.device.device_id,
-          payload: data.payload,
-          timestamp: new Date().toISOString(),
-        };
-        const updateMsg = JSON.stringify(deviceUpdate);
-        for (const [, viewerWs] of viewerSockets) {
-          try { viewerWs.send(updateMsg); } catch { /* ignore send errors */ }
+        // Broadcast only the sanitized public fields. Raw window titles stay server-side.
+        if (publicPayload) {
+          const deviceUpdate = {
+            type: "device_update",
+            device_id: ws.data.device.device_id,
+            payload: publicPayload,
+            timestamp: receivedAt,
+          };
+          const updateMsg = JSON.stringify(deviceUpdate);
+          for (const [, viewerWs] of viewerSockets) {
+            try { viewerWs.send(updateMsg); } catch { /* ignore send errors */ }
+          }
         }
       }
       send(ws, { type: "ack", status: "status_received" });
