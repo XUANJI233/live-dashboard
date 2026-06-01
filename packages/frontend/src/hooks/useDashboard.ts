@@ -3,17 +3,14 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   fetchCurrent,
   fetchTimeline,
-  getRealtimeUrl,
   type CurrentResponse,
   type DeviceState,
   type TimelineResponse,
 } from "@/lib/api";
-import { ensureViewerToken } from "@/lib/viewer-token";
+import { subscribeRealtime, subscribeRealtimeState } from "@/lib/realtime-client";
 
 const TIMELINE_POLL_INTERVAL = 30 * 1000;
 const DEVICE_POLL_INTERVAL = 15 * 1000; // slower fallback polling for devices
-const WS_RECONNECT_BASE = 3000;
-const WS_RECONNECT_MAX = 30000;
 
 function todayStr(): string {
   const d = new Date();
@@ -37,15 +34,16 @@ function mergeDevicePayload(
   if (typeof payload.display_title === "string") updated.display_title = payload.display_title;
   if (typeof payload.window_title === "string") updated.window_title = payload.window_title;
 
-  // Deep-merge extra
   if (payload.extra && typeof payload.extra === "object" && !Array.isArray(payload.extra)) {
     const incoming = payload.extra as Record<string, unknown>;
     const base = (existing.extra ?? {}) as Record<string, unknown>;
     const merged: Record<string, unknown> = { ...base };
 
     for (const [key, val] of Object.entries(incoming)) {
-      if (val && typeof val === "object" && !Array.isArray(val) &&
-          base[key] && typeof base[key] === "object" && !Array.isArray(base[key])) {
+      if (
+        val && typeof val === "object" && !Array.isArray(val) &&
+        base[key] && typeof base[key] === "object" && !Array.isArray(base[key])
+      ) {
         merged[key] = { ...(base[key] as Record<string, unknown>), ...(val as Record<string, unknown>) };
       } else {
         merged[key] = val;
@@ -54,7 +52,6 @@ function mergeDevicePayload(
     updated.extra = merged as DeviceState["extra"];
   }
 
-  // Device is actively reporting → online, update last_seen
   updated.is_online = 1;
   updated.last_seen_at = timestamp;
 
@@ -74,11 +71,9 @@ function mergeCurrentResponse(prev: CurrentResponse | null, next: CurrentRespons
   return { ...next, devices };
 }
 
-/** Shallow compare two objects — returns true if equal (no re-render needed) */
 function shallowEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
-  // Handle arrays: compare length + each element by reference
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
@@ -86,7 +81,6 @@ function shallowEqual(a: unknown, b: unknown): boolean {
     }
     return true;
   }
-  // Handle objects: compare keys + each value by reference
   const ka = Object.keys(a as Record<string, unknown>);
   const kb = Object.keys(b as Record<string, unknown>);
   if (ka.length !== kb.length) return false;
@@ -99,8 +93,6 @@ function shallowEqual(a: unknown, b: unknown): boolean {
 export function useDashboard() {
   const [current, setCurrent] = useState<CurrentResponse | null>(null);
   const [timeline, setTimeline] = useState<TimelineResponse | null>(null);
-  // SSR-safe: initialize with empty string, set real date in useEffect
-  // todayStr() uses new Date() which can differ between server and client
   const [selectedDate, setSelectedDate] = useState("");
   const [loading, setLoading] = useState(true);
   const [timelineLoading, setTimelineLoading] = useState(true);
@@ -110,89 +102,38 @@ export function useDashboard() {
   const wsConnectedRef = useRef(false);
   const firstLoad = useRef(true);
 
-  // Initialize selectedDate on client mount (SSR-safe)
   useEffect(() => {
     setSelectedDate(todayStr());
   }, []);
 
-  // ── Effect 1: WebSocket for real-time device updates ──────────────────
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    const unsubscribeState = subscribeRealtimeState((next) => {
+      wsConnectedRef.current = next;
+      setWsConnected(next);
+    });
 
-    let ws: WebSocket | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let reconnectDelay = WS_RECONNECT_BASE;
-    let disposed = false;
-
-    async function connect() {
-      let token = "";
-      try {
-        token = (await ensureViewerToken()).token;
-      } catch {
-        if (!disposed) reconnectTimer = setTimeout(connect, reconnectDelay);
-        reconnectDelay = Math.min(reconnectDelay * 2, WS_RECONNECT_MAX);
-        return;
+    const unsubscribeMessages = subscribeRealtime((msg) => {
+      if (msg.type === "device_update" && msg.device_id && msg.payload) {
+        setCurrent((prev) => {
+          if (!prev) return prev;
+          const idx = prev.devices.findIndex((d) => d.device_id === msg.device_id);
+          if (idx === -1) return prev;
+          const devices = [...prev.devices];
+          devices[idx] = mergeDevicePayload(devices[idx], msg.payload, msg.timestamp);
+          return { ...prev, devices };
+        });
       }
-      if (disposed) return;
-
-      ws = new WebSocket(getRealtimeUrl(token));
-
-      ws.onopen = () => {
-        setWsConnected(true);
-        wsConnectedRef.current = true;
-        reconnectDelay = WS_RECONNECT_BASE; // reset backoff
-      };
-
-      ws.onmessage = (ev) => {
-        try {
-          const msg = JSON.parse(ev.data as string);
-          if (msg.type === "device_update" && msg.device_id && msg.payload) {
-            setCurrent((prev) => {
-              if (!prev) return prev;
-              const idx = prev.devices.findIndex((d) => d.device_id === msg.device_id);
-              if (idx === -1) return prev; // unknown device, skip
-              const devices = [...prev.devices];
-              devices[idx] = mergeDevicePayload(devices[idx], msg.payload, msg.timestamp);
-              return { ...prev, devices };
-            });
-          }
-          // Handle viewer_count updates if the server pushes them
-          if (msg.type === "viewer_count" && typeof msg.count === "number") {
-            setViewerCount(msg.count);
-          }
-        } catch {
-          // ignore unparseable messages
-        }
-      };
-
-      ws.onclose = () => {
-        setWsConnected(false);
-        wsConnectedRef.current = false;
-        ws = null;
-        if (!disposed) {
-          reconnectTimer = setTimeout(connect, reconnectDelay);
-          reconnectDelay = Math.min(reconnectDelay * 2, WS_RECONNECT_MAX);
-        }
-      };
-
-      ws.onerror = () => {
-        // onclose will fire after onerror — reconnect handled there
-      };
-    }
-
-    connect();
+      if (msg.type === "viewer_count" && typeof msg.count === "number") {
+        setViewerCount(msg.count);
+      }
+    });
 
     return () => {
-      disposed = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (ws) {
-        ws.onclose = null; // prevent reconnect on intentional close
-        ws.close();
-      }
+      unsubscribeMessages();
+      unsubscribeState();
     };
   }, []);
 
-  // ── Effect 2: Polling ─────────────────────────────────────────────────
   useEffect(() => {
     const controller = new AbortController();
     let currentRequestId = 0;
@@ -204,10 +145,10 @@ export function useDashboard() {
       try {
         const tl = await fetchTimeline(selectedDate, controller.signal);
         if (!controller.signal.aborted && thisRequest === timelineRequestId) {
-            setTimeline(prev => {
-              if (prev && shallowEqual(prev.segments, tl.segments) && shallowEqual(prev.summary, tl.summary)) return prev;
-              return tl;
-            });
+          setTimeline((prev) => {
+            if (prev && shallowEqual(prev.segments, tl.segments) && shallowEqual(prev.summary, tl.summary)) return prev;
+            return tl;
+          });
         }
       } catch {
         // timeline fetch errors are non-critical
@@ -225,12 +166,12 @@ export function useDashboard() {
         if (firstLoad.current) setLoading(true);
         const cur = await fetchCurrent(controller.signal);
         if (!controller.signal.aborted && thisRequest === currentRequestId) {
-          setCurrent(prev => {
+          setCurrent((prev) => {
             const merged = mergeCurrentResponse(prev, cur);
             if (prev && shallowEqual(prev.devices, merged.devices) && prev.server_time === merged.server_time) return prev;
             return merged;
           });
-          setViewerCount(prev => {
+          setViewerCount((prev) => {
             const next = cur.viewer_count ?? 0;
             return prev === next ? prev : next;
           });
@@ -247,18 +188,13 @@ export function useDashboard() {
       }
     };
 
-    // Skip fetch if selectedDate is not yet initialized (SSR-safe)
     if (!selectedDate) return;
     firstLoad.current = true;
 
-    // Always do an initial full fetch
     doFetchCurrent();
     doFetchTimeline();
 
-    // Timeline always polls (cheap, data changes throughout the day)
     const timelinePollId = setInterval(doFetchTimeline, TIMELINE_POLL_INTERVAL);
-
-    // Device state polls only as fallback when WS is down.
     const devicePollId = setInterval(() => {
       if (!wsConnectedRef.current) {
         doFetchCurrent();
