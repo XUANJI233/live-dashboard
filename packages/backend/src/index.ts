@@ -23,12 +23,15 @@ import {
   handleDeleteMessage,
   handleSetRemark,
   handlePublicMessages,
+  handlePublicMessagePost,
+  handlePrivateMessagePost,
   realtimeWebSocket,
   type WsData,
   handleDeleteDevice,
   globalIpRateLimit,
 } from "./services/realtime";
 import { noStore } from "./services/cdn";
+import { normalizeClientIp } from "./services/visitors";
 import { injectSiteConfig } from "./services/site-config";
 
 // Start scheduled cleanup tasks (import triggers setInterval registration)
@@ -104,6 +107,7 @@ const server = Bun.serve<WsData>({
       pathname === "/api/daily-summary" ||
       pathname === "/api/config" ||
       pathname === "/api/messages/public" ||
+      pathname === "/api/messages/private" ||
       pathname === "/api/pow/challenge" ||
       pathname === "/api/token/issue" ||
       (pathname === "/api/health-data" && req.method === "GET") ||
@@ -133,11 +137,13 @@ const server = Bun.serve<WsData>({
     }
 
     // Global IP rate limiting — skip for device-authenticated and public GET requests
-    const clientIpForRate =
+    const clientIpForRate = normalizeClientIp(
+      req.headers.get("x-forwarded-for") ||
       req.headers.get("x-real-ip") ||
       req.headers.get("cf-connecting-ip") ||
       server.requestIP(req)?.address ||
-      "unknown";
+      "unknown"
+    );
     const authHeader = req.headers.get("authorization") || "";
     // Real device token check: use authenticateToken which properly parses token:device_id:name:platform format
     const hasDeviceToken = authenticateToken(authHeader) !== null;
@@ -172,11 +178,13 @@ const server = Bun.serve<WsData>({
     let response: Response;
 
     try {
-      const clientIp =
+      const clientIp = normalizeClientIp(
+        req.headers.get("x-forwarded-for") ||
         req.headers.get("x-real-ip") ||
         req.headers.get("cf-connecting-ip") ||
         server.requestIP(req)?.address ||
-        "";
+        ""
+      );
       if (pathname === "/api/ws") {
         const wsInfo = await getWsInfo(req);
         if (wsInfo instanceof Response) return wsInfo;
@@ -187,7 +195,7 @@ const server = Bun.serve<WsData>({
       } else if (pathname === "/api/report" && req.method === "POST") {
         response = await handleReport(req);
       } else if (pathname === "/api/current" && req.method === "GET") {
-        response = handleCurrent(clientIp, req.headers.get("user-agent") || undefined);
+        response = handleCurrent(req, clientIp, req.headers.get("user-agent") || undefined);
         response = noStore(response);
       } else if (pathname === "/api/timeline" && req.method === "GET") {
         response = handleTimeline(url);
@@ -221,6 +229,10 @@ const server = Bun.serve<WsData>({
         response = await handleUnblockViewer(req);
       } else if (pathname === "/api/messages/public" && req.method === "GET") {
         response = handlePublicMessages(req);
+      } else if (pathname === "/api/messages/public" && req.method === "POST") {
+        response = await handlePublicMessagePost(req);
+      } else if (pathname === "/api/messages/private" && req.method === "POST") {
+        response = await handlePrivateMessagePost(req);
       } else if (pathname === "/api/pow/challenge" && req.method === "GET") {
         response = handlePowChallenge(req, clientIp);
       } else if (pathname === "/api/token/issue" && req.method === "POST") {

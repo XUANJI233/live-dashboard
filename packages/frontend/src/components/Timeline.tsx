@@ -11,8 +11,9 @@ const APP_COLORS = [
 
 const MIN_VISIBLE_SECONDS = 10;
 const IDLE_VISIBLE_SECONDS = 10 * 60;
-const SWITCH_WINDOW_SECONDS = 10 * 60;
-const MIN_CLUSTER_SIZE = 2;
+const SWITCH_GAP_SECONDS = 90;
+const SWITCH_MAX_SEGMENT_SECONDS = 90;
+const MIN_CLUSTER_SIZE = 3;
 
 interface Props {
   segments: TimelineSegment[];
@@ -131,28 +132,20 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
     byDevice.set(seg.device_id, entry);
   }
   return Array.from(byDevice.entries()).map(([deviceId, entry]) => {
-    const sorted = [...entry.segments].sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime());
+    const sorted = compactChildren([...entry.segments].sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime()));
     const events: TimelineEvent[] = [];
     let i = 0;
     while (i < sorted.length) {
-      // First: merge consecutive segments with same app_name
       const current = sorted[i]!;
-      const merged = [current];
-      for (let j = i + 1; j < sorted.length; j++) {
-        const next = sorted[j]!;
-        if (next.app_name !== current.app_name) break;
-        merged.push(next);
-      }
-
-      // Then: check if this merged group is part of a rapid-switch cluster
       const cluster = collectSwitchCluster(sorted, i);
       if (cluster.length >= MIN_CLUSTER_SIZE) {
         const first = cluster[0]!;
         const last = cluster[cluster.length - 1]!;
-          events.push({ key: `${deviceId}:switch:${first.started_at}`, kind: "switching", appName: "切来切去", appId: "switching", title: "正在切来切去喵~", startedAt: first.started_at, endedAt: last.ended_at, durationSeconds: spanSeconds(cluster), isCurrent: isCurrentEvent(deviceId, last.ended_at, onlineDevices) && cluster.some((seg) => currentAppByDevice[deviceId] === seg.app_name), children: cluster });
+        events.push({ key: `${deviceId}:switch:${first.started_at}`, kind: "switching", appName: "切来切去", appId: "switching", title: "正在切来切去喵~", startedAt: first.started_at, endedAt: last.ended_at, durationSeconds: spanSeconds(cluster), isCurrent: isCurrentEvent(deviceId, last.ended_at, onlineDevices) && cluster.some((seg) => currentAppByDevice[deviceId] === seg.app_name), children: compactChildren(cluster) });
         i += cluster.length;
         continue;
       }
+      const merged = collectSameState(sorted, i);
       const first = merged[0]!;
       const last = merged[merged.length - 1]!;
       events.push({
@@ -177,23 +170,47 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
 
 function collectSwitchCluster(segments: TimelineSegment[], startIndex: number) {
   const first = segments[startIndex]!;
+  if (!isSwitchNoiseSegment(first)) return [first];
   const cluster = [first];
   let previousApp = first.app_name;
   let previousEndMs = new Date(first.ended_at || first.started_at).getTime();
   let changed = false;
   for (let i = startIndex + 1; i < segments.length; i += 1) {
     const next = segments[i]!;
+    if (!isSwitchNoiseSegment(next)) break;
     const nextStart = new Date(next.started_at).getTime();
-    // Sliding window: gap between this segment and previous must be within window
     const gap = nextStart - previousEndMs;
-    if (Number.isNaN(nextStart) || gap > SWITCH_WINDOW_SECONDS * 1000) break;
-    if (durationSeconds(next) >= SWITCH_WINDOW_SECONDS) break;
+    if (Number.isNaN(nextStart) || gap < 0 || gap > SWITCH_GAP_SECONDS * 1000) break;
     if (next.app_name !== previousApp) changed = true;
     previousApp = next.app_name;
     previousEndMs = new Date(next.ended_at || next.started_at).getTime();
     cluster.push(next);
   }
   return changed && cluster.length >= MIN_CLUSTER_SIZE ? cluster : [first];
+}
+
+function collectSameState(segments: TimelineSegment[], startIndex: number) {
+  const first = segments[startIndex]!;
+  const signature = segmentSignature(first);
+  const merged = [first];
+  for (let j = startIndex + 1; j < segments.length; j += 1) {
+    const next = segments[j]!;
+    if (segmentSignature(next) !== signature) break;
+    merged.push(next);
+  }
+  return merged;
+}
+
+function segmentSignature(seg: TimelineSegment) {
+  if (isIdleSegment(seg)) return "idle";
+  return `${seg.app_id || seg.app_name}|${seg.app_name}|${meaningfulDetailTitle(seg) || ""}`;
+}
+
+function isSwitchNoiseSegment(seg: TimelineSegment) {
+  if (isIdleSegment(seg) || isLauncherSegment(seg)) return false;
+  if (meaningfulDetailTitle(seg)) return false;
+  const seconds = durationSeconds(seg);
+  return seconds > 0 && seconds <= SWITCH_MAX_SEGMENT_SECONDS;
 }
 
 function isUsefulSegment(seg: TimelineSegment) {
@@ -234,6 +251,7 @@ function meaningfulDetailTitle(seg: TimelineSegment) {
   const app = seg.app_name.toLowerCase();
   if (normalized === app || normalized === "android" || normalized.endsWith("activity")) return "";
   if (title === `正在用${seg.app_name}` || title.startsWith("正在用系统桌面")) return "";
+  if (title === `正在用${seg.app_name}看${seg.app_name}` || title === `正在用${seg.app_name}浏览${seg.app_name}`) return "";
   return title;
 }
 

@@ -142,16 +142,45 @@ db.run(`
 
 db.run(`
   CREATE TABLE IF NOT EXISTS device_messages (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     device_id TEXT NOT NULL,
     viewer_id TEXT NOT NULL,
     text TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT NOT NULL,
     delivered_at TEXT DEFAULT '',
-    replied_at TEXT DEFAULT ''
+    replied_at TEXT DEFAULT '',
+    PRIMARY KEY(id, device_id)
   )
 `);
+
+const deviceMessageColumns = db.prepare("PRAGMA table_info(device_messages)").all() as { name: string; pk: number }[];
+const oldDeviceMessagePk = deviceMessageColumns.some((column) => column.name === "id" && column.pk === 1) &&
+  !deviceMessageColumns.some((column) => column.name === "device_id" && column.pk > 0);
+if (oldDeviceMessagePk) {
+  db.transaction(() => {
+    db.run("ALTER TABLE device_messages RENAME TO device_messages_old");
+    db.run(`
+      CREATE TABLE device_messages (
+        id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        viewer_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        expires_at TEXT NOT NULL,
+        delivered_at TEXT DEFAULT '',
+        replied_at TEXT DEFAULT '',
+        PRIMARY KEY(id, device_id)
+      )
+    `);
+    db.run(`
+      INSERT OR IGNORE INTO device_messages (id, device_id, viewer_id, text, created_at, expires_at, delivered_at, replied_at)
+      SELECT id, device_id, viewer_id, text, created_at, expires_at, delivered_at, replied_at
+      FROM device_messages_old
+    `);
+    db.run("DROP TABLE device_messages_old");
+  })();
+}
 
 db.run(`
   CREATE INDEX IF NOT EXISTS idx_device_messages_pending

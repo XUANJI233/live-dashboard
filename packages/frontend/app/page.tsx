@@ -42,6 +42,7 @@ function HomeInner() {
   const [hasHealthData, setHasHealthData] = useState(false);
   const [healthRecords, setHealthRecords] = useState<HealthRecord[]>([]);
   const [watchHealthRecords, setWatchHealthRecords] = useState<HealthRecord[]>([]);
+  const [otherHealthRecords, setOtherHealthRecords] = useState<HealthRecord[]>([]);
 
   // Reset tab to activity if health data disappears
   useEffect(() => {
@@ -93,8 +94,10 @@ function HomeInner() {
     return healthRecords;
   }, [healthRecords, selectedDevice, watchDevice, watchHealthRecords]);
 
+  const separateHealthRecords = watchHealthRecords.length > 0 ? watchHealthRecords : otherHealthRecords;
+  const separateHealthDevice = watchHealthRecords.length > 0 ? watchDevice : undefined;
   const hasSeparateWatchHealth = Boolean(
-    watchDevice && selectedDevice?.device_id !== watchDevice.device_id && watchHealthRecords.length > 0,
+    selectedDevice && selectedDevice.device_id !== separateHealthDevice?.device_id && separateHealthRecords.length > 0,
   );
 
   // Set of online device IDs for Timeline offline detection
@@ -147,6 +150,24 @@ function HomeInner() {
       });
     return () => controller.abort();
   }, [selectedDate, watchDevice?.device_id]);
+
+  useEffect(() => {
+    if (!selectedDate || watchDevice?.device_id) {
+      setOtherHealthRecords([]);
+      return;
+    }
+    const controller = new AbortController();
+    fetchHealthData(selectedDate, controller.signal)
+      .then((d) => {
+        if (controller.signal.aborted) return;
+        const selectedId = selectedDevice?.device_id || "";
+        setOtherHealthRecords(d.records.filter((record) => record.device_id && record.device_id !== selectedId));
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setOtherHealthRecords([]);
+      });
+    return () => controller.abort();
+  }, [selectedDate, selectedDevice?.device_id, watchDevice?.device_id]);
 
   // Filter timeline data by selected device
   const filteredTimeline = useMemo(() => {
@@ -215,9 +236,9 @@ function HomeInner() {
             title="身体信息"
           />
 
-          {hasSeparateWatchHealth && watchDevice && (
+          {hasSeparateWatchHealth && (
             <div className="mb-4">
-              <BodySnapshot device={watchDevice} records={watchHealthRecords} title="手表健康" />
+              <BodySnapshot device={separateHealthDevice} records={separateHealthRecords} title={separateHealthDevice ? "手表健康" : "其他健康设备"} />
             </div>
           )}
 
@@ -312,17 +333,16 @@ function HomeInner() {
 
       {/* Right sidebar: visitor messages (collapsible) */}
       {current && selectedDevice && (
-        <div className={`flex-shrink-0 transition-all duration-300 ${messagesCollapsed ? "w-full lg:w-10" : "w-full lg:w-72"}`}>
-          {messagesCollapsed ? (
+        <div className={`flex-shrink-0 transition-[width] duration-300 ease-out overflow-hidden ${messagesCollapsed ? "w-full lg:w-10" : "w-full lg:w-72"}`}>
+          <div className="relative">
             <button
               onClick={() => setMessagesCollapsed(false)}
-              className="pill-btn text-xs w-10 h-10 flex items-center justify-center"
+              className={`pill-btn text-xs w-10 h-10 flex items-center justify-center transition-opacity duration-200 ${messagesCollapsed ? "opacity-100" : "pointer-events-none absolute right-0 top-0 opacity-0"}`}
               title="展开留言"
             >
               💬
             </button>
-          ) : (
-            <div className="glass-sm rounded-lg p-3">
+            <div className={`glass-sm rounded-lg p-3 transition-opacity duration-200 ${messagesCollapsed ? "pointer-events-none opacity-0" : "opacity-100"}`}>
               <div className="flex items-center justify-between mb-2">
                 <h2 className="text-xs font-bold text-[var(--color-text-muted)] uppercase tracking-wider">留言小窗</h2>
                 <button
@@ -334,7 +354,7 @@ function HomeInner() {
               </div>
               <VisitorMessages device={selectedDevice} />
             </div>
-          )}
+          </div>
         </div>
       )}
 
@@ -370,11 +390,22 @@ function DeviceOverview({ devices }: { devices: DeviceState[] }) {
         return (
           <span key={d.device_id} className={isOnline ? "" : "opacity-40"}>
             {icon} {d.device_name} · {isOnline ? (d.app_name === "idle" ? "暂时离开" : d.app_name || "不知道在忙什么") : "离线"}
+            {deviceInlineMeta(d)}
           </span>
         );
       })}
     </div>
   );
+}
+
+function deviceInlineMeta(device: DeviceState) {
+  const parts: string[] = [];
+  const extra = device.extra;
+  if (extra?.sleeping) parts.push("睡眠");
+  if (extra?.device?.network_type) parts.push(extra.device.network_type);
+  if (extra?.device?.vpn_active) parts.push("VPN");
+  if (extra?.input?.input_active || extra?.input?.is_typing) parts.push(extra.input.is_typing ? "输入中" : "输入活跃");
+  return parts.length > 0 ? ` · ${parts.join("/")}` : "";
 }
 
 function BodySnapshot({ device, records, title = "身体状态" }: { device: DeviceState | undefined; records: HealthRecord[]; title?: string }) {
@@ -524,7 +555,7 @@ function metric(label: string, record: HealthRecord | undefined, fallbackUnit: s
 function friendlyUnit(unit: string) {
   if (unit === "minutes") return "分钟";
   if (unit === "count") return "次";
-  if (unit === "celsius") return "℃";
-  if (unit === "status" || unit === "minute_of_day") return "";
+  if (unit === "celsius" || unit === "°C") return "℃";
+  if (unit === "status" || unit === "state" || unit === "minute_of_day") return "";
   return unit;
 }

@@ -1,6 +1,7 @@
 import { getAllDeviceStates, getRecentActivities } from "../db";
 import type { DeviceState, ActivityRecord } from "../types";
 import { visitors } from "../services/visitors";
+import { edgeViewerIdentity, verifyViewerToken, viewerTokenFromRequest } from "../services/viewer-auth";
 
 // Prepare records for public API: strip window_title, parse extra JSON
 function preparePublicDevices(devices: DeviceState[]) {
@@ -26,8 +27,9 @@ function stripWindowTitle<T extends { window_title?: string }>(
   return records.map(({ window_title, ...rest }) => rest);
 }
 
-export function handleCurrent(clientIp: string, userAgent?: string): Response {
-  visitors.heartbeat(clientIp, userAgent);
+export function handleCurrent(req: Request, clientIp: string, userAgent?: string): Response {
+  const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req), clientIp);
+  visitors.heartbeat(clientIp, userAgent, viewer?.viewerId);
 
   const devices = getAllDeviceStates.all() as DeviceState[];
   const recentActivities = getRecentActivities.all() as ActivityRecord[];

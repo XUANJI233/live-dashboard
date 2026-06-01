@@ -218,31 +218,45 @@ async function handleTokenIssue(request, clientIp, secret) {
 // ══════════════════════════════════════════════════════════════
 
 async function handleCachedRead(request, origin, pathname, secret) {
-  const ttl = getCacheTTL(pathname, request);
+  const cacheMeta = getCacheMeta(pathname, request);
+  const ttl = cacheMeta.ttl;
   const cacheKey = `http://edge-cache${pathname}${new URL(request.url).search}`;
+  if (pathname === "/api/messages/public") {
+    const clientIp = request.headers.get("x-real-ip") ||
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      "unknown";
+    const token = extractViewerToken(request);
+    const verified = token && secret ? await verifyViewerToken(token, secret, clientIp) : null;
+    if (!verified) return jsonResponse({ error: "需要 viewer token" }, 403);
+    const kv = getEdgeKV();
+    if (kv) {
+      const rate = await kvGetNumber(kv, `vr:${verified.viewerId}`);
+      if (rate >= RATE_VIEWER) return jsonResponse({ error: "限流" }, 429);
+      kvPut(kv, `vr:${verified.viewerId}`, String((rate || 0) + 1), RATE_WINDOW);
+    }
+  }
 
   try {
     const cached = await cache.match(cacheKey);
     if (cached) return cached;
   } catch {}
 
+  const originHeaders = new Headers(request.headers);
+  originHeaders.set("X-Forwarded-For", request.headers.get("x-real-ip") || "");
+  originHeaders.set("X-Real-IP", request.headers.get("x-real-ip") || "");
+  if (secret) originHeaders.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
   const originResp = await fetch(`${origin}${pathname}${new URL(request.url).search}`, {
-    headers: {
-      "X-Forwarded-For": request.headers.get("x-real-ip") || "",
-      "X-Real-IP": request.headers.get("x-real-ip") || "",
-      "X-Edge-Internal": secret ? await hmacHex(secret, "edge-internal") : "",
-    },
+    headers: originHeaders,
   });
   if (!originResp.ok) return originResp;
 
   const respHeaders = new Headers(originResp.headers);
-  const publicMessageMeta = pathname === "/api/messages/public"
-    ? getPublicMessageCacheMeta(new URL(request.url))
-    : null;
-  const effectiveTtl = publicMessageMeta?.ttl ?? ttl;
+  const effectiveTtl = cacheMeta.ttl;
   respHeaders.set("Cache-Control", `public, max-age=${effectiveTtl}, s-maxage=${effectiveTtl}, stale-while-revalidate=30`);
-  if (publicMessageMeta?.tags?.length) {
-    respHeaders.set("Cache-Tag", publicMessageMeta.tags.join(","));
+  if (cacheMeta.tags?.length) {
+    const tagHeader = cacheMeta.tags.join(",");
+    respHeaders.set("Cache-Tag", tagHeader);
+    respHeaders.set("ESA-Cache-Tag", tagHeader);
   }
   respHeaders.set("X-Edge-Cache", "MISS");
   const response = new Response(originResp.body, { status: originResp.status, headers: respHeaders });
@@ -282,7 +296,7 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
         body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
       });
 
-      const ttl = getCacheTTL(getPath(request));
+      const ttl = getCacheTTL(getPath(request), request);
       if (ttl && resp.ok) {
         const h = new Headers(resp.headers);
         h.set("Cache-Control", `public, max-age=${ttl}, s-maxage=${ttl}`);
@@ -328,15 +342,22 @@ async function passthroughSigned(request, origin, clientIp, secret) {
 
 
 function getCacheTTL(p, request) {
-  if (p === "/api/current") return 0;
+  return getCacheMeta(p, request).ttl;
+}
+
+function getCacheMeta(p, request) {
+  const url = new URL(request.url);
+  if (p === "/api/current") return { ttl: 0, tags: [] };
   if (p === "/api/timeline") {
-    return isCurrentTimelineRequest(new URL(request.url)) ? 0 : 60 * 60 * 24 * 30;
+    const date = url.searchParams.get("date") || "";
+    const ttl = isCurrentTimelineRequest(url) ? 0 : 60 * 60 * 24 * 30;
+    return { ttl, tags: ttl ? ["timeline", `timeline-${date}`].filter(Boolean) : [] };
   }
-  if (p === "/api/config") return CACHE_TTL.config;
-  if (p === "/api/health") return CACHE_TTL.health;
-  if (p === "/api/messages/public") return CACHE_TTL.publicMessages;
-  if (p === "/api/daily-summary") return 60;
-  return 0;
+  if (p === "/api/config") return { ttl: CACHE_TTL.config, tags: ["config"] };
+  if (p === "/api/health") return { ttl: CACHE_TTL.health, tags: ["health"] };
+  if (p === "/api/messages/public") return getPublicMessageCacheMeta(url);
+  if (p === "/api/daily-summary") return { ttl: 60, tags: ["daily-summary", `daily-summary-${url.searchParams.get("date") || "current"}`] };
+  return { ttl: 0, tags: [] };
 }
 
 function isCurrentTimelineRequest(url) {
@@ -353,7 +374,10 @@ function isCurrentTimelineRequest(url) {
 }
 
 function isAuthEndpoint(p) {
-  return p === "/api/health-data" || p === "/api/location" || p === "/api/messages/public";
+  return p === "/api/health-data" ||
+    p === "/api/location" ||
+    p === "/api/messages/public" ||
+    p === "/api/messages/private";
 }
 
 function isLocalIp(ip) {
@@ -439,7 +463,7 @@ function getPublicMessageCacheMeta(url) {
   if (slot && /^\d{12}$/.test(slot)) {
     const isCurrent = slot === currentMessageSlot();
     return {
-      ttl: isCurrent ? CACHE_TTL.publicMessages : 60 * 60 * 24 * 30,
+      ttl: isCurrent ? 0 : 60 * 60 * 24 * 30,
       tags: ["public-messages", `public-messages-slot-${slot}`],
     };
   }
@@ -448,7 +472,7 @@ function getPublicMessageCacheMeta(url) {
   if (/^\d{10}$/.test(hourWindow)) {
     const isCurrent = hourWindow === currentHourWindow();
     return {
-      ttl: isCurrent ? 15 : 60 * 60 * 24 * 30,
+      ttl: isCurrent ? 0 : 60 * 60 * 24 * 30,
       tags: ["public-messages", `public-messages-${hourWindow}`],
     };
   }
@@ -466,10 +490,9 @@ async function verifyViewerToken(token, secret, clientIp) {
     if (typeof payload.sub !== "string" || typeof payload.exp !== "number") return null;
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;
     if (!/^fp_[a-f0-9]{32}$/.test(payload.sub)) return null;
-    if (payload.ip && clientIp && clientIp !== "unknown") {
-      const currentIpHash = (await hmacHex(secret, "ip:" + clientIp)).slice(0, 16);
-      if (payload.ip !== currentIpHash) return null;
-    }
+    // IP hash is advisory. The stable viewer identity is the fingerprint hash;
+    // accepting IP changes prevents refreshes through different CDN/mobile egress
+    // from creating false offline/extra-viewer states.
     return { viewerId: payload.sub };
   } catch { return null; }
 }

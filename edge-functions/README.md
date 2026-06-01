@@ -4,8 +4,9 @@
 
 ## 能干嘛
 
-- 读取接口（设备状态、时间线、配置、公开留言）在边缘缓存几秒，不用每次都回源
-- 公开留言按 `slot` URL 分片缓存；当前窗口短缓存，历史窗口可由 CDN 按 URL 命中
+- 读取接口（配置、历史时间线、历史公开留言）在边缘缓存，不用每次都回源
+- 公开留言按 `slot` URL 分片缓存；当前窗口不缓存，历史窗口可由 CDN 按 URL 命中
+- 缓存响应会同时写入 `Cache-Tag` 和 `ESA-Cache-Tag`，便于按标签刷新 CDN
 - PoW 挑战在边缘生成和验证，不走 CDN
 - 无效的 token 请求在边缘直接拒绝，不打到服务器
 
@@ -66,6 +67,29 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 | PoW 挑战 | 30/min |
 | Token 签发 | 12/min |
 | 已登录用户 | 60/min |
+
+## 缓存标签
+
+阿里云 ESA 的默认标签头是 `Cache-Tag`。为了兼容控制台/规则里可能使用的 ESA 命名，本项目源站和边缘函数会同时输出：
+
+| Header | 用途 |
+|--------|------|
+| `Cache-Tag` | ESA 默认缓存标签头 |
+| `ESA-Cache-Tag` | 显式 ESA 标签头别名 |
+
+目前标签覆盖：
+
+| 接口 | 标签 |
+|------|------|
+| `/api/timeline?date=YYYY-MM-DD` | `timeline`, `timeline-YYYY-MM-DD` |
+| `/api/health-data?date=YYYY-MM-DD` | 源站输出 `health-data`, `health-data-YYYY-MM-DD` |
+| `/api/messages/public?slot=YYYYMMDDHHmm` | `public-messages`, `public-messages-slot-YYYYMMDDHHmm` |
+| `/api/messages/public?window=YYYYMMDDHH` | `public-messages`, `public-messages-YYYYMMDDHH` |
+| `/api/config` | `config` |
+| `/api/health` | `health` |
+| `/api/daily-summary` | `daily-summary`, `daily-summary-<date 或 current>` |
+
+当前状态、今天的时间线、当前公开留言窗口、位置轨迹和 WebSocket 不缓存，避免在线状态/时间线/留言/位置显示滞后。
 
 ## HASH_SECRET 要求
 

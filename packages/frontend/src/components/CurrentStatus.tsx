@@ -7,16 +7,19 @@ interface Props {
 
 export default function CurrentStatus({ devices }: Props) {
   const onlineDevices = devices.filter((d) => d.is_online === 1);
-  const active = onlineDevices.sort((a, b) => {
+  const activeDevices = onlineDevices.filter(isActivePrimaryDevice).sort((a, b) => {
+    const ta = a.last_seen_at ? new Date(a.last_seen_at).getTime() : 0;
+    const tb = b.last_seen_at ? new Date(b.last_seen_at).getTime() : 0;
+    return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0);
+  });
+  const active = activeDevices[0] || onlineDevices.filter((d) => !isWatchDevice(d)).sort((a, b) => {
     const ta = a.last_seen_at ? new Date(a.last_seen_at).getTime() : 0;
     const tb = b.last_seen_at ? new Date(b.last_seen_at).getTime() : 0;
     return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0);
   })[0];
 
   const isOnline = !!active;
-  const description = active
-    ? getAppDescription(active.app_name, active.display_title, active.extra?.music)
-    : null;
+  const activeLines = activeDevices.length > 0 ? activeDevices : (active ? [active] : []);
 
   const battery = active?.extra;
   const hasBattery = battery && typeof battery.battery_percent === "number";
@@ -36,9 +39,17 @@ export default function CurrentStatus({ devices }: Props) {
             </div>
 
             {/* Main description */}
-            <p className="text-xl font-medium text-[var(--color-text)] leading-relaxed">
-              {description}
-            </p>
+            <div className="space-y-2">
+              {activeLines.map((device) => (
+                <div key={device.device_id} className="text-[var(--color-text)]">
+                  <p className="text-base sm:text-xl font-medium leading-relaxed">
+                    {activeLines.length > 1 ? `在用${device.device_name}: ` : ""}
+                    {getAppDescription(device.app_name, device.display_title, device.extra?.music)}
+                  </p>
+                  <DeviceMetaLine device={device} />
+                </div>
+              ))}
+            </div>
 
             {/* Music indicator */}
             {music?.title && (
@@ -80,4 +91,43 @@ export default function CurrentStatus({ devices }: Props) {
       </div>
     </div>
   );
+}
+
+function DeviceMetaLine({ device }: { device: DeviceState }) {
+  const parts: string[] = [];
+  const extra = device.extra;
+  if (typeof extra?.battery_percent === "number") {
+    parts.push(`${extra.battery_charging ? "充电 " : ""}${extra.battery_percent}%`);
+  }
+  if (extra?.device?.network_type) {
+    const cellular = extra.device.cellular_generation ? ` ${extra.device.cellular_generation}` : "";
+    parts.push(`${extra.device.network_type}${cellular}`);
+  }
+  if (extra?.device?.vpn_active) {
+    parts.push(extra.device.vpn_name ? `VPN ${extra.device.vpn_name}` : "VPN");
+  }
+  if (extra?.input?.input_active || extra?.input?.is_typing) {
+    parts.push(extra.input.is_typing ? "正在输入" : "输入框活跃");
+  }
+  if (parts.length === 0) return null;
+  return (
+    <p className="mt-0.5 text-[11px] text-[var(--color-text-muted)]">
+      {parts.join(" · ")}
+    </p>
+  );
+}
+
+function isActivePrimaryDevice(device: DeviceState) {
+  if (device.is_online !== 1 || isWatchDevice(device)) return false;
+  const extra = device.extra;
+  if (extra?.sleeping) return false;
+  const combined = `${device.app_id} ${device.app_name}`.toLowerCase();
+  if (!combined.trim() || combined.includes("idle") || combined.includes("sleeping")) return false;
+  const lastSeen = device.last_seen_at ? Date.parse(device.last_seen_at) : 0;
+  if (!Number.isFinite(lastSeen) || Date.now() - lastSeen > 2 * 60_000) return false;
+  return true;
+}
+
+function isWatchDevice(device: DeviceState) {
+  return device.platform === "zepp" || device.extra?.device?.device_kind === "watch";
 }

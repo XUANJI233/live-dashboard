@@ -6,11 +6,15 @@ export function isCdnMode(): boolean {
 
 export function withCdnHeaders(response: Response, tags: string[], maxAgeSeconds: number): Response {
   const headers = new Headers(response.headers);
+  if (tags.length > 0) {
+    const joined = tags.join(",");
+    headers.set("Cache-Tag", joined);
+    headers.set("ESA-Cache-Tag", joined);
+  }
   // Browser cache always applies
   headers.set("Cache-Control", `public, max-age=${maxAgeSeconds}, stale-while-revalidate=30`);
   // CDN-specific headers only in CDN mode
   if (CDN_MODE) {
-    headers.set("Cache-Tag", tags.join(","));
     headers.set("Cache-Control", `public, max-age=${maxAgeSeconds}, s-maxage=${maxAgeSeconds}, stale-while-revalidate=30`);
   }
   return new Response(response.body, {

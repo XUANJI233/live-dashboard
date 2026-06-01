@@ -84,6 +84,10 @@ echo "Token: $TOKEN  ← Agent 配置用"
 | 部署 | Docker 多阶段构建 + Nginx |
 | 边缘计算 | ESA Edge Functions（PoW 边缘处理 + 读取缓存） |
 
+### CDN 缓存标签
+
+源站和边缘函数会同时输出 `Cache-Tag` 与 `ESA-Cache-Tag`。当前状态、今天的时间线、当前公开留言窗口、位置轨迹和 WebSocket 不缓存；历史时间线、历史公开留言、配置和健康检查会带标签，便于在 CDN 控制台按标签刷新。
+
 ## 环境变量
 
 ### 必填

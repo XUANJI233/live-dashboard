@@ -396,6 +396,7 @@ function normalizeDisplayTitle(appName: string, displayTitle?: string): string {
   const app = appName.trim().toLowerCase();
   if (normalized === app || normalized === "android" || normalized.endsWith("activity")) return "";
   if (title === `正在用${appName}` || title.startsWith("正在用系统桌面")) return "";
+  if (title === `正在用${appName}看${appName}` || title === `正在用${appName}浏览${appName}`) return "";
   return title;
 }
 

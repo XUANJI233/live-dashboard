@@ -234,6 +234,7 @@ function formatValue(value: number, type: string): string {
 }
 
 function displayUnit(unit: string): string {
+  if (unit === "°C") return "℃";
   if (unit === "status" || unit === "minute_of_day") return "";
   if (unit === "count") return "次";
   if (unit === "minutes") return "分钟";

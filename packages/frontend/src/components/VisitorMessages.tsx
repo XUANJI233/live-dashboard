@@ -70,7 +70,9 @@ export default function VisitorMessages({ device }: Props) {
   const [connected, setConnected] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState<"idle" | "pow" | "token" | "connecting">("idle");
   const [privateText, setPrivateText] = useState("");
+  const [privateSending, setPrivateSending] = useState(false);
   const [publicText, setPublicText] = useState("");
+  const [publicSending, setPublicSending] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [lines, setLines] = useState<ChatLine[]>([]);
   const [publicLines, setPublicLines] = useState<PublicLine[]>([]);
@@ -96,7 +98,7 @@ export default function VisitorMessages({ device }: Props) {
       if (statusTimer) clearTimeout(statusTimer);
       statusTimer = setTimeout(() => {
         if (!closed) setLoadingStatus(status);
-      }, 700);
+      }, 350);
     };
 
     const connect = async () => {
@@ -155,6 +157,19 @@ export default function VisitorMessages({ device }: Props) {
                 from: "system",
                 text: typeof data.error === "string" ? data.error : "消息未送达，请稍后重试。",
               }]);
+            } else if (data.type === "public_message" && data.message) {
+              const message = data.message;
+              if (typeof message.id === "string" && typeof message.text === "string") {
+                setPublicLines((prev) => {
+                  if (prev.some((line) => line.id === message.id)) return prev;
+                  return [...prev, {
+                    id: message.id,
+                    viewer_name: typeof message.viewer_name === "string" ? message.viewer_name : "",
+                    text: message.text,
+                    created_at: typeof message.created_at === "string" ? message.created_at : new Date().toISOString(),
+                  }];
+                });
+              }
             }
           } catch (e) {
             // ignore parse errors
@@ -200,7 +215,7 @@ export default function VisitorMessages({ device }: Props) {
   const statusText = useMemo(() => {
     if (!device) return "尚未选择目标设备";
     if (!connected && device.is_online !== 1) return "对方离线，消息将稍后送达";
-    if (!connected) return "连接中...";
+    if (!connected) return "实时连接恢复中，私聊会走备用通道";
     return device.is_online === 1 ? "可以发送消息了" : "对方离线，消息将稍后送达";
   }, [connected, device]);
 
@@ -210,35 +225,112 @@ export default function VisitorMessages({ device }: Props) {
     localStorage.setItem("live-dashboard-viewer-name", next);
   };
 
-  const send = (kind: "private" | "public") => {
-    const source = kind === "public" ? publicText : privateText;
-    const cleaned = source.trim();
-    if (!device || !cleaned || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return;
+  const sendPublic = async () => {
+    const cleaned = publicText.trim();
+    if (!cleaned || publicSending) return;
     const id = crypto.randomUUID();
-    socketRef.current.send(JSON.stringify({
+    const optimistic = {
+      id,
+      viewer_name: displayName.trim(),
+      text: cleaned,
+      created_at: new Date().toISOString(),
+    };
+    setPublicText("");
+    setPublicLines((prev) => [...prev, optimistic]);
+    setPublicSending(true);
+    try {
+      const identity = await ensureViewerToken();
+      tokenRef.current = identity.token;
+      setViewerId(identity.viewerId);
+      const res = await fetch(`${API_BASE}/api/messages/public`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${identity.token}`,
+        },
+        body: JSON.stringify({
+          message_id: id,
+          target_device_id: device?.device_id || "",
+          viewer_name: displayName.trim(),
+          text: cleaned,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      setError(e instanceof Error ? `公开留言发送失败: ${e.message}` : "公开留言发送失败");
+      setPublicLines((prev) => prev.filter((line) => line.id !== id));
+      setPublicText(cleaned);
+    } finally {
+      setPublicSending(false);
+    }
+  };
+
+  const setPrivateLineStatus = (deviceId: string | undefined, messageId: string, status: string) => {
+    setLines((prev) => {
+      const next = prev.map((line) => line.id === messageId ? { ...line, status } : line);
+      saveHistory(deviceId, next);
+      return next;
+    });
+  };
+
+  const sendPrivate = async () => {
+    const cleaned = privateText.trim();
+    if (!device || !cleaned || privateSending) return;
+    const id = crypto.randomUUID();
+    const payload = {
       type: "viewer_message",
-      kind,
+      kind: "private",
       message_id: id,
       target_device_id: device.device_id,
       viewer_name: displayName.trim(),
       text: cleaned,
-    }));
+    };
     const line = { id, from: "viewer" as const, text: cleaned, status: "发送中", at: new Date().toISOString() };
-    if (kind === "private") {
-      setLines((prev) => {
-        const next = [...prev, line];
-        saveHistory(device.device_id, next);
-        return next;
+    setLines((prev) => {
+      const next = [...prev, line];
+      saveHistory(device.device_id, next);
+      return next;
+    });
+    setPrivateText("");
+    const ws = socketRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify(payload));
+        return;
+      } catch {
+        // Fall through to HTTP fallback.
+      }
+    }
+
+    setPrivateSending(true);
+    try {
+      const identity = await ensureViewerToken();
+      tokenRef.current = identity.token;
+      setViewerId(identity.viewerId);
+      const res = await fetch(`${API_BASE}/api/messages/private`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${identity.token}`,
+        },
+        body: JSON.stringify(payload),
       });
-      setPrivateText("");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.error === "string" ? data.error : `HTTP ${res.status}`);
+      setPrivateLineStatus(device.device_id, id, typeof data.status === "string" ? data.status : "queued");
+    } catch (e) {
+      setPrivateLineStatus(device.device_id, id, "failed");
+      setError(e instanceof Error ? `私聊发送失败: ${e.message}` : "私聊发送失败");
+    } finally {
+      setPrivateSending(false);
+    }
+  };
+
+  const send = (kind: "private" | "public") => {
+    if (kind === "public") {
+      void sendPublic();
     } else {
-      setPublicLines((prev) => [...prev, {
-        id,
-        viewer_name: displayName.trim(),
-        text: cleaned,
-        created_at: new Date().toISOString(),
-      }]);
-      setPublicText("");
+      void sendPrivate();
     }
   };
 
@@ -285,12 +377,12 @@ export default function VisitorMessages({ device }: Props) {
             value={publicText}
             onChange={(e) => setPublicText(e.target.value.slice(0, 500))}
             onKeyDown={(e) => { if (e.key === "Enter") send("public"); }}
-            disabled={!device || !connected}
+            disabled={publicSending}
             className="flex-1 min-w-0 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm outline-none"
             placeholder="写条留言喵~"
           />
-          <button onClick={() => send("public")} disabled={!device || !connected || !publicText.trim()} className="pill-btn px-3 py-2 text-xs disabled:opacity-40">
-            发布喵!
+          <button onClick={() => send("public")} disabled={publicSending || !publicText.trim()} className="pill-btn px-3 py-2 text-xs disabled:opacity-40">
+            {publicSending ? "发送中" : "发布喵!"}
           </button>
         </div>
       </div>
@@ -314,12 +406,12 @@ export default function VisitorMessages({ device }: Props) {
             value={privateText}
             onChange={(e) => setPrivateText(e.target.value.slice(0, 500))}
             onKeyDown={(e) => { if (e.key === "Enter") send("private"); }}
-            disabled={!device || !connected}
+            disabled={!device || privateSending}
             className="flex-1 min-w-0 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm outline-none"
             placeholder={device ? "悄悄对我说喵~" : "先选一个设备"}
           />
-          <button onClick={() => send("private")} disabled={!device || !connected || !privateText.trim()} className="pill-btn px-3 py-2 text-xs disabled:opacity-40">
-            发送喵!
+          <button onClick={() => send("private")} disabled={!device || privateSending || !privateText.trim()} className="pill-btn px-3 py-2 text-xs disabled:opacity-40">
+            {privateSending ? "发送中" : "发送喵!"}
           </button>
         </div>
       </div>

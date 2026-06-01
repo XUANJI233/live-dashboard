@@ -1,6 +1,7 @@
 import { db } from "../db";
 import { verifyViewerToken, viewerTokenFromRequest, edgeViewerIdentity } from "../services/viewer-auth";
 import type { LocationRecord } from "../types";
+import { noStore } from "../services/cdn";
 
 function timezoneModifier(url: URL): string | null {
   const tzParam = url.searchParams.get("tz");
@@ -75,7 +76,7 @@ export function handleLocationQuery(url: URL, req: Request): Response {
       }
     }
 
-    return Response.json({ date, records });
+    return noStore(Response.json({ date, records }));
   } catch (e: any) {
     console.error("[location] Query error:", e.message);
     return Response.json({ error: "Internal error" }, { status: 500 });

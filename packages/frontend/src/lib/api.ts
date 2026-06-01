@@ -104,7 +104,16 @@ export interface TimelineResponse {
 }
 
 export async function fetchCurrent(signal?: AbortSignal): Promise<CurrentResponse> {
-  const res = await fetch(`${API_BASE}/api/current`, { signal, cache: "no-store" });
+  let token = getCachedViewerToken();
+  if (!token && typeof window !== "undefined") {
+    try {
+      token = (await ensureViewerToken()).token;
+    } catch {
+      token = null;
+    }
+  }
+  const suffix = token ? `?viewer_token=${encodeURIComponent(token)}` : "";
+  const res = await fetch(`${API_BASE}/api/current${suffix}`, { signal, cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }

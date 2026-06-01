@@ -1,6 +1,6 @@
 /**
- * IP-based visitor counting service.
- * Each unique IP that polls /api/current counts as one viewer.
+ * Visitor counting service.
+ * A verified viewer token is preferred; IP is only the fallback identity.
  * Stale entries are cleaned up every 30 seconds.
  * Known bots/crawlers are excluded.
  */
@@ -28,7 +28,7 @@ function isBot(ua: string): boolean {
 }
 
 class VisitorTracker {
-  private seen = new Map<string, number>(); // ip → last heartbeat timestamp
+  private seen = new Map<string, number>(); // identity → last heartbeat timestamp
   private lastCleanup = 0;
 
   constructor() {
@@ -36,15 +36,17 @@ class VisitorTracker {
     timer.unref(); // don't block graceful shutdown
   }
 
-  heartbeat(ip: string, userAgent?: string): void {
-    if (!ip) return;
+  heartbeat(ip: string, userAgent?: string, viewerId?: string): void {
+    const cleanIp = normalizeClientIp(ip);
+    const identity = viewerId ? `viewer:${viewerId}` : cleanIp ? `ip:${cleanIp}` : "";
+    if (!identity) return;
     if (userAgent && isBot(userAgent)) return;
     // If at capacity and this is a new IP, cleanup first to evict stale entries
-    if (!this.seen.has(ip) && this.seen.size >= MAX_ENTRIES) {
+    if (!this.seen.has(identity) && this.seen.size >= MAX_ENTRIES) {
       this.cleanup();
       if (this.seen.size >= MAX_ENTRIES) return; // still full after cleanup
     }
-    this.seen.set(ip, Date.now());
+    this.seen.set(identity, Date.now());
   }
 
   getCount(): number {
@@ -72,3 +74,15 @@ class VisitorTracker {
 }
 
 export const visitors = new VisitorTracker();
+
+export function normalizeClientIp(value: string | null | undefined): string {
+  const first = (value || "").split(",")[0]?.trim() || "";
+  if (!first) return "";
+  if (first.startsWith("[") && first.includes("]")) {
+    return first.slice(1, first.indexOf("]"));
+  }
+  if (/^::ffff:\d+\.\d+\.\d+\.\d+$/.test(first)) return first.slice(7);
+  const portMatch = /^(\d+\.\d+\.\d+\.\d+):\d+$/.exec(first);
+  if (portMatch) return portMatch[1]!;
+  return first;
+}

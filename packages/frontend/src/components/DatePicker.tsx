@@ -4,8 +4,8 @@ interface Props {
 }
 
 function offsetDate(dateStr: string, days: number): string {
-  const d = new Date(dateStr + "T00:00:00");
-  if (isNaN(d.getTime())) return dateStr;
+  const d = parseLocalDate(dateStr);
+  if (!d) return dateStr;
   d.setDate(d.getDate() + days);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
@@ -16,9 +16,16 @@ function todayStr(): string {
 }
 
 function formatDisplay(dateStr: string): string {
-  const d = new Date(dateStr + "T00:00:00");
-  if (isNaN(d.getTime())) return dateStr;
+  const d = parseLocalDate(dateStr);
+  if (!d) return dateStr;
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function parseLocalDate(dateStr: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (!match) return null;
+  const d = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 export default function DatePicker({ selectedDate, onChange }: Props) {

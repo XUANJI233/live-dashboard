@@ -133,9 +133,10 @@ export function verifyViewerToken(token: string | null | undefined, ip?: string)
     if (typeof payload.sub !== "string" || typeof payload.exp !== "number") return null;
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;
     if (!/^fp_[a-f0-9]{32}$/.test(payload.sub)) return null;
-    // IP binding check
+    // IP hash is kept as an advisory signal only. Viewer identity is the browser
+    // fingerprint hash so mobile networks/CDN edge changes do not split one viewer
+    // into many counters.
     const tokenIpHash = typeof payload.ip === "string" ? payload.ip : "";
-    if (tokenIpHash && ip && tokenIpHash !== ipHash(ip)) return null;
     return { viewerId: payload.sub, exp: payload.exp, ipHash: tokenIpHash };
   } catch {
     return null;
