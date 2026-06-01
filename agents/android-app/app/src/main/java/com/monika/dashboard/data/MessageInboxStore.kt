@@ -99,7 +99,8 @@ object MessageInboxStore {
 
     fun latestServerTimestamp(context: Context): String {
         val latest = recent(context).maxByOrNull { it.at } ?: return ""
-        return java.time.Instant.ofEpochMilli(latest.at).toString()
+        val withDriftMargin = (latest.at - 5 * 60 * 1000L).coerceAtLeast(0L)
+        return java.time.Instant.ofEpochMilli(withDriftMargin).toString()
     }
 
     fun groupedByViewer(context: Context): List<Pair<String, List<VisitorMessage>>> =

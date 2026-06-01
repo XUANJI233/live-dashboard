@@ -1,6 +1,10 @@
 package com.monika.dashboard.lsposed;
 
 import android.app.Activity;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Intent;
 import android.content.Context;
@@ -12,6 +16,7 @@ import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
@@ -53,9 +58,12 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String TARGET_PACKAGE = BuildConfig.APPLICATION_ID;
     private static final String TARGET_RECEIVER = TARGET_PACKAGE + ".system.LsposedBridgeReceiver";
     private static final String ACTION_STATUS = "com.monika.dashboard.LSPOSED_STATUS";
+    private static final String ACTION_MESSAGE = "com.monika.dashboard.LSPOSED_MESSAGE";
     private static final String ACTION_CONFIG = "com.monika.dashboard.LSPOSED_CONFIG";
     private static final String ACTION_BROWSER_TITLE = "com.monika.dashboard.LSPOSED_BROWSER_TITLE";
     private static final String CONFIG_PERMISSION = "com.monika.dashboard.permission.LSPOSED_CONFIG";
+    private static final String MESSAGE_CHANNEL_ID = "monika_lsp_messages";
+    private static final int MESSAGE_NOTIFICATION_ID = 2002;
     private static final long HEARTBEAT_MS = 300_000L; // 5 min heartbeat (event-driven is primary)
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
     private static final long MIN_DIRECT_UPLOAD_MS = 5000L;
@@ -1327,6 +1335,87 @@ public final class MonikaXposedModule extends XposedModule {
         getUploadHandler().post(() -> maybeDirectUpload(true));
     }
 
+    private void forwardViewerMessageToApp(String payloadText) {
+        try {
+            JSONObject data = new JSONObject(payloadText);
+            if (!"viewer_message".equals(data.optString("type"))) return;
+            String viewerId = data.optString("viewer_id", "");
+            String text = data.optString("text", "");
+            if (viewerId.length() == 0 || text.length() == 0) return;
+
+            Intent intent = new Intent(ACTION_MESSAGE);
+            intent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
+            intent.putExtra("message_id", data.optString("message_id", ""));
+            intent.putExtra("viewer_id", viewerId);
+            intent.putExtra("viewer_name", data.optString("viewer_name", ""));
+            intent.putExtra("kind", data.optString("kind", "private"));
+            intent.putExtra("text", text);
+            Context ctx = getSystemContext();
+            if (ctx != null) {
+                long token = Binder.clearCallingIdentity();
+                try {
+                    ctx.sendBroadcast(intent, CONFIG_PERMISSION);
+                    postViewerMessageNotification(ctx, data, text, viewerId);
+                } finally {
+                    Binder.restoreCallingIdentity(token);
+                }
+                log(Log.DEBUG, TAG, "forwarded viewer message to app: " + viewerId);
+            }
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "viewer message forward ignored: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void postViewerMessageNotification(Context ctx, JSONObject data, String text, String viewerId) {
+        try {
+            NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationChannel channel = new NotificationChannel(
+                        MESSAGE_CHANNEL_ID,
+                        "Monika网页消息",
+                        NotificationManager.IMPORTANCE_HIGH);
+                nm.createNotificationChannel(channel);
+            }
+
+            Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(TARGET_PACKAGE);
+            if (launch == null) {
+                launch = new Intent();
+                launch.setComponent(new ComponentName(TARGET_PACKAGE, "com.monika.dashboard.MainActivity"));
+            }
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            launch.putExtra("viewer_id", viewerId);
+            launch.putExtra("message_id", data.optString("message_id", ""));
+
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
+            PendingIntent pendingIntent = PendingIntent.getActivity(
+                    ctx,
+                    viewerId.hashCode(),
+                    launch,
+                    flags);
+
+            String title = "网页游客消息";
+            String body = text.length() > 120 ? text.substring(0, 120) : text;
+            Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    ? new Notification.Builder(ctx, MESSAGE_CHANNEL_ID)
+                    : new Notification.Builder(ctx);
+            builder.setSmallIcon(android.R.drawable.stat_notify_chat)
+                    .setContentTitle(title)
+                    .setContentText(body)
+                    .setStyle(new Notification.BigTextStyle().bigText(text.length() > 500 ? text.substring(0, 500) : text))
+                    .setContentIntent(pendingIntent)
+                    .setAutoCancel(true)
+                    .setShowWhen(true)
+                    .setWhen(System.currentTimeMillis())
+                    .setCategory(Notification.CATEGORY_MESSAGE)
+                    .setPriority(Notification.PRIORITY_HIGH);
+            nm.notify(MESSAGE_NOTIFICATION_ID, builder.build());
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "LSP message notification skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
     private String buildLspWsUrl(String serverUrl) {
         String base = serverUrl.replaceAll("/+$", "");
         if (base.toLowerCase().startsWith("https://")) {
@@ -1766,6 +1855,9 @@ public final class MonikaXposedModule extends XposedModule {
                     if (payloadLen > 0) System.arraycopy(frame, 1, payload, 0, payloadLen);
 
                     switch (opcode) {
+                        case OP_TEXT:
+                            forwardViewerMessageToApp(new String(payload, StandardCharsets.UTF_8));
+                            break;
                         case OP_PING:
                             // Respond with pong (echo the ping payload).
                             // CRITICAL: per RFC 6455 §5.5, client-to-server frames MUST be masked.

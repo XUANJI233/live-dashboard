@@ -20,7 +20,6 @@ import { BodyTemperature } from '@zos/sensor'
 import { set as setAlarm, cancel as cancelAlarm, getAllAlarms } from '@zos/alarm'
 import { createConnect, send as bleSend, connectStatus } from '@zos/ble'
 import { LocalStorage } from '@zos/storage'
-import { settingsStorage } from '@zos/settings'
 import { readFileSync } from '@zos/fs'
 
 // ── Sensor instances (created once, reused) ──
@@ -57,6 +56,7 @@ const MIN_SYNC_INTERVAL_SECONDS = 60
 const DEFAULT_SYNC_INTERVAL_SECONDS = 300
 const MAX_SYNC_INTERVAL_SECONDS = 900 // server marks Zepp offline after 20 minutes
 const MAX_SLEEP_UPLOAD_GAP_MS = 15 * 60_000
+const CONFIG_KEY = 'lw_cfg'
 
 // ── Persist sleepSkipCounter (survives alarm wakeups) ──
 // 使用 @zos/storage LocalStorage (API_LEVEL 3.0+, 官方推荐)
@@ -175,31 +175,42 @@ AppService({
 // ── Config ──
 
 function restoreConfig() {
+  const localCfg = readLocalConfig()
+  if (localCfg) {
+    applyConfig(localCfg)
+    return
+  }
   try {
-    const raw = settingsStorage.getItem('livewatch_config')
-    if (raw) {
-      const cfg = JSON.parse(raw)
-      serverUrl = cleanServerUrl(cfg.serverUrl || '')
-      token = cfg.token || ''
-      syncIntervalMs = clampSyncIntervalSeconds(cfg.syncInterval) * 1000
-      enabled = cfg.enabled || false
-      restoreSensorConfig(cfg)
+    const data = readFileSync({ path: 'data://livewatch_config.json' })
+    if (data) {
+      applyConfig(JSON.parse(data))
     }
   } catch (e) {
-    try {
-      const data = readFileSync({ path: 'data://livewatch_config.json' })
-      if (data) {
-        const cfg = JSON.parse(data)
-        serverUrl = cleanServerUrl(cfg.serverUrl || '')
-        token = cfg.token || ''
-        syncIntervalMs = clampSyncIntervalSeconds(cfg.syncInterval) * 1000
-        enabled = cfg.enabled || false
-        restoreSensorConfig(cfg)
-      }
-    } catch (e2) {
-      // No config available
-    }
+    // No config available
   }
+}
+
+function readLocalConfig() {
+  try {
+    const raw = _localStorage.getItem(CONFIG_KEY, '')
+    if (!raw) return null
+    return typeof raw === 'string' ? JSON.parse(raw) : raw
+  } catch (e) {}
+  return null
+}
+
+function writeLocalConfig(cfg) {
+  try {
+    _localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg))
+  } catch (e) {}
+}
+
+function applyConfig(cfg) {
+  serverUrl = cleanServerUrl(cfg.serverUrl || '')
+  token = cleanToken(cfg.token || '')
+  syncIntervalMs = clampSyncIntervalSeconds(cfg.syncInterval) * 1000
+  enabled = Boolean(cfg.enabled)
+  restoreSensorConfig(cfg)
 }
 
 // ── Data Collection & Upload (Optimized) ──
@@ -368,6 +379,10 @@ function cleanServerUrl(value) {
     .replace(/\/+$/, '')
     .replace(/\/api\/(?:report|health-data)$/i, '')
     .replace(/\/api$/i, '')
+}
+
+function cleanToken(value) {
+  return String(value || '').replace(/^Bearer\s+/i, '').trim()
 }
 
 function readBool(cfg, key, fallback) {
@@ -662,11 +677,17 @@ function setupNextAlarm() {
 function stopSync() {
   enabled = false
   try {
-    settingsStorage.setItem('livewatch_config', JSON.stringify({
+    writeLocalConfig({
       serverUrl, token,
       syncInterval: Math.round(syncIntervalMs / 1000),
       enabled: false,
-    }))
+      sensorHeartRate,
+      sensorBattery,
+      sensorStep,
+      sensorSleep,
+      sensorBodyTemp,
+      sensorSpo2,
+    })
   } catch (e) {}
 
   // Cancel all our alarms

@@ -172,7 +172,14 @@ fun MessagesScreen(settings: SettingsStore) {
                                 client.replyToMessage(related, viewerId, text)
                             }
                         }
-                        MessageInboxStore.add(context, "local_${System.currentTimeMillis()}", viewerId, text, "", "reply", "device")
+                        MessageInboxStore.add(
+                            context = context,
+                            id = "local_${System.currentTimeMillis()}",
+                            viewerId = viewerId,
+                            text = text,
+                            kind = "reply",
+                            direction = "device",
+                        )
                         tick++
                     }
                 ) { Text("发送") }

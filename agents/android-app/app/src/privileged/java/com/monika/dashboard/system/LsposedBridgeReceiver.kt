@@ -4,10 +4,17 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.monika.dashboard.data.DebugLog
+import com.monika.dashboard.realtime.MessageSocketManager
 
 class LsposedBridgeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != ACTION_STATUS) return
+        when (intent.action) {
+            ACTION_STATUS -> handleStatus(intent)
+            ACTION_MESSAGE -> handleMessage(context, intent)
+        }
+    }
+
+    private fun handleStatus(intent: Intent) {
         val packageName = intent.getStringExtra(EXTRA_PACKAGE)
             ?.takeIf { it.isNotBlank() && it != "idle" && it != "android" && it != "com.android.systemui" }
         val foreground = ForegroundInfo(
@@ -48,8 +55,29 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
         DebugLog.log("LSPosed", "收到系统状态事件")
     }
 
+    private fun handleMessage(context: Context, intent: Intent) {
+        val appContext = context.applicationContext
+        val viewerId = intent.getStringExtra(EXTRA_VIEWER_ID).orEmpty()
+        val text = intent.getStringExtra(EXTRA_TEXT).orEmpty().take(500)
+        if (viewerId.isBlank() || text.isBlank()) return
+        if (MessageSocketManager.isViewerBlocked(appContext, viewerId)) {
+            DebugLog.log("LSPosed", "已忽略拉黑访客消息: $viewerId")
+            return
+        }
+        MessageSocketManager.notifyIncoming(
+            context = appContext,
+            text = text,
+            viewerId = viewerId,
+            messageId = intent.getStringExtra(EXTRA_MESSAGE_ID).orEmpty(),
+            viewerName = intent.getStringExtra(EXTRA_VIEWER_NAME).orEmpty(),
+            kind = intent.getStringExtra(EXTRA_KIND).orEmpty().ifBlank { "private" },
+        )
+        DebugLog.log("LSPosed", "收到网页访客消息")
+    }
+
     companion object {
         const val ACTION_STATUS = "com.monika.dashboard.LSPOSED_STATUS"
+        const val ACTION_MESSAGE = "com.monika.dashboard.LSPOSED_MESSAGE"
         const val EXTRA_PACKAGE = "package_name"
         const val EXTRA_APP_NAME = "app_name"
         const val EXTRA_ACTIVITY = "activity"
@@ -61,5 +89,10 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
         const val EXTRA_MEDIA_ARTIST = "media_artist"
         const val EXTRA_MEDIA_APP = "media_app"
         const val EXTRA_MEDIA_STATE = "media_state"
+        const val EXTRA_MESSAGE_ID = "message_id"
+        const val EXTRA_VIEWER_ID = "viewer_id"
+        const val EXTRA_VIEWER_NAME = "viewer_name"
+        const val EXTRA_KIND = "kind"
+        const val EXTRA_TEXT = "text"
     }
 }

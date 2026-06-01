@@ -1,10 +1,14 @@
 import * as hmUI from '@zos/ui'
 import { px } from '@zos/utils'
 import { set as setAlarm, getAllAlarms, cancel as cancelAlarm } from '@zos/alarm'
+import { LocalStorage } from '@zos/storage'
 import { BasePage } from '@zeppos/zml/base-page'
 
 var gUrl = '', gToken = '', gRunning = false, gInterval = 300, gPage = null
+var gConfig = {}
 var gWUrl = null, gWBtn = null, gWUpload = null, gWStatus = null, gWDebug = null
+const CONFIG_KEY = 'lw_cfg'
+const localStorage = new LocalStorage()
 
 function log(msg) { console.log('[WATCH] ' + msg) }
 
@@ -18,6 +22,7 @@ Page(
         gToken = r.token || ''
         gRunning = r.enabled || false
         gInterval = Number(r.syncInterval || 300)
+        gConfig = r || {}
         updateUI()
       }).catch(function () {})
     },
@@ -78,6 +83,7 @@ function onToggle() {
   gPage.request({ method: method, params: { serverUrl: gUrl, token: gToken, syncInterval: gInterval } })
     .then(function (r) {
       if (next) {
+        persistDeviceConfig(true)
         var alarmId = setAlarm({
           url: 'app-service/live-watch',
           delay: 1,
@@ -85,6 +91,7 @@ function onToggle() {
         })
         dbg('start ok alarm=' + alarmId + ' ' + JSON.stringify(r))
       } else {
+        persistDeviceConfig(false)
         try {
           var alarms = getAllAlarms()
           if (alarms && alarms.length) {
@@ -100,6 +107,28 @@ function onToggle() {
       dbg('toggle failed: ' + e)
       hmUI.showToast({ text: '切换失败' })
     })
+}
+
+function persistDeviceConfig(enabled) {
+  try {
+    var cfg = {
+      serverUrl: gUrl,
+      token: gToken,
+      syncInterval: gInterval,
+      enabled: Boolean(enabled),
+      sensorHeartRate: gConfig.sensorHeartRate !== false,
+      sensorBattery: gConfig.sensorBattery !== false,
+      sensorStep: gConfig.sensorStep !== false,
+      sensorSleep: gConfig.sensorSleep !== false,
+      sensorBodyTemp: gConfig.sensorBodyTemp !== false,
+      sensorSpo2: Boolean(gConfig.sensorSpo2),
+      sensorStress: Boolean(gConfig.sensorStress),
+    }
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg))
+    dbg('device config saved')
+  } catch (e) {
+    dbg('save device config failed: ' + ((e && e.message) || e))
+  }
 }
 
 function onManualUpload() {

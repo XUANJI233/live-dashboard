@@ -18,6 +18,15 @@ const MAX_SYNC_INTERVAL_SECONDS = 900
 const PENDING_STATUS_KEY = 'livewatch_pending_status'
 const PENDING_HEALTH_KEY = 'livewatch_pending_health'
 const MAX_PENDING_HEALTH_RECORDS = 300
+const SENSOR_KEYS = [
+  'sensorHeartRate',
+  'sensorBattery',
+  'sensorStep',
+  'sensorSleep',
+  'sensorBodyTemp',
+  'sensorSpo2',
+  'sensorStress',
+]
 
 function cleanToken(value) {
   return String(value || '').replace(/^Bearer\s+/i, '').trim()
@@ -49,6 +58,13 @@ AppSideService(
       syncInterval: 300,
       enabled: false,
       bleListenerReady: false,
+      sensorHeartRate: true,
+      sensorBattery: true,
+      sensorStep: true,
+      sensorSleep: true,
+      sensorBodyTemp: true,
+      sensorSpo2: false,
+      sensorStress: false,
     },
 
     onInit() {
@@ -76,6 +92,13 @@ AppSideService(
             token: this.state.token || '',
             syncInterval: this.state.syncInterval || 300,
             enabled: this.state.enabled || false,
+            sensorHeartRate: this.state.sensorHeartRate,
+            sensorBattery: this.state.sensorBattery,
+            sensorStep: this.state.sensorStep,
+            sensorSleep: this.state.sensorSleep,
+            sensorBodyTemp: this.state.sensorBodyTemp,
+            sensorSpo2: this.state.sensorSpo2,
+            sensorStress: this.state.sensorStress,
           })
           break
         }
@@ -120,6 +143,9 @@ AppSideService(
           if (cfg.serverUrl !== undefined) this.state.serverUrl = cleanServerUrl(cfg.serverUrl)
           if (cfg.token !== undefined) this.state.token = cleanToken(cfg.token)
           if (cfg.syncInterval !== undefined) this.state.syncInterval = clampSyncIntervalSeconds(cfg.syncInterval)
+          SENSOR_KEYS.forEach((key) => {
+            if (cfg[key] !== undefined) this.state[key] = Boolean(cfg[key])
+          })
           if (cfg.enabled !== undefined) {
             this.state.enabled = Boolean(cfg.enabled)
             console.log('[LiveWatch:companion] Settings changed, enabled=' + this.state.enabled)
@@ -528,6 +554,9 @@ AppSideService(
           if (saved.token) this.state.token = cleanToken(saved.token)
           if (saved.syncInterval) this.state.syncInterval = clampSyncIntervalSeconds(saved.syncInterval)
           if (saved.enabled !== undefined) this.state.enabled = Boolean(saved.enabled)
+          SENSOR_KEYS.forEach((key) => {
+            if (saved[key] !== undefined) this.state[key] = Boolean(saved[key])
+          })
         }
       } catch (e) { /* no saved config */ }
     },
@@ -539,6 +568,13 @@ AppSideService(
           token: this.state.token,
           syncInterval: this.state.syncInterval,
           enabled: this.state.enabled,
+          sensorHeartRate: this.state.sensorHeartRate,
+          sensorBattery: this.state.sensorBattery,
+          sensorStep: this.state.sensorStep,
+          sensorSleep: this.state.sensorSleep,
+          sensorBodyTemp: this.state.sensorBodyTemp,
+          sensorSpo2: this.state.sensorSpo2,
+          sensorStress: this.state.sensorStress,
         }))
       } catch (e) { /* settings may be unavailable in preview */ }
     },

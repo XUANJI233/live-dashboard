@@ -10,6 +10,7 @@
             android:permission="com.monika.dashboard.permission.LSPOSED_CONFIG">
             <intent-filter>
                 <action android:name="com.monika.dashboard.LSPOSED_STATUS" />
+                <action android:name="com.monika.dashboard.LSPOSED_MESSAGE" />
             </intent-filter>
         </receiver>
     </application>

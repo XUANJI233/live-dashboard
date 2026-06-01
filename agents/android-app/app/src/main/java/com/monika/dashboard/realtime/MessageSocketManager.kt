@@ -150,7 +150,15 @@ object MessageSocketManager {
         kind: String = "private",
     ) {
         if (!viewerId.isNullOrBlank()) {
-            MessageInboxStore.add(context, messageId, viewerId, text, viewerName, kind, "viewer")
+            MessageInboxStore.add(
+                context = context,
+                id = messageId,
+                viewerId = viewerId,
+                text = text,
+                viewerName = viewerName,
+                kind = kind,
+                direction = "viewer",
+            )
         }
         createChannel(context)
         val intent = Intent(context, MainActivity::class.java)

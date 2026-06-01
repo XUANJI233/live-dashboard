@@ -3,15 +3,19 @@
 //  alarm 唤醒时检查配置，仅 enabled=true 时启动 app-service
 // ────────────────────────────────────────────
 
+import { LocalStorage } from '@zos/storage'
+
+const CONFIG_KEY = 'lw_cfg'
+const localStorage = new LocalStorage()
+
 AppEvent({
   onInit() {
     console.log('[LiveWatch:event] init')
 
     try {
-      var storage = require('@zos/settings').settingsStorage
-      var raw = storage.getItem('livewatch_config')
+      var raw = localStorage.getItem(CONFIG_KEY, '')
       if (raw) {
-        var cfg = JSON.parse(raw)
+        var cfg = typeof raw === 'string' ? JSON.parse(raw) : raw
         if (cfg && cfg.enabled && cfg.serverUrl && cfg.token) {
           console.log('[LiveWatch:event] enabled, starting app-service')
           var as = require('@zos/app-service')
