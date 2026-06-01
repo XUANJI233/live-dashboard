@@ -6,7 +6,7 @@
       "code": 2,
       "name": "0.2.0"
     },
-    "appId": 10001,
+    "appId": 20001,
     "appName": "Live Watch",
     "icon": "icon.png",
     "vender": "zepp",
@@ -51,6 +51,7 @@
     "device:os.bg_service",
     "device:os.ble",
     "device:os.local_storage",
+    "data:os.device.info",
     "data:user.hd.heart_rate",
     "data:user.hd.spo2",
     "data:user.hd.body_temp",

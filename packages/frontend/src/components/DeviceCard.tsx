@@ -4,6 +4,7 @@ const platformIcons: Record<string, string> = {
   windows: "\u{1F5A5}",
   android: "\u{1F4F1}",
   macos: "\u{1F4BB}",
+  zepp: "\u{231A}",
 };
 
 function timeAgo(isoStr: string): string {
