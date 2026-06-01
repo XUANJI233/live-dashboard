@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { DeviceState } from "@/lib/api";
-import { getRealtimeUrl } from "@/lib/api";
 import { ensureViewerToken, getCachedViewerToken, type TokenStatus } from "@/lib/viewer-token";
+import { sendRealtime, subscribeRealtime, subscribeRealtimeState } from "@/lib/realtime-client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 
@@ -66,9 +66,15 @@ function messageStatusText(status?: string) {
   return map[status] || status;
 }
 
+function cleanUiText(value: unknown): string {
+  return typeof value === "string"
+    ? value.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/g, "").trim().slice(0, 500)
+    : "";
+}
+
 export default function VisitorMessages({ device }: Props) {
   const [connected, setConnected] = useState(false);
-  const [loadingStatus, setLoadingStatus] = useState<"idle" | "pow" | "token" | "connecting">("idle");
+  const [loadingStatus, setLoadingStatus] = useState<"idle" | "pow" | "token">("idle");
   const [privateText, setPrivateText] = useState("");
   const [privateSending, setPrivateSending] = useState(false);
   const [publicText, setPublicText] = useState("");
@@ -78,8 +84,6 @@ export default function VisitorMessages({ device }: Props) {
   const [publicLines, setPublicLines] = useState<PublicLine[]>([]);
   const [viewerId, setViewerId] = useState("");
   const [error, setError] = useState("");
-  const socketRef = useRef<WebSocket | null>(null);
-  const tokenRef = useRef("");
 
   useEffect(() => {
     setDisplayName(localStorage.getItem("live-dashboard-viewer-name") || "");
@@ -91,7 +95,6 @@ export default function VisitorMessages({ device }: Props) {
 
   useEffect(() => {
     let closed = false;
-    let retry: ReturnType<typeof setTimeout> | null = null;
     let statusTimer: ReturnType<typeof setTimeout> | null = null;
 
     const showSlowStatus = (status: TokenStatus) => {
@@ -101,93 +104,81 @@ export default function VisitorMessages({ device }: Props) {
       }, 350);
     };
 
-    const connect = async () => {
-      try {
-        const hadCachedToken = Boolean(getCachedViewerToken());
-        const identity = await ensureViewerToken(hadCachedToken ? undefined : showSlowStatus);
-        if (closed) return;
-        if (statusTimer) clearTimeout(statusTimer);
-        tokenRef.current = identity.token;
-        setViewerId(identity.viewerId);
-
-        setLoadingStatus("connecting");
-        const ws = new WebSocket(getRealtimeUrl(identity.token));
-        socketRef.current = ws;
-        ws.onopen = () => {
-          setConnected(true);
+    ensureViewerToken(getCachedViewerToken() ? undefined : showSlowStatus)
+      .then((identity) => {
+        if (!closed) {
+          setViewerId(identity.viewerId);
           setLoadingStatus("idle");
           setError("");
-        };
-        ws.onclose = () => {
-          setConnected(false);
+        }
+      })
+      .catch((e) => {
+        if (!closed) {
           setLoadingStatus("idle");
-          if (!closed) retry = setTimeout(connect, 3000);
-        };
-        ws.onerror = () => {
-          setConnected(false);
-          setLoadingStatus("idle");
-        };
-        ws.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (data.type === "ack" && data.message_id) {
-              const rawStatus = typeof data.status === "string" ? data.status : "unknown";
-              setLines((prev) => {
-                const next = prev.map((line) =>
-                  line.id === data.message_id ? { ...line, status: rawStatus } : line
-                );
-                saveHistory(device?.device_id, next);
-                return next;
-              });
-            } else if (data.type === "device_reply") {
-              const line = {
-                id: data.message_id || crypto.randomUUID(),
-                from: "device" as const,
-                text: typeof data.text === "string" ? data.text : "",
-                at: data.created_at,
-              };
-              setLines((prev) => {
-                const next = [...prev, line];
-                saveHistory(device?.device_id, next);
-                return next;
-              });
-            } else if (data.type === "error") {
-              setLines((prev) => [...prev, {
-                id: crypto.randomUUID(),
-                from: "system",
-                text: typeof data.error === "string" ? data.error : "消息未送达，请稍后重试。",
-              }]);
-            } else if (data.type === "public_message" && data.message) {
-              const message = data.message;
-              if (typeof message.id === "string" && typeof message.text === "string") {
-                setPublicLines((prev) => {
-                  if (prev.some((line) => line.id === message.id)) return prev;
-                  return [...prev, {
-                    id: message.id,
-                    viewer_name: typeof message.viewer_name === "string" ? message.viewer_name : "",
-                    text: message.text,
-                    created_at: typeof message.created_at === "string" ? message.created_at : new Date().toISOString(),
-                  }];
-                });
-              }
-            }
-          } catch (e) {
-            // ignore parse errors
-          }
-        };
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "\u8fde\u63a5\u5931\u8d25\uff0c\u6b63\u5728\u91cd\u8bd5...");
-        if (!closed) retry = setTimeout(connect, 5000);
-      }
-    };
+          setError(e instanceof Error ? e.message : "连接失败，正在重试...");
+        }
+      });
 
-    connect();
     return () => {
       closed = true;
-      if (retry) clearTimeout(retry);
       if (statusTimer) clearTimeout(statusTimer);
-      socketRef.current?.close();
     };
+  }, []);
+
+  useEffect(() => subscribeRealtimeState(setConnected), []);
+
+  useEffect(() => {
+    return subscribeRealtime((data) => {
+      if (data.type === "ack" && data.message_id) {
+        const rawStatus = typeof data.status === "string" ? data.status : "unknown";
+        setLines((prev) => {
+          const next = prev.map((line) =>
+            line.id === data.message_id ? { ...line, status: rawStatus } : line
+          );
+          saveHistory(device?.device_id, next);
+          return next;
+        });
+      } else if (data.type === "device_reply") {
+        const line = {
+          id: typeof data.message_id === "string" ? data.message_id : crypto.randomUUID(),
+          from: "device" as const,
+          text: cleanUiText(data.text),
+          at: typeof data.created_at === "string" ? data.created_at : new Date().toISOString(),
+        };
+        if (!line.text) return;
+        setLines((prev) => {
+          const next = [...prev, line];
+          saveHistory(device?.device_id, next);
+          return next;
+        });
+      } else if (data.type === "error") {
+        setLines((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            from: "system",
+            text: cleanUiText(data.error) || "消息未送达，请稍后重试。",
+          },
+        ]);
+      } else if (data.type === "public_message" && data.message) {
+        const message = data.message;
+        const text = cleanUiText(message.text);
+        if (typeof message.id === "string" && text) {
+          setPublicLines((prev) => {
+            if (prev.some((line) => line.id === message.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: message.id,
+                viewer_name: cleanUiText(message.viewer_name) || "",
+                text,
+                created_at: typeof message.created_at === "string" ? message.created_at : new Date().toISOString(),
+              },
+            ];
+          });
+        }
+      }
+    });
   }, [device?.device_id]);
 
   useEffect(() => {
@@ -199,7 +190,17 @@ export default function VisitorMessages({ device }: Props) {
         const res = await fetch(url, { headers: { Authorization: `Bearer ${identity.token}` } });
         if (!res.ok || stopped) return;
         const data = await res.json();
-        setPublicLines(Array.isArray(data.messages) ? data.messages : []);
+        if (!Array.isArray(data.messages)) return;
+        setPublicLines(
+          data.messages
+            .map((message: any) => ({
+              id: typeof message.id === "string" ? message.id : crypto.randomUUID(),
+              viewer_name: cleanUiText(message.viewer_name) || "",
+              text: cleanUiText(message.text),
+              created_at: typeof message.created_at === "string" ? message.created_at : new Date().toISOString(),
+            }))
+            .filter((message: PublicLine) => message.text),
+        );
       } catch {
         // Public board is best-effort for visitors.
       }
@@ -220,18 +221,18 @@ export default function VisitorMessages({ device }: Props) {
   }, [connected, device]);
 
   const updateName = (value: string) => {
-    const next = value.slice(0, 32);
+    const next = cleanUiText(value).slice(0, 32);
     setDisplayName(next);
     localStorage.setItem("live-dashboard-viewer-name", next);
   };
 
   const sendPublic = async () => {
-    const cleaned = publicText.trim();
+    const cleaned = cleanUiText(publicText);
     if (!cleaned || publicSending) return;
     const id = crypto.randomUUID();
     const optimistic = {
       id,
-      viewer_name: displayName.trim(),
+      viewer_name: cleanUiText(displayName),
       text: cleaned,
       created_at: new Date().toISOString(),
     };
@@ -240,7 +241,6 @@ export default function VisitorMessages({ device }: Props) {
     setPublicSending(true);
     try {
       const identity = await ensureViewerToken();
-      tokenRef.current = identity.token;
       setViewerId(identity.viewerId);
       const res = await fetch(`${API_BASE}/api/messages/public`, {
         method: "POST",
@@ -251,7 +251,7 @@ export default function VisitorMessages({ device }: Props) {
         body: JSON.stringify({
           message_id: id,
           target_device_id: device?.device_id || "",
-          viewer_name: displayName.trim(),
+          viewer_name: cleanUiText(displayName),
           text: cleaned,
         }),
       });
@@ -274,7 +274,7 @@ export default function VisitorMessages({ device }: Props) {
   };
 
   const sendPrivate = async () => {
-    const cleaned = privateText.trim();
+    const cleaned = cleanUiText(privateText);
     if (!device || !cleaned || privateSending) return;
     const id = crypto.randomUUID();
     const payload = {
@@ -282,30 +282,22 @@ export default function VisitorMessages({ device }: Props) {
       kind: "private",
       message_id: id,
       target_device_id: device.device_id,
-      viewer_name: displayName.trim(),
+      viewer_name: cleanUiText(displayName),
       text: cleaned,
     };
-    const line = { id, from: "viewer" as const, text: cleaned, status: "发送中", at: new Date().toISOString() };
+    const line = { id, from: "viewer" as const, text: cleaned, status: "sending", at: new Date().toISOString() };
     setLines((prev) => {
       const next = [...prev, line];
       saveHistory(device.device_id, next);
       return next;
     });
     setPrivateText("");
-    const ws = socketRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      try {
-        ws.send(JSON.stringify(payload));
-        return;
-      } catch {
-        // Fall through to HTTP fallback.
-      }
-    }
+
+    if (sendRealtime(payload)) return;
 
     setPrivateSending(true);
     try {
       const identity = await ensureViewerToken();
-      tokenRef.current = identity.token;
       setViewerId(identity.viewerId);
       const res = await fetch(`${API_BASE}/api/messages/private`, {
         method: "POST",
@@ -357,7 +349,6 @@ export default function VisitorMessages({ device }: Props) {
         {error && <div className="text-[10px] text-red-400">{error}</div>}
         {loadingStatus === "pow" && <div className="text-[10px] text-[var(--color-accent)]">🔐 正在计算工作证明，请稍候...</div>}
         {loadingStatus === "token" && <div className="text-[10px] text-[var(--color-accent)]">🎫 正在获取访客令牌...</div>}
-        {loadingStatus === "connecting" && <div className="text-[10px] text-[var(--color-accent)]">🔗 正在连接...</div>}
       </div>
 
       <div className="mb-4">
@@ -381,7 +372,7 @@ export default function VisitorMessages({ device }: Props) {
             className="flex-1 min-w-0 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm outline-none"
             placeholder="写条留言喵~"
           />
-          <button onClick={() => send("public")} disabled={publicSending || !publicText.trim()} className="pill-btn px-3 py-2 text-xs disabled:opacity-40">
+          <button onClick={() => send("public")} disabled={publicSending || !cleanUiText(publicText)} className="pill-btn px-3 py-2 text-xs disabled:opacity-40">
             {publicSending ? "发送中" : "发布喵!"}
           </button>
         </div>
@@ -410,7 +401,7 @@ export default function VisitorMessages({ device }: Props) {
             className="flex-1 min-w-0 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm outline-none"
             placeholder={device ? "悄悄对我说喵~" : "先选一个设备"}
           />
-          <button onClick={() => send("private")} disabled={!device || privateSending || !privateText.trim()} className="pill-btn px-3 py-2 text-xs disabled:opacity-40">
+          <button onClick={() => send("private")} disabled={!device || privateSending || !cleanUiText(privateText)} className="pill-btn px-3 py-2 text-xs disabled:opacity-40">
             {privateSending ? "发送中" : "发送喵!"}
           </button>
         </div>
