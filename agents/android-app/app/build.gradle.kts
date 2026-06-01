@@ -75,11 +75,6 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.4")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
-    // Miuix UI library (MIUI-style components)
-    implementation("top.yukonga.miuix.kmp:miuix-ui-android:0.9.1")
-    implementation("top.yukonga.miuix.kmp:miuix-preference-android:0.9.1")
-    implementation("top.yukonga.miuix.kmp:miuix-icons-android:0.9.1")
-
     // Lifecycle
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
