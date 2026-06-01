@@ -15,6 +15,7 @@ export interface DeviceState {
   extra?: {
     battery_percent?: number;
     battery_charging?: boolean;
+    sleeping?: boolean;
     device?: {
       network_connected?: boolean;
       network_type?: string;

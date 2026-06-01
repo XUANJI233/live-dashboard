@@ -91,6 +91,9 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
     if (typeof rawExtra.battery_charging === "boolean") {
       extra.battery_charging = rawExtra.battery_charging;
     }
+    if (typeof rawExtra.sleeping === "boolean") {
+      extra.sleeping = rawExtra.sleeping;
+    }
 
     const rawDevice = rawExtra.device;
     if (rawDevice != null && typeof rawDevice === "object" && !Array.isArray(rawDevice)) {
