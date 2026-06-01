@@ -46,8 +46,10 @@ function HomeInner() {
 
   // Reset tab to activity if health data disappears
   useEffect(() => {
-    if (!hasHealthData && tab === "health") setTab("activity");
-  }, [hasHealthData, tab]);
+    if (!hasHealthData && watchHealthRecords.length === 0 && otherHealthRecords.length === 0 && tab === "health") {
+      setTab("activity");
+    }
+  }, [hasHealthData, watchHealthRecords.length, otherHealthRecords.length, tab]);
 
   // Build currentAppByDevice map for Timeline
   const currentAppByDevice = useMemo(() => {
@@ -99,6 +101,12 @@ function HomeInner() {
   const hasSeparateWatchHealth = Boolean(
     selectedDevice && selectedDevice.device_id !== separateHealthDevice?.device_id && separateHealthRecords.length > 0,
   );
+  const hasAnyHealthData = hasHealthData || watchHealthRecords.length > 0 || otherHealthRecords.length > 0;
+  const healthTabDeviceId = hasHealthData
+    ? selectedDevice?.device_id
+    : watchHealthRecords.length > 0
+      ? watchDevice?.device_id
+      : undefined;
 
   // Set of online device IDs for Timeline offline detection
   const onlineDevices = useMemo(() => {
@@ -267,7 +275,7 @@ function HomeInner() {
               {/* Date picker + tab buttons on same line */}
               <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <DatePicker selectedDate={selectedDate} onChange={changeDate} />
-                {hasHealthData && (
+                {hasAnyHealthData && (
                   <div className="flex gap-1">
                     <button
                       onClick={() => setTab("activity")}
@@ -322,7 +330,7 @@ function HomeInner() {
                   ) : null}
                 </>
               ) : (
-                <HealthData selectedDate={selectedDate} deviceId={selectedDevice?.device_id} />
+                <HealthData selectedDate={selectedDate} deviceId={healthTabDeviceId} />
               )}
             </div>
           </div>
@@ -333,16 +341,16 @@ function HomeInner() {
 
       {/* Right sidebar: visitor messages (collapsible) */}
       {current && selectedDevice && (
-        <div className={`flex-shrink-0 transition-[width] duration-300 ease-out overflow-hidden ${messagesCollapsed ? "w-full lg:w-10" : "w-full lg:w-72"}`}>
-          <div className="relative">
+        <div className={`flex-shrink-0 overflow-hidden transition-[width,opacity] duration-300 ease-out ${messagesCollapsed ? "w-full opacity-95 lg:w-10" : "w-full opacity-100 lg:w-72"}`}>
+          <div className="relative min-h-10">
             <button
               onClick={() => setMessagesCollapsed(false)}
-              className={`pill-btn text-xs w-10 h-10 flex items-center justify-center transition-opacity duration-200 ${messagesCollapsed ? "opacity-100" : "pointer-events-none absolute right-0 top-0 opacity-0"}`}
+              className={`pill-btn absolute right-0 top-0 flex h-10 w-10 items-center justify-center text-xs transition-[opacity,transform] duration-200 ${messagesCollapsed ? "translate-x-0 opacity-100" : "pointer-events-none translate-x-2 opacity-0"}`}
               title="展开留言"
             >
               💬
             </button>
-            <div className={`glass-sm rounded-lg p-3 transition-opacity duration-200 ${messagesCollapsed ? "pointer-events-none opacity-0" : "opacity-100"}`}>
+            <div className={`glass-sm rounded-lg p-3 transition-[opacity,transform,visibility] duration-300 ease-out ${messagesCollapsed ? "invisible pointer-events-none translate-x-2 opacity-0" : "visible translate-x-0 opacity-100"}`}>
               <div className="flex items-center justify-between mb-2">
                 <h2 className="text-xs font-bold text-[var(--color-text-muted)] uppercase tracking-wider">留言小窗</h2>
                 <button

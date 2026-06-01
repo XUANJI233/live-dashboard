@@ -40,10 +40,10 @@ export default function CurrentStatus({ devices }: Props) {
 
             {/* Main description */}
             <div className="space-y-2">
-              {activeLines.map((device) => (
+              {activeLines.map((device, index) => (
                 <div key={device.device_id} className="text-[var(--color-text)]">
                   <p className="text-base sm:text-xl font-medium leading-relaxed">
-                    {activeLines.length > 1 ? `在用${device.device_name}: ` : ""}
+                    {activeLines.length > 1 ? `${index === 0 ? "在用" : "并在用"}${device.device_name}: ` : ""}
                     {getAppDescription(device.app_name, device.display_title, device.extra?.music)}
                   </p>
                   <DeviceMetaLine device={device} />
@@ -96,6 +96,9 @@ export default function CurrentStatus({ devices }: Props) {
 function DeviceMetaLine({ device }: { device: DeviceState }) {
   const parts: string[] = [];
   const extra = device.extra;
+  if (extra?.device?.capability_mode === "lsposed" || extra?.device?.uploader === "lsposed") {
+    parts.push("LSP");
+  }
   if (typeof extra?.battery_percent === "number") {
     parts.push(`${extra.battery_charging ? "充电 " : ""}${extra.battery_percent}%`);
   }
@@ -108,6 +111,9 @@ function DeviceMetaLine({ device }: { device: DeviceState }) {
   }
   if (extra?.input?.input_active || extra?.input?.is_typing) {
     parts.push(extra.input.is_typing ? "正在输入" : "输入框活跃");
+  }
+  if (extra?.device?.window_mode && extra.device.window_mode !== "fullscreen") {
+    parts.push(extra.device.window_mode);
   }
   if (parts.length === 0) return null;
   return (

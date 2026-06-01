@@ -66,10 +66,15 @@ function messageStatusText(status?: string) {
   return map[status] || status;
 }
 
-function cleanUiText(value: unknown): string {
+function cleanUiText(value: unknown, maxLength = 500): string {
   return typeof value === "string"
-    ? value.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/g, "").trim().slice(0, 500)
+    ? value.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/g, "").trim().slice(0, maxLength)
     : "";
+}
+
+function safeTime(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString();
 }
 
 export default function VisitorMessages({ device }: Props) {
@@ -101,7 +106,7 @@ export default function VisitorMessages({ device }: Props) {
       if (statusTimer) clearTimeout(statusTimer);
       statusTimer = setTimeout(() => {
         if (!closed) setLoadingStatus(status);
-      }, 350);
+      }, 800);
     };
 
     ensureViewerToken(getCachedViewerToken() ? undefined : showSlowStatus)
@@ -157,7 +162,7 @@ export default function VisitorMessages({ device }: Props) {
           {
             id: crypto.randomUUID(),
             from: "system",
-            text: cleanUiText(data.error) || "消息未送达，请稍后重试。",
+            text: cleanUiText(data.error, 120) || "消息未送达，请稍后重试。",
           },
         ]);
       } else if (data.type === "public_message" && data.message) {
@@ -170,7 +175,7 @@ export default function VisitorMessages({ device }: Props) {
               ...prev,
               {
                 id: message.id,
-                viewer_name: cleanUiText(message.viewer_name) || "",
+                viewer_name: cleanUiText(message.viewer_name, 32),
                 text,
                 created_at: typeof message.created_at === "string" ? message.created_at : new Date().toISOString(),
               },
@@ -195,7 +200,7 @@ export default function VisitorMessages({ device }: Props) {
           data.messages
             .map((message: any) => ({
               id: typeof message.id === "string" ? message.id : crypto.randomUUID(),
-              viewer_name: cleanUiText(message.viewer_name) || "",
+              viewer_name: cleanUiText(message.viewer_name, 32),
               text: cleanUiText(message.text),
               created_at: typeof message.created_at === "string" ? message.created_at : new Date().toISOString(),
             }))
@@ -216,12 +221,12 @@ export default function VisitorMessages({ device }: Props) {
   const statusText = useMemo(() => {
     if (!device) return "尚未选择目标设备";
     if (!connected && device.is_online !== 1) return "对方离线，消息将稍后送达";
-    if (!connected) return "实时连接恢复中，私聊会走备用通道";
+    if (!connected) return "实时通道暂未连上，发送时会用备用通道";
     return device.is_online === 1 ? "可以发送消息了" : "对方离线，消息将稍后送达";
   }, [connected, device]);
 
   const updateName = (value: string) => {
-    const next = cleanUiText(value).slice(0, 32);
+    const next = cleanUiText(value, 32);
     setDisplayName(next);
     localStorage.setItem("live-dashboard-viewer-name", next);
   };
@@ -232,7 +237,7 @@ export default function VisitorMessages({ device }: Props) {
     const id = crypto.randomUUID();
     const optimistic = {
       id,
-      viewer_name: cleanUiText(displayName),
+      viewer_name: cleanUiText(displayName, 32),
       text: cleaned,
       created_at: new Date().toISOString(),
     };
@@ -251,7 +256,7 @@ export default function VisitorMessages({ device }: Props) {
         body: JSON.stringify({
           message_id: id,
           target_device_id: device?.device_id || "",
-          viewer_name: cleanUiText(displayName),
+          viewer_name: cleanUiText(displayName, 32),
           text: cleaned,
         }),
       });
@@ -282,7 +287,7 @@ export default function VisitorMessages({ device }: Props) {
       kind: "private",
       message_id: id,
       target_device_id: device.device_id,
-      viewer_name: cleanUiText(displayName),
+      viewer_name: cleanUiText(displayName, 32),
       text: cleaned,
     };
     const line = { id, from: "viewer" as const, text: cleaned, status: "sending", at: new Date().toISOString() };
@@ -328,10 +333,7 @@ export default function VisitorMessages({ device }: Props) {
 
   return (
     <section className="vn-bubble">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <h2 className="text-xs font-bold text-[var(--color-text-muted)] uppercase tracking-wider">
-          留言小窗
-        </h2>
+      <div className="flex items-center justify-end gap-3 mb-3">
         <span className="text-[10px] text-[var(--color-text-muted)] flex items-center gap-1">
           {!connected && <span className="inline-block w-2.5 h-2.5 border border-[var(--color-text-muted)] border-t-transparent rounded-full animate-spin" />}
           {statusText}
@@ -347,8 +349,8 @@ export default function VisitorMessages({ device }: Props) {
         />
         {viewerId && <div className="text-[10px] text-[var(--color-text-muted)]">你的访客牌：{viewerId}</div>}
         {error && <div className="text-[10px] text-red-400">{error}</div>}
-        {loadingStatus === "pow" && <div className="text-[10px] text-[var(--color-accent)]">🔐 正在计算工作证明，请稍候...</div>}
-        {loadingStatus === "token" && <div className="text-[10px] text-[var(--color-accent)]">🎫 正在获取访客令牌...</div>}
+        {loadingStatus === "pow" && <div className="text-[10px] text-[var(--color-accent)]">正在计算工作证明，请稍候...</div>}
+        {loadingStatus === "token" && <div className="text-[10px] text-[var(--color-accent)]">正在获取访客令牌...</div>}
       </div>
 
       <div className="mb-4">
@@ -357,7 +359,7 @@ export default function VisitorMessages({ device }: Props) {
           {publicLines.slice(-12).map((line) => (
             <div key={line.id} className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1">
               <span className="font-semibold">{line.viewer_name || "害羞访客"}</span>
-              <span className="ml-2 text-[var(--color-text-muted)]">{new Date(line.created_at).toLocaleTimeString()}</span>
+              <span className="ml-2 text-[var(--color-text-muted)]">{safeTime(line.created_at)}</span>
               <div>{line.text}</div>
             </div>
           ))}

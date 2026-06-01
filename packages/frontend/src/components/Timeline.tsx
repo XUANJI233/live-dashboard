@@ -251,7 +251,6 @@ function meaningfulDetailTitle(seg: TimelineSegment) {
   const app = seg.app_name.toLowerCase();
   if (normalized === app || normalized === "android" || normalized.endsWith("activity")) return "";
   if (title === `正在用${seg.app_name}` || title.startsWith("正在用系统桌面")) return "";
-  if (title === `正在用${seg.app_name}看${seg.app_name}` || title === `正在用${seg.app_name}浏览${seg.app_name}`) return "";
   return title;
 }
 
@@ -275,7 +274,8 @@ function hasUsefulChildDetail(children: TimelineSegment[]) {
 }
 
 function isIdleSegment(seg: TimelineSegment) {
-  return `${seg.app_name} ${seg.app_id}`.toLowerCase().includes("idle");
+  const value = `${seg.app_name} ${seg.app_id}`.toLowerCase();
+  return value.includes("idle") || value.includes("sleeping");
 }
 
 function isLauncherSegment(seg: TimelineSegment) {

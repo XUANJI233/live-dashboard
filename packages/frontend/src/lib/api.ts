@@ -23,7 +23,9 @@ export interface DeviceState {
       vpn_active?: boolean;
       vpn_name?: string;
       capability_mode?: "normal" | "root" | "lsposed";
+      uploader?: "normal" | "root" | "lsposed";
       device_kind?: string;
+      window_mode?: string;
       last_sample_at?: string;
       relay_mode?: string;
       energy_policy?: string;

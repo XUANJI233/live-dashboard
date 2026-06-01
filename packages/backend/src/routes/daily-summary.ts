@@ -1,4 +1,5 @@
 import { getDailySummary } from "../db";
+import { withCdnHeaders } from "../services/cdn";
 
 export function handleDailySummary(url: URL): Response {
   const date = url.searchParams.get("date");
@@ -9,8 +10,16 @@ export function handleDailySummary(url: URL): Response {
   const row = getDailySummary.get(date) as { date: string; summary: string; generated_at: string } | null;
 
   if (!row) {
-    return Response.json({ date, summary: null, generated_at: null });
+    return withCdnHeaders(
+      Response.json({ date, summary: null, generated_at: null }),
+      ["daily-summary", `daily-summary-${date}`],
+      60,
+    );
   }
 
-  return Response.json(row);
+  return withCdnHeaders(
+    Response.json(row),
+    ["daily-summary", `daily-summary-${date}`],
+    60,
+  );
 }

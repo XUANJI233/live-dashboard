@@ -116,6 +116,9 @@ registerTier("browser", [
   "Google Chrome", "Chrome", "Microsoft Edge",
   "Firefox", "Safari", "Opera", "Arc",
   "Brave", "Vivaldi", "Opera GX",
+  "浏览器", "小米浏览器", "Samsung Internet",
+  "DuckDuckGo", "Via", "Kiwi Browser", "Quark", "UC Browser",
+  "HeyTap Browser", "Vivo Browser", "Huawei Browser",
 ]);
 
 // HIDE — messaging

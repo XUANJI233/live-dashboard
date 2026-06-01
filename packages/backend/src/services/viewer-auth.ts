@@ -14,6 +14,9 @@ const powChallenges = new Map<string, { ip: string; ipUpdated: boolean; createdA
 const issueRate = new Map<string, { count: number; resetAt: number }>();
 const viewerTokenRate = new Map<string, { count: number; resetAt: number }>();
 const powChallengeRate = new Map<string, { count: number; resetAt: number }>();
+const fingerprintViewerIds = new Map<string, string>();
+const ipViewerIds = new Map<string, string>();
+const viewerAliases = new Map<string, string>();
 
 // ── Cleanup (5 min) ──
 setInterval(() => {
@@ -51,6 +54,40 @@ function ipHash(ip: string): string {
   return hmacTitle("ip:" + ip).slice(0, 16);
 }
 
+function canonicalViewerId(viewerId: string): string {
+  let current = viewerId;
+  const seen = new Set<string>();
+  while (viewerAliases.has(current) && !seen.has(current)) {
+    seen.add(current);
+    current = viewerAliases.get(current)!;
+  }
+  for (const item of seen) viewerAliases.set(item, current);
+  return current;
+}
+
+function linkViewerIds(primary: string, secondary: string): string {
+  const a = canonicalViewerId(primary);
+  const b = canonicalViewerId(secondary);
+  if (a === b) return a;
+  const canonical = a < b ? a : b;
+  const alias = canonical === a ? b : a;
+  viewerAliases.set(alias, canonical);
+  return canonical;
+}
+
+function resolveViewerId(fingerprint: string, ip: string): { viewerId: string; ipHash: string } {
+  const fpId = fingerprintId(fingerprint);
+  const ih = (ip && ip !== "unknown") ? ipHash(ip) : "";
+  const fpViewer = fingerprintViewerIds.get(fpId);
+  const ipViewer = ih ? ipViewerIds.get(ih) : undefined;
+  let viewerId = fpViewer || ipViewer || fpId;
+  if (fpViewer && ipViewer) viewerId = linkViewerIds(fpViewer, ipViewer);
+  viewerId = canonicalViewerId(viewerId);
+  fingerprintViewerIds.set(fpId, viewerId);
+  if (ih) ipViewerIds.set(ih, viewerId);
+  return { viewerId, ipHash: ih };
+}
+
 // ── Local IP check ──
 export function isLocalIp(ip: string): boolean {
   if (!ip) return false;
@@ -86,11 +123,10 @@ export function issueViewerToken(fingerprintValue: unknown, ip: string): { token
   }
 
   const nowSec = Math.floor(Date.now() / 1000);
-  // IP binding: only bind when IP is known (not empty/unknown)
-  const ih = (ip && ip !== "unknown") ? ipHash(ip) : "";
+  const identity = resolveViewerId(fingerprint, ip);
   const payload = {
-    sub: fingerprintId(fingerprint),
-    ip: ih,
+    sub: identity.viewerId,
+    ip: identity.ipHash,
     iat: nowSec,
     exp: nowSec + TOKEN_TTL_SECONDS,
   };
@@ -137,7 +173,7 @@ export function verifyViewerToken(token: string | null | undefined, ip?: string)
     // fingerprint hash so mobile networks/CDN edge changes do not split one viewer
     // into many counters.
     const tokenIpHash = typeof payload.ip === "string" ? payload.ip : "";
-    return { viewerId: payload.sub, exp: payload.exp, ipHash: tokenIpHash };
+    return { viewerId: canonicalViewerId(payload.sub), exp: payload.exp, ipHash: tokenIpHash };
   } catch {
     return null;
   }

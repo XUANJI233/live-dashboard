@@ -57,6 +57,7 @@ export default function DeviceCard({ device, selected = false, onSelect }: Props
         </div>
         <span className="text-[11px] text-[var(--color-text-muted)]">
           {isOnline ? timeAgo(device.last_seen_at) : "离线"}
+          {deviceMeta(device)}
         </span>
       </div>
 
@@ -68,4 +69,16 @@ export default function DeviceCard({ device, selected = false, onSelect }: Props
       />
     </button>
   );
+}
+
+function deviceMeta(device: DeviceState): string {
+  const parts: string[] = [];
+  const extra = device.extra;
+  if (extra?.device?.capability_mode === "lsposed" || extra?.device?.uploader === "lsposed") parts.push("LSP");
+  if (extra?.device?.network_type) parts.push(extra.device.network_type);
+  if (extra?.device?.vpn_active) parts.push("VPN");
+  if (extra?.input?.input_active || extra?.input?.is_typing) {
+    parts.push(extra.input.is_typing ? "输入中" : "输入活跃");
+  }
+  return parts.length > 0 ? ` · ${parts.join("/")}` : "";
 }

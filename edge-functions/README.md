@@ -4,11 +4,11 @@
 
 ## 能干嘛
 
-- 读取接口（配置、历史时间线、历史公开留言）在边缘缓存，不用每次都回源
+- 读取接口（配置、历史时间线、历史健康数据、历史公开留言）在边缘缓存，不用每次都回源
 - 公开留言按 `slot` URL 分片缓存；当前窗口不缓存，历史窗口可由 CDN 按 URL 命中
 - 缓存响应会同时写入 `Cache-Tag` 和 `ESA-Cache-Tag`，便于按标签刷新 CDN
 - PoW 挑战在边缘生成和验证，不走 CDN
-- 无效的 token 请求在边缘直接拒绝，不打到服务器
+- 无效的访客 token 请求会在边缘直接拒绝，公开/私聊留言 POST 也会先做边缘 token 校验和限流
 
 ## 部署（阿里云 ESA）
 
@@ -35,7 +35,7 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 | `device_tokens` | 可选。设备密钥白名单，逗号/空白分隔；也兼容 `token:device_id:name:platform` 这种服务端配置行 |
 | `device_token_hashes` | 可选。`HMAC-SHA256(secret, "device:" + token)` 的 hex 列表，适合不想在 EdgeKV 存明文密钥 |
 
-配置 `device_tokens` 或 `device_token_hashes` 后，带有效 `Authorization: Bearer <token>` 的设备/API 管理请求会在边缘直接签名回源，不走访客 token 校验，也不吃边缘全局 IP 限流。源站仍会继续校验设备密钥。
+配置 `device_tokens` 或 `device_token_hashes` 后，带有效 `Authorization: Bearer <token>` 的设备/API 管理请求会在边缘直接签名回源，不走访客 token 校验，也不吃边缘全局 IP 限流。`/api/report`、`/api/health-data` 和设备消息接口都按这个路径处理，手表端 Zepp 令牌同样可通过；源站仍会继续校验设备密钥。
 
 ### 4. 配置路由
 
@@ -81,15 +81,15 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 
 | 接口 | 标签 |
 |------|------|
-| `/api/timeline?date=YYYY-MM-DD` | `timeline`, `timeline-YYYY-MM-DD` |
-| `/api/health-data?date=YYYY-MM-DD` | 源站输出 `health-data`, `health-data-YYYY-MM-DD` |
+| `/api/timeline?date=YYYY-MM-DD` | `timeline`, `timeline-YYYY-MM-DD`，带 `device_id` 时追加 `timeline-device-<device_id>` |
+| `/api/health-data?date=YYYY-MM-DD` | `health-data`, `health-data-YYYY-MM-DD`，带 `device_id` 时追加 `health-device-<device_id>` |
 | `/api/messages/public?slot=YYYYMMDDHHmm` | `public-messages`, `public-messages-slot-YYYYMMDDHHmm` |
 | `/api/messages/public?window=YYYYMMDDHH` | `public-messages`, `public-messages-YYYYMMDDHH` |
 | `/api/config` | `config` |
 | `/api/health` | `health` |
 | `/api/daily-summary` | `daily-summary`, `daily-summary-<date 或 current>` |
 
-当前状态、今天的时间线、当前公开留言窗口、位置轨迹和 WebSocket 不缓存，避免在线状态/时间线/留言/位置显示滞后。
+当前状态、今天的时间线、当天健康数据、当前公开留言窗口、位置轨迹和 WebSocket 不缓存，避免在线状态/时间线/健康/留言/位置显示滞后。
 
 ## HASH_SECRET 要求
 

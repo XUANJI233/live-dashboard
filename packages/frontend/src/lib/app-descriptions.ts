@@ -48,6 +48,17 @@ const descriptions: Record<string, string> = {
   Brave: "正在用Brave网上冲浪喵~",
   Vivaldi: "正在用Vivaldi网上冲浪喵~",
   "Opera GX": "正在用Opera GX网上冲浪喵~",
+  浏览器: "正在用浏览器网上冲浪喵~",
+  小米浏览器: "正在用小米浏览器网上冲浪喵~",
+  "Samsung Internet": "正在用Samsung Internet网上冲浪喵~",
+  DuckDuckGo: "正在用DuckDuckGo网上冲浪喵~",
+  Via: "正在用Via浏览喵~",
+  "Kiwi Browser": "正在用Kiwi浏览喵~",
+  Quark: "正在用夸克浏览喵~",
+  "UC Browser": "正在用UC浏览喵~",
+  "HeyTap Browser": "正在用浏览器网上冲浪喵~",
+  "Vivo Browser": "正在用浏览器网上冲浪喵~",
+  "Huawei Browser": "正在用浏览器网上冲浪喵~",
 
   // Code editors
   "VS Code": "正在用VS Code疯狂写bug喵~",
@@ -396,7 +407,6 @@ function normalizeDisplayTitle(appName: string, displayTitle?: string): string {
   const app = appName.trim().toLowerCase();
   if (normalized === app || normalized === "android" || normalized.endsWith("activity")) return "";
   if (title === `正在用${appName}` || title.startsWith("正在用系统桌面")) return "";
-  if (title === `正在用${appName}看${appName}` || title === `正在用${appName}浏览${appName}`) return "";
   return title;
 }
 
@@ -765,6 +775,10 @@ registerTemplate(
 registerTemplate(
   ["Vivaldi"],
   (t) => `正在用Vivaldi浏览「${t}」喵~`
+);
+registerTemplate(
+  ["浏览器", "小米浏览器", "Samsung Internet", "DuckDuckGo", "Via", "Kiwi Browser", "Quark", "UC Browser", "HeyTap Browser", "Vivo Browser", "Huawei Browser"],
+  (t) => `正在用浏览器看「${t}」喵~`
 );
 
 export function getAppDescription(appName: string, displayTitle?: string, music?: { title?: string; artist?: string; app?: string }): string {

@@ -115,6 +115,11 @@ export default {
         return passthrough(request, origin, clientIp);
       }
 
+      // 访客写入端点在边缘先验 token 和限流，挡掉无效脚本请求再回源。
+      if (method === "POST" && isViewerWriteEndpoint(pathname)) {
+        return handleAuthenticatedRequest(request, origin, clientIp, secret);
+      }
+
       // 需要 token 的端点 — 边缘验证后穿透
       if (method === "GET" && isAuthEndpoint(pathname)) {
         return handleAuthenticatedRequest(request, origin, clientIp, secret);
@@ -203,7 +208,7 @@ async function handleTokenIssue(request, clientIp, secret) {
   const fp = fingerprint.replace(/[^a-zA-Z0-9:_.,| -]/g, "").trim().slice(0, 512);
   if (fp.length < 32 || new Set(fp).size < 6) return jsonResponse({ error: "fingerprint 太弱" }, 400);
 
-  const viewerId = `fp_${await hmacHex(secret, fp)}`.slice(0, 35);
+  const viewerId = await resolveViewerId(secret, fp, clientIp);
   const ipHash = (ipKnown && clientIp !== "unknown") ? (await hmacHex(secret, "ip:" + clientIp)).slice(0, 16) : "";
   const nowSec = Math.floor(Date.now() / 1000);
   const payload = JSON.stringify({ sub: viewerId, ip: ipHash, iat: nowSec, exp: nowSec + 3600 });
@@ -211,6 +216,45 @@ async function handleTokenIssue(request, clientIp, secret) {
   const signature = await hmacSign(secret, encoded);
 
   return noStoreJson({ token: `${encoded}.${signature}`, viewer_id: viewerId, expires_in: 3600 });
+}
+
+async function resolveViewerId(secret, fingerprint, clientIp) {
+  const fpId = `fp_${await hmacHex(secret, fingerprint)}`.slice(0, 35);
+  const ipKnown = clientIp && clientIp !== "unknown";
+  const ih = ipKnown ? (await hmacHex(secret, "ip:" + clientIp)).slice(0, 16) : "";
+  const kv = getEdgeKV();
+  if (!kv) return fpId;
+
+  const fpViewer = await kvGetText(kv, `vf:${fpId}`);
+  const ipViewer = ih ? await kvGetText(kv, `vi:${ih}`) : "";
+  let viewerId = sanitizeViewerId(fpViewer) || sanitizeViewerId(ipViewer) || fpId;
+  if (fpViewer && ipViewer && fpViewer !== ipViewer) {
+    const canonical = fpViewer < ipViewer ? fpViewer : ipViewer;
+    const alias = canonical === fpViewer ? ipViewer : fpViewer;
+    viewerId = sanitizeViewerId(canonical) || viewerId;
+    await kvPutText(kv, `va:${alias}`, viewerId);
+  }
+  await kvPutText(kv, `vf:${fpId}`, viewerId);
+  if (ih) await kvPutText(kv, `vi:${ih}`, viewerId);
+  return viewerId;
+}
+
+async function resolveViewerAlias(viewerId) {
+  const clean = sanitizeViewerId(viewerId);
+  if (!clean) return viewerId;
+  const kv = getEdgeKV();
+  if (!kv) return clean;
+  let current = clean;
+  for (let i = 0; i < 4; i++) {
+    const next = sanitizeViewerId(await kvGetText(kv, `va:${current}`));
+    if (!next || next === current) return current;
+    current = next;
+  }
+  return current;
+}
+
+function sanitizeViewerId(value) {
+  return typeof value === "string" && /^fp_[a-f0-9]{32}$/.test(value) ? value : "";
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -221,12 +265,13 @@ async function handleCachedRead(request, origin, pathname, secret) {
   const cacheMeta = getCacheMeta(pathname, request);
   const ttl = cacheMeta.ttl;
   const cacheKey = `http://edge-cache${pathname}${new URL(request.url).search}`;
-  if (pathname === "/api/messages/public") {
+  let verified = null;
+  if (isAuthEndpoint(pathname)) {
     const clientIp = request.headers.get("x-real-ip") ||
       request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
       "unknown";
     const token = extractViewerToken(request);
-    const verified = token && secret ? await verifyViewerToken(token, secret, clientIp) : null;
+    verified = token && secret ? await verifyViewerToken(token, secret, clientIp) : null;
     if (!verified) return jsonResponse({ error: "需要 viewer token" }, 403);
     const kv = getEdgeKV();
     if (kv) {
@@ -245,6 +290,11 @@ async function handleCachedRead(request, origin, pathname, secret) {
   originHeaders.set("X-Forwarded-For", request.headers.get("x-real-ip") || "");
   originHeaders.set("X-Real-IP", request.headers.get("x-real-ip") || "");
   if (secret) originHeaders.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
+  if (verified && secret) {
+    originHeaders.set("X-Edge-Verified", "true");
+    originHeaders.set("X-Edge-Viewer-Id", verified.viewerId);
+    originHeaders.set("X-Edge-Signature", await hmacHex(secret, "edge:" + verified.viewerId));
+  }
   const originResp = await fetch(`${origin}${pathname}${new URL(request.url).search}`, {
     headers: originHeaders,
   });
@@ -308,7 +358,7 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
   }
 
   const path = getPath(request);
-  if (path === "/api/health-data" || path === "/api/location") {
+  if (isAuthEndpoint(path)) {
     return jsonResponse({ error: "需要 viewer token" }, 403);
   }
   return passthroughSigned(request, origin, clientIp, secret);
@@ -351,7 +401,14 @@ function getCacheMeta(p, request) {
   if (p === "/api/timeline") {
     const date = url.searchParams.get("date") || "";
     const ttl = isCurrentTimelineRequest(url) ? 0 : 60 * 60 * 24 * 30;
-    return { ttl, tags: ttl ? ["timeline", `timeline-${date}`].filter(Boolean) : [] };
+    const deviceId = url.searchParams.get("device_id") || "";
+    return { ttl, tags: ttl ? ["timeline", `timeline-${date}`, deviceId ? `timeline-device-${deviceId}` : ""].filter(Boolean) : [] };
+  }
+  if (p === "/api/health-data") {
+    const date = url.searchParams.get("date") || "";
+    const ttl = isCurrentTimelineRequest(url) ? 0 : 60 * 60 * 24 * 30;
+    const deviceId = url.searchParams.get("device_id") || "";
+    return { ttl, tags: ttl ? ["health-data", `health-data-${date}`, deviceId ? `health-device-${deviceId}` : ""].filter(Boolean) : [] };
   }
   if (p === "/api/config") return { ttl: CACHE_TTL.config, tags: ["config"] };
   if (p === "/api/health") return { ttl: CACHE_TTL.health, tags: ["health"] };
@@ -378,6 +435,10 @@ function isAuthEndpoint(p) {
     p === "/api/location" ||
     p === "/api/messages/public" ||
     p === "/api/messages/private";
+}
+
+function isViewerWriteEndpoint(p) {
+  return p === "/api/messages/public" || p === "/api/messages/private";
 }
 
 function isLocalIp(ip) {
@@ -493,7 +554,7 @@ async function verifyViewerToken(token, secret, clientIp) {
     // IP hash is advisory. The stable viewer identity is the fingerprint hash;
     // accepting IP changes prevents refreshes through different CDN/mobile egress
     // from creating false offline/extra-viewer states.
-    return { viewerId: payload.sub };
+    return { viewerId: await resolveViewerAlias(payload.sub) };
   } catch { return null; }
 }
 
@@ -528,8 +589,16 @@ async function kvGet(kv, key) {
   try { return await kv.get(key, { type: "text" }) || null; } catch { return null; }
 }
 
+async function kvGetText(kv, key) {
+  try { return await kv.get(key, { type: "text" }) || ""; } catch { return ""; }
+}
+
 async function kvPut(kv, key, value, ttl) {
   try { await kv.put(key, `${value}:${Date.now()}`); } catch {}
+}
+
+async function kvPutText(kv, key, value) {
+  try { await kv.put(key, value); } catch {}
 }
 
 async function kvPutJson(kv, key, obj, ttl) {

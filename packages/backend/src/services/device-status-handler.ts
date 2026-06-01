@@ -115,6 +115,8 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (vpnName) deviceExtra.vpn_name = vpnName;
       const capabilityMode = cleanSource(deviceBody.capability_mode);
       if (capabilityMode) deviceExtra.capability_mode = capabilityMode;
+      const uploader = cleanSource(deviceBody.uploader);
+      if (uploader) deviceExtra.uploader = uploader;
       const lastSampleAt = cleanTimestamp(deviceBody.last_sample_at);
       if (lastSampleAt) deviceExtra.last_sample_at = lastSampleAt;
       const relayMode = cleanString(deviceBody.relay_mode, MAX_SHORT_LENGTH);
@@ -125,6 +127,8 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (minIntervalMs != null) deviceExtra.min_interval_ms = Math.round(minIntervalMs);
       const deviceKind = cleanString(deviceBody.device_kind, MAX_SHORT_LENGTH);
       if (deviceKind) deviceExtra.device_kind = deviceKind;
+      const windowMode = cleanString(deviceBody.window_mode, MAX_SHORT_LENGTH);
+      if (windowMode) deviceExtra.window_mode = windowMode;
       if (Object.keys(deviceExtra).length > 0) extra.device = deviceExtra;
     }
 
