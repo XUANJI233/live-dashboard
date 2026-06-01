@@ -147,6 +147,8 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String lastBroadcastTitle = "";
     private volatile String recentForegroundBrowser = "";
     private volatile long recentForegroundBrowserAt = 0L;
+    private volatile long lastScreenOffCheckAt = 0L;
+    private static final long SCREEN_OFF_DEBOUNCE_MS = 30_000L; // 30s debounce for sleep detection
 
     @Override
     public void onModuleLoaded(@NonNull XposedModuleInterface.ModuleLoadedParam param) {
@@ -306,6 +308,8 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private Handler getUploadHandler() {
+        if (uploadHandler != null) return uploadHandler;
+        initUploadThread();
         if (uploadHandler != null) return uploadHandler;
         return new Handler(Looper.getMainLooper());
     }
@@ -711,8 +715,47 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void broadcastSnapshot() {
         try {
-            ComponentName top = getTopActivityComponentName();
             long now = System.currentTimeMillis();
+
+            // ── Screen-off / sleep detection ──
+            // When the screen is off, skip ATMS calls entirely and report sleeping.
+            // This prevents stale "last foreground app" from being reported during sleep,
+            // and avoids unnecessary hidden-API calls that may fail during deep sleep.
+            boolean screenOn = isScreenInteractive();
+            if (!screenOn) {
+                if (now - lastScreenOffCheckAt < SCREEN_OFF_DEBOUNCE_MS) return;
+                lastScreenOffCheckAt = now;
+                // Only report sleeping if not already in that state
+                if ("sleeping".equals(lastForegroundKey) && now - lastForegroundBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
+                lastForegroundKey = "sleeping";
+                lastForegroundBroadcastAt = now;
+                idleConsecutiveCount = 0;
+                foregroundPackage = "sleeping";
+                foregroundApp = "sleeping";
+                foregroundActivity = "";
+                foregroundTitle = "";
+                log(Log.INFO, TAG, "screen off → sleeping");
+                Intent sleepIntent = new Intent(ACTION_STATUS);
+                sleepIntent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
+                sleepIntent.putExtra("package_name", "sleeping");
+                sleepIntent.putExtra("app_name", "sleeping");
+                sleepIntent.putExtra("activity", "");
+                sleepIntent.putExtra("input_active", false);
+                Context ctx = getSystemContext();
+                if (ctx != null) {
+                    long token = Binder.clearCallingIdentity();
+                    try { ctx.sendBroadcast(sleepIntent); } finally { Binder.restoreCallingIdentity(token); }
+                }
+                maybeDirectUpload(false);
+                return;
+            }
+            // Reset sleep state when screen comes back on
+            if ("sleeping".equals(lastForegroundKey)) {
+                lastForegroundKey = ""; // force foreground detection on wake
+                log(Log.INFO, TAG, "screen on → waking from sleep");
+            }
+
+            ComponentName top = getTopActivityComponentName();
             boolean idleCandidate = top == null || isIgnoredPackage(top.getPackageName());
 
             // Only call expensive getFocusedTaskDescription when foreground changed or is browser
@@ -1178,6 +1221,7 @@ public final class MonikaXposedModule extends XposedModule {
             String wm = getWindowingMode();
             if (wm != null) device.put("window_mode", wm);
             extra.put("device", device);
+            extra.put("sleeping", "sleeping".equals(foregroundPackage));
             if (directUploadForeground && foregroundPackage.length() > 0 && !"idle".equals(foregroundPackage)) {
                 JSONObject foreground = new JSONObject();
                 foreground.put("package_name", foregroundPackage);
@@ -1240,6 +1284,7 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private void ensureWsConnected(String serverUrl, String token) {
+        if (!directUploadEnabled || !"system".equals(currentProcessName)) return;
         if (wsClient != null && wsClient.isConnected()) {
             wsRetryDelayMs = WS_RETRY_BASE_MS; // reset on success
             return;
@@ -1268,6 +1313,18 @@ public final class MonikaXposedModule extends XposedModule {
                 log(Log.WARN, TAG, "LSP WS connect failed (retry in " + (wsRetryDelayMs / 1000) + "s): " + t.getClass().getSimpleName());
             }
         }
+    }
+
+    /**
+     * Schedule an immediate WebSocket reconnection attempt (with backoff).
+     * Called when the WS reader/ping loop detects disconnection.
+     * This ensures we don't wait for the next heartbeat (up to 5 min) to reconnect.
+     */
+    private void scheduleWsReconnect() {
+        if (!directUploadEnabled || directServerUrl.length() == 0 || directToken.length() == 0 || !"system".equals(currentProcessName)) return;
+        // Reconnect and immediately send the current snapshot. Reconnecting alone
+        // would leave the dashboard stale until the next 5-minute heartbeat.
+        getUploadHandler().post(() -> maybeDirectUpload(true));
     }
 
     private String buildLspWsUrl(String serverUrl) {
@@ -1405,6 +1462,18 @@ public final class MonikaXposedModule extends XposedModule {
         return value == null ? "" : value.trim();
     }
 
+    private boolean isScreenInteractive() {
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return true; // assume interactive if we can't check
+            PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+            if (pm == null) return true;
+            return pm.isInteractive();
+        } catch (Throwable t) {
+            return true; // assume interactive on error
+        }
+    }
+
     private boolean isIgnoredPackage(String packageName) {
         return packageName == null ||
                 "android".equals(packageName) ||
@@ -1449,7 +1518,10 @@ public final class MonikaXposedModule extends XposedModule {
         private static final int OP_PONG  = 0xA;
         private static final String WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         private static final int RECEIVE_BUF = 8192;
+        private static final int SOCKET_TIMEOUT_MS = 60_000; // 60s read timeout
+        private static final int PING_INTERVAL_MS = 30_000;  // send ping every 30s
         private final byte[] recvBuf = new byte[RECEIVE_BUF];
+        private final byte[] pingPayload = new byte[0]; // empty ping payload
 
         private final String wsUrl;
         private final String authHeader;
@@ -1458,8 +1530,16 @@ public final class MonikaXposedModule extends XposedModule {
         private InputStream in;
         private OutputStream out;
         private Thread readerThread;
+        private Thread pingThread;
         private volatile boolean connected;
         private volatile boolean running;
+        private volatile boolean manualDisconnect;
+
+        private void clearModuleClientIfCurrent() {
+            if (MonikaXposedModule.this.wsClient == this) {
+                MonikaXposedModule.this.wsClient = null;
+            }
+        }
 
         LspWebSocketClient(String wsUrl, String authHeader) {
             this.wsUrl = wsUrl;
@@ -1472,6 +1552,7 @@ public final class MonikaXposedModule extends XposedModule {
 
         void connect() throws Exception {
             URI uri = URI.create(wsUrl);
+            manualDisconnect = false;
             String host = uri.getHost();
             String scheme = uri.getScheme();
             boolean isWss = "wss".equalsIgnoreCase(scheme);
@@ -1486,7 +1567,7 @@ public final class MonikaXposedModule extends XposedModule {
                 SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
                 SSLSocket ssl = (SSLSocket) factory.createSocket();
                 ssl.setTcpNoDelay(true);
-                ssl.setSoTimeout(0);
+                ssl.setSoTimeout(SOCKET_TIMEOUT_MS); // read timeout — detect dead connections
                 // SNI (Server Name Indication) — required for virtual-hosted TLS.
                 // Skip SNI for IP addresses (SNIHostName throws on raw IP).
                 boolean isIp = host.matches("[0-9.]+|[:0-9a-fA-F]+");
@@ -1509,7 +1590,7 @@ public final class MonikaXposedModule extends XposedModule {
             } else {
                 java.net.Socket plain = new java.net.Socket();
                 plain.setTcpNoDelay(true);
-                plain.setSoTimeout(0);
+                plain.setSoTimeout(SOCKET_TIMEOUT_MS);
                 plain.connect(new InetSocketAddress(host, port), 8000);
                 socket = plain;
             }
@@ -1565,11 +1646,20 @@ public final class MonikaXposedModule extends XposedModule {
             readerThread = new Thread(this::readerLoop, "LspWsReader");
             readerThread.setDaemon(true);
             readerThread.start();
+
+            // Start ping thread — sends periodic pings to keep connection alive
+            // and detect dead connections early (server pong timeout = 2x PING_INTERVAL)
+            pingThread = new Thread(this::pingLoop, "LspWsPing");
+            pingThread.setDaemon(true);
+            pingThread.start();
         }
 
         void disconnect() {
+            manualDisconnect = true;
             running = false;
             connected = false;
+            // Interrupt threads to unblock socket reads during close
+            if (pingThread != null) { try { pingThread.interrupt(); } catch (Throwable ignored) {} }
             try {
                 if (out != null) {
                     sendCloseFrame(1000, "done");
@@ -1599,6 +1689,7 @@ public final class MonikaXposedModule extends XposedModule {
             } catch (Throwable t) {
                 connected = false;
                 closeQuietly();
+                if (!manualDisconnect) scheduleWsReconnect();
                 return false;
             }
         }
@@ -1660,10 +1751,15 @@ public final class MonikaXposedModule extends XposedModule {
         }
 
         private void readerLoop() {
+            boolean unexpectedDisconnect = false;
             try {
                 while (running && connected) {
                     byte[] frame = readFrame();
-                    if (frame == null) break;
+                    if (frame == null) {
+                        // EOF — server closed connection without close frame
+                        unexpectedDisconnect = true;
+                        break;
+                    }
                     int opcode = frame[0] & 0x0F;
                     int payloadLen = frame.length - 1;
                     byte[] payload = payloadLen > 0 ? new byte[payloadLen] : new byte[0];
@@ -1687,12 +1783,12 @@ public final class MonikaXposedModule extends XposedModule {
                             // Server responded to our ping — connection is alive
                             break;
                         case OP_CLOSE:
-                            // Server closed
+                            // Server closed — cleanup and schedule immediate reconnect
                             connected = false;
                             running = false;
                             closeQuietly();
-                            // Signal reconnect on next maybeDirectUpload
-                            MonikaXposedModule.this.wsClient = null;
+                            clearModuleClientIfCurrent();
+                            if (!manualDisconnect) scheduleWsReconnect();
                             return;
                         default:
                             // Ignore other frame types (ack, messages, etc.)
@@ -1700,12 +1796,53 @@ public final class MonikaXposedModule extends XposedModule {
                     }
                 }
             } catch (Throwable t) {
-                // Connection lost — signal reconnect
+                // Connection lost — trigger immediate reconnect
+                log(Log.DEBUG, TAG, "WS reader error: " + t.getClass().getSimpleName());
                 connected = false;
+                if (!manualDisconnect) scheduleWsReconnect();
             } finally {
                 connected = false;
+                running = false;
                 closeQuietly();
-                MonikaXposedModule.this.wsClient = null;
+                clearModuleClientIfCurrent();
+                if (unexpectedDisconnect && !manualDisconnect) {
+                    scheduleWsReconnect();
+                }
+            }
+        }
+
+        /**
+         * Periodic ping loop — sends a WebSocket ping every PING_INTERVAL_MS.
+         * This keeps the connection alive through NAT/firewall timeouts and
+         * detects dead connections faster than TCP keepalive.
+         */
+        private void pingLoop() {
+            while (running && connected) {
+                try {
+                    Thread.sleep(PING_INTERVAL_MS);
+                } catch (InterruptedException e) {
+                    break;
+                }
+                if (!running || !connected || out == null) break;
+                try {
+                    synchronized (out) {
+                        sendFrame(OP_PING, pingPayload, true);
+                        out.flush();
+                    }
+                } catch (Throwable t) {
+                    // Write failed — connection is dead
+                    log(Log.DEBUG, TAG, "WS ping failed: " + t.getClass().getSimpleName());
+                    connected = false;
+                    break;
+                }
+            }
+            // If ping loop exits due to error, trigger cleanup
+            if ((!running || !connected) && !manualDisconnect) {
+                connected = false;
+                running = false;
+                closeQuietly();
+                clearModuleClientIfCurrent();
+                scheduleWsReconnect();
             }
         }
 
