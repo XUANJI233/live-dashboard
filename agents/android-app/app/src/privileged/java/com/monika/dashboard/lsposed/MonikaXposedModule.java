@@ -19,6 +19,7 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.os.Binder;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -70,9 +71,10 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String CONFIG_PERMISSION = "com.monika.dashboard.permission.LSPOSED_CONFIG";
     private static final String MESSAGE_CHANNEL_ID = "monika_lsp_messages";
     private static final int MESSAGE_NOTIFICATION_ID = 2002;
-    private static final long HEARTBEAT_MS = 300_000L; // 5 min heartbeat (event-driven is primary)
+    private static final long HEARTBEAT_MS = 25_000L; // keep direct-upload devices online without busy polling
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
     private static final long MIN_DIRECT_UPLOAD_MS = 5000L;
+    private static final long MAX_DIRECT_UPLOAD_MS = 45_000L;
     private static final long IDLE_DEBOUNCE_COUNT = 2; // 2 consecutive heartbeats (~10 min) before reporting idle
     private static final long WS_RETRY_BASE_MS = 30_000L;  // first retry delay
     private static final long WS_RETRY_MAX_MS = 300_000L;  // max retry delay (5 min)
@@ -86,6 +88,11 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile long wsRetryDelayMs = WS_RETRY_BASE_MS;
     private static final String[] BROWSER_PACKAGES = new String[] {
             "com.android.browser",
+            "com.mi.globalbrowser",
+            "com.mi.browser",
+            "com.heytap.browser",
+            "com.vivo.browser",
+            "com.huawei.browser",
             "com.android.chrome",
             "com.chrome.beta",
             "com.chrome.dev",
@@ -115,6 +122,7 @@ public final class MonikaXposedModule extends XposedModule {
             "com.opera.mini.native",
             "com.duckduckgo.mobile.android",
             "com.kiwibrowser.browser",
+            "com.quark.browser",
             "mark.via.gp",
             "com.UCMobile.intl",
             "com.sec.android.app.sbrowser",
@@ -1128,7 +1136,7 @@ public final class MonikaXposedModule extends XposedModule {
                         directUploadEnabled = dps.getBoolean("enabled", false);
                         directServerUrl = dps.getString("server_url", "");
                         directToken = dps.getString("token", "");
-                        directIntervalMs = Math.max(MIN_DIRECT_UPLOAD_MS, dps.getLong("interval_ms", 30000L));
+                        directIntervalMs = clampDirectInterval(dps.getLong("interval_ms", 30000L));
                         directUploadForeground = dps.getBoolean("upload_foreground", true);
                         directUploadMedia = dps.getBoolean("upload_media", true);
                         directUploadNetwork = dps.getBoolean("upload_network", true);
@@ -1144,7 +1152,7 @@ public final class MonikaXposedModule extends XposedModule {
             directUploadEnabled = prefs.getBoolean("enabled", false);
             directServerUrl = prefs.getString("server_url", "");
             directToken = prefs.getString("token", "");
-            directIntervalMs = Math.max(MIN_DIRECT_UPLOAD_MS, prefs.getLong("interval_ms", 30000L));
+            directIntervalMs = clampDirectInterval(prefs.getLong("interval_ms", 30000L));
             directUploadForeground = prefs.getBoolean("upload_foreground", true);
             directUploadMedia = prefs.getBoolean("upload_media", true);
             directUploadNetwork = prefs.getBoolean("upload_network", true);
@@ -1188,7 +1196,7 @@ public final class MonikaXposedModule extends XposedModule {
                         .putBoolean("enabled", enabled)
                         .putString("server_url", serverUrl)
                         .putString("token", token)
-                        .putLong("interval_ms", Math.max(MIN_DIRECT_UPLOAD_MS, intervalSec * 1000L))
+                        .putLong("interval_ms", clampDirectInterval(intervalSec * 1000L))
                         .putBoolean("upload_foreground", uploadForeground)
                         .putBoolean("upload_media", uploadMedia)
                         .putBoolean("upload_network", uploadNetwork)
@@ -1204,7 +1212,7 @@ public final class MonikaXposedModule extends XposedModule {
             directUploadEnabled = enabled;
             directServerUrl = serverUrl;
             directToken = token;
-            directIntervalMs = Math.max(MIN_DIRECT_UPLOAD_MS, intervalSec * 1000L);
+            directIntervalMs = clampDirectInterval(intervalSec * 1000L);
             directUploadForeground = uploadForeground;
             directUploadMedia = uploadMedia;
             directUploadNetwork = uploadNetwork;
@@ -1265,6 +1273,10 @@ public final class MonikaXposedModule extends XposedModule {
         });
     }
 
+    private long clampDirectInterval(long intervalMs) {
+        return Math.max(MIN_DIRECT_UPLOAD_MS, Math.min(MAX_DIRECT_UPLOAD_MS, intervalMs));
+    }
+
     private String buildDirectReportBody(long now) {
         try {
             String appId = directUploadForeground ? safeString(foregroundPackage) : "";
@@ -1280,6 +1292,7 @@ public final class MonikaXposedModule extends XposedModule {
             }
             String windowTitle = primaryDisplayTitle();
             JSONObject extra = new JSONObject();
+            fillBatteryExtras(extra);
             JSONObject device = new JSONObject();
             device.put("capability_mode", "lsposed");
             device.put("uploader", "lsposed");
@@ -1329,6 +1342,29 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable t) {
             log(Log.WARN, TAG, "build direct body failed: " + t.getClass().getSimpleName());
             return null;
+        }
+    }
+
+    private void fillBatteryExtras(JSONObject extra) {
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return;
+            Intent intent = ctx.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (intent == null) return;
+            int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            if (level >= 0 && scale > 0) {
+                int percent = Math.max(0, Math.min(100, Math.round((level * 100f) / scale)));
+                extra.put("battery_percent", percent);
+            }
+            int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+            if (status >= 0) {
+                extra.put("battery_charging",
+                        status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                        status == BatteryManager.BATTERY_STATUS_FULL);
+            }
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "battery extras skipped: " + t.getClass().getSimpleName());
         }
     }
 

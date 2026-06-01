@@ -1,5 +1,10 @@
 system
 com.android.browser
+com.mi.globalbrowser
+com.mi.browser
+com.heytap.browser
+com.vivo.browser
+com.huawei.browser
 com.android.chrome
 com.chrome.beta
 com.chrome.dev
@@ -29,6 +34,7 @@ com.opera.browser.beta
 com.opera.mini.native
 com.duckduckgo.mobile.android
 com.kiwibrowser.browser
+com.quark.browser
 mark.via.gp
 com.UCMobile.intl
 com.sec.android.app.sbrowser
