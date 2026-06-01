@@ -22,6 +22,12 @@ function cleanServerUrl(value) {
     .replace(/\/api$/i, '')
 }
 
+function clampSyncInterval(value) {
+  const cleaned = String(value || '').replace(/[^0-9]/g, '')
+  const parsed = parseInt(cleaned) || 300
+  return Math.max(60, Math.min(900, parsed))
+}
+
 AppSettingsPage({
   build(props) {
     const storage = props.settingsStorage
@@ -61,11 +67,9 @@ AppSettingsPage({
       TextInput({
         label: '同步间隔 (秒)',
         value: String(get('syncInterval', 300)),
-        placeholder: '60-3600',
+        placeholder: '60-900',
         onChange: (value) => {
-          const cleaned = String(value || '').replace(/[^0-9]/g, '')
-          const interval = Math.max(60, Math.min(3600, parseInt(cleaned) || 300))
-          writeConfig({ syncInterval: interval })
+          writeConfig({ syncInterval: clampSyncInterval(value) })
         },
       }),
 

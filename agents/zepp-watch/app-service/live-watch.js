@@ -53,6 +53,10 @@ let sensorSpo2 = false
 const MAX_HR_RECORDS_PER_SYNC = 30
 const MAX_SPO2_RECORDS_PER_SYNC = 12
 const MAX_TEMP_RECORDS_PER_SYNC = 24
+const MIN_SYNC_INTERVAL_SECONDS = 60
+const DEFAULT_SYNC_INTERVAL_SECONDS = 300
+const MAX_SYNC_INTERVAL_SECONDS = 900 // server marks Zepp offline after 20 minutes
+const MAX_SLEEP_UPLOAD_GAP_MS = 15 * 60_000
 
 // ── Persist sleepSkipCounter (survives alarm wakeups) ──
 // 使用 @zos/storage LocalStorage (API_LEVEL 3.0+, 官方推荐)
@@ -96,6 +100,16 @@ function readString(key, fallback) {
     return typeof val === 'string' ? val : fallback
   } catch (e) {}
   return fallback
+}
+
+function clampSyncIntervalSeconds(value) {
+  const numeric = Number(value)
+  const seconds = Number.isFinite(numeric) ? numeric : DEFAULT_SYNC_INTERVAL_SECONDS
+  return Math.max(MIN_SYNC_INTERVAL_SECONDS, Math.min(MAX_SYNC_INTERVAL_SECONDS, seconds))
+}
+
+function getSleepUploadEveryCycles() {
+  return Math.max(1, Math.floor(MAX_SLEEP_UPLOAD_GAP_MS / syncIntervalMs))
 }
 
 function writeString(key, value) {
@@ -167,7 +181,7 @@ function restoreConfig() {
       const cfg = JSON.parse(raw)
       serverUrl = cleanServerUrl(cfg.serverUrl || '')
       token = cfg.token || ''
-      syncIntervalMs = Math.max(60_000, Math.min(3600_000, (cfg.syncInterval || 300) * 1000))
+      syncIntervalMs = clampSyncIntervalSeconds(cfg.syncInterval) * 1000
       enabled = cfg.enabled || false
       restoreSensorConfig(cfg)
     }
@@ -178,7 +192,7 @@ function restoreConfig() {
         const cfg = JSON.parse(data)
         serverUrl = cleanServerUrl(cfg.serverUrl || '')
         token = cfg.token || ''
-        syncIntervalMs = Math.max(60_000, Math.min(3600_000, (cfg.syncInterval || 300) * 1000))
+        syncIntervalMs = clampSyncIntervalSeconds(cfg.syncInterval) * 1000
         enabled = cfg.enabled || false
         restoreSensorConfig(cfg)
       }
@@ -208,8 +222,9 @@ function collectAndUpload() {
   }
 
   // 2. 智能传输策略：首次检测到睡眠时必须上传（让服务端立即知道），
-  //    之后每6次才上传1次（节省80%传输+传感器功耗）
+  //    之后按同步间隔动态跳过，确保服务端不会超过 15 分钟没有状态心跳。
   if (isSleeping) {
+    const sleepUploadEveryCycles = getSleepUploadEveryCycles()
     if (sleepSkipCounter === 0) {
       // 首次检测到睡眠 → 强制上传，让服务端立即知道用户睡着了
       sleepSkipCounter = 1
@@ -218,13 +233,13 @@ function collectAndUpload() {
     } else {
       sleepSkipCounter++
       writeSleepSkipCounter(sleepSkipCounter)
-      if (sleepSkipCounter < 6) {
-        console.log('[LiveWatch:device] Sleeping, skip all (' + sleepSkipCounter + '/6)')
+      if (sleepSkipCounter < sleepUploadEveryCycles) {
+        console.log('[LiveWatch:device] Sleeping, skip all (' + sleepSkipCounter + '/' + sleepUploadEveryCycles + ')')
         return // 直接退出，不获取任何传感器数据
       }
       sleepSkipCounter = 0 // 重置计数器
       writeSleepSkipCounter(sleepSkipCounter)
-      console.log('[LiveWatch:device] Sleeping but uploading (6th cycle)')
+      console.log('[LiveWatch:device] Sleeping but uploading')
     }
   } else {
     if (sleepSkipCounter !== 0) {
@@ -305,8 +320,37 @@ function collectAndUpload() {
 }
 
 function sendToCompanion(payload) {
-  // 手表端不直接 HTTP 上传，交给伴生应用处理。@zos/messaging 是 side-service API；
-  // device/app-service 侧应使用 @zos/ble，把 JSON 编码成二进制发送。
+  // Prefer ZML's request protocol because BaseSideService installs the same
+  // protocol listener on the phone side. Raw BLE is only a compatibility
+  // fallback when the app-level messaging object is unavailable.
+  if (sendToCompanionViaZml(payload)) return
+  sendToCompanionRaw(payload)
+}
+
+function sendToCompanionViaZml(payload) {
+  try {
+    const app = typeof getApp === 'function' ? getApp() : null
+    const messaging = app && app._options && app._options.globalData && app._options.globalData.messaging
+    if (!messaging || typeof messaging.request !== 'function') return false
+
+    messaging.request({
+      method: 'BATCH_DATA',
+      params: { payload: payload },
+    }, { timeout: 15000 }).then(function () {
+      console.log('[LiveWatch:device] ZML batch sent')
+    }).catch(function (e) {
+      console.log('[LiveWatch:device] ZML batch send failed: ' + ((e && e.message) || e))
+    })
+    console.log('[LiveWatch:device] ZML batch queued')
+    return true
+  } catch (e) {
+    console.log('[LiveWatch:device] ZML messaging unavailable: ' + ((e && e.message) || e))
+    return false
+  }
+}
+
+function sendToCompanionRaw(payload) {
+  // @zos/messaging is side-service API; device/app-service side uses @zos/ble.
   try {
     createConnect(function () {})
     const msg = { type: 'batch_data', payload: payload }

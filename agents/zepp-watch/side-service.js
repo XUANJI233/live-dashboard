@@ -12,6 +12,13 @@
 
 import { BaseSideService } from '@zeppos/zml/base-side'
 
+const MIN_SYNC_INTERVAL_SECONDS = 60
+const DEFAULT_SYNC_INTERVAL_SECONDS = 300
+const MAX_SYNC_INTERVAL_SECONDS = 900
+const PENDING_STATUS_KEY = 'livewatch_pending_status'
+const PENDING_HEALTH_KEY = 'livewatch_pending_health'
+const MAX_PENDING_HEALTH_RECORDS = 300
+
 function cleanToken(value) {
   return String(value || '').replace(/^Bearer\s+/i, '').trim()
 }
@@ -22,6 +29,16 @@ function cleanServerUrl(value) {
     .replace(/\/+$/, '')
     .replace(/\/api\/(?:report|health-data)$/i, '')
     .replace(/\/api$/i, '')
+}
+
+function clampSyncIntervalSeconds(value) {
+  const numeric = Number(value)
+  const seconds = Number.isFinite(numeric) ? numeric : DEFAULT_SYNC_INTERVAL_SECONDS
+  return Math.max(MIN_SYNC_INTERVAL_SECONDS, Math.min(MAX_SYNC_INTERVAL_SECONDS, seconds))
+}
+
+function shouldRetryStatus(status) {
+  return status === 429 || status >= 500
 }
 
 AppSideService(
@@ -65,7 +82,7 @@ AppSideService(
         case 'START': {
           this.state.serverUrl = cleanServerUrl((params && params.serverUrl) || this.state.serverUrl)
           this.state.token = cleanToken((params && params.token) || this.state.token)
-          this.state.syncInterval = Number((params && params.syncInterval) || 300)
+          this.state.syncInterval = clampSyncIntervalSeconds((params && params.syncInterval) || this.state.syncInterval)
           this.state.enabled = true
           this.persistConfig()
           res(null, { ok: true, status: 'started' })
@@ -102,7 +119,7 @@ AppSideService(
           const cfg = JSON.parse(newValue)
           if (cfg.serverUrl !== undefined) this.state.serverUrl = cleanServerUrl(cfg.serverUrl)
           if (cfg.token !== undefined) this.state.token = cleanToken(cfg.token)
-          if (cfg.syncInterval !== undefined) this.state.syncInterval = Number(cfg.syncInterval)
+          if (cfg.syncInterval !== undefined) this.state.syncInterval = clampSyncIntervalSeconds(cfg.syncInterval)
           if (cfg.enabled !== undefined) {
             this.state.enabled = Boolean(cfg.enabled)
             console.log('[LiveWatch:companion] Settings changed, enabled=' + this.state.enabled)
@@ -123,7 +140,10 @@ AppSideService(
         var self = this
         messaging.peerSocket.addListener('message', function (payload) {
           try {
-            var msg = JSON.parse(Buffer.from(payload).toString('utf-8'))
+            var buf = Buffer.from(payload)
+            var first = buf && buf.length ? buf[0] : 0
+            if (first !== 123 && first !== 91) return
+            var msg = JSON.parse(buf.toString('utf-8'))
             if (msg && msg.type === 'batch_data') {
               console.log('[LiveWatch:companion] BLE batch received')
               self.handleBatchData(msg.payload, function () {})
@@ -158,6 +178,8 @@ AppSideService(
       const { status, heart_rate_history, spo2_history, body_temp_history } = expanded
       const healthRecords = this.statusToHealthRecords(status)
 
+      this.flushPendingUploads()
+
       // 1. Status report
       if (status) {
         this.uploadStatus(status)
@@ -186,6 +208,58 @@ AppSideService(
       }
 
       if (res) res(null, { ok: true, message: 'processing' })
+    },
+
+    flushPendingUploads() {
+      if (!this.state.enabled || !this.state.serverUrl || !this.state.token) return
+      this.flushPendingStatus()
+      this.flushPendingHealthRecords()
+    },
+
+    flushPendingStatus() {
+      try {
+        const raw = settings.settingsStorage.getItem(PENDING_STATUS_KEY)
+        if (!raw) return
+        const status = JSON.parse(raw)
+        this.uploadStatus(status, { pending: true })
+      } catch (e) {
+        settings.settingsStorage.removeItem(PENDING_STATUS_KEY)
+      }
+    },
+
+    flushPendingHealthRecords() {
+      const records = this.readPendingHealthRecords()
+      if (records.length > 0) {
+        this.uploadHealthRecords(records, { pending: true })
+      }
+    },
+
+    queuePendingStatus(status) {
+      try {
+        settings.settingsStorage.setItem(PENDING_STATUS_KEY, JSON.stringify(status))
+      } catch (e) {
+        console.warn('[LiveWatch:companion] Failed to queue pending status: ' + ((e && e.message) || e))
+      }
+    },
+
+    readPendingHealthRecords() {
+      try {
+        const raw = settings.settingsStorage.getItem(PENDING_HEALTH_KEY)
+        const records = raw ? JSON.parse(raw) : []
+        return Array.isArray(records) ? records : []
+      } catch (e) {
+        return []
+      }
+    },
+
+    queuePendingHealthRecords(records) {
+      try {
+        const pending = this.readPendingHealthRecords()
+        const merged = pending.concat(records).slice(-MAX_PENDING_HEALTH_RECORDS)
+        settings.settingsStorage.setItem(PENDING_HEALTH_KEY, JSON.stringify(merged))
+      } catch (e) {
+        console.warn('[LiveWatch:companion] Failed to queue pending health records: ' + ((e && e.message) || e))
+      }
     },
 
     statusToHealthRecords(status) {
@@ -364,12 +438,13 @@ AppSideService(
 
     // ── 上传状态报告 ──
 
-    uploadStatus(status) {
+    uploadStatus(status, options) {
       if (!this.state.serverUrl || !this.state.token) return
       if (!this.state.enabled) {
         console.log('[LiveWatch:companion] Upload disabled, skip status')
         return
       }
+      const isPending = options && options.pending
 
       fetch({
         url: this.state.serverUrl.replace(/\/+$/, '') + '/api/report',
@@ -382,11 +457,14 @@ AppSideService(
       }).then(res => {
         if (res.status >= 200 && res.status < 300) {
           console.log('[LiveWatch:companion] Status upload OK')
+          if (isPending) settings.settingsStorage.removeItem(PENDING_STATUS_KEY)
         } else {
           console.warn('[LiveWatch:companion] Status upload HTTP ' + res.status)
+          if (!isPending && shouldRetryStatus(res.status)) this.queuePendingStatus(status)
         }
       }).catch(err => {
         console.error('[LiveWatch:companion] Status upload failed: ' + (err.message || err))
+        if (!isPending) this.queuePendingStatus(status)
       })
     },
     // 无视 enabled 的上传（手动触发用）
@@ -409,12 +487,13 @@ AppSideService(
 
     // ── 上传健康数据（心率/血氧/体温/状态派生数据） ──
 
-    uploadHealthRecords(records) {
+    uploadHealthRecords(records, options) {
       if (!this.state.serverUrl || !this.state.token) return
       if (!this.state.enabled) {
         console.log('[LiveWatch:companion] Upload disabled, skip health records')
         return
       }
+      const isPending = options && options.pending
 
       const payload = { records: records }
 
@@ -429,11 +508,14 @@ AppSideService(
       }).then(res => {
         if (res.status >= 200 && res.status < 300) {
           console.log('[LiveWatch:companion] Health upload OK: ' + records.length + ' records')
+          if (isPending) settings.settingsStorage.removeItem(PENDING_HEALTH_KEY)
         } else {
           console.warn('[LiveWatch:companion] Health upload HTTP ' + res.status)
+          if (!isPending && shouldRetryStatus(res.status)) this.queuePendingHealthRecords(records)
         }
       }).catch(err => {
         console.error('[LiveWatch:companion] Health upload failed: ' + (err.message || err))
+        if (!isPending) this.queuePendingHealthRecords(records)
       })
     },
 
@@ -444,7 +526,7 @@ AppSideService(
           const saved = JSON.parse(raw)
           if (saved.serverUrl) this.state.serverUrl = cleanServerUrl(saved.serverUrl)
           if (saved.token) this.state.token = cleanToken(saved.token)
-          if (saved.syncInterval) this.state.syncInterval = Number(saved.syncInterval)
+          if (saved.syncInterval) this.state.syncInterval = clampSyncIntervalSeconds(saved.syncInterval)
           if (saved.enabled !== undefined) this.state.enabled = Boolean(saved.enabled)
         }
       } catch (e) { /* no saved config */ }
