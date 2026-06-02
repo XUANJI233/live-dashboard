@@ -211,6 +211,7 @@ export interface HealthRecord {
 export interface HealthDataResponse {
   date: string;
   window?: string | null;
+  summary?: boolean;
   records: HealthRecord[];
 }
 
@@ -275,56 +276,21 @@ export async function fetchConfig(signal?: AbortSignal): Promise<SiteConfig> {
   }
 }
 
-export async function fetchHealthData(date: string, signal?: AbortSignal, deviceId?: string): Promise<HealthDataResponse> {
+export async function fetchHealthData(
+  date: string,
+  signal?: AbortSignal,
+  deviceId?: string,
+  options?: { summary?: boolean },
+): Promise<HealthDataResponse> {
   const viewerToken = getCachedViewerToken() || (typeof window !== "undefined" ? (await ensureViewerToken()).token : null);
-  if (isTodayForClientTimezone(date)) {
-    try {
-      const windows = clientHourWindowsForDate(date);
-      const parts = await mapWithConcurrency(windows, 4, (window) => fetchHealthDataWindow(date, window, signal, deviceId, viewerToken));
-      return mergeHealthResponses(date, parts);
-    } catch {
-      // Fallback for older deployments that do not support windowed reads.
-    }
-  }
-
   const tz = new Date().getTimezoneOffset();
   let url = `${API_BASE}/api/health-data?date=${encodeURIComponent(date)}&tz=${tz}`;
   if (deviceId) url += `&device_id=${encodeURIComponent(deviceId)}`;
+  if (options?.summary) url += "&summary=1";
   if (viewerToken) url += `&viewer_token=${encodeURIComponent(viewerToken)}`;
   const res = await fetch(url, { signal, cache: isTodayForClientTimezone(date) ? "no-store" : "default" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
-}
-
-async function fetchHealthDataWindow(
-  date: string,
-  window: string,
-  signal?: AbortSignal,
-  deviceId?: string,
-  viewerToken?: string | null,
-): Promise<HealthDataResponse> {
-  const tz = new Date().getTimezoneOffset();
-  let url = `${API_BASE}/api/health-data?date=${encodeURIComponent(date)}&tz=${tz}&window=${window}`;
-  if (deviceId) url += `&device_id=${encodeURIComponent(deviceId)}`;
-  if (viewerToken) url += `&viewer_token=${encodeURIComponent(viewerToken)}`;
-  const res = await fetch(url, { signal, cache: isLiveClientWindow(window) ? "no-store" : "default" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-function mergeHealthResponses(date: string, parts: HealthDataResponse[]): HealthDataResponse {
-  const seen = new Set<string>();
-  const records: HealthRecord[] = [];
-  for (const part of parts) {
-    for (const record of part.records || []) {
-      const key = `${record.device_id}|${record.type}|${record.recorded_at}|${record.end_time || ""}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      records.push(record);
-    }
-  }
-  records.sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime());
-  return { date, window: null, records };
 }
 
 async function mapWithConcurrency<T, R>(

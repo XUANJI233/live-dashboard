@@ -103,9 +103,10 @@ export default {
         return passthroughSigned(request, origin, clientIp, secret);
       }
 
-      // 可缓存读取
-      if (method === "GET" && getCacheTTL(pathname, request)) {
-        return handleCachedRead(request, origin, pathname, secret);
+      // 由边缘统一管理缓存头/标签的读取。ttl=0 也会经过这里，以便强制 no-store 并补齐 Cache-Tag。
+      const cacheMeta = getCacheMeta(pathname, request);
+      if (method === "GET" && (cacheMeta.ttl > 0 || cacheMeta.tags?.length)) {
+        return handleCachedRead(request, origin, pathname, secret, cacheMeta);
       }
 
       // WebSocket — 穿透
@@ -261,8 +262,7 @@ function sanitizeViewerId(value) {
 // 缓存读取
 // ══════════════════════════════════════════════════════════════
 
-async function handleCachedRead(request, origin, pathname, secret) {
-  const cacheMeta = getCacheMeta(pathname, request);
+async function handleCachedRead(request, origin, pathname, secret, cacheMeta = getCacheMeta(pathname, request)) {
   const ttl = cacheMeta.ttl;
   const cacheKey = `http://edge-cache${pathname}${new URL(request.url).search}`;
   let verified = null;
@@ -281,10 +281,12 @@ async function handleCachedRead(request, origin, pathname, secret) {
     }
   }
 
-  try {
-    const cached = await cache.match(cacheKey);
-    if (cached) return cached;
-  } catch {}
+  if (ttl > 0) {
+    try {
+      const cached = await cache.match(cacheKey);
+      if (cached) return cached;
+    } catch {}
+  }
 
   const originHeaders = new Headers(request.headers);
   originHeaders.set("X-Forwarded-For", request.headers.get("x-real-ip") || "");
@@ -300,18 +302,11 @@ async function handleCachedRead(request, origin, pathname, secret) {
   });
   if (!originResp.ok) return originResp;
 
-  const respHeaders = new Headers(originResp.headers);
-  const effectiveTtl = cacheMeta.ttl;
-  respHeaders.set("Cache-Control", `public, max-age=${effectiveTtl}, s-maxage=${effectiveTtl}, stale-while-revalidate=30`);
-  if (cacheMeta.tags?.length) {
-    const tagHeader = cacheMeta.tags.join(",");
-    respHeaders.set("Cache-Tag", tagHeader);
-    respHeaders.set("ESA-Cache-Tag", tagHeader);
-  }
-  respHeaders.set("X-Edge-Cache", "MISS");
-  const response = new Response(originResp.body, { status: originResp.status, headers: respHeaders });
+  const response = withEdgeCacheHeaders(originResp, cacheMeta, ttl > 0 ? "MISS" : "BYPASS");
 
-  try { await cache.put(cacheKey, response.clone()); } catch {}
+  if (ttl > 0) {
+    try { await cache.put(cacheKey, response.clone()); } catch {}
+  }
   return response;
 }
 
@@ -346,11 +341,9 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
         body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
       });
 
-      const ttl = getCacheTTL(getPath(request), request);
-      if (ttl && resp.ok) {
-        const h = new Headers(resp.headers);
-        h.set("Cache-Control", `public, max-age=${ttl}, s-maxage=${ttl}`);
-        return new Response(resp.body, { status: resp.status, headers: h });
+      const cacheMeta = getCacheMeta(getPath(request), request);
+      if (request.method === "GET" && resp.ok && cacheMeta.tags?.length) {
+        return withEdgeCacheHeaders(resp, cacheMeta, "PASS");
       }
       return resp;
     }
@@ -391,13 +384,34 @@ async function passthroughSigned(request, origin, clientIp, secret) {
 }
 
 
-function getCacheTTL(p, request) {
-  return getCacheMeta(p, request).ttl;
+function withEdgeCacheHeaders(response, cacheMeta, edgeState) {
+  const headers = new Headers(response.headers);
+  if (cacheMeta.tags?.length) {
+    const tagHeader = cacheMeta.tags.join(",");
+    headers.set("Cache-Tag", tagHeader);
+    headers.set("ESA-Cache-Tag", tagHeader);
+  }
+  if (cacheMeta.ttl > 0) {
+    headers.set("Cache-Control", `public, max-age=${cacheMeta.ttl}, s-maxage=${cacheMeta.ttl}, stale-while-revalidate=30`);
+    headers.set("Expires", new Date(Date.now() + cacheMeta.ttl * 1000).toUTCString());
+  } else {
+    headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0, s-maxage=0");
+    headers.set("Pragma", "no-cache");
+    headers.set("Expires", "0");
+    headers.set("CDN-Cache-Control", "no-store");
+    headers.set("Surrogate-Control", "no-store");
+  }
+  if (edgeState) headers.set("X-Edge-Cache", edgeState);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 function getCacheMeta(p, request) {
   const url = new URL(request.url);
-  if (p === "/api/current") return { ttl: 0, tags: [] };
+  if (p === "/api/current") return { ttl: 0, tags: ["current", "realtime", "status"] };
   if (p === "/api/timeline") {
     const date = url.searchParams.get("date") || "";
     const window = normalizedHourWindow(url.searchParams.get("window"));
@@ -410,7 +424,8 @@ function getCacheMeta(p, request) {
     const window = normalizedHourWindow(url.searchParams.get("window"));
     const ttl = isCurrentDateRequest(url) || isLiveWindowRequest(url, window) ? 0 : 60 * 60 * 24 * 30;
     const deviceId = url.searchParams.get("device_id") || "";
-    return { ttl, tags: ["health-data", `health-data-${date}`, window ? `health-data-window-${window}` : "", deviceId ? `health-device-${deviceId}` : ""].filter(Boolean) };
+    const summary = url.searchParams.get("summary") === "1" || url.searchParams.get("summary") === "true";
+    return { ttl, tags: ["health-data", summary ? "health-data-summary" : "health-data-full", `health-data-${date}`, window ? `health-data-window-${window}` : "", deviceId ? `health-device-${deviceId}` : ""].filter(Boolean) };
   }
   if (p === "/api/location") {
     const date = url.searchParams.get("date") || "";

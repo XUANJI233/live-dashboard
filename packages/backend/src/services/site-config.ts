@@ -32,6 +32,10 @@ function isValidFaviconUrl(url: string): boolean {
   }
 }
 
+function normalizeFaviconUrl(url: string): string {
+  return url.trim() === "/favicon.ico" ? DEFAULT_FAVICON : url;
+}
+
 export function getSiteConfig(): SiteConfig {
   const displayName = nonEmpty(process.env.DISPLAY_NAME) ?? DEFAULT_DISPLAY_NAME;
   const siteTitle = nonEmpty(process.env.SITE_TITLE) ?? `${displayName} Now`;
@@ -43,7 +47,7 @@ export function getSiteConfig(): SiteConfig {
     displayName,
     siteTitle,
     siteDescription,
-    siteFavicon: isValidFaviconUrl(rawFavicon) ? rawFavicon : DEFAULT_FAVICON,
+    siteFavicon: isValidFaviconUrl(rawFavicon) ? normalizeFaviconUrl(rawFavicon) : DEFAULT_FAVICON,
     messageBoardEnabled: process.env.MESSAGE_BOARD_ENABLED !== "false",
     privateChatEnabled: process.env.PRIVATE_CHAT_ENABLED !== "false",
     nsfwFilterEnabled: process.env.NSFW_FILTER_DISABLED !== "true",

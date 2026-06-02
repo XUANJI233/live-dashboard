@@ -109,6 +109,7 @@ export function handleHealthDataQuery(url: URL, req: Request): Response {
   const date = url.searchParams.get("date");
   const deviceId = url.searchParams.get("device_id");
   const window = normalizeHourWindow(url.searchParams.get("window"));
+  const summary = isSummaryRequest(url);
 
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return Response.json({ error: "date parameter required (YYYY-MM-DD)" }, { status: 400 });
@@ -134,26 +135,14 @@ export function handleHealthDataQuery(url: URL, req: Request): Response {
       const modifier = `${sign}${String(absH).padStart(2, "0")}:${String(absM).padStart(2, "0")}`;
 
       const whereWindow = window ? ` AND strftime('%Y%m%d%H', recorded_at, '${modifier}') = ?` : "";
-      let records: HealthRecord[];
-      if (deviceId) {
-        records = db.prepare(`
-          SELECT device_id, type, value, unit, recorded_at, end_time
-          FROM health_records
-          WHERE date(recorded_at, '${modifier}') = ?${whereWindow} AND device_id = ?
-          ORDER BY recorded_at ASC
-          LIMIT 10000
-        `).all(...(window ? [date, window, deviceId] : [date, deviceId])) as HealthRecord[];
-      } else {
-        records = db.prepare(`
-          SELECT device_id, type, value, unit, recorded_at, end_time
-          FROM health_records
-          WHERE date(recorded_at, '${modifier}') = ?${whereWindow}
-          ORDER BY recorded_at ASC
-          LIMIT 10000
-        `).all(...(window ? [date, window] : [date])) as HealthRecord[];
-      }
+      const whereDevice = deviceId ? " AND device_id = ?" : "";
+      const where = `date(recorded_at, '${modifier}') = ?${whereWindow}${whereDevice}`;
+      const params = window
+        ? (deviceId ? [date, window, deviceId] : [date, window])
+        : (deviceId ? [date, deviceId] : [date]);
+      const records = db.prepare(healthSelectSql(where, summary)).all(...params) as HealthRecord[];
 
-      return healthQueryResponse(date, window, deviceId, records, tzOffsetMinutes);
+      return healthQueryResponse(date, window, deviceId, records, tzOffsetMinutes, summary);
     }
 
     // No timezone offset — use UTC (backwards compatible)
@@ -165,35 +154,30 @@ export function handleHealthDataQuery(url: URL, req: Request): Response {
     d.setUTCDate(d.getUTCDate() + 1);
     const startOfNextDay = d.toISOString();
 
-    let records: HealthRecord[];
-    if (deviceId) {
-      records = db.prepare(`
-        SELECT device_id, type, value, unit, recorded_at, end_time
-        FROM health_records
-        WHERE recorded_at >= ? AND recorded_at < ?${window ? " AND strftime('%Y%m%d%H', recorded_at) = ?" : ""} AND device_id = ?
-        ORDER BY recorded_at ASC
-        LIMIT 10000
-      `).all(...(window ? [startOfDay, startOfNextDay, window, deviceId] : [startOfDay, startOfNextDay, deviceId])) as HealthRecord[];
-    } else {
-      records = db.prepare(`
-        SELECT device_id, type, value, unit, recorded_at, end_time
-        FROM health_records
-        WHERE recorded_at >= ? AND recorded_at < ?${window ? " AND strftime('%Y%m%d%H', recorded_at) = ?" : ""}
-        ORDER BY recorded_at ASC
-        LIMIT 10000
-      `).all(...(window ? [startOfDay, startOfNextDay, window] : [startOfDay, startOfNextDay])) as HealthRecord[];
-    }
+    const whereWindow = window ? " AND strftime('%Y%m%d%H', recorded_at) = ?" : "";
+    const whereDevice = deviceId ? " AND device_id = ?" : "";
+    const where = `recorded_at >= ? AND recorded_at < ?${whereWindow}${whereDevice}`;
+    const params = window
+      ? (deviceId ? [startOfDay, startOfNextDay, window, deviceId] : [startOfDay, startOfNextDay, window])
+      : (deviceId ? [startOfDay, startOfNextDay, deviceId] : [startOfDay, startOfNextDay]);
+    const records = db.prepare(healthSelectSql(where, summary)).all(...params) as HealthRecord[];
 
-    return healthQueryResponse(date, window, deviceId, records, tzOffsetMinutes);
+    return healthQueryResponse(date, window, deviceId, records, tzOffsetMinutes, summary);
   } catch (e: any) {
     console.error("[health-data] Query error:", e.message);
     return Response.json({ error: "Internal error" }, { status: 500 });
   }
 }
 
-function healthQueryResponse(date: string, window: string | null, deviceId: string | null, records: HealthRecord[], tzOffsetMinutes: number): Response {
-  const response = Response.json({ date, window, records });
-  const tags = ["health-data", `health-data-${date}`, ...(window ? [`health-data-window-${window}`] : []), ...(deviceId ? [`health-device-${deviceId}`] : [])];
+function healthQueryResponse(date: string, window: string | null, deviceId: string | null, records: HealthRecord[], tzOffsetMinutes: number, summary: boolean): Response {
+  const response = Response.json({ date, window, summary, records });
+  const tags = [
+    "health-data",
+    summary ? "health-data-summary" : "health-data-full",
+    `health-data-${date}`,
+    ...(window ? [`health-data-window-${window}`] : []),
+    ...(deviceId ? [`health-device-${deviceId}`] : []),
+  ];
   if (isTodayForOffset(date, tzOffsetMinutes) || (window && isLiveHourWindow(window, safeTimezoneOffset(tzOffsetMinutes)))) {
     return noStore(response, tags);
   }
@@ -202,6 +186,40 @@ function healthQueryResponse(date: string, window: string | null, deviceId: stri
     tags,
     60 * 60 * 24 * 30,
   );
+}
+
+function healthSelectSql(where: string, summary: boolean): string {
+  const fields = "device_id, type, value, unit, recorded_at, end_time";
+  if (!summary) {
+    return `
+      SELECT ${fields}
+      FROM health_records
+      WHERE ${where}
+      ORDER BY recorded_at ASC
+      LIMIT 10000
+    `;
+  }
+
+  return `
+    SELECT ${fields}
+    FROM (
+      SELECT ${fields},
+        ROW_NUMBER() OVER (
+          PARTITION BY device_id, type
+          ORDER BY recorded_at DESC, end_time DESC
+        ) AS rn
+      FROM health_records
+      WHERE ${where}
+    )
+    WHERE rn = 1
+    ORDER BY recorded_at ASC
+    LIMIT 1000
+  `;
+}
+
+function isSummaryRequest(url: URL): boolean {
+  const value = url.searchParams.get("summary");
+  return value === "1" || value === "true";
 }
 
 function isTodayForOffset(date: string, tzOffsetMinutes: number): boolean {

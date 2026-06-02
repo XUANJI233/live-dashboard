@@ -29,7 +29,7 @@ function setFavicon(href: string) {
   for (const selector of selectors) {
     const link = document.head.querySelector<HTMLLinkElement>(selector);
     if (link) {
-      link.setAttribute("href", href);
+      applyFaviconAttributes(link, href);
       updated = true;
     }
   }
@@ -37,8 +37,22 @@ function setFavicon(href: string) {
   if (!updated) {
     const link = document.createElement("link");
     link.setAttribute("rel", "icon");
-    link.setAttribute("href", href);
+    applyFaviconAttributes(link, href);
     document.head.appendChild(link);
+  }
+}
+
+function applyFaviconAttributes(link: HTMLLinkElement, href: string) {
+  link.setAttribute("href", href);
+  if (href.endsWith(".svg")) {
+    link.setAttribute("type", "image/svg+xml");
+    link.setAttribute("sizes", "any");
+  } else if (href.endsWith(".ico")) {
+    link.setAttribute("type", "image/x-icon");
+    link.removeAttribute("sizes");
+  } else {
+    link.removeAttribute("type");
+    link.removeAttribute("sizes");
   }
 }
 

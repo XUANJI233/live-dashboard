@@ -81,9 +81,12 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 
 | 接口 | 标签 |
 |------|------|
-| `/api/timeline?date=YYYY-MM-DD` | `timeline`, `timeline-YYYY-MM-DD`，带 `device_id` 时追加 `timeline-device-<device_id>` |
-| `/api/health-data?date=YYYY-MM-DD` | `health-data`, `health-data-YYYY-MM-DD`，带 `device_id` 时追加 `health-device-<device_id>` |
-| `/api/location?date=YYYY-MM-DD` | `location`, `location-YYYY-MM-DD`，带 `device_id` 时追加 `location-device-<device_id>` |
+| `/` / HTML fallback | `page`, `page-index` |
+| `/_next/*`、`/icon.svg`、`/favicon.ico` 等静态资源 | `static`, `static-<path>`，例如 `static-favicon-ico` |
+| `/api/current` | `current`, `realtime`, `status` |
+| `/api/timeline?date=YYYY-MM-DD` | `timeline`, `timeline-YYYY-MM-DD`，带 `window` 时追加 `timeline-window-YYYYMMDDHH`，带 `device_id` 时追加 `timeline-device-<device_id>` |
+| `/api/health-data?date=YYYY-MM-DD` | `health-data`, `health-data-summary`/`health-data-full`, `health-data-YYYY-MM-DD`，带 `window` 时追加 `health-data-window-YYYYMMDDHH`，带 `device_id` 时追加 `health-device-<device_id>` |
+| `/api/location?date=YYYY-MM-DD` | `location`, `location-YYYY-MM-DD`，带 `window` 时追加 `location-window-YYYYMMDDHH`，带 `device_id` 时追加 `location-device-<device_id>` |
 | `/api/messages/public?slot=YYYYMMDDHHmm` | `public-messages`, `public-messages-slot-YYYYMMDDHHmm` |
 | `/api/messages/public?window=YYYYMMDDHH` | `public-messages`, `public-messages-YYYYMMDDHH` |
 | `/api/config` | `config` |
@@ -92,7 +95,7 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 
 当前状态、当前/上一小时的时间线、当天健康数据、当前/上一小时的位置轨迹、当前公开留言窗口和 WebSocket 不缓存，避免在线状态/时间线/健康/留言/位置显示滞后。更早的同日时间线/位置和历史健康数据按小时窗口缓存，例如 `window=2026060201`；当天健康数据可能由手表延迟补发到过去的小时窗口，因此当天健康窗口也保持不缓存。源站对实时响应也会带 `Cache-Control: no-store`、`CDN-Cache-Control: no-store`、`Expires: 0`，并继续输出对应的 `Cache-Tag`，便于 ESA 规则误缓存后按标签清理。
 
-按标签刷新可使用这些标签：`timeline`、`timeline-YYYY-MM-DD`、`timeline-window-YYYYMMDDHH`、`health-data`、`health-data-YYYY-MM-DD`、`health-data-window-YYYYMMDDHH`、`location`、`location-YYYY-MM-DD`、`location-window-YYYYMMDDHH`、`public-messages-slot-YYYYMMDDHHmm`。ESA 默认标签头仍是 `Cache-Tag`。
+按标签刷新可使用这些标签：`page`、`static`、`current`、`realtime`、`status`、`timeline`、`timeline-YYYY-MM-DD`、`timeline-window-YYYYMMDDHH`、`health-data`、`health-data-summary`、`health-data-full`、`health-data-YYYY-MM-DD`、`health-data-window-YYYYMMDDHH`、`location`、`location-YYYY-MM-DD`、`location-window-YYYYMMDDHH`、`public-messages-slot-YYYYMMDDHHmm`。ESA 默认标签头仍是 `Cache-Tag`。
 
 ## HASH_SECRET 要求
 

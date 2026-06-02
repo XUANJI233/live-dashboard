@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useMemo, useState } from "react";
 import { useDashboard } from "@/hooks/useDashboard";
 import { useConfig, useConfigLoader, ConfigContext } from "@/hooks/useConfig";
 import type { DeviceState, HealthRecord } from "@/lib/api";
@@ -91,14 +91,46 @@ function HomeInner() {
       return;
     }
     const controller = new AbortController();
-    fetchHealthData(selectedDate, controller.signal)
-      .then((d) => {
-        if (!controller.signal.aborted) setAllHealthRecords(d.records);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setAllHealthRecords([]);
-      });
-    return () => controller.abort();
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let idleId: number | null = null;
+    setAllHealthRecords([]);
+
+    const loadHealth = () => {
+      fetchHealthData(selectedDate, controller.signal, undefined, { summary: true })
+        .then((d) => {
+          if (!controller.signal.aborted) {
+            startTransition(() => setAllHealthRecords(d.records));
+          }
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            startTransition(() => setAllHealthRecords([]));
+          }
+        });
+    };
+
+    if (typeof window !== "undefined") {
+      const idleWindow = window as Window & {
+        requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+        cancelIdleCallback?: (handle: number) => void;
+      };
+      if (idleWindow.requestIdleCallback) {
+        idleId = idleWindow.requestIdleCallback(loadHealth, { timeout: 1200 });
+      } else {
+        timeoutId = setTimeout(loadHealth, 80);
+      }
+    } else {
+      loadHealth();
+    }
+
+    return () => {
+      controller.abort();
+      if (timeoutId) clearTimeout(timeoutId);
+      if (idleId !== null) {
+        const idleWindow = window as Window & { cancelIdleCallback?: (handle: number) => void };
+        idleWindow.cancelIdleCallback?.(idleId);
+      }
+    };
   }, [selectedDate]);
 
   // Filter timeline data by selected device
@@ -165,7 +197,7 @@ function HomeInner() {
           <DeviceSnapshot selectedDevice={selectedDevice} devices={devices} />
 
           {hasAnyHealthData && (
-            <HealthSnapshot devices={devices} records={allHealthRecords} />
+            <HealthSnapshot selectedDate={selectedDate} devices={devices} records={allHealthRecords} />
           )}
 
           {devices.length > 0 && <CurrentStatus devices={devices} />}
@@ -390,20 +422,59 @@ function DeviceSnapshot({ selectedDevice, devices }: { selectedDevice: DeviceSta
   );
 }
 
-function HealthSnapshot({ devices, records }: { devices: DeviceState[]; records: HealthRecord[] }) {
+function HealthSnapshot({ selectedDate, devices, records }: { selectedDate: string; devices: DeviceState[]; records: HealthRecord[] }) {
   const [expanded, setExpanded] = useState(false);
   const [selectedType, setSelectedType] = useState<string | null>(null);
+  const [detailRecords, setDetailRecords] = useState<HealthRecord[] | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const deviceById = useMemo(() => new Map(devices.map((device) => [device.device_id, device])), [devices]);
   const grouped = useMemo(() => groupHealth(records), [records]);
-  const items = healthItems(grouped, deviceById);
+  const detailGrouped = useMemo(() => groupHealth(detailRecords ?? records), [detailRecords, records]);
+  const items = useMemo(() => healthItems(grouped, deviceById), [grouped, deviceById]);
+  const detailAllItems = useMemo(() => healthItems(detailGrouped, deviceById), [detailGrouped, deviceById]);
+  const sourceCount = useMemo(() => new Set(records.map((record) => record.device_id).filter(Boolean)).size || 1, [records]);
+
   useEffect(() => {
-    if (selectedType && !grouped.has(selectedType)) setSelectedType(null);
-  }, [grouped, selectedType]);
+    setDetailRecords(null);
+    setDetailLoading(false);
+    setDetailError(null);
+    setExpanded(false);
+    setSelectedType(null);
+  }, [selectedDate]);
+
+  useEffect(() => {
+    if (!expanded || detailRecords !== null || detailLoading || detailError) return;
+    const controller = new AbortController();
+    setDetailLoading(true);
+    setDetailError(null);
+    fetchHealthData(selectedDate, controller.signal)
+      .then((data) => {
+        if (!controller.signal.aborted) setDetailRecords(data.records);
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted && error?.name !== "AbortError") {
+          setDetailError(error instanceof Error ? error.message : String(error));
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setDetailLoading(false);
+      });
+    return () => controller.abort();
+  }, [detailError, detailLoading, detailRecords, expanded, selectedDate]);
+
+  useEffect(() => {
+    if (!selectedType) return;
+    const hasSelected = isSleepType(selectedType)
+      ? Array.from(detailGrouped.keys()).some(isSleepType)
+      : detailGrouped.has(selectedType);
+    if (!hasSelected) setSelectedType(null);
+  }, [detailGrouped, selectedType]);
   if (items.length === 0) return null;
   const preview = items.slice(0, 6);
   const detailItems = selectedType
-    ? items.filter((item) => isSleepType(selectedType) ? isSleepType(item.type) : item.type === selectedType)
-    : items;
+    ? detailAllItems.filter((item) => isSleepType(selectedType) ? isSleepType(item.type) : item.type === selectedType)
+    : detailAllItems;
 
   return (
     <section className="mb-4 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3">
@@ -411,7 +482,7 @@ function HealthSnapshot({ devices, records }: { devices: DeviceState[]; records:
         <div>
           <div className="text-xs font-semibold text-[var(--color-text-muted)]">健康</div>
           <div className="truncate text-[10px] text-[var(--color-text-muted)]">
-            已聚合 {new Set(records.map((record) => record.device_id).filter(Boolean)).size || 1} 个来源
+            已聚合 {sourceCount} 个来源
           </div>
         </div>
         {items.length > 0 && (
@@ -420,6 +491,7 @@ function HealthSnapshot({ devices, records }: { devices: DeviceState[]; records:
             className="pill-btn px-3 py-1 text-xs"
             onClick={() => {
               setSelectedType(null);
+              if (!expanded) setDetailError(null);
               setExpanded((v) => !v);
             }}
           >
@@ -434,6 +506,7 @@ function HealthSnapshot({ devices, records }: { devices: DeviceState[]; records:
             item={item}
             onOpen={() => {
               setSelectedType(isSleepType(item.type) ? "sleep_status" : item.type);
+              setDetailError(null);
               setExpanded(true);
             }}
           />
@@ -441,10 +514,12 @@ function HealthSnapshot({ devices, records }: { devices: DeviceState[]; records:
       </div>
       {expanded && (
         <HealthDetailPanel
-          grouped={grouped}
+          grouped={detailGrouped}
           items={detailItems}
           selectedType={selectedType}
           deviceById={deviceById}
+          loading={detailLoading}
+          error={detailError}
           onShowAll={() => setSelectedType(null)}
           onSelectType={setSelectedType}
         />
@@ -502,6 +577,8 @@ function HealthDetailPanel({
   items,
   selectedType,
   deviceById,
+  loading,
+  error,
   onShowAll,
   onSelectType,
 }: {
@@ -509,6 +586,8 @@ function HealthDetailPanel({
   items: HealthItem[];
   selectedType: string | null;
   deviceById: Map<string, DeviceState>;
+  loading: boolean;
+  error: string | null;
   onShowAll: () => void;
   onSelectType: (type: string) => void;
 }) {
@@ -538,6 +617,12 @@ function HealthDetailPanel({
           </button>
         )}
       </div>
+
+      {(loading || error) && (
+        <div className="mb-3 rounded border border-dashed border-[var(--color-border)] px-3 py-2 text-[10px] text-[var(--color-text-muted)]">
+          {loading ? "正在补全详细历史..." : "详细历史暂时没有取到，先显示摘要。"}
+        </div>
+      )}
 
       {!selectedType && navItems.length > 0 && (
         <div className="mb-3 flex flex-wrap gap-1">
@@ -734,9 +819,6 @@ function groupHealth(records: HealthRecord[]) {
     } else {
       map.set(record.type, { latest: record, all: [record] });
     }
-  }
-  for (const entry of map.values()) {
-    entry.all.sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime());
   }
   return map;
 }

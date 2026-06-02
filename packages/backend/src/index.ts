@@ -30,7 +30,7 @@ import {
   handleDeleteDevice,
   globalIpRateLimit,
 } from "./services/realtime";
-import { noStore } from "./services/cdn";
+import { noStore, withCdnHeaders } from "./services/cdn";
 import { normalizeClientIp } from "./services/visitors";
 import { injectSiteConfig } from "./services/site-config";
 
@@ -62,12 +62,18 @@ try {
 async function serveStaticFile(realFile: string): Promise<Response> {
   if (realFile.endsWith(".html")) {
     const html = await Bun.file(realFile).text();
-    return new Response(injectSiteConfig(html), {
+    return noStore(new Response(injectSiteConfig(html), {
       headers: { "Content-Type": "text/html; charset=utf-8" },
-    });
+    }), ["page", "page-index"]);
   }
 
-  return new Response(Bun.file(realFile));
+  return withCdnHeaders(new Response(Bun.file(realFile)), staticCacheTags(realFile), 60 * 60 * 24 * 30);
+}
+
+function staticCacheTags(realFile: string): string[] {
+  const rel = relative(REAL_STATIC_ROOT, realFile).replaceAll("\\", "/");
+  const safe = rel.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 96);
+  return ["static", ...(safe ? [`static-${safe}`] : [])];
 }
 
 const server = Bun.serve<WsData>({
@@ -244,6 +250,21 @@ const server = Bun.serve<WsData>({
         if (!staticEnabled) {
           response = Response.json({ error: "Not found" }, { status: 404 });
         } else {
+          if (pathname === "/favicon.ico") {
+            const faviconFile = Bun.file(`${REAL_STATIC_ROOT}/favicon.ico`);
+            if (await faviconFile.exists()) {
+              return withCdnHeaders(new Response(faviconFile, {
+                headers: { "Content-Type": "image/x-icon" },
+              }), ["static", "static-favicon-ico"], 60 * 60 * 24 * 30);
+            }
+            const iconFile = Bun.file(`${REAL_STATIC_ROOT}/icon.svg`);
+            if (await iconFile.exists()) {
+              return withCdnHeaders(new Response(iconFile, {
+                headers: { "Content-Type": "image/svg+xml" },
+              }), ["static", "static-favicon-ico", "static-icon-svg"], 60 * 60 * 24 * 30);
+            }
+          }
+
           // Path traversal + symlink protection
           let decoded: string;
           try {
