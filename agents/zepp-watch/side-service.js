@@ -411,16 +411,42 @@ AppSideService(
         return Number.isFinite(value) && value >= 0 && value < 1440
       }
 
-      function minuteIso(value) {
-        return new Date(todayMs + value * 60000).toISOString()
+      function validSleepMinute(value) {
+        return Number.isFinite(value) && value >= 0 && value < 2880
       }
 
-      if (validMinute(details.st)) out.push({ type: 'sleep_start', value: details.st, unit: 'minute_of_day', timestamp: nowISO })
-      if (validMinute(details.en)) out.push({ type: 'sleep_end', value: details.en, unit: 'minute_of_day', timestamp: nowISO })
-      if (Number.isFinite(details.du) && details.du > 0) out.push({ type: 'sleep_duration', value: details.du, unit: 'minutes', timestamp: nowISO })
-      if (Number.isFinite(details.de) && details.de >= 0) out.push({ type: 'deep_sleep_duration', value: details.de, unit: 'minutes', timestamp: nowISO })
-      if (Number.isFinite(details.sc) && details.sc >= 0) out.push({ type: 'sleep_score', value: details.sc, unit: 'score', timestamp: nowISO })
-      if (Number.isFinite(details.sg) && details.sg >= 0) out.push({ type: 'sleep_stage_count', value: details.sg, unit: 'count', timestamp: nowISO })
+      function minuteMs(value) {
+        return todayMs + value * 60000
+      }
+
+      function minuteIso(value) {
+        return new Date(minuteMs(value)).toISOString()
+      }
+
+      function sleepRange(start, end) {
+        const hasStart = validSleepMinute(start)
+        const hasEnd = validSleepMinute(end)
+        const baseMs = hasEnd && end >= 1440 ? todayMs - 24 * 60 * 60000 : todayMs
+        let startMs = hasStart ? baseMs + start * 60000 : NaN
+        let endMs = hasEnd ? baseMs + end * 60000 : NaN
+        if (hasStart && hasEnd && end < start) startMs -= 24 * 60 * 60000
+        return {
+          startIso: hasStart ? new Date(startMs).toISOString() : '',
+          endIso: hasEnd ? new Date(endMs).toISOString() : nowISO,
+        }
+      }
+
+      const range = sleepRange(details.st, details.en)
+      const startIso = range.startIso
+      const endIso = range.endIso
+      const summaryEndTime = startIso && endIso !== nowISO ? startIso : ''
+
+      if (validSleepMinute(details.st)) out.push({ type: 'sleep_start', value: details.st, unit: 'minute_of_day', timestamp: endIso, end_time: startIso })
+      if (validSleepMinute(details.en)) out.push({ type: 'sleep_end', value: details.en, unit: 'minute_of_day', timestamp: endIso, end_time: startIso })
+      if (Number.isFinite(details.du) && details.du > 0) out.push({ type: 'sleep_duration', value: details.du, unit: 'minutes', timestamp: endIso, end_time: summaryEndTime })
+      if (Number.isFinite(details.de) && details.de >= 0) out.push({ type: 'deep_sleep_duration', value: details.de, unit: 'minutes', timestamp: endIso, end_time: summaryEndTime })
+      if (Number.isFinite(details.sc) && details.sc >= 0) out.push({ type: 'sleep_score', value: details.sc, unit: 'score', timestamp: endIso, end_time: summaryEndTime })
+      if (Number.isFinite(details.sg) && details.sg >= 0) out.push({ type: 'sleep_stage_count', value: details.sg, unit: 'count', timestamp: endIso, end_time: summaryEndTime })
 
       if (Array.isArray(details.np)) {
         details.np.forEach((nap) => {
