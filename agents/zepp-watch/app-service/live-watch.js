@@ -48,6 +48,7 @@ let sensorStep = true
 let sensorSleep = true
 let sensorBodyTemp = true
 let sensorSpo2 = false
+let sensorStress = false
 
 const MAX_HR_RECORDS_PER_SYNC = 30
 const MAX_SPO2_RECORDS_PER_SYNC = 12
@@ -57,7 +58,9 @@ const DEFAULT_SYNC_INTERVAL_SECONDS = 300
 const MAX_SYNC_INTERVAL_SECONDS = 900 // server marks Zepp offline after 20 minutes
 const MAX_SLEEP_UPLOAD_GAP_MS = 15 * 60_000
 const CONFIG_KEY = 'lw_cfg'
+const PENDING_PAYLOADS_KEY = 'lw_pending_payloads'
 const PREVIOUS_PAYLOAD_KEY = 'lw_prev_payload'
+const MAX_PENDING_PAYLOADS = 24
 const MANUAL_FULL_SYNC_KEY = 'lw_manual_full'
 
 // ── Persist sleepSkipCounter (survives alarm wakeups) ──
@@ -164,6 +167,7 @@ AppService(
 
     // Read config
     restoreConfig()
+    requestConfigFromCompanion(this)
 
     const manualFullSync = readManualFullSyncRequest()
 
@@ -216,6 +220,50 @@ function writeLocalConfig(cfg) {
   } catch (e) {}
 }
 
+function currentConfigSnapshot() {
+  return {
+    serverUrl: serverUrl,
+    token: token,
+    syncInterval: Math.round(syncIntervalMs / 1000),
+    enabled: enabled,
+    sensorHeartRate: sensorHeartRate,
+    sensorBattery: sensorBattery,
+    sensorStep: sensorStep,
+    sensorSleep: sensorSleep,
+    sensorBodyTemp: sensorBodyTemp,
+    sensorSpo2: sensorSpo2,
+    sensorStress: sensorStress,
+  }
+}
+
+function requestConfigFromCompanion(messenger) {
+  if (!messenger || typeof messenger.request !== 'function') return
+  try {
+    const pending = messenger.request({ method: 'GET_CONFIG' })
+    if (pending && typeof pending.then === 'function') {
+      pending.then(function (cfg) {
+        if (!cfg || !cfg.serverUrl || !cfg.token) return
+        applyConfig(cfg)
+        writeLocalConfig(currentConfigSnapshot())
+        console.log('[LiveWatch:device] Config synced from companion')
+      }, function (e) {
+        console.log('[LiveWatch:device] Config sync failed: ' + ((e && e.message) || e))
+      })
+    }
+  } catch (e) {
+    console.log('[LiveWatch:device] Config sync unavailable: ' + ((e && e.message) || e))
+  }
+}
+
+function normalizePayloadQueue(value) {
+  if (!value) return []
+  const parsed = typeof value === 'string' ? JSON.parse(value) : value
+  if (!Array.isArray(parsed)) return []
+  return parsed.filter(function (payload) {
+    return payload && payload.s && payload.s.ts
+  })
+}
+
 function readPreviousPayload() {
   try {
     const raw = _localStorage.getItem(PREVIOUS_PAYLOAD_KEY, '')
@@ -228,6 +276,42 @@ function readPreviousPayload() {
 function writePreviousPayload(payload) {
   try {
     _localStorage.setItem(PREVIOUS_PAYLOAD_KEY, JSON.stringify(payload))
+  } catch (e) {}
+}
+
+function readPendingPayloads() {
+  try {
+    const queue = normalizePayloadQueue(_localStorage.getItem(PENDING_PAYLOADS_KEY, ''))
+    if (queue.length > 0) return queue
+  } catch (e) {}
+
+  const previous = readPreviousPayload()
+  return previous && previous.s ? [previous] : []
+}
+
+function writePendingPayloads(payloads) {
+  try {
+    _localStorage.setItem(PENDING_PAYLOADS_KEY, JSON.stringify(payloads.slice(-MAX_PENDING_PAYLOADS)))
+  } catch (e) {
+    console.log('[LiveWatch:device] Failed to persist payload queue: ' + ((e && e.message) || e))
+  }
+}
+
+function queuePendingPayload(payload) {
+  const pending = readPendingPayloads().filter(function (item) {
+    return item && item.s && item.s.ts !== payload.s.ts
+  })
+  pending.push(payload)
+  const trimmed = pending.slice(-MAX_PENDING_PAYLOADS)
+  writePendingPayloads(trimmed)
+  writePreviousPayload(payload)
+  return trimmed
+}
+
+function clearPendingPayloads() {
+  writePendingPayloads([])
+  try {
+    _localStorage.setItem(PREVIOUS_PAYLOAD_KEY, '')
   } catch (e) {}
 }
 
@@ -366,17 +450,12 @@ function collectAndUpload(options = {}) {
   const compactSize = JSON.stringify(compactPayload).length
   console.log('[LiveWatch:device] Compact payload: ' + compactSize + ' bytes')
 
-  // Retry the previous compact payload once. The server dedupes health rows by
-  // device/type/time, so this protects against a missed BLE handoff without
-  // forcing the watch to wait for a response.
-  const previousPayload = readPreviousPayload()
-  const payloads = previousPayload && previousPayload.s && previousPayload.s.ts !== compactPayload.s.ts
-    ? [previousPayload, compactPayload]
-    : [compactPayload]
+  // Keep a small local queue until the companion acknowledges receipt. Server
+  // health rows are deduped by device/type/time, so retrying is safe.
+  const payloads = queuePendingPayload(compactPayload)
 
   // Send compact data to side-service over ZML BLE. Side-service expands and uploads.
   sendToCompanion({ payloads: payloads }, options.messenger)
-  writePreviousPayload(compactPayload)
 }
 
 function sendToCompanion(payload, messenger) {
@@ -385,12 +464,33 @@ function sendToCompanion(payload, messenger) {
 
 function sendToCompanionViaZml(payload, messenger) {
   try {
-    const sender = messenger && typeof messenger.call === 'function'
+    const sender = messenger && (typeof messenger.request === 'function' || typeof messenger.call === 'function')
       ? messenger
       : null
     if (!sender) {
       console.log('[LiveWatch:device] ZML messenger unavailable')
       return false
+    }
+
+    if (typeof sender.request === 'function') {
+      const pending = sender.request({
+        method: 'BATCH_DATA',
+        params: { payload: payload },
+      })
+      if (pending && typeof pending.then === 'function') {
+        pending.then(function (result) {
+          if (!result || result.ok !== false) {
+            clearPendingPayloads()
+            console.log('[LiveWatch:device] ZML batch ack, queue cleared')
+          } else {
+            console.log('[LiveWatch:device] ZML batch rejected: ' + JSON.stringify(result))
+          }
+        }, function (e) {
+          console.log('[LiveWatch:device] ZML batch failed: ' + ((e && e.message) || e))
+        })
+      }
+      console.log('[LiveWatch:device] ZML batch requested')
+      return true
     }
 
     const pending = sender.call({
@@ -433,6 +533,7 @@ function restoreSensorConfig(cfg) {
   sensorSleep = readBool(cfg, 'sensorSleep', true)
   sensorBodyTemp = readBool(cfg, 'sensorBodyTemp', true)
   sensorSpo2 = readBool(cfg, 'sensorSpo2', false)
+  sensorStress = readBool(cfg, 'sensorStress', false)
 }
 
 // ── Heart Rate History Collection (O(N), only non-zero values) ──
@@ -673,6 +774,7 @@ function stopSync() {
       sensorSleep,
       sensorBodyTemp,
       sensorSpo2,
+      sensorStress,
     })
   } catch (e) {}
 

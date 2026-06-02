@@ -25,6 +25,10 @@ Page(
         gInterval = Number(r.syncInterval || 300)
         gConfig = r || {}
         updateUI()
+        if (gRunning && gUrl && gToken) {
+          persistDeviceConfig(true)
+          scheduleWatchService(1, true)
+        }
       }).catch(function () {})
     },
 
@@ -85,20 +89,11 @@ function onToggle() {
     .then(function (r) {
       if (next) {
         persistDeviceConfig(true)
-        var alarmId = setAlarm({
-          url: 'app-service/live-watch',
-          delay: 1,
-          store: true,
-        })
+        var alarmId = scheduleWatchService(1, true)
         dbg('start ok alarm=' + alarmId + ' ' + JSON.stringify(r))
       } else {
         persistDeviceConfig(false)
-        try {
-          var alarms = getAllAlarms()
-          if (alarms && alarms.length) {
-            alarms.forEach(function (id) { cancelAlarm(id) })
-          }
-        } catch (e) {}
+        cancelWatchServiceAlarms()
         dbg('stop ok ' + JSON.stringify(r))
       }
       gRunning = next
@@ -138,11 +133,7 @@ function onManualUpload() {
   persistDeviceConfig(gRunning)
   try {
     localStorage.setItem(MANUAL_FULL_SYNC_KEY, 1)
-    setAlarm({
-      url: 'app-service/live-watch',
-      delay: 1,
-      store: false,
-    })
+    scheduleWatchService(1, false)
   } catch (e) {
     dbg('manual alarm failed: ' + ((e && e.message) || e))
   }
@@ -178,4 +169,26 @@ function updateUI() {
     text: gRunning ? '正在后台同步' : (has ? '已配置，点击启动' : '请在手机端设置'),
     color: gRunning ? 0x00aa55 : (has ? 0xaaaaaa : 0x888888)
   })
+}
+
+function scheduleWatchService(delaySec, store) {
+  try {
+    return setAlarm({
+      url: 'app-service/live-watch',
+      delay: delaySec,
+      store: Boolean(store),
+    })
+  } catch (e) {
+    dbg('schedule failed: ' + ((e && e.message) || e))
+    return null
+  }
+}
+
+function cancelWatchServiceAlarms() {
+  try {
+    var alarms = getAllAlarms()
+    if (alarms && alarms.length) {
+      alarms.forEach(function (id) { cancelAlarm(id) })
+    }
+  } catch (e) {}
 }

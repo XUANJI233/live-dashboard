@@ -75,7 +75,7 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String CONFIG_PERMISSION = "com.monika.dashboard.permission.LSPOSED_CONFIG";
     private static final String MESSAGE_CHANNEL_ID = "monika_lsp_messages";
     private static final int MESSAGE_NOTIFICATION_ID = 2002;
-    private static final long HEARTBEAT_MS = 25_000L; // keep direct-upload devices online without busy polling
+    private static final long HEARTBEAT_MS = 5 * 60_000L; // low-frequency fallback; events drive normal uploads
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
     private static final long MIN_DIRECT_UPLOAD_MS = 5000L;
     private static final long MAX_DIRECT_UPLOAD_MS = 45_000L;
@@ -142,6 +142,7 @@ public final class MonikaXposedModule extends XposedModule {
     };
     private volatile boolean samplerStarted = false;
     private volatile boolean mediaListenerRegistered = false;
+    private volatile boolean screenReceiverRegistered = false;
     private final java.util.Set<String> registeredMediaControllers =
             java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private final java.util.Set<String> hookedWebChromeClientClasses =
@@ -250,7 +251,8 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void installForegroundSampler(ClassLoader cl) {
         try {
-            Class<?> clazz = Class.forName("com.android.server.wm.ActivityTaskManagerService", false, cl);
+            Class<?> clazz = cachedClassForName("com.android.server.wm.ActivityTaskManagerService", cl);
+            if (clazz == null) throw new ClassNotFoundException("ActivityTaskManagerService");
 
             // Hook systemReady to start the sampler
             Method systemReady = findMethod(clazz, "systemReady");
@@ -269,11 +271,12 @@ public final class MonikaXposedModule extends XposedModule {
             }
 
             // Event-driven: hook moveTaskToFront to detect foreground changes immediately
-            // This eliminates the need for frequent polling when the foreground is stable
-            // IApplicationThread is a hidden API — use Class.forName at runtime
+            // This eliminates frequent sampling when the foreground is stable.
+            // IApplicationThread is a hidden API — resolve once and keep it in the class cache.
             Method moveToFront = null;
             try {
-                Class<?> iAppThread = Class.forName("android.app.IApplicationThread");
+                Class<?> iAppThread = cachedClassForName("android.app.IApplicationThread");
+                if (iAppThread == null) throw new ClassNotFoundException("IApplicationThread");
                 moveToFront = findMethod(clazz, "moveTaskToFront",
                         iAppThread, String.class, int.class, int.class, android.os.Bundle.class);
                 if (moveToFront == null) {
@@ -307,7 +310,8 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void installInputMethodHooks(ClassLoader cl) {
         try {
-            Class<?> clazz = Class.forName("com.android.server.inputmethod.InputMethodManagerService", false, cl);
+            Class<?> clazz = cachedClassForName("com.android.server.inputmethod.InputMethodManagerService", cl);
+            if (clazz == null) throw new ClassNotFoundException("InputMethodManagerService");
             int hooked = 0;
             for (Method method : clazz.getDeclaredMethods()) {
                 String name = method.getName();
@@ -367,6 +371,7 @@ public final class MonikaXposedModule extends XposedModule {
                 try { loadDirectUploadConfig(); } catch (Throwable t) { log(Log.WARN, TAG, "deferred load config failed: " + t.getClass().getSimpleName()); }
                 try { registerConfigReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register receiver failed: " + t.getClass().getSimpleName()); }
                 try { registerBrowserTitleReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register browser title receiver failed: " + t.getClass().getSimpleName()); }
+                try { registerScreenStateReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register screen receiver failed: " + t.getClass().getSimpleName()); }
                 try { initMediaSessionListener(); } catch (Throwable t) { log(Log.WARN, TAG, "deferred init media listener failed: " + t.getClass().getSimpleName()); }
             }, 10000L);
             handler.postDelayed(new Runnable() {
@@ -377,7 +382,7 @@ public final class MonikaXposedModule extends XposedModule {
                     } catch (Throwable t) {
                         log(Log.WARN, TAG, "foreground sample failed: " + t.getClass().getSimpleName());
                     } finally {
-                        // Heartbeat only — event-driven hook handles foreground changes
+                        // Low-frequency fallback only; foreground/media/input hooks drive normal updates.
                         handler.postDelayed(this, HEARTBEAT_MS);
                     }
                 }
@@ -424,6 +429,49 @@ public final class MonikaXposedModule extends XposedModule {
             log(Log.INFO, TAG, "upload HandlerThread started");
         } catch (Throwable t) {
             log(Log.WARN, TAG, "init upload thread failed: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void registerScreenStateReceiver(Handler handler) {
+        if (screenReceiverRegistered) return;
+        Context context = getSystemContext();
+        if (context == null) return;
+        try {
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(Intent.ACTION_SCREEN_OFF);
+            filter.addAction(Intent.ACTION_SCREEN_ON);
+            BroadcastReceiver receiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context ctx, Intent intent) {
+                    String action = intent != null ? intent.getAction() : null;
+                    if (Intent.ACTION_SCREEN_OFF.equals(action)) {
+                        lastScreenOffCheckAt = 0L;
+                        handler.post(() -> {
+                            try { broadcastSnapshot(); } catch (Throwable ignored) {}
+                        });
+                    } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
+                        lastForegroundKey = "";
+                        lastScreenOffCheckAt = 0L;
+                        foregroundRecentlyChanged = true;
+                        handler.postDelayed(() -> {
+                            try { broadcastSnapshot(); } catch (Throwable ignored) {}
+                        }, 500L);
+                    }
+                }
+            };
+            // Screen broadcasts are system-originated; exporting the dynamic receiver
+            // preserves delivery on Android 13+ while the action filter stays narrow.
+            if (android.os.Build.VERSION.SDK_INT >= 34) {
+                context.registerReceiver(receiver, filter, null, handler, Context.RECEIVER_EXPORTED);
+            } else if (android.os.Build.VERSION.SDK_INT >= 33) {
+                context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
+            } else {
+                context.registerReceiver(receiver, filter, null, handler);
+            }
+            screenReceiverRegistered = true;
+            log(Log.INFO, TAG, "registered screen state receiver");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "screen receiver failed: " + t.getClass().getSimpleName());
         }
     }
 
@@ -776,7 +824,8 @@ public final class MonikaXposedModule extends XposedModule {
             if (activity == null) return;
 
             // Hook 1: Activity#setTitle(CharSequence)
-            Method setTitleText = activity.getDeclaredMethod("setTitle", CharSequence.class);
+            Method setTitleText = findMethod(activity, "setTitle", CharSequence.class);
+            if (setTitleText == null) return;
             try { deoptimize(setTitleText); } catch (Throwable ignored) {}
             hook(setTitleText)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
@@ -794,7 +843,8 @@ public final class MonikaXposedModule extends XposedModule {
                     });
 
             // Hook 2: Activity#setTitle(int)
-            Method setTitleRes = activity.getDeclaredMethod("setTitle", int.class);
+            Method setTitleRes = findMethod(activity, "setTitle", int.class);
+            if (setTitleRes == null) return;
             try { deoptimize(setTitleRes); } catch (Throwable ignored) {}
             hook(setTitleRes)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
@@ -811,7 +861,8 @@ public final class MonikaXposedModule extends XposedModule {
             // Hook 3: Activity#setTaskDescription — browsers set page title here
             Class<?> taskDescription = cachedClassForName("android.app.ActivityManager$TaskDescription", cl);
             if (taskDescription == null) return;
-            Method setTaskDesc = activity.getDeclaredMethod("setTaskDescription", taskDescription);
+            Method setTaskDesc = findMethod(activity, "setTaskDescription", taskDescription);
+            if (setTaskDesc == null) return;
             try { deoptimize(setTaskDesc); } catch (Throwable ignored) {}
             hook(setTaskDesc)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
@@ -833,7 +884,8 @@ public final class MonikaXposedModule extends XposedModule {
                     });
 
             // Hook 4: Activity#onWindowFocusChanged
-            Method focusChanged = activity.getDeclaredMethod("onWindowFocusChanged", boolean.class);
+            Method focusChanged = findMethod(activity, "onWindowFocusChanged", boolean.class);
+            if (focusChanged == null) return;
             try { deoptimize(focusChanged); } catch (Throwable ignored) {}
             hook(focusChanged)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
@@ -853,7 +905,8 @@ public final class MonikaXposedModule extends XposedModule {
             try {
                 Class<?> window = cachedClassForName("android.view.Window", cl);
                 if (window == null) throw new ClassNotFoundException("android.view.Window");
-                Method windowSetTitle = window.getDeclaredMethod("setTitle", CharSequence.class);
+                Method windowSetTitle = findMethod(window, "setTitle", CharSequence.class);
+                if (windowSetTitle == null) throw new NoSuchMethodException("Window#setTitle");
                 try { deoptimize(windowSetTitle); } catch (Throwable ignored) {}
                 hook(windowSetTitle)
                         .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
@@ -881,8 +934,8 @@ public final class MonikaXposedModule extends XposedModule {
                 Class<?> wcc = cachedClassForName("android.webkit.WebChromeClient", cl);
                 Class<?> webViewClass = cachedClassForName("android.webkit.WebView", cl);
                 if (wcc == null || webViewClass == null) throw new ClassNotFoundException("android.webkit");
-                Method onReceivedTitle = wcc.getDeclaredMethod("onReceivedTitle",
-                        webViewClass, String.class);
+                Method onReceivedTitle = findMethod(wcc, "onReceivedTitle", webViewClass, String.class);
+                if (onReceivedTitle == null) throw new NoSuchMethodException("WebChromeClient#onReceivedTitle");
                 try { deoptimize(onReceivedTitle); } catch (Throwable ignored) {}
                 hook(onReceivedTitle)
                         .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
@@ -920,7 +973,8 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void installWebViewTitleHooks(ClassLoader cl, String packageName) {
         try {
-            Class<?> webView = Class.forName("android.webkit.WebView", false, cl);
+            Class<?> webView = cachedClassForName("android.webkit.WebView", cl);
+            if (webView == null) throw new ClassNotFoundException("android.webkit.WebView");
             hookWebViewNavigation(webView, packageName, "loadUrl", String.class);
             hookWebViewNavigation(webView, packageName, "loadUrl", String.class, java.util.Map.class);
             hookWebViewNavigation(webView, packageName, "postUrl", String.class, byte[].class);
@@ -935,7 +989,8 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void hookWebChromeTitle(ClassLoader cl, Class<?> webView, String packageName) {
         try {
-            Class<?> chromeClient = Class.forName("android.webkit.WebChromeClient", false, cl);
+            Class<?> chromeClient = cachedClassForName("android.webkit.WebChromeClient", cl);
+            if (chromeClient == null) throw new ClassNotFoundException("android.webkit.WebChromeClient");
             Method method = findMethod(chromeClient, "onReceivedTitle", webView, String.class);
             if (method == null) return;
             try { deoptimize(method); } catch (Throwable ignored) {}
@@ -957,7 +1012,8 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void hookWebViewClientInstallers(Class<?> webView, String packageName) {
         try {
-            Class<?> chromeClient = Class.forName("android.webkit.WebChromeClient", false, webView.getClassLoader());
+            Class<?> chromeClient = cachedClassForName("android.webkit.WebChromeClient", webView.getClassLoader());
+            if (chromeClient == null) throw new ClassNotFoundException("android.webkit.WebChromeClient");
             Method setChromeClient = findMethod(webView, "setWebChromeClient", chromeClient);
             if (setChromeClient != null) {
                 try { deoptimize(setChromeClient); } catch (Throwable ignored) {}
@@ -978,7 +1034,8 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable ignored) {}
 
         try {
-            Class<?> viewClient = Class.forName("android.webkit.WebViewClient", false, webView.getClassLoader());
+            Class<?> viewClient = cachedClassForName("android.webkit.WebViewClient", webView.getClassLoader());
+            if (viewClient == null) throw new ClassNotFoundException("android.webkit.WebViewClient");
             Method setViewClient = findMethod(webView, "setWebViewClient", viewClient);
             if (setViewClient != null) {
                 try { deoptimize(setViewClient); } catch (Throwable ignored) {}
@@ -1052,7 +1109,8 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void hookWebViewClientPageFinished(ClassLoader cl, Class<?> webView, String packageName) {
         try {
-            Class<?> viewClient = Class.forName("android.webkit.WebViewClient", false, cl);
+            Class<?> viewClient = cachedClassForName("android.webkit.WebViewClient", cl);
+            if (viewClient == null) throw new ClassNotFoundException("android.webkit.WebViewClient");
             Method method = findMethod(viewClient, "onPageFinished", webView, String.class);
             if (method == null) return;
             try { deoptimize(method); } catch (Throwable ignored) {}
@@ -1076,7 +1134,8 @@ public final class MonikaXposedModule extends XposedModule {
     private void installAospBrowserTitleHooks(ClassLoader cl, String packageName) {
         if (!"com.android.browser".equals(packageName)) return;
         try {
-            Class<?> browserActivity = Class.forName("com.android.browser.BrowserActivity", false, cl);
+            Class<?> browserActivity = cachedClassForName("com.android.browser.BrowserActivity", cl);
+            if (browserActivity == null) throw new ClassNotFoundException("com.android.browser.BrowserActivity");
             for (Method method : browserActivity.getDeclaredMethods()) {
                 if (!"setUrlTitle".equals(method.getName())) continue;
                 Class<?>[] params = method.getParameterTypes();
@@ -1099,7 +1158,8 @@ public final class MonikaXposedModule extends XposedModule {
                 log(Log.INFO, TAG, "hooked AOSP BrowserActivity#setUrlTitle");
             }
 
-            Class<?> webView = Class.forName("android.webkit.WebView", false, cl);
+            Class<?> webView = cachedClassForName("android.webkit.WebView", cl);
+            if (webView == null) throw new ClassNotFoundException("android.webkit.WebView");
             hookAospBrowserPageCallback(browserActivity, packageName, "onPageFinished", webView, String.class);
         } catch (Throwable t) {
             log(Log.DEBUG, TAG, "AOSP browser title hooks skipped: " + t.getClass().getSimpleName());
@@ -1533,24 +1593,18 @@ public final class MonikaXposedModule extends XposedModule {
                         if (info == null) info = topTask;
                     }
                 } catch (Throwable t) {
-                    log(Log.DEBUG, TAG, "getTasks fallback failed: " + t.getMessage());
+                    log(Log.DEBUG, TAG, "getTasks fallback skipped: " + t.getClass().getSimpleName());
                 }
             }
             
-            if (info == null) {
-                log(Log.DEBUG, TAG, "getFocusedTaskDescription: no task info available");
-                return null;
-            }
+            if (info == null) return null;
             
             // Try multiple field names for TaskDescription
             Object desc = readField(info, "taskDescription");
             if (desc == null) desc = readField(info, "description");
             if (desc == null) desc = readField(info, "origDescription");
             
-            if (desc == null) {
-                log(Log.DEBUG, TAG, "getFocusedTaskDescription: taskDescription field is null");
-                return null;
-            }
+            if (desc == null) return null;
             
             // desc might be an ActivityManager.TaskDescription object instead of CharSequence
             if (desc != null && !(desc instanceof CharSequence)) {
@@ -1562,7 +1616,6 @@ public final class MonikaXposedModule extends XposedModule {
                     if (label instanceof CharSequence) {
                         String result = ((CharSequence) label).toString().trim();
                         if (result.length() > 0) {
-                            log(Log.DEBUG, TAG, "getFocusedTaskDescription: got label from TaskDescription.getLabel()");
                             return result;
                         }
                     }
@@ -1576,15 +1629,13 @@ public final class MonikaXposedModule extends XposedModule {
             if (desc instanceof CharSequence) {
                 String s = desc.toString().trim();
                 if (s.length() > 0) {
-                    log(Log.DEBUG, TAG, "getFocusedTaskDescription: got CharSequence directly");
                     return s;
                 }
             }
             
-            log(Log.DEBUG, TAG, "getFocusedTaskDescription: no valid description found");
             return null;
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "getFocusedTaskDescription failed: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+            log(Log.DEBUG, TAG, "getFocusedTaskDescription skipped: " + t.getClass().getSimpleName());
             return null;
         }
     }
@@ -2076,7 +2127,7 @@ public final class MonikaXposedModule extends XposedModule {
             int code = connection.getResponseCode();
             if (code >= 200 && code < 300) {
                 log(Log.DEBUG, TAG, "http upload OK");
-                pollQueuedMessagesFallback();
+                fetchQueuedMessagesFallback();
                 return true;
             } else {
                 log(Log.WARN, TAG, "http upload HTTP " + code);
@@ -2089,7 +2140,7 @@ public final class MonikaXposedModule extends XposedModule {
         return false;
     }
 
-    private void pollQueuedMessagesFallback() {
+    private void fetchQueuedMessagesFallback() {
         HttpURLConnection connection = null;
         try {
             if (!directUploadEnabled || directServerUrl.length() == 0 || directToken.length() == 0) return;
@@ -2101,7 +2152,7 @@ public final class MonikaXposedModule extends XposedModule {
             connection.setRequestProperty("Authorization", "Bearer " + directToken);
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) {
-                log(Log.DEBUG, TAG, "message poll HTTP " + code);
+                log(Log.DEBUG, TAG, "message fallback fetch HTTP " + code);
                 return;
             }
             String body = readUtf8(connection.getInputStream());
@@ -2119,9 +2170,9 @@ public final class MonikaXposedModule extends XposedModule {
                         .put("text", item.optString("text", ""));
                 forwardViewerMessageToApp(data.toString());
             }
-            log(Log.DEBUG, TAG, "message poll delivered " + messages.length());
+            log(Log.DEBUG, TAG, "message fallback fetch delivered " + messages.length());
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "message poll skipped: " + t.getClass().getSimpleName());
+            log(Log.DEBUG, TAG, "message fallback fetch skipped: " + t.getClass().getSimpleName());
         } finally {
             if (connection != null) connection.disconnect();
         }

@@ -86,10 +86,12 @@ AppSideService(
     onInit() {
       console.log('[COMPANION] init')
       this.restoreConfig()
+      this.flushPendingUploads(false)
     },
 
     onRun() {
       console.log('[LiveWatch:companion] running')
+      this.flushPendingUploads(false)
     },
 
     onDestroy() {
@@ -123,6 +125,7 @@ AppSideService(
           this.state.syncInterval = clampSyncIntervalSeconds((params && params.syncInterval) || this.state.syncInterval)
           this.state.enabled = true
           this.persistConfig()
+          this.flushPendingUploads(false)
           res(null, { ok: true, status: 'started' })
           break
         }
@@ -177,6 +180,7 @@ AppSideService(
             console.log('[LiveWatch:companion] Settings changed, enabled=' + this.state.enabled)
           }
           this.persistConfig()
+          this.flushPendingUploads(false)
         } catch (e) {
           console.warn('[LiveWatch:companion] Failed to parse settings change: ' + e.message)
         }
