@@ -232,6 +232,9 @@ fun MessagesScreen(settings: SettingsStore) {
                     TextButton(onClick = {
                         MessageInboxStore.deleteViewer(context, viewerId)
                         if (selectedViewer == viewerId) selectedViewer = null
+                        scope.launch(Dispatchers.IO) {
+                            syncMessageAction(settings) { client -> client.deleteViewerMessages(viewerId) }
+                        }
                         tick++
                         detailViewerId = null
                     }) { Text("删除会话") }

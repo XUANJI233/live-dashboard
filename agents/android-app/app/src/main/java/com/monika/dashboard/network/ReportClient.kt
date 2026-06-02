@@ -285,6 +285,13 @@ class ReportClient(
         return post("${serverUrl.trimEnd('/')}/api/messages/delete", body)
     }
 
+    fun deleteViewerMessages(viewerId: String): Result<Unit> {
+        val body = JSONObject().apply {
+            put("viewer_id", viewerId.take(120))
+        }
+        return post("${serverUrl.trimEnd('/')}/api/messages/viewer/delete", body)
+    }
+
     fun setViewerRemark(viewerId: String, remark: String): Result<Unit> {
         val body = JSONObject().apply {
             put("viewer_id", viewerId.take(120))
