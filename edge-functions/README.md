@@ -90,7 +90,7 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 | `/api/health` | `health` |
 | `/api/daily-summary` | `daily-summary`, `daily-summary-<date 或 current>` |
 
-当前状态、当前/上一小时的时间线、健康数据、位置轨迹、当前公开留言窗口和 WebSocket 不缓存，避免在线状态/时间线/健康/留言/位置显示滞后。更早的同日数据按小时窗口缓存，例如 `window=2026060201`；这样页面轮询时只会穿透实时小时窗口，已稳定的历史小时由浏览器/CDN 承担。源站对实时响应也会带 `Cache-Control: no-store`、`CDN-Cache-Control: no-store`、`Expires: 0`，并继续输出对应的 `Cache-Tag`，便于 ESA 规则误缓存后按标签清理。
+当前状态、当前/上一小时的时间线、当天健康数据、当前/上一小时的位置轨迹、当前公开留言窗口和 WebSocket 不缓存，避免在线状态/时间线/健康/留言/位置显示滞后。更早的同日时间线/位置和历史健康数据按小时窗口缓存，例如 `window=2026060201`；当天健康数据可能由手表延迟补发到过去的小时窗口，因此当天健康窗口也保持不缓存。源站对实时响应也会带 `Cache-Control: no-store`、`CDN-Cache-Control: no-store`、`Expires: 0`，并继续输出对应的 `Cache-Tag`，便于 ESA 规则误缓存后按标签清理。
 
 按标签刷新可使用这些标签：`timeline`、`timeline-YYYY-MM-DD`、`timeline-window-YYYYMMDDHH`、`health-data`、`health-data-YYYY-MM-DD`、`health-data-window-YYYYMMDDHH`、`location`、`location-YYYY-MM-DD`、`location-window-YYYYMMDDHH`、`public-messages-slot-YYYYMMDDHHmm`。ESA 默认标签头仍是 `Cache-Tag`。
 

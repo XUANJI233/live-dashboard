@@ -408,7 +408,7 @@ function getCacheMeta(p, request) {
   if (p === "/api/health-data") {
     const date = url.searchParams.get("date") || "";
     const window = normalizedHourWindow(url.searchParams.get("window"));
-    const ttl = isCurrentTimelineRequest(url) || isLiveWindowRequest(url, window) ? 0 : 60 * 60 * 24 * 30;
+    const ttl = isCurrentDateRequest(url) || isLiveWindowRequest(url, window) ? 0 : 60 * 60 * 24 * 30;
     const deviceId = url.searchParams.get("device_id") || "";
     return { ttl, tags: ["health-data", `health-data-${date}`, window ? `health-data-window-${window}` : "", deviceId ? `health-device-${deviceId}` : ""].filter(Boolean) };
   }
@@ -428,6 +428,10 @@ function getCacheMeta(p, request) {
 
 function isCurrentTimelineRequest(url) {
   if (normalizedHourWindow(url.searchParams.get("window"))) return false;
+  return isCurrentDateRequest(url);
+}
+
+function isCurrentDateRequest(url) {
   const date = url.searchParams.get("date");
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return true;
   const tzRaw = url.searchParams.get("tz");

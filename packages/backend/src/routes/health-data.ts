@@ -194,7 +194,7 @@ export function handleHealthDataQuery(url: URL, req: Request): Response {
 function healthQueryResponse(date: string, window: string | null, deviceId: string | null, records: HealthRecord[], tzOffsetMinutes: number): Response {
   const response = Response.json({ date, window, records });
   const tags = ["health-data", `health-data-${date}`, ...(window ? [`health-data-window-${window}`] : []), ...(deviceId ? [`health-device-${deviceId}`] : [])];
-  if ((window && isLiveHourWindow(window, safeTimezoneOffset(tzOffsetMinutes))) || (!window && isTodayForOffset(date, tzOffsetMinutes))) {
+  if (isTodayForOffset(date, tzOffsetMinutes) || (window && isLiveHourWindow(window, safeTimezoneOffset(tzOffsetMinutes)))) {
     return noStore(response, tags);
   }
   return withCdnHeaders(
