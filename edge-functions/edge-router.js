@@ -400,21 +400,24 @@ function getCacheMeta(p, request) {
   if (p === "/api/current") return { ttl: 0, tags: [] };
   if (p === "/api/timeline") {
     const date = url.searchParams.get("date") || "";
-    const ttl = isCurrentTimelineRequest(url) ? 0 : 60 * 60 * 24 * 30;
+    const window = normalizedHourWindow(url.searchParams.get("window"));
+    const ttl = isCurrentTimelineRequest(url) || isLiveWindowRequest(url, window) ? 0 : 60 * 60 * 24 * 30;
     const deviceId = url.searchParams.get("device_id") || "";
-    return { ttl, tags: ttl ? ["timeline", `timeline-${date}`, deviceId ? `timeline-device-${deviceId}` : ""].filter(Boolean) : [] };
+    return { ttl, tags: ["timeline", `timeline-${date}`, window ? `timeline-window-${window}` : "", deviceId ? `timeline-device-${deviceId}` : ""].filter(Boolean) };
   }
   if (p === "/api/health-data") {
     const date = url.searchParams.get("date") || "";
-    const ttl = isCurrentTimelineRequest(url) ? 0 : 60 * 60 * 24 * 30;
+    const window = normalizedHourWindow(url.searchParams.get("window"));
+    const ttl = isCurrentTimelineRequest(url) || isLiveWindowRequest(url, window) ? 0 : 60 * 60 * 24 * 30;
     const deviceId = url.searchParams.get("device_id") || "";
-    return { ttl, tags: ttl ? ["health-data", `health-data-${date}`, deviceId ? `health-device-${deviceId}` : ""].filter(Boolean) : [] };
+    return { ttl, tags: ["health-data", `health-data-${date}`, window ? `health-data-window-${window}` : "", deviceId ? `health-device-${deviceId}` : ""].filter(Boolean) };
   }
   if (p === "/api/location") {
     const date = url.searchParams.get("date") || "";
-    const ttl = isCurrentTimelineRequest(url) ? 0 : 60 * 60 * 24 * 30;
+    const window = normalizedHourWindow(url.searchParams.get("window"));
+    const ttl = isCurrentTimelineRequest(url) || isLiveWindowRequest(url, window) ? 0 : 60 * 60 * 24 * 30;
     const deviceId = url.searchParams.get("device_id") || "";
-    return { ttl, tags: ttl ? ["location", `location-${date}`, deviceId ? `location-device-${deviceId}` : ""].filter(Boolean) : [] };
+    return { ttl, tags: ["location", `location-${date}`, window ? `location-window-${window}` : "", deviceId ? `location-device-${deviceId}` : ""].filter(Boolean) };
   }
   if (p === "/api/config") return { ttl: CACHE_TTL.config, tags: ["config"] };
   if (p === "/api/health") return { ttl: CACHE_TTL.health, tags: ["health"] };
@@ -424,6 +427,7 @@ function getCacheMeta(p, request) {
 }
 
 function isCurrentTimelineRequest(url) {
+  if (normalizedHourWindow(url.searchParams.get("window"))) return false;
   const date = url.searchParams.get("date");
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return true;
   const tzRaw = url.searchParams.get("tz");
@@ -434,6 +438,27 @@ function isCurrentTimelineRequest(url) {
   const now = new Date(Date.now() - safeOffset * 60_000);
   const today = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
   return date === today;
+}
+
+function normalizedHourWindow(value) {
+  return value && /^\d{10}$/.test(value) ? value : "";
+}
+
+function isLiveWindowRequest(url, window) {
+  if (!window) return false;
+  const tzRaw = url.searchParams.get("tz");
+  const tzOffsetMinutes = tzRaw ? parseInt(tzRaw, 10) : 0;
+  const safeOffset = Number.isFinite(tzOffsetMinutes) && Math.abs(tzOffsetMinutes) <= 840
+    ? tzOffsetMinutes
+    : 0;
+  const current = hourWindowForOffset(new Date(), safeOffset);
+  const previous = hourWindowForOffset(new Date(Date.now() - 60 * 60 * 1000), safeOffset);
+  return window === current || window === previous;
+}
+
+function hourWindowForOffset(date, tzOffsetMinutes) {
+  const local = new Date(date.getTime() - tzOffsetMinutes * 60_000);
+  return `${local.getUTCFullYear()}${String(local.getUTCMonth() + 1).padStart(2, "0")}${String(local.getUTCDate()).padStart(2, "0")}${String(local.getUTCHours()).padStart(2, "0")}`;
 }
 
 function isAuthEndpoint(p) {
@@ -575,7 +600,10 @@ async function kvGetNumber(kv, key) {
   if (!val) return 0;
   const parts = val.split(":");
   const ts = parseInt(parts[1], 10) || 0;
-  if (ts && Date.now() - ts > RATE_WINDOW * 1000) return 0;
+  if (ts && Date.now() - ts > RATE_WINDOW * 1000) {
+    try { await kv.delete(key); } catch {}
+    return 0;
+  }
   return parseInt(parts[0], 10) || 0;
 }
 
@@ -640,6 +668,8 @@ function noStoreJson(data) {
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, s-maxage=0",
+      "Pragma": "no-cache",
+      "Expires": "0",
       "CDN-Cache-Control": "no-store", "Surrogate-Control": "no-store",
       ...corsHeaders(),
     },

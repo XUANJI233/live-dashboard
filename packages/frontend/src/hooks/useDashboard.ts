@@ -36,6 +36,7 @@ function mergeDevicePayload(
 
     for (const [key, val] of Object.entries(incoming)) {
       if (
+        key !== "media" &&
         val && typeof val === "object" && !Array.isArray(val) &&
         base[key] && typeof base[key] === "object" && !Array.isArray(base[key])
       ) {

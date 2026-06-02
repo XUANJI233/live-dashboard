@@ -5,6 +5,7 @@ export interface SiteConfig {
   siteFavicon: string;
   messageBoardEnabled: boolean;
   privateChatEnabled: boolean;
+  nsfwFilterEnabled: boolean;
 }
 
 export const DISPLAY_NAME_PLACEHOLDER = "__LIVE_DASHBOARD_DISPLAY_NAME__";
@@ -13,7 +14,7 @@ export const SITE_DESCRIPTION_PLACEHOLDER = "__LIVE_DASHBOARD_SITE_DESCRIPTION__
 export const SITE_FAVICON_PLACEHOLDER = "/__LIVE_DASHBOARD_SITE_FAVICON__";
 
 const DEFAULT_DISPLAY_NAME = "Monika";
-const DEFAULT_FAVICON = "/favicon.ico";
+const DEFAULT_FAVICON = "/icon.svg";
 const SCRIPT_TAG_PATTERN = /<script\b[^>]*>[\s\S]*?<\/script>/gi;
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -45,6 +46,7 @@ export function getSiteConfig(): SiteConfig {
     siteFavicon: isValidFaviconUrl(rawFavicon) ? rawFavicon : DEFAULT_FAVICON,
     messageBoardEnabled: process.env.MESSAGE_BOARD_ENABLED !== "false",
     privateChatEnabled: process.env.PRIVATE_CHAT_ENABLED !== "false",
+    nsfwFilterEnabled: process.env.NSFW_FILTER_DISABLED !== "true",
   };
 }
 

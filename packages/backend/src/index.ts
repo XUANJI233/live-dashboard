@@ -196,7 +196,7 @@ const server = Bun.serve<WsData>({
         response = await handleReport(req);
       } else if (pathname === "/api/current" && req.method === "GET") {
         response = handleCurrent(req, clientIp, req.headers.get("user-agent") || undefined);
-        response = noStore(response);
+        response = noStore(response, ["current", "realtime", "status"]);
       } else if (pathname === "/api/timeline" && req.method === "GET") {
         response = handleTimeline(url);
       } else if (pathname === "/api/health" && req.method === "GET") {

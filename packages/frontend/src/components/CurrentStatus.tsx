@@ -1,11 +1,13 @@
 import type { DeviceState } from "@/lib/api";
 import { getAppDescription } from "@/lib/app-descriptions";
+import { useConfig } from "@/hooks/useConfig";
 
 interface Props {
   devices: DeviceState[];
 }
 
 export default function CurrentStatus({ devices }: Props) {
+  const { nsfwFilterEnabled } = useConfig();
   const onlineDevices = devices.filter((d) => d.is_online === 1);
   const activeDevices = onlineDevices.filter(isActivePrimaryDevice).sort((a, b) => {
     const ta = a.last_seen_at ? new Date(a.last_seen_at).getTime() : 0;
@@ -44,7 +46,10 @@ export default function CurrentStatus({ devices }: Props) {
                 <div key={device.device_id} className="text-[var(--color-text)]">
                   <p className="text-base sm:text-xl font-medium leading-relaxed">
                     {activeLines.length > 1 ? `${index === 0 ? "在用" : "并在用"}${device.device_name}: ` : ""}
-                    {getAppDescription(device.app_name, device.display_title, device.extra?.music)}
+                    {getAppDescription(device.app_name, device.display_title, device.extra?.music, {
+                      appId: device.app_id,
+                      nsfwFilterEnabled,
+                    })}
                   </p>
                   <DeviceMetaLine device={device} />
                 </div>

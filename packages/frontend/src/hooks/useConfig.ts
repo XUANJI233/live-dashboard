@@ -11,11 +11,13 @@ const serverRenderConfig: SiteConfig = {
   siteTitle: "__LIVE_DASHBOARD_SITE_TITLE__",
   siteDescription: "__LIVE_DASHBOARD_SITE_DESCRIPTION__",
   siteFavicon: "/__LIVE_DASHBOARD_SITE_FAVICON__",
+  nsfwFilterEnabled: true,
 };
 
 function readDocumentValue(value: string | null | undefined, fallback: string): string {
   const trimmed = value?.trim();
-  if (!trimmed || trimmed.startsWith(PLACEHOLDER_PREFIX)) {
+  const placeholderCandidate = trimmed?.replace(/^\/+/, "");
+  if (!trimmed || placeholderCandidate?.startsWith(PLACEHOLDER_PREFIX)) {
     return fallback;
   }
   return trimmed;
@@ -37,7 +39,7 @@ function getInitialConfig(): SiteConfig {
   );
   const siteFavicon = readDocumentValue(
     document.head
-      .querySelector<HTMLLinkElement>('link[rel="icon"], link[rel="shortcut icon"]')
+      .querySelector<HTMLLinkElement>('link[rel="icon"][type="image/svg+xml"], link[rel="icon"], link[rel="shortcut icon"]')
       ?.getAttribute("href"),
     defaultConfig.siteFavicon,
   );

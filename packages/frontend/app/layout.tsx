@@ -13,6 +13,10 @@ export const metadata: Metadata = {
   title: "Monika 现在在做什么",
   description: "轻轻看一眼 Monika 此刻的动态",
   manifest: "/manifest.webmanifest",
+  icons: {
+    icon: [{ url: "/icon.svg", type: "image/svg+xml", sizes: "any" }],
+    shortcut: "/icon.svg",
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",

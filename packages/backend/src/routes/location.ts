@@ -1,7 +1,7 @@
 import { db } from "../db";
 import { verifyViewerToken, viewerTokenFromRequest, edgeViewerIdentity, viewerTokenRateLimit } from "../services/viewer-auth";
 import type { LocationRecord } from "../types";
-import { noStore, withCdnHeaders } from "../services/cdn";
+import { isLiveHourWindow, normalizeHourWindow, noStore, windowMatchesDate, withCdnHeaders } from "../services/cdn";
 
 function timezoneModifier(url: URL): string | null {
   const tzParam = url.searchParams.get("tz");
@@ -25,8 +25,15 @@ export function handleLocationQuery(url: URL, req: Request): Response {
   }
   const date = url.searchParams.get("date");
   const deviceId = url.searchParams.get("device_id");
+  const window = normalizeHourWindow(url.searchParams.get("window"));
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return Response.json({ error: "date parameter required (YYYY-MM-DD)" }, { status: 400 });
+  }
+  if (url.searchParams.has("window") && !window) {
+    return Response.json({ error: "window must be YYYYMMDDHH" }, { status: 400 });
+  }
+  if (window && !windowMatchesDate(window, date)) {
+    return Response.json({ error: "window does not match date" }, { status: 400 });
   }
 
   try {
@@ -34,22 +41,23 @@ export function handleLocationQuery(url: URL, req: Request): Response {
     let records: LocationRecord[];
 
     if (modifier) {
+      const whereWindow = window ? ` AND strftime('%Y%m%d%H', recorded_at, '${modifier}') = ?` : "";
       if (deviceId) {
         records = db.prepare(`
           SELECT device_id, latitude, longitude, accuracy_m, provider, recorded_at
           FROM location_records
-          WHERE date(recorded_at, '${modifier}') = ? AND device_id = ?
+          WHERE date(recorded_at, '${modifier}') = ?${whereWindow} AND device_id = ?
           ORDER BY recorded_at ASC
           LIMIT 10000
-        `).all(date, deviceId) as LocationRecord[];
+        `).all(...(window ? [date, window, deviceId] : [date, deviceId])) as LocationRecord[];
       } else {
         records = db.prepare(`
           SELECT device_id, latitude, longitude, accuracy_m, provider, recorded_at
           FROM location_records
-          WHERE date(recorded_at, '${modifier}') = ?
+          WHERE date(recorded_at, '${modifier}') = ?${whereWindow}
           ORDER BY recorded_at ASC
           LIMIT 10000
-        `).all(date) as LocationRecord[];
+        `).all(...(window ? [date, window] : [date])) as LocationRecord[];
       }
     } else {
       const startOfDay = `${date}T00:00:00.000Z`;
@@ -64,36 +72,38 @@ export function handleLocationQuery(url: URL, req: Request): Response {
         records = db.prepare(`
           SELECT device_id, latitude, longitude, accuracy_m, provider, recorded_at
           FROM location_records
-          WHERE recorded_at >= ? AND recorded_at < ? AND device_id = ?
+          WHERE recorded_at >= ? AND recorded_at < ?${window ? " AND strftime('%Y%m%d%H', recorded_at) = ?" : ""} AND device_id = ?
           ORDER BY recorded_at ASC
           LIMIT 10000
-        `).all(startOfDay, startOfNextDay, deviceId) as LocationRecord[];
+        `).all(...(window ? [startOfDay, startOfNextDay, window, deviceId] : [startOfDay, startOfNextDay, deviceId])) as LocationRecord[];
       } else {
         records = db.prepare(`
           SELECT device_id, latitude, longitude, accuracy_m, provider, recorded_at
           FROM location_records
-          WHERE recorded_at >= ? AND recorded_at < ?
+          WHERE recorded_at >= ? AND recorded_at < ?${window ? " AND strftime('%Y%m%d%H', recorded_at) = ?" : ""}
           ORDER BY recorded_at ASC
           LIMIT 10000
-        `).all(startOfDay, startOfNextDay) as LocationRecord[];
+        `).all(...(window ? [startOfDay, startOfNextDay, window] : [startOfDay, startOfNextDay])) as LocationRecord[];
       }
     }
 
-    return locationQueryResponse(date, deviceId, records, url);
+    return locationQueryResponse(date, window, deviceId, records, url);
   } catch (e: any) {
     console.error("[location] Query error:", e.message);
     return Response.json({ error: "Internal error" }, { status: 500 });
   }
 }
 
-function locationQueryResponse(date: string, deviceId: string | null, records: LocationRecord[], url: URL): Response {
-  const response = Response.json({ date, records });
-  if (isTodayForOffset(date, timezoneOffsetMinutes(url))) {
-    return noStore(response);
+function locationQueryResponse(date: string, window: string | null, deviceId: string | null, records: LocationRecord[], url: URL): Response {
+  const tzOffsetMinutes = timezoneOffsetMinutes(url);
+  const response = Response.json({ date, window, records });
+  const tags = ["location", `location-${date}`, ...(window ? [`location-window-${window}`] : []), ...(deviceId ? [`location-device-${deviceId}`] : [])];
+  if ((window && isLiveHourWindow(window, tzOffsetMinutes)) || (!window && isTodayForOffset(date, tzOffsetMinutes))) {
+    return noStore(response, tags);
   }
   return withCdnHeaders(
     response,
-    ["location", `location-${date}`, ...(deviceId ? [`location-device-${deviceId}`] : [])],
+    tags,
     60 * 60 * 24 * 30,
   );
 }

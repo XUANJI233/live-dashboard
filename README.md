@@ -86,7 +86,7 @@ echo "Token: $TOKEN  ← Agent 配置用"
 
 ### CDN 缓存标签
 
-阿里云 ESA 默认读取的缓存标签头是 `Cache-Tag`；源站和边缘函数会同时输出 `Cache-Tag` 与 `ESA-Cache-Tag`，因此默认标签刷新和自定义标签头两种配置都能命中。当前状态、今天的时间线、当天健康数据、当天位置轨迹、当前公开留言窗口和 WebSocket 不缓存；历史时间线、历史健康数据、历史位置轨迹、历史公开留言、配置、健康检查和每日总结会带标签，便于在 CDN 控制台按标签刷新。
+阿里云 ESA 默认读取的缓存标签头是 `Cache-Tag`；源站和边缘函数会同时输出 `Cache-Tag` 与 `ESA-Cache-Tag`，因此默认标签刷新和自定义标签头两种配置都能命中。当前状态、当前/上一小时的时间线、健康数据、位置轨迹、当前公开留言窗口和 WebSocket 不缓存；更早的同日数据按小时窗口缓存并带 `timeline-window-YYYYMMDDHH`、`health-data-window-YYYYMMDDHH`、`location-window-YYYYMMDDHH` 等标签，历史时间线、历史健康数据、历史位置轨迹、历史公开留言、配置、健康检查和每日总结也会带标签，便于在 CDN 控制台按标签刷新。
 
 ## 环境变量
 

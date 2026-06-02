@@ -16,6 +16,8 @@ const TYPE_META: Record<string, { label: string; icon: string; priority: number 
   sleep_start:            { label: "入睡时间",  icon: "☾", priority: 5 },
   sleep_end:              { label: "起床时间",  icon: "☀", priority: 5 },
   sleep_duration:         { label: "睡眠时长",  icon: "⏱", priority: 5 },
+  deep_sleep_duration:    { label: "深睡时长",  icon: "▰", priority: 5 },
+  sleep_score:            { label: "睡眠评分",  icon: "◎", priority: 5 },
   sleep_stage_count:      { label: "睡眠阶段",  icon: "▦", priority: 5 },
   nap_start:              { label: "小睡开始",  icon: "☾", priority: 5 },
   nap_end:                { label: "小睡结束",  icon: "☀", priority: 5 },
@@ -228,9 +230,10 @@ export default function HealthData({ selectedDate, deviceId, records }: Props) {
 }
 
 function formatValue(value: number, type: string): string {
-  if (type === "sleep" || type === "exercise" || type === "sleep_duration" || type === "nap_duration") {
+  if (type === "sleep" || type === "exercise" || type === "sleep_duration" || type === "nap_duration" || type === "deep_sleep_duration") {
     return formatDurationMinutes(value);
   }
+  if (type === "sleep_score") return `${Math.round(value)}分`;
   if (type === "sleep_status") return value > 0 ? "睡着了" : "醒着";
   if (type === "wear_status") return value > 0 ? "佩戴中" : "未佩戴";
   if (type === "sleep_start" || type === "sleep_end" || type === "nap_start" || type === "nap_end") {
@@ -269,7 +272,8 @@ function displayUnit(unit: string): string {
 }
 
 function displayUnitForType(type: string, unit: string): string {
-  if (type === "sleep" || type === "sleep_duration" || type === "nap_duration") return "";
+  if (type === "sleep" || type === "sleep_duration" || type === "nap_duration" || type === "deep_sleep_duration") return "";
+  if (type === "sleep_score") return "";
   if (type === "sleep_start" || type === "sleep_end" || type === "nap_start" || type === "nap_end") return "";
   return displayUnit(unit);
 }

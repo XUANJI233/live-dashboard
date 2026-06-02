@@ -288,9 +288,9 @@ async function readMessageJson(req: Request): Promise<{ ok: true; body: any } | 
   }
   let text = "";
   try {
-    text = await req.text();
+    text = await readLimitedText(req, MAX_MESSAGE_JSON_BYTES);
   } catch {
-    return { ok: false, response: Response.json({ error: "Invalid body" }, { status: 400 }) };
+    return { ok: false, response: Response.json({ error: "Request too large" }, { status: 413 }) };
   }
   if (text.length > MAX_MESSAGE_JSON_BYTES) {
     return { ok: false, response: Response.json({ error: "Request too large" }, { status: 413 }) };
@@ -300,6 +300,27 @@ async function readMessageJson(req: Request): Promise<{ ok: true; body: any } | 
   } catch {
     return { ok: false, response: Response.json({ error: "Invalid JSON" }, { status: 400 }) };
   }
+}
+
+async function readLimitedText(req: Request, maxBytes: number): Promise<string> {
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    bytes += value.byteLength;
+    if (bytes > maxBytes) {
+      try { await reader.cancel(); } catch { /* ignore */ }
+      throw new Error("too_large");
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  text += decoder.decode();
+  return text;
 }
 
 function rateLimit(viewerId: string): boolean {
@@ -796,7 +817,7 @@ export function handlePublicMessages(req: Request): Response {
     const rows = getPublicMessagesByWindow.all(start.toISOString(), end.toISOString());
     const currentSlot = slotParam === currentMessageSlot();
     const response = Response.json({ slot: slotParam, messages: rows });
-    if (currentSlot) return noStore(response);
+    if (currentSlot) return noStore(response, ["public-messages", `public-messages-slot-${slotParam}`]);
     return withCdnHeaders(
       response,
       ["public-messages", `public-messages-slot-${slotParam}`],
@@ -819,7 +840,7 @@ export function handlePublicMessages(req: Request): Response {
   const rows = getPublicMessagesByWindow.all(start.toISOString(), end.toISOString());
   const currentWindow = windowParam === currentHourWindow();
   const response = Response.json({ window: windowParam, messages: rows });
-  if (currentWindow) return noStore(response);
+  if (currentWindow) return noStore(response, ["public-messages", `public-messages-${windowParam}`]);
   return withCdnHeaders(
     response,
     ["public-messages", `public-messages-${windowParam}`],

@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import type { TimelineSegment } from "@/lib/api";
-import { getAppDescription } from "@/lib/app-descriptions";
+import { getAppDescription, shouldMaskAppDescription } from "@/lib/app-descriptions";
+import { useConfig } from "@/hooks/useConfig";
 
 const APP_COLORS = [
   "#E8A0BF", "#88C9C9", "#E8B86D", "#C4A882", "#D4917B",
@@ -14,6 +15,7 @@ const IDLE_VISIBLE_SECONDS = 10 * 60;
 const SWITCH_GAP_SECONDS = 90;
 const SWITCH_MAX_SEGMENT_SECONDS = 90;
 const MIN_CLUSTER_SIZE = 3;
+const SAME_VISIBLE_GAP_SECONDS = 10 * 60;
 
 interface Props {
   segments: TimelineSegment[];
@@ -37,11 +39,12 @@ type TimelineEvent = {
 };
 
 export default function Timeline({ segments, currentAppByDevice, onlineDevices, loading }: Props) {
+  const { nsfwFilterEnabled } = useConfig();
   const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
   const colorMap = useMemo(() => new Map<string, string>(), []);
   const byDevice = useMemo(
-    () => buildDeviceEvents(segments, currentAppByDevice, onlineDevices),
-    [segments, currentAppByDevice, onlineDevices],
+    () => buildDeviceEvents(segments, currentAppByDevice, onlineDevices, nsfwFilterEnabled),
+    [segments, currentAppByDevice, onlineDevices, nsfwFilterEnabled],
   );
 
   if (byDevice.length === 0) {
@@ -76,7 +79,7 @@ export default function Timeline({ segments, currentAppByDevice, onlineDevices, 
                   colorMap,
                 );
                 const isOpen = !!openKeys[event.key];
-                const canOpen = event.children.length > 1 || hasUsefulChildDetail(event.children);
+                const canOpen = event.children.length > 1 || hasUsefulChildDetail(event.children, nsfwFilterEnabled);
                 return (
                   <div key={event.key} className={`timeline-entry glass-sm rounded ${event.isCurrent ? "timeline-active-glow" : ""}`}>
                     <button type="button" className="flex w-full items-center text-left group" onClick={() => { if (canOpen) setOpenKeys((prev) => ({ ...prev, [event.key]: !prev[event.key] })); }}>
@@ -107,7 +110,7 @@ export default function Timeline({ segments, currentAppByDevice, onlineDevices, 
                             <div className="flex items-center justify-between gap-3">
                               <span className="font-mono text-[10px] text-[var(--color-text-muted)]">{formatTimeRange(child.started_at, child.ended_at, isDeviceOffline(deviceId, onlineDevices))}</span>
                             </div>
-                            <div className="mt-0.5 truncate text-[var(--color-text)] text-xs" title={describeChild(child)}>{describeChild(child)}</div>
+                            <div className="mt-0.5 truncate text-[var(--color-text)] text-xs" title={describeChild(child, nsfwFilterEnabled)}>{describeChild(child, nsfwFilterEnabled)}</div>
                           </div>
                         ))}
                       </div>
@@ -123,7 +126,7 @@ export default function Timeline({ segments, currentAppByDevice, onlineDevices, 
   );
 }
 
-function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Record<string, string>, onlineDevices?: Set<string>) {
+function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Record<string, string>, onlineDevices?: Set<string>, nsfwFilterEnabled = true) {
   const byDevice = new Map<string, { deviceName: string; segments: TimelineSegment[] }>();
   for (const seg of segments) {
     if (!isUsefulSegment(seg)) continue;
@@ -136,7 +139,26 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
     const events: TimelineEvent[] = [];
     let i = 0;
     while (i < sorted.length) {
-      const cluster = collectSwitchCluster(sorted, i);
+      const visibleCluster = collectSameVisibleState(sorted, i, nsfwFilterEnabled);
+      if (visibleCluster.length > 1) {
+        const first = visibleCluster[0]!;
+        const last = visibleCluster[visibleCluster.length - 1]!;
+        events.push({
+          key: `${deviceId}:visible:${first.started_at}:${segmentVisibleSignature(first, nsfwFilterEnabled)}`,
+          kind: "single",
+          appName: first.app_name,
+          appId: first.app_id,
+          title: describeSegment(first, nsfwFilterEnabled),
+          startedAt: first.started_at,
+          endedAt: last.ended_at,
+          durationSeconds: spanSeconds(visibleCluster),
+          isCurrent: isCurrentEvent(deviceId, last.ended_at, onlineDevices) && visibleCluster.some((seg) => currentAppByDevice[deviceId] === seg.app_name),
+          children: compactChildren(visibleCluster),
+        });
+        i += visibleCluster.length;
+        continue;
+      }
+      const cluster = collectSwitchCluster(sorted, i, nsfwFilterEnabled);
       if (cluster.length >= MIN_CLUSTER_SIZE) {
         const first = cluster[0]!;
         const last = cluster[cluster.length - 1]!;
@@ -144,7 +166,7 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
         i += cluster.length;
         continue;
       }
-      const merged = collectSameState(sorted, i);
+      const merged = collectSameState(sorted, i, nsfwFilterEnabled);
       const first = merged[0]!;
       const last = merged[merged.length - 1]!;
       events.push({
@@ -152,12 +174,12 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
         kind: "single",
         appName: first.app_name,
         appId: first.app_id,
-        title: describeSegment(first),
+        title: describeSegment(first, nsfwFilterEnabled),
         startedAt: first.started_at,
         endedAt: last.ended_at,
         durationSeconds: spanSeconds(merged),
         isCurrent: isCurrentEvent(deviceId, last.ended_at, onlineDevices) && currentAppByDevice[deviceId] === first.app_name,
-        children: merged.length > 1 ? compactChildren(merged) : (meaningfulDetailTitle(first) ? [first] : []),
+        children: merged.length > 1 ? compactChildren(merged) : (meaningfulDetailTitle(first, nsfwFilterEnabled) ? [first] : []),
       });
       i += merged.length;
     }
@@ -167,16 +189,16 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
   }).filter((entry) => entry.events.length > 0);
 }
 
-function collectSwitchCluster(segments: TimelineSegment[], startIndex: number) {
+function collectSwitchCluster(segments: TimelineSegment[], startIndex: number, nsfwFilterEnabled = true) {
   const first = segments[startIndex]!;
-  if (!isSwitchNoiseSegment(first)) return [first];
+  if (!isSwitchNoiseSegment(first, nsfwFilterEnabled)) return [first];
   const cluster = [first];
   let previousApp = first.app_name;
   let previousEndMs = new Date(first.ended_at || first.started_at).getTime();
   let changed = false;
   for (let i = startIndex + 1; i < segments.length; i += 1) {
     const next = segments[i]!;
-    if (!isSwitchNoiseSegment(next)) break;
+    if (!isSwitchNoiseSegment(next, nsfwFilterEnabled)) break;
     const nextStart = new Date(next.started_at).getTime();
     const gap = nextStart - previousEndMs;
     if (Number.isNaN(nextStart) || gap < 0 || gap > SWITCH_GAP_SECONDS * 1000) break;
@@ -188,26 +210,58 @@ function collectSwitchCluster(segments: TimelineSegment[], startIndex: number) {
   return changed && cluster.length >= MIN_CLUSTER_SIZE ? cluster : [first];
 }
 
-function collectSameState(segments: TimelineSegment[], startIndex: number) {
+function collectSameVisibleState(segments: TimelineSegment[], startIndex: number, nsfwFilterEnabled = true) {
   const first = segments[startIndex]!;
-  const signature = segmentSignature(first);
+  if (!isSameVisibleMergeCandidate(first, nsfwFilterEnabled)) return [first];
+  const signature = segmentVisibleSignature(first, nsfwFilterEnabled);
+  const merged = [first];
+  let previousEndMs = new Date(first.ended_at || first.started_at).getTime();
+  for (let j = startIndex + 1; j < segments.length; j += 1) {
+    const next = segments[j]!;
+    if (!isSameVisibleMergeCandidate(next, nsfwFilterEnabled)) break;
+    if (segmentVisibleSignature(next, nsfwFilterEnabled) !== signature) break;
+    const nextStart = new Date(next.started_at).getTime();
+    const gap = nextStart - previousEndMs;
+    if (Number.isNaN(nextStart) || Number.isNaN(previousEndMs) || gap < 0 || gap > SAME_VISIBLE_GAP_SECONDS * 1000) break;
+    merged.push(next);
+    previousEndMs = new Date(next.ended_at || next.started_at).getTime();
+  }
+  return merged;
+}
+
+function collectSameState(segments: TimelineSegment[], startIndex: number, nsfwFilterEnabled = true) {
+  const first = segments[startIndex]!;
+  const signature = segmentSignature(first, nsfwFilterEnabled);
   const merged = [first];
   for (let j = startIndex + 1; j < segments.length; j += 1) {
     const next = segments[j]!;
-    if (segmentSignature(next) !== signature) break;
+    if (segmentSignature(next, nsfwFilterEnabled) !== signature) break;
     merged.push(next);
   }
   return merged;
 }
 
-function segmentSignature(seg: TimelineSegment) {
+function segmentSignature(seg: TimelineSegment, nsfwFilterEnabled = true) {
   if (isIdleSegment(seg)) return "idle";
-  return `${seg.app_id || seg.app_name}|${seg.app_name}|${meaningfulDetailTitle(seg) || ""}`;
+  if (nsfwFilterEnabled && shouldMaskAppDescription(seg.app_name, seg.app_id, seg.display_title)) return "masked-nsfw";
+  return `${seg.app_id || seg.app_name}|${seg.app_name}|${meaningfulDetailTitle(seg, nsfwFilterEnabled) || ""}`;
 }
 
-function isSwitchNoiseSegment(seg: TimelineSegment) {
+function segmentVisibleSignature(seg: TimelineSegment, nsfwFilterEnabled = true) {
+  return describeSegment(seg, nsfwFilterEnabled).trim();
+}
+
+function isSameVisibleMergeCandidate(seg: TimelineSegment, nsfwFilterEnabled = true) {
+  if (isLauncherSegment(seg)) return false;
+  if (meaningfulDetailTitle(seg, nsfwFilterEnabled)) return false;
+  const title = segmentVisibleSignature(seg, nsfwFilterEnabled);
+  if (!title) return false;
+  return title === "暂时看不到具体活动喵~" || title === "暂时离开了一会儿喵~";
+}
+
+function isSwitchNoiseSegment(seg: TimelineSegment, nsfwFilterEnabled = true) {
   if (isIdleSegment(seg) || isLauncherSegment(seg)) return false;
-  if (meaningfulDetailTitle(seg)) return false;
+  if (meaningfulDetailTitle(seg, nsfwFilterEnabled)) return false;
   if (isBrowserLikeSegment(seg) && (seg.display_title || "").trim()) return false;
   const seconds = durationSeconds(seg);
   return seconds > 0 && seconds <= SWITCH_MAX_SEGMENT_SECONDS;
@@ -235,16 +289,20 @@ function spanSeconds(segments: TimelineSegment[]) {
   return Math.max(0, Math.round((end - start) / 1000));
 }
 
-function describeSegment(seg: TimelineSegment) {
+function describeSegment(seg: TimelineSegment, nsfwFilterEnabled = true) {
   if (isIdleSegment(seg)) return "暂时离开了一会儿喵~";
-  return getAppDescription(seg.app_name, seg.display_title);
+  return getAppDescription(seg.app_name, seg.display_title, undefined, {
+    appId: seg.app_id,
+    nsfwFilterEnabled,
+  });
 }
 
-function describeChild(seg: TimelineSegment) {
-  return meaningfulDetailTitle(seg) || describeSegment(seg);
+function describeChild(seg: TimelineSegment, nsfwFilterEnabled = true) {
+  return meaningfulDetailTitle(seg, nsfwFilterEnabled) || describeSegment(seg, nsfwFilterEnabled);
 }
 
-function meaningfulDetailTitle(seg: TimelineSegment) {
+function meaningfulDetailTitle(seg: TimelineSegment, nsfwFilterEnabled = true) {
+  if (nsfwFilterEnabled && shouldMaskAppDescription(seg.app_name, seg.app_id, seg.display_title)) return "";
   const title = (seg.display_title || "").trim();
   if (!title) return "";
   const normalized = title.toLowerCase();
@@ -290,8 +348,8 @@ function compactChildren(children: TimelineSegment[]) {
   return compacted;
 }
 
-function hasUsefulChildDetail(children: TimelineSegment[]) {
-  return children.some((child) => !!meaningfulDetailTitle(child));
+function hasUsefulChildDetail(children: TimelineSegment[], nsfwFilterEnabled = true) {
+  return children.some((child) => !!meaningfulDetailTitle(child, nsfwFilterEnabled));
 }
 
 function isIdleSegment(seg: TimelineSegment) {

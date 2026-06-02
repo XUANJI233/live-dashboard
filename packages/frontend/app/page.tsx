@@ -5,6 +5,7 @@ import { useDashboard } from "@/hooks/useDashboard";
 import { useConfig, useConfigLoader, ConfigContext } from "@/hooks/useConfig";
 import type { DeviceState, HealthRecord } from "@/lib/api";
 import { fetchHealthData } from "@/lib/api";
+import { shouldMaskAppDescription } from "@/lib/app-descriptions";
 import Header from "@/components/Header";
 import CurrentStatus from "@/components/CurrentStatus";
 import DeviceCard from "@/components/DeviceCard";
@@ -304,6 +305,7 @@ function isWatchDevice(device: DeviceState) {
 }
 
 function DeviceOverview({ devices }: { devices: DeviceState[] }) {
+  const { nsfwFilterEnabled } = useConfig();
   return (
     <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[11px] text-[var(--color-text-muted)]">
       {devices.map((d) => {
@@ -311,7 +313,7 @@ function DeviceOverview({ devices }: { devices: DeviceState[] }) {
         const icon = platformIcons[d.platform] || "\u{1F4BB}";
         return (
           <span key={d.device_id} className={isOnline ? "" : "opacity-40"}>
-            {icon} {d.device_name} · {isOnline ? (d.app_name === "idle" ? "暂时离开" : d.app_name || "不知道在忙什么") : "离线"}
+            {icon} {d.device_name} · {isOnline ? getOverviewAppLabel(d, nsfwFilterEnabled) : "离线"}
             {deviceInlineMeta(d)}
           </span>
         );
@@ -451,10 +453,18 @@ function HealthSnapshot({ devices, records }: { devices: DeviceState[]; records:
   );
 }
 
+function getOverviewAppLabel(device: DeviceState, nsfwFilterEnabled: boolean) {
+  if (device.app_name === "idle") return "暂时离开";
+  if (nsfwFilterEnabled && shouldMaskAppDescription(device.app_name, device.app_id, device.display_title)) {
+    return "私密活动中";
+  }
+  return device.app_name || "不知道在忙什么";
+}
+
 type DeviceInfoItem = { label: string; value: string; unit?: string };
 type HealthItem = { type: string; label: string; value: string; unit: string; source: string; records: HealthRecord[] };
 type HealthGroup = { latest: HealthRecord; all: HealthRecord[] };
-const SLEEP_DETAIL_TYPES = ["sleep", "sleep_status", "sleep_start", "sleep_end", "sleep_duration", "sleep_stage_count", "nap_start", "nap_end", "nap_duration"];
+const SLEEP_DETAIL_TYPES = ["sleep", "sleep_status", "sleep_start", "sleep_end", "sleep_duration", "deep_sleep_duration", "sleep_score", "sleep_stage_count", "nap_start", "nap_end", "nap_duration"];
 
 function DeviceInfoCard({ item }: { item: DeviceInfoItem }) {
   return (
@@ -622,6 +632,8 @@ function SleepDetail({ grouped, items }: { grouped: Map<string, HealthGroup>; it
   const sleepStart = grouped.get("sleep_start")?.latest;
   const sleepEnd = grouped.get("sleep_end")?.latest;
   const sleepDuration = grouped.get("sleep_duration")?.latest || grouped.get("sleep")?.latest;
+  const deepSleepDuration = grouped.get("deep_sleep_duration")?.latest;
+  const sleepScore = grouped.get("sleep_score")?.latest;
   const napStart = grouped.get("nap_start")?.latest;
   const napEnd = grouped.get("nap_end")?.latest;
   const napDuration = grouped.get("nap_duration")?.latest;
@@ -643,6 +655,8 @@ function SleepDetail({ grouped, items }: { grouped: Map<string, HealthGroup>; it
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         <SleepSummaryItem label="夜间睡眠" value={formatSleepRange(sleepStart, sleepEnd, sleepDuration)} />
         <SleepSummaryItem label="睡眠时长" value={sleepDuration ? formatHealthValue(sleepDuration.value, "sleep_duration") : "--"} />
+        <SleepSummaryItem label="深睡" value={deepSleepDuration ? formatHealthValue(deepSleepDuration.value, "deep_sleep_duration") : "--"} />
+        <SleepSummaryItem label="评分" value={sleepScore ? formatHealthValue(sleepScore.value, "sleep_score") : "--"} />
         <SleepSummaryItem label="睡眠阶段" value={stageCount ? `${formatHealthValue(stageCount.value, "sleep_stage_count")}次` : "--"} />
         <SleepSummaryItem label="小睡" value={formatSleepRange(napStart, napEnd, napDuration)} />
       </div>
@@ -730,6 +744,7 @@ function groupHealth(records: HealthRecord[]) {
 function healthItems(grouped: Map<string, HealthGroup>, deviceById: Map<string, DeviceState>): HealthItem[] {
   const order = [
     "heart_rate", "oxygen_saturation", "body_temperature", "sleep_status", "sleep_start", "sleep_end", "sleep_duration",
+    "deep_sleep_duration", "sleep_score",
     "nap_start", "nap_end", "nap_duration", "sleep_stage_count", "wear_status", "stress", "steps",
     "active_calories", "stand_count", "stand_target", "air_pressure", "altitude",
   ];
@@ -840,6 +855,8 @@ function healthLabel(type: string) {
     sleep_start: "入睡时间",
     sleep_end: "起床时间",
     sleep_duration: "睡眠时长",
+    deep_sleep_duration: "深睡时长",
+    sleep_score: "睡眠评分",
     sleep_stage_count: "睡眠阶段",
     nap_start: "小睡开始",
     nap_end: "小睡结束",
@@ -859,12 +876,13 @@ function healthLabel(type: string) {
 function formatHealthValue(value: number, type: string) {
   if (type === "sleep_status") return value > 0 ? "睡着了" : "醒着";
   if (type === "wear_status") return value > 0 ? "佩戴中" : "未佩戴";
-  if (type === "sleep_duration" || type === "nap_duration" || type === "sleep") {
+  if (type === "sleep_duration" || type === "nap_duration" || type === "sleep" || type === "deep_sleep_duration") {
     return formatDurationMinutes(value);
   }
   if (type === "sleep_start" || type === "sleep_end" || type === "nap_start" || type === "nap_end") {
     return formatMinuteOfDay(value);
   }
+  if (type === "sleep_score") return `${Math.round(value)}分`;
   if (Number.isInteger(value)) return String(value);
   return value.toFixed(1);
 }
@@ -886,7 +904,8 @@ function friendlyUnit(unit: string) {
 }
 
 function healthUnit(type: string, unit: string) {
-  if (type === "sleep" || type === "sleep_duration" || type === "nap_duration") return "";
+  if (type === "sleep" || type === "sleep_duration" || type === "nap_duration" || type === "deep_sleep_duration") return "";
+  if (type === "sleep_score") return "";
   if (type === "sleep_start" || type === "sleep_end" || type === "nap_start" || type === "nap_end") return "";
   return friendlyUnit(unit);
 }
