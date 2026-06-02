@@ -17,7 +17,8 @@ const DEFAULT_SYNC_INTERVAL_SECONDS = 300
 const MAX_SYNC_INTERVAL_SECONDS = 900
 const PENDING_STATUS_KEY = 'livewatch_pending_status'
 const PENDING_HEALTH_KEY = 'livewatch_pending_health'
-const MAX_PENDING_HEALTH_RECORDS = 300
+const MAX_PENDING_HEALTH_RECORDS = 5000
+const HEALTH_UPLOAD_CHUNK_SIZE = 1000
 const SENSOR_KEYS = [
   'sensorHeartRate',
   'sensorBattery',
@@ -48,6 +49,22 @@ function clampSyncIntervalSeconds(value) {
 
 function shouldRetryStatus(status) {
   return status === 429 || status >= 500
+}
+
+function chunkRecords(records, size) {
+  const out = []
+  for (let i = 0; i < records.length; i += size) {
+    out.push(records.slice(i, i + size))
+  }
+  return out
+}
+
+function concatChunks(chunks, startIndex) {
+  const out = []
+  for (let i = startIndex; i < chunks.length; i++) {
+    for (let j = 0; j < chunks[i].length; j++) out.push(chunks[i][j])
+  }
+  return out
 }
 
 AppSideService(
@@ -119,8 +136,11 @@ AppSideService(
           var url = (params && params.serverUrl) || this.state.serverUrl
           var tok = (params && params.token) || this.state.token
           if (!url || !tok) { res(null, { ok: false, reason: 'no config' }); break }
-          var self = this
-          this.doUpload(url, tok, { app_id: 'zepp_watch', window_title: '手表在线', timestamp: new Date().toISOString(), extra: { device: { platform: 'zepp', capability_mode: 'normal', device_kind: 'watch', last_sample_at: new Date().toISOString() } } }, res)
+          this.state.serverUrl = cleanServerUrl(url)
+          this.state.token = cleanToken(tok)
+          this.persistConfig()
+          this.flushPendingUploads(true)
+          res(null, { ok: true, status: 'watch_full_upload_queued' })
           break
         }
         case 'BATCH_DATA': {
@@ -192,14 +212,15 @@ AppSideService(
         return false
       }
 
-      const { status, heart_rate_history, spo2_history, body_temp_history } = expanded
+      const { status, heart_rate_history, spo2_history, body_temp_history, sleep_history } = expanded
+      const forceUpload = Boolean(expanded.manual)
       const healthRecords = this.statusToHealthRecords(status)
 
-      this.flushPendingUploads()
+      this.flushPendingUploads(forceUpload)
 
       // 1. Status report
       if (status) {
-        this.uploadStatus(status)
+        this.uploadStatus(status, { force: forceUpload })
       }
 
       // 2. Interpolate + upload HR history (phone has power for this)
@@ -220,34 +241,38 @@ AppSideService(
         healthRecords.push(...body_temp_history)
       }
 
+      if (sleep_history && sleep_history.length > 0) {
+        healthRecords.push(...sleep_history)
+      }
+
       if (healthRecords.length > 0) {
-        this.uploadHealthRecords(healthRecords)
+        this.uploadHealthRecords(healthRecords, { force: forceUpload })
       }
 
       return true
     },
 
-    flushPendingUploads() {
-      if (!this.state.enabled || !this.state.serverUrl || !this.state.token) return
-      this.flushPendingStatus()
-      this.flushPendingHealthRecords()
+    flushPendingUploads(force) {
+      if ((!this.state.enabled && !force) || !this.state.serverUrl || !this.state.token) return
+      this.flushPendingStatus(force)
+      this.flushPendingHealthRecords(force)
     },
 
-    flushPendingStatus() {
+    flushPendingStatus(force) {
       try {
         const raw = settings.settingsStorage.getItem(PENDING_STATUS_KEY)
         if (!raw) return
         const status = JSON.parse(raw)
-        this.uploadStatus(status, { pending: true })
+        this.uploadStatus(status, { pending: true, force: force })
       } catch (e) {
         settings.settingsStorage.removeItem(PENDING_STATUS_KEY)
       }
     },
 
-    flushPendingHealthRecords() {
+    flushPendingHealthRecords(force) {
       const records = this.readPendingHealthRecords()
       if (records.length > 0) {
-        this.uploadHealthRecords(records, { pending: true })
+        this.uploadHealthRecords(records, { pending: true, force: force })
       }
     },
 
@@ -362,17 +387,54 @@ AppSideService(
           unit: 'celsius',
           timestamp: new Date(todayMs + m * 60000).toISOString(),
         }))
+        const verboseSleep = this.expandSleepDetails(compact.sl, todayMs, nowISO)
 
         return {
           status: verboseStatus,
           heart_rate_history: verboseHr,
           spo2_history: verboseSpo2,
           body_temp_history: verboseTemp,
+          sleep_history: verboseSleep,
+          manual: compact.m === 1,
         }
       } catch (e) {
         console.error('[LiveWatch:companion] expandCompact failed: ' + e.message)
         return null
       }
+    },
+
+    expandSleepDetails(details, todayMs, nowISO) {
+      if (!details || typeof details !== 'object') return []
+      const out = []
+
+      function validMinute(value) {
+        return Number.isFinite(value) && value >= 0 && value < 1440
+      }
+
+      function minuteIso(value) {
+        return new Date(todayMs + value * 60000).toISOString()
+      }
+
+      if (validMinute(details.st)) out.push({ type: 'sleep_start', value: details.st, unit: 'minute_of_day', timestamp: nowISO })
+      if (validMinute(details.en)) out.push({ type: 'sleep_end', value: details.en, unit: 'minute_of_day', timestamp: nowISO })
+      if (Number.isFinite(details.du) && details.du > 0) out.push({ type: 'sleep_duration', value: details.du, unit: 'minutes', timestamp: nowISO })
+      if (Number.isFinite(details.de) && details.de >= 0) out.push({ type: 'deep_sleep_duration', value: details.de, unit: 'minutes', timestamp: nowISO })
+      if (Number.isFinite(details.sc) && details.sc >= 0) out.push({ type: 'sleep_score', value: details.sc, unit: 'score', timestamp: nowISO })
+      if (Number.isFinite(details.sg) && details.sg >= 0) out.push({ type: 'sleep_stage_count', value: details.sg, unit: 'count', timestamp: nowISO })
+
+      if (Array.isArray(details.np)) {
+        details.np.forEach((nap) => {
+          if (!Array.isArray(nap) || nap.length < 3) return
+          const start = nap[0]
+          const end = nap[1]
+          const duration = nap[2]
+          if (validMinute(start)) out.push({ type: 'nap_start', value: start, unit: 'minute_of_day', timestamp: minuteIso(start) })
+          if (validMinute(end)) out.push({ type: 'nap_end', value: end, unit: 'minute_of_day', timestamp: minuteIso(end) })
+          if (Number.isFinite(duration) && duration > 0) out.push({ type: 'nap_duration', value: duration, unit: 'minutes', timestamp: validMinute(start) ? minuteIso(start) : nowISO })
+        })
+      }
+
+      return out
     },
 
     // ── O(N) 心率插值算法 ──
@@ -382,71 +444,57 @@ AppSideService(
     interpolateHeartRate(records) {
       if (!records || records.length === 0) return []
 
-      // 1. 按时间排序
+      // 1. 按时间排序并合并同一分钟的重复读数
       const sorted = records.slice().sort((a, b) => {
         return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-      })
+      }).filter((record) => Number.isFinite(new Date(record.timestamp).getTime()) && Number.isFinite(record.value))
+      if (sorted.length === 0) return []
 
-      // 2. 构建时间→值映射
-      const dataMap = new Map()
-      sorted.forEach(r => {
-        const ts = new Date(r.timestamp).getTime()
-        dataMap.set(ts, r.value)
-      })
+      const points = []
+      for (let i = 0; i < sorted.length; i++) {
+        const minuteTs = Math.floor(new Date(sorted[i].timestamp).getTime() / 60000) * 60000
+        const value = sorted[i].value
+        const prev = points[points.length - 1]
+        if (prev && prev.ts === minuteTs) {
+          prev.value = value
+        } else {
+          points.push({ ts: minuteTs, value: value })
+        }
+      }
+      if (points.length === 0) return []
 
-      // 3. 确定时间范围（从第一个到最后一个）
+      // 2. 确定时间范围（从第一个到最后一个）
       const firstTs = new Date(sorted[0].timestamp).getTime()
       const lastTs = new Date(sorted[sorted.length - 1].timestamp).getTime()
 
-      // 4. 按分钟填充，使用线性插值
+      // 3. 按分钟填充，使用双指针线性插值，避免 O(N²)
       const result = []
-      const sortedKeys = Array.from(dataMap.keys()).sort((a, b) => a - b)
+      let nextIndex = 0
 
-      for (let ts = firstTs; ts <= lastTs; ts += 60000) {
-        // 查找 ts 前后的有效数据点
-        let prevTs = null, prevVal = null
-        let nextTs = null, nextVal = null
+      for (let ts = Math.floor(firstTs / 60000) * 60000; ts <= lastTs; ts += 60000) {
+        while (nextIndex < points.length && points[nextIndex].ts < ts) nextIndex++
+        const next = points[nextIndex] || null
+        const prev = next && next.ts === ts ? next : points[nextIndex - 1] || null
+        let value
 
-        for (let i = 0; i < sortedKeys.length; i++) {
-          const key = sortedKeys[i]
-          if (key <= ts) {
-            prevTs = key
-            prevVal = dataMap.get(key)
-          }
-          if (key >= ts && nextTs === null) {
-            nextTs = key
-            nextVal = dataMap.get(key)
-          }
-        }
-
-        let value = null
-
-        // 情况1：ts 有精确值
-        if (dataMap.has(ts)) {
-          value = dataMap.get(ts)
-        }
-        // 情况2：前后都有值，线性插值
-        else if (prevVal !== null && nextVal !== null) {
-          const ratio = (ts - prevTs) / (nextTs - prevTs)
-          value = Math.round(prevVal + ratio * (nextVal - prevVal))
-        }
-        // 情况3：只有前值，使用前值
-        else if (prevVal !== null) {
-          value = prevVal
-        }
-        // 情况4：只有后值，使用后值
-        else if (nextVal !== null) {
-          value = nextVal
+        if (next && next.ts === ts) {
+          value = next.value
+        } else if (prev && next) {
+          const ratio = (ts - prev.ts) / (next.ts - prev.ts)
+          value = Math.round(prev.value + ratio * (next.value - prev.value))
+        } else if (prev) {
+          value = prev.value
+        } else if (next) {
+          value = next.value
         }
 
-        if (value !== null) {
-          result.push({
-            type: 'heart_rate',
-            value: value,
-            unit: 'bpm',
-            timestamp: new Date(ts).toISOString(),
-          })
-        }
+        if (value == null) continue
+        result.push({
+          type: 'heart_rate',
+          value: value,
+          unit: 'bpm',
+          timestamp: new Date(ts).toISOString(),
+        })
       }
 
       console.log('[LiveWatch:companion] Interpolated ' + records.length + ' → ' + result.length + ' records')
@@ -457,7 +505,8 @@ AppSideService(
 
     uploadStatus(status, options) {
       if (!this.state.serverUrl || !this.state.token) return
-      if (!this.state.enabled) {
+      const force = options && options.force
+      if (!this.state.enabled && !force) {
         console.log('[LiveWatch:companion] Upload disabled, skip status')
         return
       }
@@ -484,56 +533,52 @@ AppSideService(
         if (!isPending) this.queuePendingStatus(status)
       })
     },
-    // 无视 enabled 的上传（手动触发用）
-    async doUpload(url, token, data, res) {
-      var apiUrl = cleanServerUrl(url) + '/api/report'
-      var bearerToken = cleanToken(token)
-      try {
-        var r = await fetch({
-          url: apiUrl, method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + bearerToken },
-          body: JSON.stringify(data),
-        })
-        var body = typeof r.body === 'string' ? r.body : JSON.stringify(r.body)
-        var ok = r.status >= 200 && r.status < 300
-        if (res) res(null, { ok: ok, status: r.status, body: body.substring(0, 200) })
-      } catch (err) {
-        if (res) res(null, { ok: false, error: (err && err.message) || String(err) })
-      }
-    },
-
     // ── 上传健康数据（心率/血氧/体温/状态派生数据） ──
 
     uploadHealthRecords(records, options) {
       if (!this.state.serverUrl || !this.state.token) return
-      if (!this.state.enabled) {
+      const force = options && options.force
+      if (!this.state.enabled && !force) {
         console.log('[LiveWatch:companion] Upload disabled, skip health records')
         return
       }
       const isPending = options && options.pending
 
-      const payload = { records: records }
+      const chunks = chunkRecords(records, HEALTH_UPLOAD_CHUNK_SIZE)
+      let uploaded = 0
 
-      fetch({
-        url: this.state.serverUrl.replace(/\/+$/, '') + '/api/health-data',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + this.state.token,
-        },
-        body: JSON.stringify(payload),
-      }).then(res => {
-        if (res.status >= 200 && res.status < 300) {
-          console.log('[LiveWatch:companion] Health upload OK: ' + records.length + ' records')
+      const uploadNext = (index) => {
+        if (index >= chunks.length) {
           if (isPending) settings.settingsStorage.removeItem(PENDING_HEALTH_KEY)
-        } else {
-          console.warn('[LiveWatch:companion] Health upload HTTP ' + res.status)
-          if (!isPending && shouldRetryStatus(res.status)) this.queuePendingHealthRecords(records)
+          return
         }
-      }).catch(err => {
-        console.error('[LiveWatch:companion] Health upload failed: ' + (err.message || err))
-        if (!isPending) this.queuePendingHealthRecords(records)
-      })
+        const chunk = chunks[index]
+        const payload = { records: chunk }
+
+        fetch({
+          url: this.state.serverUrl.replace(/\/+$/, '') + '/api/health-data',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + this.state.token,
+          },
+          body: JSON.stringify(payload),
+        }).then(res => {
+          if (res.status >= 200 && res.status < 300) {
+            uploaded += chunk.length
+            console.log('[LiveWatch:companion] Health upload OK: ' + chunk.length + ' records')
+            uploadNext(index + 1)
+          } else {
+            console.warn('[LiveWatch:companion] Health upload HTTP ' + res.status)
+            if (!isPending && shouldRetryStatus(res.status)) this.queuePendingHealthRecords(concatChunks(chunks, index))
+          }
+        }).catch(err => {
+          console.error('[LiveWatch:companion] Health upload failed: ' + (err.message || err))
+          if (!isPending) this.queuePendingHealthRecords(concatChunks(chunks, index))
+        })
+      }
+
+      uploadNext(0)
     },
 
     restoreConfig() {

@@ -76,6 +76,15 @@ object SystemSnapshotStore {
     private fun mergeMedia(previous: MediaInfo?, next: MediaInfo?): MediaInfo? {
         if (previous == null) return next
         if (next == null) return previous
+        if (next.playing == false) {
+            return MediaInfo(
+                playing = false,
+                app = next.app,
+                packageName = next.packageName,
+                state = next.state ?: "paused",
+                source = next.source,
+            )
+        }
         return MediaInfo(
             playing = next.playing ?: previous.playing,
             title = next.title ?: previous.title,

@@ -4,13 +4,14 @@
 //  硬件工程师思维：最小化手表端功耗
 //  - 单次执行模式：alarm 唤醒 → 采集 → 传输 → exit
 //  - 只采集非零心率值（减少 80% 传输数据量）
-//  - 删除 O(N²) 插值算法（交给伴生应用处理）
+//  - 删除 O(N²) 插值算法（交给伴生应用用线性流水线处理）
 //  - 移除 createSysTimer（避免持续运行开销）
 //  - 批量打包成单个 JSON（减少 HTTP 开销）
 //
 //  T-Rex 3: Zepp OS 4.0, API_LEVEL 4.5
 // ────────────────────────────────────────────
 
+import { BasePage } from '@zeppos/zml/base-page'
 import { Battery } from '@zos/sensor'
 import { Step } from '@zos/sensor'
 import { HeartRate } from '@zos/sensor'
@@ -57,6 +58,7 @@ const MAX_SYNC_INTERVAL_SECONDS = 900 // server marks Zepp offline after 20 minu
 const MAX_SLEEP_UPLOAD_GAP_MS = 15 * 60_000
 const CONFIG_KEY = 'lw_cfg'
 const PREVIOUS_PAYLOAD_KEY = 'lw_prev_payload'
+const MANUAL_FULL_SYNC_KEY = 'lw_manual_full'
 
 // ── Persist sleepSkipCounter (survives alarm wakeups) ──
 // 使用 @zos/storage LocalStorage (API_LEVEL 3.0+, 官方推荐)
@@ -138,7 +140,12 @@ function writeLastSpo2SyncTime(value) {
 }
 
 // ── AppService entry (single-execution mode) ──
-AppService({
+//
+// ZML exposes call/request through BasePage. AppService can use the same
+// wrapper for the short BLE handoff to the phone side-service while still
+// exiting after one collection cycle.
+AppService(
+  BasePage({
   onInit(options) {
     console.log('[LiveWatch:device] AppService init (single-execution)')
 
@@ -158,9 +165,12 @@ AppService({
     // Read config
     restoreConfig()
 
-    // Collect and upload data
-    if (enabled && serverUrl && token) {
-      collectAndUpload()
+    const manualFullSync = readManualFullSyncRequest()
+
+    // Collect and upload data. Manual upload is one-shot and does not enable
+    // recurring background sync.
+    if ((enabled || manualFullSync) && serverUrl && token) {
+      collectAndUpload({ forceFull: manualFullSync, messenger: this })
     }
 
     // Setup next alarm before exit
@@ -170,7 +180,8 @@ AppService({
   onDestroy() {
     console.log('[LiveWatch:device] AppService destroy')
   },
-})
+  }),
+)
 
 // ── Config ──
 
@@ -220,6 +231,15 @@ function writePreviousPayload(payload) {
   } catch (e) {}
 }
 
+function readManualFullSyncRequest() {
+  try {
+    const value = _localStorage.getItem(MANUAL_FULL_SYNC_KEY, 0)
+    _localStorage.setItem(MANUAL_FULL_SYNC_KEY, 0)
+    return value === 1 || value === true || value === '1'
+  } catch (e) {}
+  return false
+}
+
 function applyConfig(cfg) {
   serverUrl = cleanServerUrl(cfg.serverUrl || '')
   token = cleanToken(cfg.token || '')
@@ -230,7 +250,8 @@ function applyConfig(cfg) {
 
 // ── Data Collection & Upload (Optimized) ──
 
-function collectAndUpload() {
+function collectAndUpload(options = {}) {
+  const forceFull = Boolean(options.forceFull)
   const now = new Date()
   const nowISO = now.toISOString()
   const extra = {}
@@ -249,7 +270,7 @@ function collectAndUpload() {
 
   // 2. 智能传输策略：首次检测到睡眠时必须上传（让服务端立即知道），
   //    之后按同步间隔动态跳过，确保服务端不会超过 15 分钟没有状态心跳。
-  if (isSleeping) {
+  if (isSleeping && !forceFull) {
     const sleepUploadEveryCycles = getSleepUploadEveryCycles()
     if (sleepSkipCounter === 0) {
       // 首次检测到睡眠 → 强制上传，让服务端立即知道用户睡着了
@@ -308,8 +329,9 @@ function collectAndUpload() {
   if (sensorSleep) extra.sleeping = isSleeping
 
   // ── Build compact payload (short keys, reduced ~84%) ──
-  // Compact format: sends minimal data over BLE/HTTP, side-service expands to verbose
-  // s = status, h = HR history [value, minuteIndex], o = SpO2 [value, timeSec], t = temp [value, minuteOffset]
+  // Compact format: sends minimal data over BLE/HTTP, side-service expands to verbose.
+  // s = status, h = HR history [value, minuteIndex], o = SpO2 [value, timeSec],
+  // t = temp [value, minuteOffset], sl = sleep summary.
 
   const unixTs = Math.floor(now.getTime() / 1000)
 
@@ -326,9 +348,10 @@ function collectAndUpload() {
   }
 
   // Compact data arrays (each 85% smaller than verbose)
-  const compactHr = sensorHeartRate ? collectHeartRateHistory(now) : []
-  const compactSpo2 = sensorSpo2 ? collectSpo2History(6) : []
-  const compactTemp = sensorBodyTemp ? collectTempHistory(now) : []
+  const compactHr = sensorHeartRate ? collectHeartRateHistory(now, forceFull) : []
+  const compactSpo2 = sensorSpo2 ? collectSpo2History(forceFull ? 24 : 6, forceFull) : []
+  const compactTemp = sensorBodyTemp ? collectTempHistory(now, forceFull) : []
+  const compactSleep = sensorSleep ? collectSleepDetails(forceFull) : null
 
   // Compact payload (short keys for ~84% size reduction)
   const compactPayload = {
@@ -336,6 +359,8 @@ function collectAndUpload() {
     h: compactHr,   // [[value, minuteIndex], ...]
     o: compactSpo2, // [[value, timeSec], ...]
     t: compactTemp, // [[value, minuteOffset], ...]
+    sl: compactSleep,
+    m: forceFull ? 1 : undefined,
   }
 
   const compactSize = JSON.stringify(compactPayload).length
@@ -350,24 +375,33 @@ function collectAndUpload() {
     : [compactPayload]
 
   // Send compact data to side-service over ZML BLE. Side-service expands and uploads.
-  sendToCompanion({ payloads: payloads })
+  sendToCompanion({ payloads: payloads }, options.messenger)
   writePreviousPayload(compactPayload)
 }
 
-function sendToCompanion(payload) {
-  sendToCompanionViaZml(payload)
+function sendToCompanion(payload, messenger) {
+  sendToCompanionViaZml(payload, messenger)
 }
 
-function sendToCompanionViaZml(payload) {
+function sendToCompanionViaZml(payload, messenger) {
   try {
-    const app = typeof getApp === 'function' ? getApp() : null
-    const messaging = app && app._options && app._options.globalData && app._options.globalData.messaging
-    if (!messaging || typeof messaging.call !== 'function') return false
+    const sender = messenger && typeof messenger.call === 'function'
+      ? messenger
+      : null
+    if (!sender) {
+      console.log('[LiveWatch:device] ZML messenger unavailable')
+      return false
+    }
 
-    messaging.call({
+    const pending = sender.call({
       method: 'BATCH_DATA',
       params: { payload: payload },
     })
+    if (pending && typeof pending.catch === 'function') {
+      pending.catch(function (e) {
+        console.log('[LiveWatch:device] ZML batch failed: ' + ((e && e.message) || e))
+      })
+    }
     console.log('[LiveWatch:device] ZML batch queued')
     return true
   } catch (e) {
@@ -403,7 +437,7 @@ function restoreSensorConfig(cfg) {
 
 // ── Heart Rate History Collection (O(N), only non-zero values) ──
 
-function collectHeartRateHistory(now) {
+function collectHeartRateHistory(now, forceFull = false) {
   try {
     const todayData = heartRate.getToday()
     if (!todayData || todayData.length === 0) return []
@@ -425,7 +459,8 @@ function collectHeartRateHistory(now) {
     // Saves ~85% vs verbose {type, value, unit, timestamp}
     const records = []
 
-    for (let i = lastHrSyncIndex + 1; i < todayData.length; i++) {
+    const startIndex = forceFull ? 0 : lastHrSyncIndex + 1
+    for (let i = startIndex; i < todayData.length; i++) {
       const hr = todayData[i]
 
       // Skip zero values (watch not worn or measurement failed)
@@ -440,6 +475,7 @@ function collectHeartRateHistory(now) {
       writeString('lw_hr_date', lastHrSyncDate)
     }
 
+    if (forceFull) return records
     return records.length > MAX_HR_RECORDS_PER_SYNC
       ? records.slice(records.length - MAX_HR_RECORDS_PER_SYNC)
       : records
@@ -449,21 +485,12 @@ function collectHeartRateHistory(now) {
   }
 }
 
-function updateHrSyncIndex(now) {
-  try {
-    const todayData = heartRate.getToday()
-    if (todayData && todayData.length > 0) {
-      lastHrSyncIndex = todayData.length - 1
-    }
-  } catch (e) {}
-}
-
 // ── SpO2 History Collection (getLastFewHour, incremental sync) ──
 // getLastDay() 只返回 24 个平均数，不适合详细上报
 // getLastFewHour(hour) 返回指定小时内的全部测量数据 {spo2, time}
 // 增量同步：只上传 lastSpo2SyncTime 之后的新数据
 
-function collectSpo2History(hours) {
+function collectSpo2History(hours, forceFull = false) {
   try {
     const data = bloodOxygen.getLastFewHour(hours)
     if (!data || data.length === 0) return []
@@ -487,7 +514,7 @@ function collectSpo2History(hours) {
       if (!d || d.spo2 <= 0 || d.spo2 > 100) continue
 
       // 增量：只取时间戳大于上次同步的
-      if (d.time <= lastSpo2SyncTime) continue
+      if (!forceFull && d.time <= lastSpo2SyncTime) continue
 
       // compact: [value, timeSec] — timeSec is Unix seconds from sensor API
       // Saves ~80% vs verbose {type, value, unit, timestamp}
@@ -503,6 +530,7 @@ function collectSpo2History(hours) {
       writeString('lw_spo2_date', todayStr)
     }
 
+    if (forceFull) return records
     return records.length > MAX_SPO2_RECORDS_PER_SYNC
       ? records.slice(records.length - MAX_SPO2_RECORDS_PER_SYNC)
       : records
@@ -516,7 +544,7 @@ function collectSpo2History(hours) {
 // getToday() 返回 288 个点（每5分钟一个），无数据为 -1000
 // 增量同步：只上传 lastTempSyncIndex 之后的新数据
 
-function collectTempHistory(now) {
+function collectTempHistory(now, forceFull = false) {
   try {
     const todayData = bodyTemperature.getToday()
     if (!todayData || todayData.length === 0) return []
@@ -535,7 +563,8 @@ function collectTempHistory(now) {
     // 只采集新数据
     const records = []
 
-    for (let i = lastTempSyncIndex + 1; i < todayData.length; i++) {
+    const startIndex = forceFull ? 0 : lastTempSyncIndex + 1
+    for (let i = startIndex; i < todayData.length; i++) {
       const temp = todayData[i]
 
       // Skip invalid (-1000 means no measurement)
@@ -553,6 +582,7 @@ function collectTempHistory(now) {
       writeString('lw_temp_date', lastTempSyncDate)
     }
 
+    if (forceFull) return records
     return records.length > MAX_TEMP_RECORDS_PER_SYNC
       ? records.slice(records.length - MAX_TEMP_RECORDS_PER_SYNC)
       : records
@@ -562,75 +592,43 @@ function collectTempHistory(now) {
   }
 }
 
-// ── Expand compact payload to verbose (for server HTTP compatibility) ──
-// HR compact: [value, minuteIndex] → {type, value, unit, timestamp}
-// SpO2 compact: [value, timeSec] → {type, value, unit, timestamp}
-// Temp compact: [value, minuteOffset] → {type, value, unit, timestamp}
-
-function expandToVerbose(compact, now) {
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const todayMs = today.getTime()
-
-  function isoFromMinuteOffset(minuteOffset) {
-    return new Date(todayMs + minuteOffset * 60000).toISOString()
+function collectSleepDetails(forceFull = false) {
+  const details = {}
+  try {
+    if (forceFull && typeof sleep.updateInfo === 'function') sleep.updateInfo()
+  } catch (e) {
+    console.log('[LiveWatch:device] sleep.updateInfo() failed: ' + e.message)
   }
 
-  // Expand status: compact → verbose
-  const cs = compact.s
-  const nowISO = new Date(cs.ts * 1000).toISOString()
-  const extraFields = {}
-  if (cs.b) extraFields.battery_percent = cs.b
-  if (cs.se) extraFields.steps = cs.se
-  if (cs.st) extraFields.steps_target = cs.st
-  if (cs.sp !== undefined) extraFields.sleeping = cs.sp
-  if (cs.hr) extraFields.heart_rate = cs.hr
-  if (cs.hrr) extraFields.heart_rate_resting = cs.hrr
-
-  const verboseStatus = {
-    app_id: 'zepp_watch',
-    window_title: '手表在线',
-    timestamp: nowISO,
-    extra: {
-      ...extraFields,
-      device: {
-        platform: 'zepp',
-        capability_mode: 'normal',
-        device_kind: 'watch',
-        last_sample_at: nowISO,
-      },
-    },
+  try {
+    const info = sleep.getInfo()
+    if (info) {
+      if (Number.isFinite(info.startTime) && info.startTime >= 0) details.st = info.startTime
+      if (Number.isFinite(info.endTime) && info.endTime >= 0) details.en = info.endTime
+      if (Number.isFinite(info.totalTime) && info.totalTime > 0) details.du = info.totalTime
+      if (Number.isFinite(info.deepTime) && info.deepTime >= 0) details.de = info.deepTime
+      if (Number.isFinite(info.score) && info.score >= 0) details.sc = info.score
+    }
+  } catch (e) {
+    console.log('[LiveWatch:device] sleep.getInfo() failed: ' + e.message)
   }
 
-  // Expand HR: [value, minuteIndex] → verbose
-  const verboseHr = (compact.h || []).map(([v, m]) => ({
-    type: 'heart_rate',
-    value: v,
-    unit: 'bpm',
-    timestamp: isoFromMinuteOffset(m),
-  }))
+  try {
+    const stage = sleep.getStage()
+    if (stage && stage.length > 0) details.sg = stage.length
+  } catch (e) {}
 
-  // Expand SpO2: [value, timeSec] → verbose
-  const verboseSpo2 = (compact.o || []).map(([v, ts]) => ({
-    type: 'oxygen_saturation',
-    value: v,
-    unit: '%',
-    timestamp: new Date(ts * 1000).toISOString(),
-  }))
+  try {
+    const naps = sleep.getNap()
+    if (naps && naps.length > 0) {
+      details.np = naps
+        .filter((nap) => nap && Number.isFinite(nap.start) && Number.isFinite(nap.stop) && Number.isFinite(nap.length))
+        .slice(forceFull ? -6 : -2)
+        .map((nap) => [nap.start, nap.stop, nap.length])
+    }
+  } catch (e) {}
 
-  // Expand Temp: [value, minuteOffset] → verbose
-  const verboseTemp = (compact.t || []).map(([v, m]) => ({
-    type: 'body_temperature',
-    value: v,
-    unit: 'celsius',
-    timestamp: isoFromMinuteOffset(m),
-  }))
-
-  return {
-    status: verboseStatus,
-    heart_rate_history: verboseHr,
-    spo2_history: verboseSpo2,
-    body_temp_history: verboseTemp,
-  }
+  return Object.keys(details).length > 0 ? details : null
 }
 
 // ── Alarm Management (System-level, survives screen-off) ──

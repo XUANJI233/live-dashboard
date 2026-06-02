@@ -8,6 +8,7 @@ var gUrl = '', gToken = '', gRunning = false, gInterval = 300, gPage = null
 var gConfig = {}
 var gWUrl = null, gWBtn = null, gWUpload = null, gWStatus = null, gWDebug = null
 const CONFIG_KEY = 'lw_cfg'
+const MANUAL_FULL_SYNC_KEY = 'lw_manual_full'
 const localStorage = new LocalStorage()
 
 function log(msg) { console.log('[WATCH] ' + msg) }
@@ -133,10 +134,21 @@ function persistDeviceConfig(enabled) {
 
 function onManualUpload() {
   if (!gUrl || !gToken) { hmUI.showToast({ text: '请先配置' }); return }
-  hmUI.showToast({ text: '发送中...' })
-  gPage.request({ method: 'UPLOAD_NOW', params: { serverUrl: gUrl, token: gToken } })
-    .then(function (r) { hmUI.showToast({ text: 'OK: ' + JSON.stringify(r) }) })
-    .catch(function (e) { hmUI.showToast({ text: 'FAIL: ' + e }) })
+  hmUI.showToast({ text: '全量上传已排队' })
+  persistDeviceConfig(gRunning)
+  try {
+    localStorage.setItem(MANUAL_FULL_SYNC_KEY, 1)
+    setAlarm({
+      url: 'app-service/live-watch',
+      delay: 1,
+      store: false,
+    })
+  } catch (e) {
+    dbg('manual alarm failed: ' + ((e && e.message) || e))
+  }
+  gPage.request({ method: 'UPLOAD_NOW', params: { serverUrl: gUrl, token: gToken, forceFull: true } })
+    .then(function (r) { dbg('manual queued ' + JSON.stringify(r)) })
+    .catch(function (e) { dbg('manual side failed: ' + e) })
 }
 
 function updateUI() {

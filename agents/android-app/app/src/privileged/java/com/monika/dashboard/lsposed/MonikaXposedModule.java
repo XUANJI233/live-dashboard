@@ -12,6 +12,7 @@ import android.content.ContextWrapper;
 import android.content.ComponentName;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.pm.ActivityInfo;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
@@ -143,6 +144,10 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile boolean mediaListenerRegistered = false;
     private final java.util.Set<String> registeredMediaControllers =
             java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private final java.util.Set<String> hookedWebChromeClientClasses =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private final java.util.Set<String> hookedWebViewClientClasses =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private MediaSessionManager mediaSessionManager;
     private volatile String currentProcessName = "";
     private volatile boolean browserTitleReceiverRegistered = false;
@@ -181,6 +186,14 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile long recentForegroundBrowserAt = 0L;
     private volatile long lastScreenOffCheckAt = 0L;
     private static final long SCREEN_OFF_DEBOUNCE_MS = 30_000L; // 30s debounce for sleep detection
+    private static final long TOP_ACTIVITY_FALLBACK_MS = 120_000L;
+    private volatile ComponentName lastKnownTopComponent = null;
+    private volatile long lastKnownTopAt = 0L;
+    private static final Object REFLECTION_MISS = new Object();
+    private static final String NO_ARG_SIG = "#";
+    private final ConcurrentHashMap<String, Object> classCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Object> methodLookupCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Object> fieldLookupCache = new ConcurrentHashMap<>();
 
     @Override
     public void onModuleLoaded(@NonNull XposedModuleInterface.ModuleLoadedParam param) {
@@ -535,6 +548,7 @@ public final class MonikaXposedModule extends XposedModule {
                             for (MediaController controller : controllers) {
                                 registerMediaControllerCallback(controller);
                             }
+                            refreshMediaFromControllers(controllers);
                             // Cleanup: remove stale entries from registeredMediaControllers
                             // that are no longer in the active session list
                             java.util.Set<String> activeKeys = new java.util.HashSet<>();
@@ -577,12 +591,13 @@ public final class MonikaXposedModule extends XposedModule {
                     try {
                         if (state == null) return;
                         String pkg = controller.getPackageName();
-                        mediaPlaying = state.getState() == PlaybackState.STATE_PLAYING;
+                        boolean nextPlaying = state.getState() == PlaybackState.STATE_PLAYING;
+                        mediaPlaying = nextPlaying;
                         mediaPackage = safeString(pkg);
                         mediaApp = safeString(resolveAppLabel(pkg));
                         mediaState = safeString(playbackStateName(state));
                         MediaMetadata metadata = controller.getMetadata();
-                        if (metadata != null) {
+                        if (nextPlaying && metadata != null) {
                             mediaTitle = safeString(firstNonBlank(
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_TITLE)));
@@ -590,6 +605,9 @@ public final class MonikaXposedModule extends XposedModule {
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ARTIST),
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
+                        } else if (!nextPlaying) {
+                            mediaTitle = "";
+                            mediaArtist = "";
                         }
                         log(Log.DEBUG, TAG, "media playback: pkg=" + pkg + " playing=" + mediaPlaying + " title=" + mediaTitle);
                         maybeDirectUpload(false);
@@ -626,6 +644,46 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
+    private void refreshMediaFromControllers(List<MediaController> controllers) {
+        try {
+            MediaController playing = null;
+            if (controllers != null) {
+                for (MediaController controller : controllers) {
+                    PlaybackState state = controller.getPlaybackState();
+                    if (state != null && state.getState() == PlaybackState.STATE_PLAYING) {
+                        playing = controller;
+                        break;
+                    }
+                }
+            }
+            if (playing == null) {
+                mediaPlaying = false;
+                mediaTitle = "";
+                mediaArtist = "";
+                mediaState = "paused";
+                return;
+            }
+            String pkg = playing.getPackageName();
+            mediaPlaying = true;
+            mediaPackage = safeString(pkg);
+            mediaApp = safeString(resolveAppLabel(pkg));
+            PlaybackState state = playing.getPlaybackState();
+            mediaState = safeString(playbackStateName(state));
+            MediaMetadata metadata = playing.getMetadata();
+            if (metadata != null) {
+                mediaTitle = safeString(firstNonBlank(
+                        mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
+                        mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_TITLE)));
+                mediaArtist = safeString(firstNonBlank(
+                        mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ARTIST),
+                        mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
+                        mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
+            }
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "refresh media failed: " + t.getClass().getSimpleName());
+        }
+    }
+
     private String mediaTextFromMeta(MediaMetadata metadata, String key) {
         try {
             CharSequence value = metadata.getText(key);
@@ -636,23 +694,86 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private Method findMethod(Class<?> clazz, String name) {
+        String cacheKey = clazz.getName() + "#" + name + NO_ARG_SIG;
+        Object cached = methodLookupCache.get(cacheKey);
+        if (cached instanceof Method) return (Method) cached;
+        if (cached == REFLECTION_MISS) return null;
         for (Method method : clazz.getDeclaredMethods()) {
-            if (name.equals(method.getName())) return method;
+            if (name.equals(method.getName())) {
+                try { method.setAccessible(true); } catch (Throwable ignored) {}
+                methodLookupCache.put(cacheKey, method);
+                return method;
+            }
         }
+        methodLookupCache.put(cacheKey, REFLECTION_MISS);
         return null;
     }
 
     private Method findMethod(Class<?> clazz, String name, Class<?>... paramTypes) {
+        String cacheKey = clazz.getName() + "#" + name + signatureOf(paramTypes);
+        Object cached = methodLookupCache.get(cacheKey);
+        if (cached instanceof Method) return (Method) cached;
+        if (cached == REFLECTION_MISS) return null;
         try {
-            return clazz.getDeclaredMethod(name, paramTypes);
+            Method method = clazz.getDeclaredMethod(name, paramTypes);
+            try { method.setAccessible(true); } catch (Throwable ignored) {}
+            methodLookupCache.put(cacheKey, method);
+            return method;
         } catch (NoSuchMethodException ignored) {
+            methodLookupCache.put(cacheKey, REFLECTION_MISS);
+            return null;
+        }
+    }
+
+    private Method findPublicMethod(Class<?> clazz, String name, Class<?>... paramTypes) {
+        String cacheKey = clazz.getName() + "#public:" + name + signatureOf(paramTypes);
+        Object cached = methodLookupCache.get(cacheKey);
+        if (cached instanceof Method) return (Method) cached;
+        if (cached == REFLECTION_MISS) return null;
+        try {
+            Method method = clazz.getMethod(name, paramTypes);
+            try { method.setAccessible(true); } catch (Throwable ignored) {}
+            methodLookupCache.put(cacheKey, method);
+            return method;
+        } catch (Throwable ignored) {
+            methodLookupCache.put(cacheKey, REFLECTION_MISS);
+            return null;
+        }
+    }
+
+    private String signatureOf(Class<?>... paramTypes) {
+        if (paramTypes == null || paramTypes.length == 0) return NO_ARG_SIG;
+        StringBuilder sb = new StringBuilder();
+        for (Class<?> param : paramTypes) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(param != null ? param.getName() : "null");
+        }
+        return sb.toString();
+    }
+
+    private Class<?> cachedClassForName(String name) {
+        return cachedClassForName(name, null);
+    }
+
+    private Class<?> cachedClassForName(String name, ClassLoader loader) {
+        String cacheKey = name + "@" + (loader != null ? System.identityHashCode(loader) : 0);
+        Object cached = classCache.get(cacheKey);
+        if (cached instanceof Class<?>) return (Class<?>) cached;
+        if (cached == REFLECTION_MISS) return null;
+        try {
+            Class<?> clazz = loader != null ? Class.forName(name, false, loader) : Class.forName(name);
+            classCache.put(cacheKey, clazz);
+            return clazz;
+        } catch (Throwable ignored) {
+            classCache.put(cacheKey, REFLECTION_MISS);
             return null;
         }
     }
 
     private void installActivityTitleHooks(ClassLoader cl, String packageName) {
         try {
-            Class<?> activity = Class.forName("android.app.Activity", false, cl);
+            Class<?> activity = cachedClassForName("android.app.Activity", cl);
+            if (activity == null) return;
 
             // Hook 1: Activity#setTitle(CharSequence)
             Method setTitleText = activity.getDeclaredMethod("setTitle", CharSequence.class);
@@ -688,8 +809,9 @@ public final class MonikaXposedModule extends XposedModule {
                     });
 
             // Hook 3: Activity#setTaskDescription — browsers set page title here
-            Method setTaskDesc = activity.getDeclaredMethod("setTaskDescription",
-                    Class.forName("android.app.ActivityManager$TaskDescription", false, cl));
+            Class<?> taskDescription = cachedClassForName("android.app.ActivityManager$TaskDescription", cl);
+            if (taskDescription == null) return;
+            Method setTaskDesc = activity.getDeclaredMethod("setTaskDescription", taskDescription);
             try { deoptimize(setTaskDesc); } catch (Throwable ignored) {}
             hook(setTaskDesc)
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
@@ -700,8 +822,8 @@ public final class MonikaXposedModule extends XposedModule {
                             List<Object> args = chain.getArgs();
                             if (owner instanceof Activity && args.size() > 0 && args.get(0) != null) {
                                 Object td = args.get(0);
-                                java.lang.reflect.Method getLabel = td.getClass().getMethod("getLabel");
-                                Object label = getLabel.invoke(td);
+                                Method getLabel = findPublicMethod(td.getClass(), "getLabel");
+                                Object label = getLabel != null ? getLabel.invoke(td) : null;
                                 if (label instanceof CharSequence && ((CharSequence) label).length() > 0) {
                                     publishBrowserTitle((Activity) owner, packageName, label.toString());
                                 }
@@ -729,7 +851,8 @@ public final class MonikaXposedModule extends XposedModule {
 
             // Hook 5: Window#setTitle
             try {
-                Class<?> window = Class.forName("android.view.Window", false, cl);
+                Class<?> window = cachedClassForName("android.view.Window", cl);
+                if (window == null) throw new ClassNotFoundException("android.view.Window");
                 Method windowSetTitle = window.getDeclaredMethod("setTitle", CharSequence.class);
                 try { deoptimize(windowSetTitle); } catch (Throwable ignored) {}
                 hook(windowSetTitle)
@@ -741,8 +864,8 @@ public final class MonikaXposedModule extends XposedModule {
                                 if (args.size() > 0 && args.get(0) instanceof CharSequence) {
                                     String title = args.get(0).toString();
                                     Object windowObj = chain.getThisObject();
-                                    java.lang.reflect.Method getContext = windowObj.getClass().getMethod("getContext");
-                                    Object ctx = getContext.invoke(windowObj);
+                                    Method getContext = findPublicMethod(windowObj.getClass(), "getContext");
+                                    Object ctx = getContext != null ? getContext.invoke(windowObj) : null;
                                     Activity activityCtx = findActivityContext(ctx);
                                     if (activityCtx != null) {
                                         publishBrowserTitle(activityCtx, packageName, title);
@@ -755,9 +878,11 @@ public final class MonikaXposedModule extends XposedModule {
 
             // Hook 6: WebChromeClient#onReceivedTitle
             try {
-                Class<?> wcc = Class.forName("android.webkit.WebChromeClient", false, cl);
+                Class<?> wcc = cachedClassForName("android.webkit.WebChromeClient", cl);
+                Class<?> webViewClass = cachedClassForName("android.webkit.WebView", cl);
+                if (wcc == null || webViewClass == null) throw new ClassNotFoundException("android.webkit");
                 Method onReceivedTitle = wcc.getDeclaredMethod("onReceivedTitle",
-                        Class.forName("android.webkit.WebView", false, cl), String.class);
+                        webViewClass, String.class);
                 try { deoptimize(onReceivedTitle); } catch (Throwable ignored) {}
                 hook(onReceivedTitle)
                         .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
@@ -768,8 +893,8 @@ public final class MonikaXposedModule extends XposedModule {
                                 if (args.size() > 1 && args.get(1) instanceof String) {
                                     String title = (String) args.get(1);
                                     Object webView = args.get(0);
-                                    java.lang.reflect.Method getContext = webView.getClass().getMethod("getContext");
-                                    Object ctx = getContext.invoke(webView);
+                                    Method getContext = findPublicMethod(webView.getClass(), "getContext");
+                                    Object ctx = getContext != null ? getContext.invoke(webView) : null;
                                     Activity activityCtx = findActivityContext(ctx);
                                     if (activityCtx != null) {
                                         publishBrowserTitle(activityCtx, packageName, title);
@@ -804,6 +929,7 @@ public final class MonikaXposedModule extends XposedModule {
             hookWebViewNavigation(webView, packageName, "goForward");
             hookWebChromeTitle(cl, webView, packageName);
             hookWebViewClientPageFinished(cl, webView, packageName);
+            hookWebViewClientInstallers(webView, packageName);
         } catch (Throwable ignored) {}
     }
 
@@ -826,6 +952,101 @@ public final class MonikaXposedModule extends XposedModule {
                         return result;
                     });
             log(Log.INFO, TAG, "hooked WebChromeClient#onReceivedTitle for " + packageName);
+        } catch (Throwable ignored) {}
+    }
+
+    private void hookWebViewClientInstallers(Class<?> webView, String packageName) {
+        try {
+            Class<?> chromeClient = Class.forName("android.webkit.WebChromeClient", false, webView.getClassLoader());
+            Method setChromeClient = findMethod(webView, "setWebChromeClient", chromeClient);
+            if (setChromeClient != null) {
+                try { deoptimize(setChromeClient); } catch (Throwable ignored) {}
+                hook(setChromeClient)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            try {
+                                List<Object> args = chain.getArgs();
+                                if (args.size() > 0 && args.get(0) != null) {
+                                    hookSpecificWebChromeClient(args.get(0).getClass(), webView, packageName);
+                                }
+                            } catch (Throwable ignored) {}
+                            return result;
+                        });
+                log(Log.INFO, TAG, "hooked WebView#setWebChromeClient for " + packageName);
+            }
+        } catch (Throwable ignored) {}
+
+        try {
+            Class<?> viewClient = Class.forName("android.webkit.WebViewClient", false, webView.getClassLoader());
+            Method setViewClient = findMethod(webView, "setWebViewClient", viewClient);
+            if (setViewClient != null) {
+                try { deoptimize(setViewClient); } catch (Throwable ignored) {}
+                hook(setViewClient)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            try {
+                                List<Object> args = chain.getArgs();
+                                if (args.size() > 0 && args.get(0) != null) {
+                                    hookSpecificWebViewClient(args.get(0).getClass(), webView, packageName);
+                                }
+                            } catch (Throwable ignored) {}
+                            return result;
+                        });
+                log(Log.INFO, TAG, "hooked WebView#setWebViewClient for " + packageName);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private void hookSpecificWebChromeClient(Class<?> clientClass, Class<?> webView, String packageName) {
+        if (clientClass == null) return;
+        String className = clientClass.getName();
+        if (!hookedWebChromeClientClasses.add(packageName + ":" + className)) return;
+        Method method = findMethod(clientClass, "onReceivedTitle", webView, String.class);
+        if (method == null) return;
+        try { method.setAccessible(true); } catch (Throwable ignored) {}
+        try { deoptimize(method); } catch (Throwable ignored) {}
+        try {
+            hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            List<Object> args = chain.getArgs();
+                            if (args.size() > 1 && args.get(1) instanceof String) {
+                                publishTitleFromWebView(args.get(0), packageName, (String) args.get(1));
+                            }
+                        } catch (Throwable ignored) {}
+                        return result;
+                    });
+            log(Log.INFO, TAG, "hooked concrete WebChromeClient#onReceivedTitle: " + className);
+        } catch (Throwable ignored) {}
+    }
+
+    private void hookSpecificWebViewClient(Class<?> clientClass, Class<?> webView, String packageName) {
+        if (clientClass == null) return;
+        String className = clientClass.getName();
+        if (!hookedWebViewClientClasses.add(packageName + ":" + className)) return;
+        Method method = findMethod(clientClass, "onPageFinished", webView, String.class);
+        if (method == null) return;
+        try { method.setAccessible(true); } catch (Throwable ignored) {}
+        try { deoptimize(method); } catch (Throwable ignored) {}
+        try {
+            hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            List<Object> args = chain.getArgs();
+                            if (args.size() > 0) {
+                                scheduleWebViewTitleRead(args.get(0), packageName, 150L);
+                                scheduleWebViewTitleRead(args.get(0), packageName, 900L);
+                            }
+                        } catch (Throwable ignored) {}
+                        return result;
+                    });
+            log(Log.INFO, TAG, "hooked concrete WebViewClient#onPageFinished: " + className);
         } catch (Throwable ignored) {}
     }
 
@@ -928,7 +1149,8 @@ public final class MonikaXposedModule extends XposedModule {
     private void scheduleWebViewTitleRead(Object webView, String packageName, long delayMs) {
         if (webView == null) return;
         try {
-            Method postDelayed = webView.getClass().getMethod("postDelayed", Runnable.class, long.class);
+            Method postDelayed = findPublicMethod(webView.getClass(), "postDelayed", Runnable.class, long.class);
+            if (postDelayed == null) return;
             postDelayed.invoke(webView, (Runnable) () -> publishTitleFromWebView(webView, packageName), delayMs);
         } catch (Throwable ignored) {}
     }
@@ -941,12 +1163,14 @@ public final class MonikaXposedModule extends XposedModule {
         try {
             Object rawTitle = explicitTitle != null && explicitTitle.trim().length() > 0 ? explicitTitle : null;
             if (rawTitle == null) {
-                Method getTitle = webView.getClass().getMethod("getTitle");
+                Method getTitle = findPublicMethod(webView.getClass(), "getTitle");
+                if (getTitle == null) return;
                 rawTitle = getTitle.invoke(webView);
             }
             if (!(rawTitle instanceof String)) return;
             String title = (String) rawTitle;
-            Method getContext = webView.getClass().getMethod("getContext");
+            Method getContext = findPublicMethod(webView.getClass(), "getContext");
+            if (getContext == null) return;
             Object ctx = getContext.invoke(webView);
             Activity activityCtx = findActivityContext(ctx);
             if (activityCtx != null) {
@@ -1017,6 +1241,7 @@ public final class MonikaXposedModule extends XposedModule {
     private void broadcastSnapshot() {
         try {
             long now = System.currentTimeMillis();
+            boolean forceDirectUpload = false;
 
             // ── Screen-off / sleep detection ──
             // When the screen is off, skip ATMS calls entirely and report sleeping.
@@ -1036,6 +1261,7 @@ public final class MonikaXposedModule extends XposedModule {
                 foregroundActivity = "";
                 foregroundTitle = "";
                 log(Log.INFO, TAG, "screen off → sleeping");
+                forceDirectUpload = true;
                 Intent sleepIntent = new Intent(ACTION_STATUS);
                 sleepIntent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
                 sleepIntent.putExtra("package_name", "sleeping");
@@ -1048,7 +1274,7 @@ public final class MonikaXposedModule extends XposedModule {
                     long token = Binder.clearCallingIdentity();
                     try { ctx.sendBroadcast(sleepIntent); } finally { Binder.restoreCallingIdentity(token); }
                 }
-                maybeDirectUpload(false);
+                maybeDirectUpload(forceDirectUpload);
                 return;
             }
             // Reset sleep state when screen comes back on
@@ -1079,6 +1305,7 @@ public final class MonikaXposedModule extends XposedModule {
                 if (idleConsecutiveCount < IDLE_DEBOUNCE_COUNT) return; // skip — wait for more samples
                 // N consecutive idles reached → commit idle state
                 if ("idle".equals(lastForegroundKey) && now - lastForegroundBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
+                forceDirectUpload = !"idle".equals(lastForegroundKey);
                 lastForegroundKey = "idle";
                 lastForegroundBroadcastAt = now;
                 foregroundPackage = "idle";
@@ -1093,6 +1320,7 @@ public final class MonikaXposedModule extends XposedModule {
                 if (!key.equals(lastForegroundKey)) {
                     log(Log.INFO, TAG, "foreground: " + key + " title=" + (taskDescription != null ? taskDescription : ""));
                     foregroundRecentlyChanged = true;
+                    forceDirectUpload = true;
                 } else {
                     foregroundRecentlyChanged = false;
                 }
@@ -1139,7 +1367,7 @@ public final class MonikaXposedModule extends XposedModule {
                 long token = Binder.clearCallingIdentity();
                 try { context.sendBroadcast(intent); } finally { Binder.restoreCallingIdentity(token); }
             }
-            maybeDirectUpload(false);
+            maybeDirectUpload(forceDirectUpload);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "broadcast failed: " + t.getClass().getSimpleName());
         }
@@ -1148,15 +1376,122 @@ public final class MonikaXposedModule extends XposedModule {
     private ComponentName getTopActivityComponentName() {
         try {
             Object service = getActivityTaskManagerService();
-            if (service == null) return null;
+            if (service == null) return getRecentTopActivityFallback();
             Object info = callAny(service, "getFocusedRootTaskInfo");
             if (info == null) info = callAny(service, "getFocusedStackInfo");
-            if (info == null) return null;
-            Object top = readField(info, "topActivity");
-            return top instanceof ComponentName ? (ComponentName) top : null;
+            ComponentName top = componentFromTaskInfo(info);
+            if (top == null) top = getTopActivityFromTasks(service);
+            if (top != null) {
+                lastKnownTopComponent = top;
+                lastKnownTopAt = System.currentTimeMillis();
+                return top;
+            }
+            return getRecentTopActivityFallback();
         } catch (Throwable ignored) {
-            return null;
+            return getRecentTopActivityFallback();
         }
+    }
+
+    private ComponentName componentFromTaskInfo(Object info) {
+        if (info == null) return null;
+        String[] fields = new String[] {
+                "topActivity",
+                "topActivityInfo",
+                "topRunningActivity",
+                "resumedActivity",
+                "mResumedActivity",
+                "realActivity",
+                "baseActivity",
+                "origActivity"
+        };
+        for (String field : fields) {
+            Object value = readField(info, field);
+            if (value instanceof ComponentName) return (ComponentName) value;
+            if (value instanceof ActivityInfo) {
+                ActivityInfo activityInfo = (ActivityInfo) value;
+                if (activityInfo.packageName != null && activityInfo.name != null) {
+                    return new ComponentName(activityInfo.packageName, activityInfo.name);
+                }
+            }
+        }
+        return null;
+    }
+
+    private ComponentName getTopActivityFromTasks(Object service) {
+        try {
+            Method method = findCompatibleGetTasksMethod(service.getClass());
+            if (method == null) return null;
+            method.setAccessible(true);
+            Object[] args = buildDefaultArgs(method.getParameterTypes(), 3);
+            @SuppressWarnings("unchecked")
+            List<?> tasks = (List<?>) method.invoke(service, args);
+            if (tasks == null || tasks.isEmpty()) return null;
+            for (Object task : tasks) {
+                ComponentName top = componentFromTaskInfo(task);
+                if (top == null) {
+                    Object taskInfo = readField(task, "taskInfo");
+                    top = componentFromTaskInfo(taskInfo);
+                }
+                if (top != null && !isIgnoredPackage(top.getPackageName())) return top;
+            }
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "getTasks top fallback failed: " + t.getClass().getSimpleName());
+        }
+        return null;
+    }
+
+    private Method findCompatibleGetTasksMethod(Class<?> clazz) {
+        String cacheKey = clazz.getName() + "#compatibleGetTasks";
+        Object cached = methodLookupCache.get(cacheKey);
+        if (cached instanceof Method) return (Method) cached;
+        if (cached == REFLECTION_MISS) return null;
+        for (Method method : clazz.getDeclaredMethods()) {
+            if (!"getTasks".equals(method.getName())) continue;
+            Class<?>[] params = method.getParameterTypes();
+            if (params.length == 0 || params[0] != int.class) continue;
+            try { method.setAccessible(true); } catch (Throwable ignored) {}
+            methodLookupCache.put(cacheKey, method);
+            return method;
+        }
+        methodLookupCache.put(cacheKey, REFLECTION_MISS);
+        return null;
+    }
+
+    private Object[] buildDefaultArgs(Class<?>[] params, int maxTasks) {
+        Object[] args = new Object[params.length];
+        for (int i = 0; i < params.length; i++) {
+            Class<?> type = params[i];
+            if (i == 0 && type == int.class) {
+                args[i] = maxTasks;
+            } else if (type == boolean.class) {
+                args[i] = false;
+            } else if (type == int.class) {
+                args[i] = 0;
+            } else if (type == long.class) {
+                args[i] = 0L;
+            } else if (type == float.class) {
+                args[i] = 0f;
+            } else if (type == double.class) {
+                args[i] = 0d;
+            } else if (type == String.class) {
+                args[i] = TARGET_PACKAGE;
+            } else if (type.isArray()) {
+                args[i] = java.lang.reflect.Array.newInstance(type.getComponentType(), 0);
+            } else if (java.util.List.class.isAssignableFrom(type)) {
+                args[i] = java.util.Collections.emptyList();
+            } else {
+                args[i] = null;
+            }
+        }
+        return args;
+    }
+
+    private ComponentName getRecentTopActivityFallback() {
+        ComponentName cached = lastKnownTopComponent;
+        if (cached == null) return null;
+        long age = System.currentTimeMillis() - lastKnownTopAt;
+        if (age >= 0 && age <= TOP_ACTIVITY_FALLBACK_MS) return cached;
+        return null;
     }
 
     /**
@@ -1187,9 +1522,10 @@ public final class MonikaXposedModule extends XposedModule {
             // Strategy 3: getTasks() fallback (Android 9 and below)
             if (info == null) {
                 try {
-                    Method getTasks = service.getClass().getMethod("getTasks", int.class);
+                    Method getTasks = findCompatibleGetTasksMethod(service.getClass());
+                    if (getTasks == null) return null;
                     @SuppressWarnings("unchecked")
-                    List<?> tasks = (List<?>) getTasks.invoke(service, 1);
+                    List<?> tasks = (List<?>) getTasks.invoke(service, buildDefaultArgs(getTasks.getParameterTypes(), 1));
                     if (tasks != null && !tasks.isEmpty()) {
                         Object topTask = tasks.get(0);
                         // Try to get TaskInfo from RunningTaskInfo
@@ -1220,7 +1556,8 @@ public final class MonikaXposedModule extends XposedModule {
             if (desc != null && !(desc instanceof CharSequence)) {
                 try {
                     // Try getLabel() method (standard API)
-                    Method getLabel = desc.getClass().getMethod("getLabel");
+                    Method getLabel = findPublicMethod(desc.getClass(), "getLabel");
+                    if (getLabel == null) return null;
                     Object label = getLabel.invoke(desc);
                     if (label instanceof CharSequence) {
                         String result = ((CharSequence) label).toString().trim();
@@ -1291,8 +1628,8 @@ public final class MonikaXposedModule extends XposedModule {
     private String getDeviceFormFactor() {
         try {
             // MIUI: miui.os.Build.IS_TABLET (most reliable for Xiaomi devices)
-            Class<?> miuiBuild = Class.forName("miui.os.Build");
-            Object isTablet = miuiBuild.getDeclaredField("IS_TABLET").get(null);
+            Class<?> miuiBuild = cachedClassForName("miui.os.Build");
+            Object isTablet = miuiBuild != null ? readStaticField(miuiBuild, "IS_TABLET") : null;
             if (Boolean.TRUE.equals(isTablet)) return "tablet";
         } catch (Throwable ignored) {}
         try {
@@ -1319,8 +1656,6 @@ public final class MonikaXposedModule extends XposedModule {
         return "phone";
     }
 
-    private final ConcurrentHashMap<String, Method> methodCache = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Field> fieldCache = new ConcurrentHashMap<>();
     private volatile Object cachedAtmService = null;
     private volatile Context cachedSystemContext = null;
 
@@ -1328,19 +1663,20 @@ public final class MonikaXposedModule extends XposedModule {
         Object cached = cachedAtmService;
         if (cached != null) return cached;
         try {
-            Class<?> atm = Class.forName("android.app.ActivityTaskManager");
-            Object service = atm.getDeclaredMethod("getService").invoke(null);
+            Class<?> atm = cachedClassForName("android.app.ActivityTaskManager");
+            Method getService = atm != null ? findMethod(atm, "getService") : null;
+            Object service = getService != null ? getService.invoke(null) : null;
             if (service != null) { cachedAtmService = service; return service; }
         } catch (Throwable ignored) {
         }
         try {
-            Class<?> serviceManager = Class.forName("android.os.ServiceManager");
-            Object binder = serviceManager.getDeclaredMethod("getService", String.class)
-                    .invoke(null, "activity_task");
+            Class<?> serviceManager = cachedClassForName("android.os.ServiceManager");
+            Method getService = serviceManager != null ? findMethod(serviceManager, "getService", String.class) : null;
+            Object binder = getService != null ? getService.invoke(null, "activity_task") : null;
             if (binder == null) return null;
-            Class<?> stub = Class.forName("android.app.IActivityTaskManager$Stub");
-            Object svc = stub.getDeclaredMethod("asInterface", android.os.IBinder.class)
-                    .invoke(null, binder);
+            Class<?> stub = cachedClassForName("android.app.IActivityTaskManager$Stub");
+            Method asInterface = stub != null ? findMethod(stub, "asInterface", android.os.IBinder.class) : null;
+            Object svc = asInterface != null ? asInterface.invoke(null, binder) : null;
             if (svc != null) cachedAtmService = svc;
             return svc;
         } catch (Throwable ignored) {
@@ -1352,11 +1688,11 @@ public final class MonikaXposedModule extends XposedModule {
         Context cached = cachedSystemContext;
         if (cached != null) return cached;
         try {
-            Class<?> activityThread = Class.forName("android.app.ActivityThread");
-            Method current = activityThread.getDeclaredMethod("currentActivityThread");
-            Object thread = current.invoke(null);
+            Class<?> activityThread = cachedClassForName("android.app.ActivityThread");
+            Method current = activityThread != null ? findMethod(activityThread, "currentActivityThread") : null;
+            Object thread = current != null ? current.invoke(null) : null;
             if (thread == null) return null;
-            Method getSystemContext = activityThread.getDeclaredMethod("getSystemContext");
+            Method getSystemContext = findMethod(activityThread, "getSystemContext");
             Context ctx = (Context) getSystemContext.invoke(thread);
             if (ctx != null) cachedSystemContext = ctx;
             return ctx;
@@ -1575,12 +1911,11 @@ public final class MonikaXposedModule extends XposedModule {
                 foreground.put("confidence", 0.95);
                 extra.put("foreground", foreground);
             }
-            // Only include media info when actively playing — avoids showing stale paused data
-            if (directUploadMedia && mediaPlaying && mediaTitle.length() > 0) {
+            if (directUploadMedia && (mediaPlaying || mediaPackage.length() > 0 || mediaState.length() > 0)) {
                 JSONObject media = new JSONObject();
                 media.put("playing", mediaPlaying);
-                if (mediaTitle.length() > 0) media.put("title", mediaTitle);
-                if (mediaArtist.length() > 0) media.put("artist", mediaArtist);
+                if (mediaPlaying && mediaTitle.length() > 0) media.put("title", mediaTitle);
+                if (mediaPlaying && mediaArtist.length() > 0) media.put("artist", mediaArtist);
                 if (mediaApp.length() > 0) media.put("app", mediaApp);
                 if (mediaPackage.length() > 0) media.put("package_name", mediaPackage);
                 if (mediaState.length() > 0) media.put("state", mediaState);
@@ -1989,20 +2324,22 @@ public final class MonikaXposedModule extends XposedModule {
         if (target == null) return null;
         Class<?> clazz = target instanceof Class<?> ? (Class<?>) target : target.getClass();
         String cacheKey = clazz.getName() + "#" + methodName;
-        Method cached = methodCache.get(cacheKey);
-        if (cached != null) {
-            try { return cached.invoke(target instanceof Class<?> ? null : target); } catch (Throwable ignored) {}
+        Object cached = methodLookupCache.get(cacheKey);
+        if (cached instanceof Method) {
+            try { return ((Method) cached).invoke(target instanceof Class<?> ? null : target); } catch (Throwable ignored) {}
         }
+        if (cached == REFLECTION_MISS) return null;
         while (clazz != null) {
             try {
                 Method method = clazz.getDeclaredMethod(methodName);
                 method.setAccessible(true);
-                methodCache.put(cacheKey, method);
+                methodLookupCache.put(cacheKey, method);
                 return method.invoke(target instanceof Class<?> ? null : target);
             } catch (Throwable ignored) {
                 clazz = clazz.getSuperclass();
             }
         }
+        methodLookupCache.put(cacheKey, REFLECTION_MISS);
         return null;
     }
 
@@ -2010,20 +2347,45 @@ public final class MonikaXposedModule extends XposedModule {
         if (target == null) return null;
         Class<?> clazz = target.getClass();
         String cacheKey = clazz.getName() + "." + fieldName;
-        Field cached = fieldCache.get(cacheKey);
-        if (cached != null) {
-            try { return cached.get(target); } catch (Throwable ignored) {}
+        Object cached = fieldLookupCache.get(cacheKey);
+        if (cached instanceof Field) {
+            try { return ((Field) cached).get(target); } catch (Throwable ignored) {}
         }
+        if (cached == REFLECTION_MISS) return null;
         while (clazz != null) {
             try {
                 Field field = clazz.getDeclaredField(fieldName);
                 field.setAccessible(true);
-                fieldCache.put(cacheKey, field);
+                fieldLookupCache.put(cacheKey, field);
                 return field.get(target);
             } catch (Throwable ignored) {
                 clazz = clazz.getSuperclass();
             }
         }
+        fieldLookupCache.put(cacheKey, REFLECTION_MISS);
+        return null;
+    }
+
+    private Object readStaticField(Class<?> clazz, String fieldName) {
+        if (clazz == null) return null;
+        String cacheKey = clazz.getName() + "." + fieldName;
+        Object cached = fieldLookupCache.get(cacheKey);
+        if (cached instanceof Field) {
+            try { return ((Field) cached).get(null); } catch (Throwable ignored) {}
+        }
+        if (cached == REFLECTION_MISS) return null;
+        Class<?> current = clazz;
+        while (current != null) {
+            try {
+                Field field = current.getDeclaredField(fieldName);
+                field.setAccessible(true);
+                fieldLookupCache.put(cacheKey, field);
+                return field.get(null);
+            } catch (Throwable ignored) {
+                current = current.getSuperclass();
+            }
+        }
+        fieldLookupCache.put(cacheKey, REFLECTION_MISS);
         return null;
     }
 
