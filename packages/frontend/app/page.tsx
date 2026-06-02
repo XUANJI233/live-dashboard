@@ -461,7 +461,7 @@ function HealthSnapshot({ selectedDate, devices, records }: { selectedDate: stri
         if (!controller.signal.aborted) setDetailLoading(false);
       });
     return () => controller.abort();
-  }, [detailError, detailLoading, detailRecords, expanded, selectedDate]);
+  }, [detailRecords, expanded, selectedDate]);
 
   useEffect(() => {
     if (!selectedType) return;

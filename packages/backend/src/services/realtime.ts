@@ -157,6 +157,11 @@ const deleteVisitorMessage = db.prepare(`
   WHERE id = ? AND device_id = ?
 `);
 
+const deleteVisitorMessagesByViewer = db.prepare(`
+  DELETE FROM visitor_messages
+  WHERE device_id = ? AND viewer_id = ?
+`);
+
 const upsertViewerRemark = db.prepare(`
   INSERT INTO viewer_remarks (device_id, viewer_id, remark)
   VALUES (?, ?, ?)
@@ -896,6 +901,23 @@ export async function handleDeleteMessage(req: Request): Promise<Response> {
   }
 
   deleteVisitorMessage.run(messageId, device.device_id);
+  return Response.json({ ok: true });
+}
+
+export async function handleDeleteViewerMessages(req: Request): Promise<Response> {
+  const device = authenticateToken(req.headers.get("authorization"));
+  if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
+
+  const parsed = await readMessageJson(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
+
+  const viewerId = cleanViewerId(body.viewer_id);
+  if (!viewerId) {
+    return Response.json({ error: "viewer_id required" }, { status: 400 });
+  }
+
+  deleteVisitorMessagesByViewer.run(device.device_id, viewerId);
   return Response.json({ ok: true });
 }
 

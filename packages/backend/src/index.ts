@@ -21,6 +21,7 @@ import {
   handleDeviceMessages,
   handleDeviceMessageReply,
   handleDeleteMessage,
+  handleDeleteViewerMessages,
   handleSetRemark,
   handlePublicMessages,
   handlePublicMessagePost,
@@ -227,6 +228,8 @@ const server = Bun.serve<WsData>({
         response = await handleDeviceMessageReply(req);
       } else if (pathname === "/api/messages/delete" && req.method === "POST") {
         response = await handleDeleteMessage(req);
+      } else if (pathname === "/api/messages/viewer/delete" && req.method === "POST") {
+        response = await handleDeleteViewerMessages(req);
       } else if (pathname === "/api/messages/remark" && req.method === "POST") {
         response = await handleSetRemark(req);
       } else if (pathname === "/api/messages/block" && req.method === "POST") {

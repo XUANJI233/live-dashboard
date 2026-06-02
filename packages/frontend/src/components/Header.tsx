@@ -1,5 +1,8 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import { onInstallReady, triggerInstall } from "@/components/PwaRegistrar";
+
 function getGreeting(): { text: string; period: string } {
   const hour = new Date().getHours();
   if (hour >= 5 && hour < 9) return { text: "早安", period: "morning" };
@@ -16,6 +19,12 @@ interface HeaderProps {
 }
 
 export default function Header({ serverTime, viewerCount = 0 }: HeaderProps) {
+  const [installable, setInstallable] = useState(false);
+
+  useEffect(() => {
+    onInstallReady(() => setInstallable(true));
+  }, []);
+
   const timeStr = (() => {
     if (!serverTime) return "--:--";
     const d = new Date(serverTime);
@@ -40,9 +49,21 @@ export default function Header({ serverTime, viewerCount = 0 }: HeaderProps) {
 
         {/* Right: meta */}
         <div className="text-right flex flex-col items-end gap-1.5">
-          <p className="text-lg font-mono font-medium text-[var(--color-text-secondary)] tabular-nums">
-            {timeStr}
-          </p>
+          <div className="flex items-center gap-2">
+            {installable && (
+              <button
+                type="button"
+                onClick={triggerInstall}
+                className="pill-btn px-2.5 py-1 text-[11px]"
+                title="安装到桌面"
+              >
+                ⬇ 安装
+              </button>
+            )}
+            <p className="text-lg font-mono font-medium text-[var(--color-text-secondary)] tabular-nums">
+              {timeStr}
+            </p>
+          </div>
           {viewerCount > 0 && (
             <p className="text-[11px] text-[var(--color-text-muted)]">
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-emerald)] mr-1.5 relative top-[-1px]" />
