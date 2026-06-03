@@ -580,14 +580,18 @@ export const realtimeWebSocket = {
         return;
       }
 
-      if (isViewerBlocked(targetDeviceId, ws.data.id)) {
-        send(ws, { type: "error", message_id: messageId, error: "blocked_by_device" });
-        return;
-      }
       const createdAt = new Date().toISOString();
-      recordMessage(messageId, targetDeviceId, ws.data.id, viewerName, "private", "viewer", text, createdAt);
-      const status = deliverViewerMessage(targetDeviceId, ws.data.id, viewerName, "private", text, messageId, createdAt);
-      send(ws, { type: "ack", message_id: messageId, status });
+      const targets = messageTargets(targetDeviceId)
+        .filter((deviceId) => !isViewerBlocked(deviceId, ws.data.id));
+      recordMessage(messageId, targetDeviceId || "__broadcast__", ws.data.id, viewerName, "private", "viewer", text, createdAt);
+      let sent = 0;
+      let queued = 0;
+      for (const deviceId of targets) {
+        const status = deliverViewerMessage(deviceId, ws.data.id, viewerName, "private", text, messageId, createdAt);
+        if (status === "sent") sent += 1;
+        else queued += 1;
+      }
+      send(ws, { type: "ack", message_id: messageId, status: sent > 0 ? "sent" : queued > 0 ? "queued" : "recorded", sent, queued });
       return;
     }
 

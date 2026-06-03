@@ -37,8 +37,8 @@ function currentMessageSlot() {
   return `${year}${month}${day}${hour}${minute}`;
 }
 
-function historyKey(deviceId?: string) {
-  return `live-dashboard-private-history-${deviceId || "none"}`;
+function historyKey(_deviceId?: string) {
+  return "live-dashboard-private-history-all";
 }
 
 function loadHistory(deviceId?: string): ChatLine[] {
