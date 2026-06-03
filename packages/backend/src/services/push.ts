@@ -37,10 +37,23 @@ export async function sendPush(viewerId: string, payload: { title: string; body:
   const sub = getSubscriber(viewerId);
   if (!sub) return false;
   try {
-    await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, JSON.stringify(payload));
+    await webpush.sendNotification(
+      { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+      JSON.stringify(payload),
+      {
+        TTL: 3600,              // 1 hour — chat notifications are time-sensitive
+        urgency: "high",         // deliver immediately
+        topic: viewerId.slice(0, 32), // coalesce multiple notifications for same viewer
+      },
+    );
     return true;
   } catch (e: any) {
-    if (e?.statusCode === 410 || e?.statusCode === 404) removeSubscription(viewerId);
+    if (e?.statusCode === 410 || e?.statusCode === 404) {
+      console.log("[push] Subscription expired, removing:", viewerId);
+      removeSubscription(viewerId);
+    } else {
+      console.error("[push] Failed for viewer", viewerId, ":", e?.statusCode, e?.body || e?.message || e);
+    }
     return false;
   }
 }
