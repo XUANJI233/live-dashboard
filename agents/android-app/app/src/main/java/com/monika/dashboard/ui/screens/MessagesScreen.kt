@@ -33,23 +33,27 @@ fun MessagesScreen(settings: SettingsStore) {
     var remarkText by remember { mutableStateOf("") }
     var detailMessage by remember { mutableStateOf<com.monika.dashboard.data.VisitorMessage?>(null) }
 
-    LaunchedEffect(Unit) {
-        while (true) {
-            val url = settings.serverUrl.first()
-            val token = withContext(Dispatchers.IO) { settings.getToken() }
-            if (url.isNotBlank() && !token.isNullOrBlank()) {
-                withContext(Dispatchers.IO) {
-                    val client = ReportClient(url, token)
-                    try {
-                        val latest = MessageInboxStore.latestServerTimestamp(context)
-                        client.fetchMessageHistory(latest.takeIf { it.isNotBlank() }).getOrNull()?.let {
-                            MessageInboxStore.upsertAll(context, it)
-                        }
-                    } finally {
-                        client.shutdown()
+    val syncMessages: suspend () -> Unit = {
+        val url = settings.serverUrl.first()
+        val token = withContext(Dispatchers.IO) { settings.getToken() }
+        if (url.isNotBlank() && !token.isNullOrBlank()) {
+            withContext(Dispatchers.IO) {
+                val client = ReportClient(url, token)
+                try {
+                    val latest = MessageInboxStore.latestServerTimestamp(context)
+                    client.fetchMessageHistory(latest.takeIf { it.isNotBlank() }).getOrNull()?.let {
+                        MessageInboxStore.upsertAll(context, it)
                     }
+                } finally {
+                    client.shutdown()
                 }
             }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            syncMessages()
             tick++
             delay(10_000)
         }
@@ -171,6 +175,7 @@ fun MessagesScreen(settings: SettingsStore) {
                             syncMessageAction(settings) { client ->
                                 client.replyToMessage(related, viewerId, text)
                             }
+                            syncMessages()
                         }
                         tick++
                     }
