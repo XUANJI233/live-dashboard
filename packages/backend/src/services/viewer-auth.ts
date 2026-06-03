@@ -5,6 +5,7 @@ const TOKEN_TTL_SECONDS = 60 * 60;
 const MIN_FINGERPRINT_LENGTH = 32; // FingerprintJS visitorId is 32-char hex
 const MIN_FINGERPRINT_UNIQUE = 6;  // hex has 16 chars, 6 is reasonable
 const POW_DIFFICULTY_HEX = 4;      // 4 leading hex zeros = 16 bits of work
+const POW_MEMORY_SEGMENTS = 16384; // 512 KB sequential memory chain, matches edge/frontend
 const POW_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const VIEWER_TOKEN_RATE_LIMIT = 600;
 const MAX_POW_CHALLENGES = 10000;  // limit memory usage
@@ -219,7 +220,7 @@ export function verifyViewerToken(token: string | null | undefined): ViewerIdent
 }
 
 // ── PoW Challenge ──
-export function issuePowChallenge(ip: string): { challenge: string; difficulty: number } | { error: string; status: number } {
+export function issuePowChallenge(ip: string): { challenge: string; difficulty: number; segments: number } | { error: string; status: number } {
   if (!ip || ip === "unknown") {
     return { error: "Unable to determine client IP", status: 400 };
   }
@@ -236,10 +237,10 @@ export function issuePowChallenge(ip: string): { challenge: string; difficulty: 
   }
   const challenge = randomBytes(32).toString("hex");
   powChallenges.set(challenge, { ip, ipUpdated: false, createdAt: Date.now() });
-  return { challenge, difficulty: POW_DIFFICULTY_HEX };
+  return { challenge, difficulty: POW_DIFFICULTY_HEX, segments: POW_MEMORY_SEGMENTS };
 }
 
-export function verifyPowSolution(challenge: string, nonce: string, ip: string): boolean {
+export function verifyPowSolution(challenge: string, nonce: string, ip: string, lastHash?: string): boolean {
   const entry = powChallenges.get(challenge);
   if (!entry) return false;
   if (Date.now() - entry.createdAt > POW_CHALLENGE_TTL_MS) {
@@ -252,8 +253,21 @@ export function verifyPowSolution(challenge: string, nonce: string, ip: string):
     entry.ipUpdated = true;
     entry.ip = ip;
   }
-  const input = challenge + nonce;
-  const hashHex = createHash("sha256").update(input).digest("hex");
+  let hashHex = "";
+  if (lastHash) {
+    const firstHash = createHash("sha256").update(challenge).digest("hex");
+    let chainHash = firstHash;
+    for (let i = 1; i < POW_MEMORY_SEGMENTS; i += 1) {
+      chainHash = createHash("sha256").update(chainHash).digest("hex");
+    }
+    if (chainHash !== lastHash) {
+      powChallenges.delete(challenge);
+      return false;
+    }
+    hashHex = createHash("sha256").update(firstHash + chainHash + nonce).digest("hex");
+  } else {
+    hashHex = createHash("sha256").update(challenge + nonce).digest("hex");
+  }
   powChallenges.delete(challenge);
   return hashHex.startsWith("0".repeat(POW_DIFFICULTY_HEX));
 }

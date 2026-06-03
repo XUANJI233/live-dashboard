@@ -392,7 +392,7 @@ function recordMessage(
   deviceId: string,
   viewerId: string,
   viewerName: string,
-  kind: "public" | "private" | "reply",
+  kind: "public" | "private" | "reply" | "public_reply",
   direction: "viewer" | "device",
   text: string,
   createdAt = new Date().toISOString(),

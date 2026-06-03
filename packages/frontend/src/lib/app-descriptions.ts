@@ -1533,11 +1533,17 @@ function normalizeDisplayTitle(appName: string, displayTitle?: string): string {
 
   const normalized = title.toLowerCase();
   const app = appName.trim().toLowerCase();
+  if (isGenericVisibleTitle(title)) return "";
   if (normalized === app || normalized === "android" || normalized.endsWith("activity")) return "";
   if (isGenericAppTitle(appName, title)) return "";
   if (title === `正在用${appName}` || title.startsWith("正在用系统桌面")) return "";
   if (isRedundantGeneratedTitle(appName, title)) return "";
   return title;
+}
+
+function isGenericVisibleTitle(title: string): boolean {
+  const normalized = title.trim().replace(/[~～。.!！]+$/g, "~");
+  return normalized === "暂时看不到具体活动喵~" || normalized === "暂时离开了一会儿喵~";
 }
 
 function isGenericAppTitle(appName: string, title: string): boolean {

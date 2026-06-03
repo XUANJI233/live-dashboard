@@ -9,17 +9,17 @@ import { noStore } from "../services/cdn";
 export function handlePowChallenge(req: Request, ipHint: string): Response {
   // In edge mode, PoW is handled by the edge function
   if (EDGE_MODE) {
-    return Response.json({ skip: true, message: "Edge mode — PoW handled at edge" });
+    return noStore(Response.json({ skip: true, message: "Edge mode - PoW handled at edge" }));
   }
   // Skip PoW for local IPs and unknown IPs (PoW is IP-bound, can't work without valid IP)
   if (!ipHint || ipHint === "unknown" || isLocalIp(ipHint)) {
-    return Response.json({ skip: true, message: "Local IP — PoW not required" });
+    return noStore(Response.json({ skip: true, message: "Local IP - PoW not required" }));
   }
   const result = issuePowChallenge(ipHint);
   if ("error" in result) {
     return noStore(Response.json({ skip: true, message: result.error }));
   }
-  return noStore(Response.json({ challenge: result.challenge, difficulty: result.difficulty, expiresIn: 300 }));
+  return noStore(Response.json({ challenge: result.challenge, difficulty: result.difficulty, segments: result.segments, expiresIn: 300 }));
 }
 
 // POST /api/token/issue — require PoW + JA4 for non-local IPs (skip in edge/CDN mode)
@@ -51,14 +51,19 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
   if (!POW_DISABLED && !EDGE_MODE && !edgeVerified && ipKnown && !isLocalIp(ipHint)) {
     let pow_challenge = body.pow_challenge;
     let pow_nonce = body.pow_nonce;
+    let pow_last_hash = "";
     // Support new memory-PoW result format (pow_result JSON with nonce + lastHash)
     if (!pow_nonce && body.pow_result) {
-      try { const r = JSON.parse(body.pow_result); pow_nonce = r.nonce; } catch {}
+      try {
+        const r = JSON.parse(body.pow_result);
+        pow_nonce = r.nonce;
+        pow_last_hash = typeof r.lastHash === "string" ? r.lastHash : "";
+      } catch {}
     }
     if (!pow_challenge || !pow_nonce) {
       return Response.json({ error: "PoW challenge and nonce required", code: "POW_REQUIRED" }, { status: 403 });
     }
-    const powValid = await verifyPowSolution(pow_challenge, pow_nonce, ipHint);
+    const powValid = await verifyPowSolution(pow_challenge, pow_nonce, ipHint, pow_last_hash);
     if (!powValid) {
       return Response.json({ error: "Invalid PoW solution", code: "POW_INVALID" }, { status: 403 });
     }

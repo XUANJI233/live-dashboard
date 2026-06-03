@@ -256,7 +256,7 @@ function isSameVisibleMergeCandidate(seg: TimelineSegment, nsfwFilterEnabled = t
   if (meaningfulDetailTitle(seg, nsfwFilterEnabled)) return false;
   const title = segmentVisibleSignature(seg, nsfwFilterEnabled);
   if (!title) return false;
-  return title === "暂时看不到具体活动喵~" || title === "暂时离开了一会儿喵~";
+  return isGenericVisibleTitle(title);
 }
 
 function isSwitchNoiseSegment(seg: TimelineSegment, nsfwFilterEnabled = true) {
@@ -309,8 +309,14 @@ function meaningfulDetailTitle(seg: TimelineSegment, nsfwFilterEnabled = true) {
   const app = seg.app_name.toLowerCase();
   if (normalized === app || normalized === "android" || normalized.endsWith("activity")) return "";
   if (title === `正在用${seg.app_name}` || title.startsWith("正在用系统桌面")) return "";
+  if (isGenericVisibleTitle(title)) return "";
   if (isRedundantGeneratedTitle(seg.app_name, title)) return "";
   return title;
+}
+
+function isGenericVisibleTitle(title: string) {
+  const normalized = title.trim().replace(/[~～。.!！]+$/g, "~");
+  return normalized === "暂时看不到具体活动喵~" || normalized === "暂时离开了一会儿喵~";
 }
 
 function isRedundantGeneratedTitle(appName: string, title: string) {

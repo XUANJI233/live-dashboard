@@ -28,6 +28,15 @@ function withTimeout(promise, ms, fallback) {
   ]);
 }
 
+function getClientIpFromHeaders(headers) {
+  const forwarded = headers.get("x-forwarded-for") || "";
+  const forwardedIp = forwarded ? forwarded.split(",")[0].trim() : "";
+  return headers.get("x-real-ip") ||
+    headers.get("ali-real-client-ip") ||
+    forwardedIp ||
+    "unknown";
+}
+
 // ── 配置加载（单次 EdgeKV 读取）──
 async function loadConfig() {
   const kv = new EdgeKV({ namespace: CONFIG_NS });
@@ -47,8 +56,11 @@ async function loadConfig() {
 }
 
 // ══════════════════════════════════════════════════════════════
-export default {
-  async fetch(request) {
+addEventListener("fetch", event => {
+  event.respondWith(handleFetch(event.request));
+});
+
+async function handleFetch(request) {
     const cfg = await loadConfig();
     const { origin, secret, deviceTokens, deviceTokenHashes } = cfg;
     if (!origin) return new Response("边缘配置缺失：请在 EdgeKV 写入 origin", { status: 500 });
@@ -56,9 +68,7 @@ export default {
     const url = new URL(request.url);
     const { pathname } = url;
     const method = request.method;
-    const clientIp = request.headers.get("x-real-ip") ||
-                     request.headers.get("ali-real-client-ip") ||
-                     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    const clientIp = getClientIpFromHeaders(request.headers);
 
     // CORS 预检
     if (method === "OPTIONS") {
@@ -106,7 +116,7 @@ export default {
 
       // 由边缘统一管理缓存头/标签的读取。ttl=0 也会经过这里，以便强制 no-store 并补齐 Cache-Tag。
       const cacheMeta = getCacheMeta(pathname, request);
-      if (method === "GET" && (cacheMeta.ttl > 0 || cacheMeta.tags?.length)) {
+      if (method === "GET" && (cacheMeta.ttl > 0 || (cacheMeta.tags && cacheMeta.tags.length))) {
         return handleCachedRead(request, origin, pathname, secret, cacheMeta);
       }
 
@@ -147,8 +157,7 @@ export default {
     } catch {
       return applySecurityHeaders(await passthroughSigned(request, origin, clientIp, secret));
     }
-  },
-};
+}
 
 // ══════════════════════════════════════════════════════════════
 // PoW 挑战
@@ -224,8 +233,8 @@ async function handleTokenIssue(request, clientIp, secret) {
 
     // 验证内存密集型 PoW：客户端需填充 POW_MEMORY_SEGMENTS 个连续 SHA-256 哈希
     const segments = challengeData.segments || POW_MEMORY_SEGMENTS;
-    const powResult = body.pow_result; // client submits: { nonce, lastHash }
-    if (!powResult?.nonce || !powResult?.lastHash) {
+    // client submits JSON: { nonce, lastHash }
+    if (!powResult || !powResult.nonce || !powResult.lastHash) {
       return jsonResponse({ error: "需要完整 PoW 结果 (nonce + lastHash)", code: "POW_INCOMPLETE" }, 403);
     }
 
@@ -315,9 +324,7 @@ async function handleCachedRead(request, origin, pathname, secret, cacheMeta = g
   const cacheKey = `http://edge-cache${pathname}${new URL(request.url).search}`;
   let verified = null;
   if (isAuthEndpoint(pathname)) {
-    const clientIp = request.headers.get("x-real-ip") ||
-      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-      "unknown";
+    const clientIp = getClientIpFromHeaders(request.headers);
     const token = extractViewerToken(request);
     verified = token && secret ? await verifyViewerToken(token, secret, clientIp) : null;
     if (!verified) return jsonResponse({ error: "需要 viewer token" }, 403);
@@ -390,7 +397,7 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
       });
 
       const cacheMeta = getCacheMeta(getPath(request), request);
-      if (request.method === "GET" && resp.ok && cacheMeta.tags?.length) {
+      if (request.method === "GET" && resp.ok && cacheMeta.tags && cacheMeta.tags.length) {
         return withEdgeCacheHeaders(resp, cacheMeta, "PASS");
       }
       return resp;
@@ -419,7 +426,7 @@ function passthrough(request, origin, clientIp) {
     fetch(`${origin}${url.pathname}${url.search}`, {
       method: request.method, headers,
       body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
-    }),
+    }).catch(() => new Response("Origin Fetch Failed", { status: 502 })),
     8000, // below ESA 10s gateway timeout
     new Response("Gateway Timeout", { status: 504 }),
   ).then(applySecurityHeaders);
@@ -433,7 +440,7 @@ async function passthroughSigned(request, origin, clientIp, secret) {
     fetch(`${origin}${url.pathname}${url.search}`, {
       method: request.method, headers,
       body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
-    }),
+    }).catch(() => new Response("Origin Fetch Failed", { status: 502 })),
     8000, // below ESA 10s gateway timeout
     new Response("Gateway Timeout", { status: 504 }),
   ).then(applySecurityHeaders);
@@ -442,7 +449,7 @@ async function passthroughSigned(request, origin, clientIp, secret) {
 
 function withEdgeCacheHeaders(response, cacheMeta, edgeState) {
   const headers = new Headers(response.headers);
-  if (cacheMeta.tags?.length) {
+  if (cacheMeta.tags && cacheMeta.tags.length) {
     const tagHeader = cacheMeta.tags.join(",");
     headers.set("Cache-Tag", tagHeader);
     headers.set("ESA-Cache-Tag", tagHeader);
@@ -555,15 +562,15 @@ function isLocalIp(ip) {
 
 function extractViewerToken(request) {
   const auth = request.headers.get("authorization");
-  const match = auth?.match(/^Bearer\s+(.+)$/i);
-  if (match?.[1]) return match[1];
+  const match = auth ? auth.match(/^Bearer\s+(.+)$/i) : null;
+  if (match && match[1]) return match[1];
   return new URL(request.url).searchParams.get("viewer_token");
 }
 
 function extractBearerToken(request) {
   const auth = request.headers.get("authorization");
-  const match = auth?.match(/^Bearer\s+(.+)$/i);
-  return match?.[1]?.trim() || "";
+  const match = auth ? auth.match(/^Bearer\s+(.+)$/i) : null;
+  return match && match[1] ? match[1].trim() : "";
 }
 
 function parseDeviceTokenList(raw) {
@@ -753,7 +760,7 @@ function noStoreJson(data) {
       "CDN-Cache-Control": "no-store", "Surrogate-Control": "no-store",
       ...corsHeaders(),
     },
-  });
+  }));
 }
 
 function corsHeaders() {

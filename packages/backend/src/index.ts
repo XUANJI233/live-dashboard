@@ -267,7 +267,7 @@ const server = Bun.serve<WsData>({
         if (!viewer) response = Response.json({ error: "Viewer token required" }, { status: 403 });
         else {
           const body = await req.json().catch(() => null);
-          if (body?.endpoint && body?.keys?.p256dh && body?.keys?.auth) {
+          if (isPushSubscriptionBody(body)) {
             saveSubscription(viewer.viewerId, body);
             response = Response.json({ ok: true });
           } else {
@@ -366,6 +366,15 @@ const server = Bun.serve<WsData>({
   },
   websocket: realtimeWebSocket,
 });
+
+function isPushSubscriptionBody(value: unknown): value is { endpoint: string; keys: { p256dh: string; auth: string } } {
+  if (!value || typeof value !== "object") return false;
+  const body = value as { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } };
+  return typeof body.endpoint === "string" &&
+    !!body.keys &&
+    typeof body.keys.p256dh === "string" &&
+    typeof body.keys.auth === "string";
+}
 
 // ── 启动信息 ──
 const cdnMode = /^(1|true|yes)$/i.test(process.env.CDN_MODE || "");
