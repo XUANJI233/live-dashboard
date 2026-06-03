@@ -722,10 +722,10 @@ export function handleViewerMessageHistory(req: Request): Response {
   if (!viewerTokenRateLimit(viewer.viewerId)) return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
 
   const url = new URL(req.url);
-  const since = url.searchParams.get("since") || "";
-  const safeSince = since && !isNaN(new Date(since).getTime()) ? new Date(since).toISOString() : "";
+  const since = url.searchParams.get("since") || new Date(Date.now() - 86400000).toISOString(); // default 24h
+  const safeSince = !isNaN(new Date(since).getTime()) ? new Date(since).toISOString() : new Date(Date.now() - 86400000).toISOString();
   const rows = getViewerMessageHistory.all(viewer.viewerId, safeSince, safeSince);
-  return Response.json({ messages: rows });
+  return Response.json({ messages: rows, since: safeSince });
 }
 
 export async function handleDeviceMessageReply(req: Request): Promise<Response> {
