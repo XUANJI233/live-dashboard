@@ -46,8 +46,9 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
   }
 
   // PoW verification: required for non-local IPs with known IP
-  // Skip PoW in edge mode (edge function handles it)
-  if (!POW_DISABLED && !EDGE_MODE && ipKnown && !isLocalIp(ipHint)) {
+  // Skip PoW in edge mode (edge function handles it) or if edge already verified
+  const edgeVerified = req.headers.get("x-edge-verified") === "true";
+  if (!POW_DISABLED && !EDGE_MODE && !edgeVerified && ipKnown && !isLocalIp(ipHint)) {
     let pow_challenge = body.pow_challenge;
     let pow_nonce = body.pow_nonce;
     // Support new memory-PoW result format (pow_result JSON with nonce + lastHash)
