@@ -56,9 +56,9 @@ export default function Header({ serverTime, viewerCount = 0 }: HeaderProps) {
                 type="button"
                 onClick={triggerInstall}
                 className="pill-btn px-1.5 py-0.5 text-[10px]"
-                title="安装到桌面"
+                title="添加到桌面"
               >
-                ⬇ 安装
+                ⬇ 添加到桌面
               </button>
             )}
             <PushSubscribe />

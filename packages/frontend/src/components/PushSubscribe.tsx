@@ -72,10 +72,11 @@ export default function PushSubscribe() {
     <button
       type="button"
       onClick={toggle}
-      className="pill-btn px-2 py-0.5 text-[10px]"
-      title={status === "subscribed" ? "关闭推送通知" : status === "denied" ? "通知权限被拒绝" : "开启推送通知"}
+      className="pill-btn px-1.5 py-0.5 text-[10px]"
+      title={status === "subscribed" ? "关闭推送通知" : status === "denied" ? "通知权限被拒绝" : "开启回复推送通知"}
     >
       {status === "subscribed" ? "🔔" : status === "denied" ? "🔕" : "🔔+"}
+      <span className="ml-1">{status === "subscribed" ? "推送开" : status === "denied" ? "已拒绝" : "推送"}</span>
     </button>
   );
 }
