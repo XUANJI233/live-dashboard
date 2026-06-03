@@ -28,35 +28,22 @@ function withTimeout(promise, ms, fallback) {
   ]);
 }
 
-// ── 配置加载（单次 EdgeKV 读取，节省子请求配额）──
+// ── 配置加载（单次 EdgeKV 读取）──
 async function loadConfig() {
   const kv = new EdgeKV({ namespace: CONFIG_NS });
-  // Try single-json config first, fallback to individual keys
   const jsonStr = await withTimeout(kv.get(CONFIG_KEY, { type: "text" }), 2000, "");
-  if (jsonStr) {
-    try {
-      const cfg = JSON.parse(jsonStr);
-      return {
-        origin: cfg.origin || "",
-        secret: cfg.secret || "",
-        deviceTokens: cfg.device_tokens || "",
-        deviceTokenHashes: cfg.device_token_hashes || "",
-      };
-    } catch { /* fall through to individual keys */ }
+  if (!jsonStr) return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "" };
+  try {
+    const cfg = JSON.parse(jsonStr);
+    return {
+      origin: cfg.origin || "",
+      secret: cfg.secret || "",
+      deviceTokens: cfg.device_tokens || "",
+      deviceTokenHashes: cfg.device_token_hashes || "",
+    };
+  } catch {
+    return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "" };
   }
-  // Legacy: individual keys (one sub-request each — deprecated)
-  const [origin, secret, deviceTokens, deviceTokenHashes] = await Promise.all([
-    withTimeout(kv.get("origin", { type: "text" }), 2000, ""),
-    withTimeout(kv.get("secret", { type: "text" }), 2000, ""),
-    withTimeout(kv.get("device_tokens", { type: "text" }), 2000, ""),
-    withTimeout(kv.get("device_token_hashes", { type: "text" }), 2000, ""),
-  ]);
-  return {
-    origin: origin || "",
-    secret: secret || "",
-    deviceTokens: deviceTokens || "",
-    deviceTokenHashes: deviceTokenHashes || "",
-  };
 }
 
 // ══════════════════════════════════════════════════════════════
