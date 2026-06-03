@@ -256,7 +256,6 @@ function requestConfigFromCompanion(messenger) {
         // Even on failure, try to keep the alarm going with existing config
         setupNextAlarm()
       })
-      })
     }
   } catch (e) {
     console.log('[LiveWatch:device] Config sync unavailable: ' + ((e && e.message) || e))
