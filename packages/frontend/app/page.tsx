@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { useDashboard } from "@/hooks/useDashboard";
 import { useConfig, useConfigLoader, ConfigContext } from "@/hooks/useConfig";
 import type { DeviceState, HealthRecord } from "@/lib/api";
@@ -540,6 +540,13 @@ type DeviceInfoItem = { label: string; value: string; unit?: string };
 type HealthItem = { type: string; label: string; value: string; unit: string; source: string; records: HealthRecord[] };
 type HealthGroup = { latest: HealthRecord; all: HealthRecord[] };
 const SLEEP_DETAIL_TYPES = ["sleep", "sleep_status", "sleep_start", "sleep_end", "sleep_duration", "deep_sleep_duration", "sleep_score", "sleep_stage_count", "nap_start", "nap_end", "nap_duration"];
+const IGNORED_HEALTH_TYPES = new Set(["battery_percent"]);
+const HEALTH_TYPE_ORDER = new Map([
+  "heart_rate", "oxygen_saturation", "body_temperature", "sleep_status", "sleep_start", "sleep_end", "sleep_duration",
+  "deep_sleep_duration", "sleep_score",
+  "nap_start", "nap_end", "nap_duration", "sleep_stage_count", "wear_status", "stress", "steps",
+  "active_calories", "stand_count", "stand_target", "air_pressure", "altitude",
+].map((type, index) => [type, index]));
 
 function DeviceInfoCard({ item }: { item: DeviceInfoItem }) {
   return (
@@ -591,14 +598,14 @@ function HealthDetailPanel({
   onShowAll: () => void;
   onSelectType: (type: string) => void;
 }) {
-  const allItems = healthItems(grouped, deviceById);
-  const visibleItems = items.filter((item) => !isSleepType(item.type));
-  const chartItems = visibleItems.filter((item) => item.records.length > 1 && isChartableHealthType(item.type));
-  const recentRecords = visibleItems
-    .flatMap((item) => item.records.map((record) => ({ ...record, type: item.type })))
-    .sort((a, b) => new Date(b.recorded_at).getTime() - new Date(a.recorded_at).getTime())
-    .slice(0, 24);
-  const navItems = aggregateHealthNavItems(allItems);
+  const allItems = useMemo(() => healthItems(grouped, deviceById), [grouped, deviceById]);
+  const visibleItems = useMemo(() => items.filter((item) => !isSleepType(item.type)), [items]);
+  const chartItems = useMemo(
+    () => visibleItems.filter((item) => item.records.length > 1 && isChartableHealthType(item.type)),
+    [visibleItems]
+  );
+  const recentRecords = useMemo(() => collectRecentHealthRecords(visibleItems, 24), [visibleItems]);
+  const navItems = useMemo(() => aggregateHealthNavItems(allItems), [allItems]);
 
   return (
     <div className="mt-3 rounded border border-[var(--color-border)] px-3 py-3">
@@ -808,10 +815,9 @@ function compactDeviceInfo(device: DeviceState) {
 }
 
 function groupHealth(records: HealthRecord[]) {
-  const ignoredTypes = new Set(["battery_percent"]);
   const map = new Map<string, HealthGroup>();
   for (const record of records) {
-    if (ignoredTypes.has(record.type)) continue;
+    if (IGNORED_HEALTH_TYPES.has(record.type)) continue;
     const existing = map.get(record.type);
     if (existing) {
       existing.all.push(record);
@@ -824,14 +830,8 @@ function groupHealth(records: HealthRecord[]) {
 }
 
 function healthItems(grouped: Map<string, HealthGroup>, deviceById: Map<string, DeviceState>): HealthItem[] {
-  const order = [
-    "heart_rate", "oxygen_saturation", "body_temperature", "sleep_status", "sleep_start", "sleep_end", "sleep_duration",
-    "deep_sleep_duration", "sleep_score",
-    "nap_start", "nap_end", "nap_duration", "sleep_stage_count", "wear_status", "stress", "steps",
-    "active_calories", "stand_count", "stand_target", "air_pressure", "altitude",
-  ];
   return Array.from(grouped.entries())
-    .sort(([a], [b]) => (order.indexOf(a) < 0 ? 99 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 99 : order.indexOf(b)))
+    .sort(([a], [b]) => (HEALTH_TYPE_ORDER.get(a) ?? 99) - (HEALTH_TYPE_ORDER.get(b) ?? 99))
     .map(([type, entry]) => ({
       type,
       label: healthLabel(type),
@@ -849,37 +849,153 @@ function sourceLabel(deviceId: string, deviceById: Map<string, DeviceState>) {
   return `来自 ${device.device_name || "设备"}`;
 }
 
-function Sparkline({ records, type }: { records: HealthRecord[]; type: string }) {
-  const sampled = sampleRecords(records, 80);
-  const values = sampled.map((record) => record.value).filter(Number.isFinite);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = Math.max(1, max - min);
-  return (
-    <div className="flex h-16 items-end gap-[2px] overflow-hidden">
-      {sampled.map((record, index) => {
-        const height = Math.max(8, Math.min(100, ((record.value - min) / span) * 86 + 8));
-        return (
-          <span
-            key={`${record.recorded_at}-${index}`}
-            title={`${formatShortTime(record.recorded_at)} ${formatHealthValue(record.value, type)} ${healthUnit(type, record.unit)}`}
-            className="min-w-[2px] flex-1 rounded-sm bg-[var(--color-primary)] opacity-70"
-            style={{ height: `${height}%` }}
-          />
-        );
-      })}
-    </div>
-  );
+function collectRecentHealthRecords(items: HealthItem[], max: number) {
+  if (max <= 0) return [];
+  const picked: { record: HealthRecord; ts: number }[] = [];
+  let minIndex = -1;
+  let minTs = Infinity;
+
+  const recomputeMin = () => {
+    minIndex = -1;
+    minTs = Infinity;
+    for (let i = 0; i < picked.length; i += 1) {
+      if (picked[i]!.ts < minTs) {
+        minTs = picked[i]!.ts;
+        minIndex = i;
+      }
+    }
+  };
+
+  for (const item of items) {
+    for (const record of item.records) {
+      const ts = Date.parse(record.recorded_at);
+      if (!Number.isFinite(ts)) continue;
+      if (picked.length < max) {
+        picked.push({ record, ts });
+        if (ts < minTs) {
+          minTs = ts;
+          minIndex = picked.length - 1;
+        }
+      } else if (ts > minTs && minIndex >= 0) {
+        picked[minIndex] = { record, ts };
+        recomputeMin();
+      }
+    }
+  }
+
+  picked.sort((a, b) => b.ts - a.ts);
+  return picked.map((entry) => entry.record);
 }
 
-function sampleRecords(records: HealthRecord[], max: number) {
-  if (records.length <= max) return records;
-  const step = records.length / max;
-  const result: HealthRecord[] = [];
-  for (let i = 0; i < max; i += 1) {
-    result.push(records[Math.floor(i * step)]!);
+function buildCanvasSeries(records: HealthRecord[]) {
+  const points: { time: number; value: number }[] = [];
+  let minTime = Infinity;
+  let maxTime = -Infinity;
+  let minValue = Infinity;
+  let maxValue = -Infinity;
+  let previousTime = -Infinity;
+  let isSorted = true;
+
+  for (const record of records) {
+    const time = Date.parse(record.recorded_at);
+    const value = record.value;
+    if (!Number.isFinite(time) || !Number.isFinite(value)) continue;
+    if (time < previousTime) isSorted = false;
+    previousTime = time;
+    points.push({ time, value });
+    if (time < minTime) minTime = time;
+    if (time > maxTime) maxTime = time;
+    if (value < minValue) minValue = value;
+    if (value > maxValue) maxValue = value;
   }
-  return result;
+
+  if (!isSorted) points.sort((a, b) => a.time - b.time);
+  if (points.length === 0) {
+    return { points, minTime: 0, maxTime: 1, minValue: 0, maxValue: 1 };
+  }
+  if (minValue === maxValue) {
+    minValue -= 1;
+    maxValue += 1;
+  }
+  return { points, minTime, maxTime, minValue, maxValue };
+}
+
+function Sparkline({ records, type }: { records: HealthRecord[]; type: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const series = useMemo(() => buildCanvasSeries(records), [records]);
+  const label = `${healthLabel(type)}历史，${series.points.length} 条`;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || series.points.length === 0) return;
+
+    const draw = () => {
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(1, rect.width);
+      const height = Math.max(1, rect.height);
+      const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+
+      const styles = getComputedStyle(canvas);
+      const stroke = styles.getPropertyValue("--color-primary").trim() || "#88c0d0";
+      const muted = styles.getPropertyValue("--color-border").trim() || "rgba(128,128,128,0.3)";
+      ctx.strokeStyle = muted;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, height - 0.5);
+      ctx.lineTo(width, height - 0.5);
+      ctx.stroke();
+
+      const points = series.points;
+      const tSpan = Math.max(1, series.maxTime - series.minTime);
+      const vSpan = Math.max(1, series.maxValue - series.minValue);
+      const toX = (time: number) => ((time - series.minTime) / tSpan) * width;
+      const toY = (value: number) => height - ((value - series.minValue) / vSpan) * (height - 8) - 4;
+
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < points.length; i += 1) {
+        const point = points[i]!;
+        const x = toX(point.time);
+        const y = toY(point.value);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      if (points.length === 1) {
+        const point = points[0]!;
+        ctx.fillStyle = stroke;
+        ctx.beginPath();
+        ctx.arc(toX(point.time), toY(point.value), 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    };
+
+    draw();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(draw);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [series]);
+
+  if (series.points.length === 0) return null;
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="block h-16 w-full"
+      role="img"
+      aria-label={label}
+      title={label}
+    />
+  );
 }
 
 function isChartableHealthType(type: string) {

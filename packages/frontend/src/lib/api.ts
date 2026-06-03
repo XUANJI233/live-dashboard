@@ -283,14 +283,62 @@ export async function fetchHealthData(
   options?: { summary?: boolean },
 ): Promise<HealthDataResponse> {
   const viewerToken = getCachedViewerToken() || (typeof window !== "undefined" ? (await ensureViewerToken()).token : null);
+  if (!options?.summary && isTodayForClientTimezone(date)) {
+    try {
+      const windows = clientHourWindowsForDate(date);
+      const parts = await mapWithConcurrency(windows, 4, (window) => fetchHealthDataWindow(date, window, viewerToken, signal, deviceId));
+      return mergeHealthDataResponses(date, parts);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      // Fall back to the full-day endpoint if a deployment has not picked up
+      // windowed health reads yet.
+    }
+  }
+  return fetchHealthDataRequest(date, viewerToken, signal, deviceId, options);
+}
+
+async function fetchHealthDataWindow(
+  date: string,
+  window: string,
+  viewerToken: string | null,
+  signal?: AbortSignal,
+  deviceId?: string,
+): Promise<HealthDataResponse> {
+  return fetchHealthDataRequest(date, viewerToken, signal, deviceId, undefined, window);
+}
+
+async function fetchHealthDataRequest(
+  date: string,
+  viewerToken: string | null,
+  signal?: AbortSignal,
+  deviceId?: string,
+  options?: { summary?: boolean },
+  window?: string,
+): Promise<HealthDataResponse> {
   const tz = new Date().getTimezoneOffset();
   let url = `${API_BASE}/api/health-data?date=${encodeURIComponent(date)}&tz=${tz}`;
   if (deviceId) url += `&device_id=${encodeURIComponent(deviceId)}`;
   if (options?.summary) url += "&summary=1";
+  if (window) url += `&window=${encodeURIComponent(window)}`;
   if (viewerToken) url += `&viewer_token=${encodeURIComponent(viewerToken)}`;
-  const res = await fetch(url, { signal, cache: isTodayForClientTimezone(date) ? "no-store" : "default" });
+  const res = await fetch(url, { signal, cache: window && !isLiveClientWindow(window) ? "default" : isTodayForClientTimezone(date) ? "no-store" : "default" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+function mergeHealthDataResponses(date: string, parts: HealthDataResponse[]): HealthDataResponse {
+  const seen = new Set<string>();
+  const records: HealthRecord[] = [];
+  for (const part of parts) {
+    for (const record of part.records || []) {
+      const key = `${record.device_id}|${record.type}|${record.recorded_at}|${record.end_time}|${record.value}|${record.unit}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      records.push(record);
+    }
+  }
+  records.sort((a, b) => Date.parse(a.recorded_at) - Date.parse(b.recorded_at));
+  return { date, window: null, summary: false, records };
 }
 
 async function mapWithConcurrency<T, R>(

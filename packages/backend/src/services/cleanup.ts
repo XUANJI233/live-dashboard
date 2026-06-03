@@ -1,4 +1,4 @@
-import { cleanupExpiredMessages, cleanupOldActivities, cleanupOldLocations, cleanupOldSummaries, markOfflineDevices } from "../db";
+import { cleanupExpiredMessages, cleanupOldActivities, cleanupOldLocations, cleanupOldSummaries, markOfflineDevices, optimizeDatabase } from "../db";
 import { generateDailySummary } from "./daily-summary-gen";
 
 // Cleanup old activities + old summaries every hour
@@ -37,6 +37,12 @@ const hourlyCleanupTimer = setInterval(() => {
     }
   } catch (e) {
     console.error("[cleanup] Summaries cleanup failed:", e);
+  }
+
+  try {
+    optimizeDatabase();
+  } catch (e) {
+    console.error("[cleanup] SQLite optimize failed:", e);
   }
 }, 60 * 60 * 1000);
 hourlyCleanupTimer.unref();

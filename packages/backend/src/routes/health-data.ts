@@ -2,7 +2,7 @@ import { authenticateToken } from "../middleware/auth";
 import { db } from "../db";
 import { verifyViewerToken, viewerTokenFromRequest, edgeViewerIdentity, viewerTokenRateLimit } from "../services/viewer-auth";
 import type { HealthRecord } from "../types";
-import { isLiveHourWindow, normalizeHourWindow, noStore, windowMatchesDate, withCdnHeaders } from "../services/cdn";
+import { isLiveHourWindow, normalizeHourWindow, noStore, safeTimezoneOffset, utcRangeForLocalDate, utcRangeForLocalHourWindow, windowMatchesDate, withCdnHeaders } from "../services/cdn";
 
 const MAX_RECORDS_PER_REQUEST = 1500; // supports full day of minute-level heart rate data (1440 max)
 const VALID_TYPES = new Set([
@@ -123,43 +123,17 @@ export function handleHealthDataQuery(url: URL, req: Request): Response {
 
   // Accept timezone offset in minutes (e.g. -480 for UTC+8), same as /api/timeline
   const tzParam = url.searchParams.get("tz");
-  const tzOffsetMinutes = tzParam ? parseInt(tzParam, 10) : 0;
+  const tzOffsetMinutes = safeTimezoneOffset(tzParam ? parseInt(tzParam, 10) : 0);
 
   try {
-    if (tzOffsetMinutes && !isNaN(tzOffsetMinutes) && Math.abs(tzOffsetMinutes) <= 840) {
-      // Convert offset to SQLite modifier (e.g. tz=-480 → "+08:00")
-      const offsetHours = -tzOffsetMinutes / 60;
-      const sign = offsetHours >= 0 ? "+" : "-";
-      const absH = Math.floor(Math.abs(offsetHours));
-      const absM = Math.round((Math.abs(offsetHours) - absH) * 60);
-      const modifier = `${sign}${String(absH).padStart(2, "0")}:${String(absM).padStart(2, "0")}`;
+    const range = window
+      ? utcRangeForLocalHourWindow(window, tzOffsetMinutes)
+      : utcRangeForLocalDate(date, tzOffsetMinutes);
+    if (!range) return Response.json({ error: "Invalid date" }, { status: 400 });
 
-      const whereWindow = window ? ` AND strftime('%Y%m%d%H', recorded_at, '${modifier}') = ?` : "";
-      const whereDevice = deviceId ? " AND device_id = ?" : "";
-      const where = `date(recorded_at, '${modifier}') = ?${whereWindow}${whereDevice}`;
-      const params = window
-        ? (deviceId ? [date, window, deviceId] : [date, window])
-        : (deviceId ? [date, deviceId] : [date]);
-      const records = db.prepare(healthSelectSql(where, summary)).all(...params) as HealthRecord[];
-
-      return healthQueryResponse(date, window, deviceId, records, tzOffsetMinutes, summary);
-    }
-
-    // No timezone offset — use UTC (backwards compatible)
-    const startOfDay = `${date}T00:00:00.000Z`;
-    const d = new Date(startOfDay);
-    if (isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== date) {
-      return Response.json({ error: "Invalid date" }, { status: 400 });
-    }
-    d.setUTCDate(d.getUTCDate() + 1);
-    const startOfNextDay = d.toISOString();
-
-    const whereWindow = window ? " AND strftime('%Y%m%d%H', recorded_at) = ?" : "";
     const whereDevice = deviceId ? " AND device_id = ?" : "";
-    const where = `recorded_at >= ? AND recorded_at < ?${whereWindow}${whereDevice}`;
-    const params = window
-      ? (deviceId ? [startOfDay, startOfNextDay, window, deviceId] : [startOfDay, startOfNextDay, window])
-      : (deviceId ? [startOfDay, startOfNextDay, deviceId] : [startOfDay, startOfNextDay]);
+    const where = `recorded_at >= ? AND recorded_at < ?${whereDevice}`;
+    const params = deviceId ? [range.start, range.end, deviceId] : [range.start, range.end];
     const records = db.prepare(healthSelectSql(where, summary)).all(...params) as HealthRecord[];
 
     return healthQueryResponse(date, window, deviceId, records, tzOffsetMinutes, summary);
@@ -178,7 +152,7 @@ function healthQueryResponse(date: string, window: string | null, deviceId: stri
     ...(window ? [`health-data-window-${window}`] : []),
     ...(deviceId ? [`health-device-${deviceId}`] : []),
   ];
-  if (isTodayForOffset(date, tzOffsetMinutes) || (window && isLiveHourWindow(window, safeTimezoneOffset(tzOffsetMinutes)))) {
+  if ((window && isLiveHourWindow(window, tzOffsetMinutes)) || (!window && isTodayForOffset(date, tzOffsetMinutes))) {
     return noStore(response, tags);
   }
   return withCdnHeaders(
@@ -196,7 +170,6 @@ function healthSelectSql(where: string, summary: boolean): string {
       FROM health_records
       WHERE ${where}
       ORDER BY recorded_at ASC
-      LIMIT 10000
     `;
   }
 
@@ -213,7 +186,6 @@ function healthSelectSql(where: string, summary: boolean): string {
     )
     WHERE rn = 1
     ORDER BY recorded_at ASC
-    LIMIT 1000
   `;
 }
 
@@ -226,8 +198,4 @@ function isTodayForOffset(date: string, tzOffsetMinutes: number): boolean {
   const now = new Date(Date.now() - safeTimezoneOffset(tzOffsetMinutes) * 60_000);
   const today = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
   return date === today;
-}
-
-function safeTimezoneOffset(value: number): number {
-  return Number.isFinite(value) && Math.abs(value) <= 840 ? value : 0;
 }

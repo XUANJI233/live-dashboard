@@ -1,13 +1,38 @@
 import { Database } from "bun:sqlite";
 
 const DB_PATH = process.env.DB_PATH || "./live-dashboard.db";
+const SQLITE_BUSY_TIMEOUT_MS = positiveIntegerEnv("SQLITE_BUSY_TIMEOUT_MS", 5000);
+const SQLITE_WAL_AUTOCHECKPOINT_PAGES = positiveIntegerEnv("SQLITE_WAL_AUTOCHECKPOINT_PAGES", 1000);
+const SQLITE_CACHE_SIZE_KIB = positiveIntegerEnv("SQLITE_CACHE_SIZE_KIB", 32 * 1024);
+const SQLITE_MMAP_SIZE_BYTES = positiveIntegerEnv("SQLITE_MMAP_SIZE_BYTES", 256 * 1024 * 1024);
+const SQLITE_JOURNAL_SIZE_LIMIT_BYTES = positiveIntegerEnv("SQLITE_JOURNAL_SIZE_LIMIT_BYTES", 64 * 1024 * 1024);
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number.parseInt(raw, 10);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
 
 export const db = new Database(DB_PATH, { create: true });
 
-// Performance pragmas
-db.run("PRAGMA journal_mode = WAL");
-db.run("PRAGMA busy_timeout = 5000");
+// SQLite pragmas are mostly connection-scoped, so reapply them on each startup.
+db.run("PRAGMA foreign_keys = ON");
+db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+const journalMode = db.query("PRAGMA journal_mode = WAL").get() as { journal_mode?: string } | null;
+if (journalMode?.journal_mode?.toLowerCase() !== "wal") {
+  console.warn(`[db] SQLite WAL mode was not enabled, current journal_mode=${journalMode?.journal_mode ?? "unknown"}`);
+}
 db.run("PRAGMA synchronous = NORMAL");
+db.run(`PRAGMA wal_autocheckpoint = ${SQLITE_WAL_AUTOCHECKPOINT_PAGES}`);
+db.run(`PRAGMA cache_size = -${SQLITE_CACHE_SIZE_KIB}`);
+db.run(`PRAGMA mmap_size = ${SQLITE_MMAP_SIZE_BYTES}`);
+db.run(`PRAGMA journal_size_limit = ${SQLITE_JOURNAL_SIZE_LIMIT_BYTES}`);
+db.run("PRAGMA temp_store = MEMORY");
+
+export function optimizeDatabase(startup = false): void {
+  db.run(startup ? "PRAGMA optimize=0x10002" : "PRAGMA optimize");
+}
 
 // Activities table
 db.run(`
@@ -113,6 +138,11 @@ db.run(`
   ON health_records(type, recorded_at)
 `);
 
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_health_records_device_recorded
+  ON health_records(device_id, recorded_at)
+`);
+
 // ── Location records table ──
 
 db.run(`
@@ -131,6 +161,11 @@ db.run(`
 db.run(`
   CREATE INDEX IF NOT EXISTS idx_location_records_device_recorded
   ON location_records(device_id, recorded_at)
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_location_records_recorded
+  ON location_records(recorded_at)
 `);
 
 db.run(`
@@ -252,6 +287,17 @@ db.run(`
   ON visitor_messages(kind, created_at)
 `);
 
+// Daily summaries table (AI-generated, kept 7 days)
+db.run(`
+  CREATE TABLE IF NOT EXISTS daily_summaries (
+    date TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    generated_at TEXT DEFAULT (datetime('now'))
+  )
+`);
+
+optimizeDatabase(true);
+
 // ── HMAC hash secret validation ──
 
 const HASH_SECRET = process.env.HASH_SECRET || "";
@@ -304,18 +350,6 @@ export const getRecentActivities = db.prepare(`
   SELECT * FROM activities ORDER BY started_at DESC LIMIT 20
 `);
 
-export const getTimelineByDate = db.prepare(`
-  SELECT * FROM activities
-  WHERE date(started_at) = ?
-  ORDER BY started_at ASC
-`);
-
-export const getTimelineByDateAndDevice = db.prepare(`
-  SELECT * FROM activities
-  WHERE date(started_at) = ? AND device_id = ?
-  ORDER BY started_at ASC
-`);
-
 export const markOfflineDevices = db.prepare(`
   UPDATE device_states SET is_online = 0
   WHERE is_online = 1
@@ -346,15 +380,6 @@ export const insertLocationRecord = db.prepare(`
 
 export const cleanupOldLocations = db.prepare(`
   DELETE FROM location_records WHERE created_at < datetime('now', '-30 days')
-`);
-
-// Daily summaries table (AI-generated, kept 7 days)
-db.run(`
-  CREATE TABLE IF NOT EXISTS daily_summaries (
-    date TEXT PRIMARY KEY,
-    summary TEXT NOT NULL,
-    generated_at TEXT DEFAULT (datetime('now'))
-  )
 `);
 
 export const upsertDailySummary = db.prepare(`

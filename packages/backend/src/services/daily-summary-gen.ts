@@ -1,4 +1,5 @@
-import { getTimelineByDate, upsertDailySummary } from "../db";
+import { db, upsertDailySummary } from "../db";
+import { utcRangeForLocalDate } from "./cdn";
 
 /**
  * AI Daily Summary Generator
@@ -26,6 +27,13 @@ interface ActivityRow {
   display_title: string;
   started_at: string;
 }
+
+const getDailyActivityRows = db.prepare(`
+  SELECT device_name, app_name, display_title, started_at
+  FROM activities
+  WHERE started_at >= ? AND started_at < ?
+  ORDER BY started_at ASC
+`);
 
 function todayStr() {
   const d = new Date();
@@ -62,7 +70,13 @@ export async function generateDailySummary(): Promise<void> {
   }
 
   const date = todayStr();
-  const rows = getTimelineByDate.all(date) as ActivityRow[];
+  const range = utcRangeForLocalDate(date, new Date().getTimezoneOffset());
+  if (!range) {
+    console.error(`[ai-summary] Invalid summary date: ${date}`);
+    return;
+  }
+
+  const rows = getDailyActivityRows.all(range.start, range.end) as ActivityRow[];
   if (rows.length === 0) {
     console.log("[ai-summary] No activity data for today, skipping");
     return;

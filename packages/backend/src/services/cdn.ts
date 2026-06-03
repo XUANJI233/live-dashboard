@@ -69,6 +69,46 @@ export function isLiveHourWindow(window: string, tzOffsetMinutes: number, now = 
   return window === current || window === previous;
 }
 
+export function safeTimezoneOffset(value: number): number {
+  return Number.isFinite(value) && Math.abs(value) <= 840 ? value : 0;
+}
+
+export function utcRangeForLocalDate(date: string, tzOffsetMinutes: number): { start: string; end: string } | null {
+  const parts = date.split("-").map((part) => parseInt(part, 10));
+  const [year, month, day] = parts;
+  if (!year || !month || !day) return null;
+  if (!validUtcParts(year, month, day)) return null;
+  const startMs = Date.UTC(year, month - 1, day) + safeTimezoneOffset(tzOffsetMinutes) * 60_000;
+  const endMs = startMs + 24 * 60 * 60_000;
+  const start = new Date(startMs);
+  const end = new Date(endMs);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
+export function utcRangeForLocalHourWindow(window: string, tzOffsetMinutes: number): { start: string; end: string } | null {
+  const year = parseInt(window.slice(0, 4), 10);
+  const month = parseInt(window.slice(4, 6), 10);
+  const day = parseInt(window.slice(6, 8), 10);
+  const hour = parseInt(window.slice(8, 10), 10);
+  if (!year || !month || !day || !Number.isInteger(hour) || hour < 0 || hour > 23) return null;
+  if (!validUtcParts(year, month, day, hour)) return null;
+  const startMs = Date.UTC(year, month - 1, day, hour) + safeTimezoneOffset(tzOffsetMinutes) * 60_000;
+  const endMs = startMs + 60 * 60_000;
+  const start = new Date(startMs);
+  const end = new Date(endMs);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
+function validUtcParts(year: number, month: number, day: number, hour = 0): boolean {
+  const probe = new Date(Date.UTC(year, month - 1, day, hour));
+  return probe.getUTCFullYear() === year &&
+    probe.getUTCMonth() === month - 1 &&
+    probe.getUTCDate() === day &&
+    probe.getUTCHours() === hour;
+}
+
 export function currentMessageSlot(date = new Date(), slotMinutes = 10): string {
   const safeSlot = Math.max(1, Math.min(60, Math.floor(slotMinutes)));
   const roundedMinute = Math.floor(date.getUTCMinutes() / safeSlot) * safeSlot;
