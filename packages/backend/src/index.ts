@@ -147,11 +147,11 @@ const server = Bun.serve<WsData>({
 
     // Global IP rate limiting — skip for device-authenticated and public GET requests
     const clientIpForRate = normalizeClientIp(
-      req.headers.get("x-forwarded-for") ||
-      req.headers.get("x-real-ip") ||
       req.headers.get("ali-real-client-ip") ||
+      req.headers.get("x-real-ip") ||
       req.headers.get("cf-connecting-ip") ||
       server.requestIP(req)?.address ||
+      req.headers.get("x-forwarded-for") ||
       "unknown"
     );
     const authHeader = req.headers.get("authorization") || "";
@@ -196,10 +196,11 @@ const server = Bun.serve<WsData>({
 
     try {
       const clientIp = normalizeClientIp(
-        req.headers.get("x-forwarded-for") ||
+        req.headers.get("ali-real-client-ip") ||
         req.headers.get("x-real-ip") ||
         req.headers.get("cf-connecting-ip") ||
         server.requestIP(req)?.address ||
+        req.headers.get("x-forwarded-for") ||
         ""
       );
       if (pathname === "/api/ws") {

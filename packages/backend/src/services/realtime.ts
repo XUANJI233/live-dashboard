@@ -264,9 +264,10 @@ function viewerSocketCount() {
 
 function requestIp(req: Request): string {
   const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  return forwarded ||
+  return req.headers.get("ali-real-client-ip") ||
     req.headers.get("x-real-ip") ||
     req.headers.get("cf-connecting-ip") ||
+    forwarded ||
     "unknown";
 }
 
@@ -495,6 +496,11 @@ function deliverQueuedMessages(deviceId: string, ws: ServerWebSocket<WsData>) {
 export function getWsInfo(req: Request): WsData | Response {
   const url = new URL(req.url);
   const role = url.searchParams.get("role");
+  const ip = requestIp(req);
+  if (!globalIpRateLimit(ip)) {
+    return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
+
   if (role === "device") {
     const device = authenticateToken(req.headers.get("authorization"));
     if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
@@ -504,9 +510,6 @@ export function getWsInfo(req: Request): WsData | Response {
   if (role === "viewer") {
     const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
     if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
-    if (!globalIpRateLimit(requestIp(req))) {
-      return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
-    }
     if (!wsRateLimit(viewer.viewerId)) {
       return Response.json({ error: "Too many WebSocket reconnects" }, { status: 429 });
     }
