@@ -189,10 +189,16 @@ export default function VisitorMessages({ device }: Props) {
 
   useEffect(() => {
     let stopped = false;
+    let isFirstLoad = true;
     const loadPublic = async () => {
       try {
         const identity = await ensureViewerToken();
-        const url = `${API_BASE}/api/messages/public?slot=${currentMessageSlot()}`;
+        // First load: get full hour window so restart doesn't lose messages.
+        // Subsequent polls: use 10-min slot for incremental updates.
+        const url = isFirstLoad
+          ? `${API_BASE}/api/messages/public`
+          : `${API_BASE}/api/messages/public?slot=${currentMessageSlot()}`;
+        isFirstLoad = false;
         const res = await fetch(url, { headers: { Authorization: `Bearer ${identity.token}` } });
         if (!res.ok || stopped) return;
         const data = await res.json();
