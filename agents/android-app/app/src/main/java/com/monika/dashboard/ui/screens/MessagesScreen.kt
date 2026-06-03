@@ -234,7 +234,7 @@ fun MessagesScreen(settings: SettingsStore) {
                     val isAdmin = message.kind == "public_reply"
                     Surface(shape = RoundedCornerShape(8.dp), color = if (isAdmin) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(10.dp)) {
-                            Text(text = if (isAdmin) "👤 管理员" else message.viewerName.ifBlank { "游客" }, style = MaterialTheme.typography.labelSmall)
+                            Text(text = if (isAdmin) "👤 up" else message.viewerName.ifBlank { "游客" }, style = MaterialTheme.typography.labelSmall)
                             Text(message.text, style = MaterialTheme.typography.bodyMedium)
                         }
                     }
