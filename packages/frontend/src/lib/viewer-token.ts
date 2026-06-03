@@ -38,6 +38,27 @@ async function fingerprint(): Promise<string> {
   return fpPromise;
 }
 
+function hasLeadingZeroBits(hex: string, bits: number): boolean {
+  const fullNibbles = Math.floor(bits / 4);
+  if (!hex.startsWith("0".repeat(fullNibbles))) return false;
+  const remainder = bits % 4;
+  if (remainder === 0) return true;
+  const next = parseInt(hex[fullNibbles] || "f", 16);
+  return next < (1 << (4 - remainder));
+}
+
+async function solveHashcashV2(challenge: string, fingerprintValue: string, difficultyBits: number): Promise<{ nonce: string; algorithm: string } | null> {
+  const deadline = Date.now() + 20_000;
+  const bits = Number.isFinite(difficultyBits) && difficultyBits > 0 ? difficultyBits : 17;
+
+  for (let nonce = 0; nonce < 10_000_000; nonce += 1) {
+    if (Date.now() > deadline) return null;
+    const hashHex = await sha256Hex(`hashcash-v2:${challenge}:${fingerprintValue}:${nonce}`);
+    if (hasLeadingZeroBits(hashHex, bits)) return { nonce: String(nonce), algorithm: "hashcash-v2" };
+  }
+  return null;
+}
+
 async function solvePow(challenge: string, difficulty: number, segments: number = 16384): Promise<{ nonce: string; lastHash: string } | null> {
   const deadline = Date.now() + 10_000;
 
@@ -71,14 +92,19 @@ export async function ensureViewerToken(onStatus?: (status: TokenStatus) => void
   if (tokenPromise) return tokenPromise;
 
   tokenPromise = (async () => {
+    const fp = await fingerprint();
+    const fpHash = await sha256Hex(fp);
+
     onStatus?.("pow");
-    const powRes = await fetch(`${API_BASE}/api/pow/challenge?_=${Date.now()}`);
+    const powRes = await fetch(`${API_BASE}/api/pow/challenge?_=${Date.now()}&fp_hash=${encodeURIComponent(fpHash)}`);
     if (!powRes.ok) throw new Error("获取访客验证失败");
     const powData = await powRes.json();
 
-    const body: Record<string, string> = { fingerprint: await fingerprint() };
+    const body: Record<string, string> = { fingerprint: fp };
     if (powData.challenge && !powData.skip) {
-      const result = await solvePow(powData.challenge, powData.difficulty || 4, powData.segments || 16384);
+      const result = powData.algorithm === "hashcash-v2"
+        ? await solveHashcashV2(powData.challenge, fp, Number(powData.difficultyBits || 17))
+        : await solvePow(powData.challenge, powData.difficulty || 4, powData.segments || 16384);
       if (!result) throw new Error("访客验证超时，请重试");
       body.pow_challenge = powData.challenge;
       body.pow_result = JSON.stringify(result);

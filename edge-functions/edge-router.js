@@ -12,7 +12,8 @@ const CONFIG_NS = "live-dashboard-config";
 const CONFIG_KEY = "config"; // 合并为单个 key，避免超过 ESA 子请求数限制（4 次 fetch）
 const CACHE_TTL = { config: 60, publicMessages: 10, health: 5 };
 const POW_DIFFICULTY = 4;
-const POW_MEMORY_SEGMENTS = 16384; // 16K × 32 bytes = 512 KB memory requirement
+const POW_DIFFICULTY_BITS = 17;
+const POW_ALGORITHM = "hashcash-v2";
 const POW_CHALLENGE_TTL = 300;
 const RATE_WINDOW = 60;
 const RATE_GLOBAL = 300;
@@ -101,7 +102,7 @@ export default {
 
       // PoW 挑战 — 完全边缘处理
       if (pathname === "/api/pow/challenge" && method === "GET") {
-        const powResp = await handlePowChallenge(clientIp, secret);
+        const powResp = await handlePowChallenge(request, clientIp, secret);
         if (powResp) return powResp;
         return passthroughSigned(request, origin, clientIp, secret);
       }
@@ -132,9 +133,10 @@ export default {
         }
         // Viewer token: verify at edge
         if (role === "viewer") {
-          const token = auth.startsWith("Bearer ") ? auth.slice(7) : auth;
-          if (token && token.length > 20) {
-            return passthrough(request, origin, clientIp); // origin validates full JWT
+          const token = auth.startsWith("Bearer ") ? auth.slice(7) : (auth || url.searchParams.get("viewer_token") || "");
+          const verified = token && secret ? await verifyViewerToken(token, secret, clientIp) : null;
+          if (verified) {
+            return passthrough(request, origin, clientIp); // origin validates again before upgrade
           }
           return jsonResponse({ error: "需要访客令牌" }, 403);
         }
@@ -163,32 +165,44 @@ export default {
 // PoW 挑战
 // ══════════════════════════════════════════════════════════════
 
-async function handlePowChallenge(clientIp, secret) {
+async function handlePowChallenge(request, clientIp, secret) {
   if (!clientIp || clientIp === "unknown" || isLocalIp(clientIp)) {
     return jsonResponse({ skip: true, message: "本地 IP 无需 PoW" });
   }
+  if (!secret) return null; // caller will fallback to passthrough
   const kv = getEdgeKV();
-  if (!kv) return null; // caller will fallback to passthrough
 
   // 限流 30/min
-  const rate = await kvGetNumber(kv, `pr:${clientIp}`);
-  if (rate >= RATE_POW) return jsonResponse({ error: "PoW 请求过多", retryAfter: 60 }, 429);
-  kvPut(kv, `pr:${clientIp}`, String((rate || 0) + 1), RATE_WINDOW);
+  if (kv) {
+    const rate = await kvGetNumber(kv, `pr:${clientIp}`);
+    if (rate >= RATE_POW) return jsonResponse({ error: "PoW 请求过多", retryAfter: 60 }, 429);
+    kvPut(kv, `pr:${clientIp}`, String((rate || 0) + 1), RATE_WINDOW);
+  }
 
-  // 生成挑战（内存密集型 PoW：客户端需分配 POW_MEMORY_SEGMENTS × 32B = 512KB）
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
-  const challenge = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
-
-  // 存储到 KV（含难度和内存参数）
-  await kvPutJson(kv, `pc:${challenge}`, {
-    ip: clientIp, ipUpdated: false, createdAt: Date.now(),
-    difficulty: POW_DIFFICULTY, segments: POW_MEMORY_SEGMENTS,
-  }, POW_CHALLENGE_TTL);
+  const random = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+  const fpHash = sanitizePowFingerprintHash(new URL(request.url).searchParams.get("fp_hash") || "");
+  if (!fpHash) return jsonResponse({ error: "需要 fingerprint hash", code: "POW_FINGERPRINT_REQUIRED" }, 400);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const payload = {
+    v: 2,
+    alg: POW_ALGORITHM,
+    r: random,
+    fp: fpHash,
+    iat: nowSec,
+    exp: nowSec + POW_CHALLENGE_TTL,
+    bits: POW_DIFFICULTY_BITS,
+  };
+  const encoded = base64UrlEncode(JSON.stringify(payload));
+  const challenge = `${encoded}.${await hmacSign(secret, encoded)}`;
 
   return noStoreJson({
-    challenge, difficulty: POW_DIFFICULTY,
-    segments: POW_MEMORY_SEGMENTS, expiresIn: POW_CHALLENGE_TTL,
+    challenge,
+    difficulty: POW_DIFFICULTY,
+    difficultyBits: POW_DIFFICULTY_BITS,
+    algorithm: POW_ALGORITHM,
+    expiresIn: POW_CHALLENGE_TTL,
   });
 }
 
@@ -218,43 +232,27 @@ async function handleTokenIssue(request, clientIp, secret) {
   if (ipKnown && !isLocalIp(clientIp)) {
     if (!pow_challenge || !pow_result) return jsonResponse({ error: "需要 PoW", code: "POW_REQUIRED" }, 403);
 
-    const challengeData = kv ? await kvGetJson(kv, `pc:${pow_challenge}`) : null;
+    const challengeData = await verifyPowChallenge(pow_challenge, secret);
     if (!challengeData) return jsonResponse({ error: "PoW 无效或过期", code: "POW_INVALID" }, 403);
-
-    // IP 绑定（允许一次变更）
-    if (challengeData.ip !== clientIp) {
-      if (challengeData.ipUpdated) { if (kv) await kvDelete(kv, `pc:${pow_challenge}`); return jsonResponse({ error: "PoW IP 不匹配" }, 403); }
-      challengeData.ipUpdated = true;
-    }
 
     // Parse pow_result JSON
     let powResult;
     try { powResult = JSON.parse(pow_result); } catch { return jsonResponse({ error: "PoW 格式无效" }, 403); }
 
-    // 验证内存密集型 PoW：客户端需填充 POW_MEMORY_SEGMENTS 个连续 SHA-256 哈希
-    const segments = challengeData.segments || POW_MEMORY_SEGMENTS;
-    // client submits JSON: { nonce, lastHash }
-    if (!powResult || !powResult.nonce || !powResult.lastHash) {
-      return jsonResponse({ error: "需要完整 PoW 结果 (nonce + lastHash)", code: "POW_INCOMPLETE" }, 403);
+    if (!powResult || typeof powResult.nonce !== "string" || !powResult.nonce) {
+      return jsonResponse({ error: "需要完整 PoW 结果", code: "POW_INCOMPLETE" }, 403);
     }
 
-    // 服务端重新计算内存链的最后一个哈希（16K × SHA-256 ≈ 3ms）
-    const firstHash = await sha256Hex(pow_challenge);
-    let chainHash = firstHash;
-    for (let i = 1; i < segments; i++) {
-      chainHash = await sha256Hex(chainHash);
-    }
-    if (chainHash !== powResult.lastHash) {
-      return jsonResponse({ error: "PoW 内存链不匹配", code: "POW_CHAIN_MISMATCH" }, 403);
+    if (challengeData.fp) {
+      const fingerprintHash = await sha256Hex(fingerprint);
+      if (fingerprintHash !== challengeData.fp) {
+        return jsonResponse({ error: "PoW fingerprint 不匹配", code: "POW_FINGERPRINT_MISMATCH" }, 403);
+      }
     }
 
-    // 验证最终 nonce
-    const finalInput = firstHash + chainHash + powResult.nonce;
-    const finalHash = await sha256Hex(finalInput);
-    const difficulty = challengeData.difficulty || POW_DIFFICULTY;
-    if (!finalHash.startsWith("0".repeat(difficulty))) return jsonResponse({ error: "PoW 解无效" }, 403);
-
-    if (kv) await kvDelete(kv, `pc:${pow_challenge}`);
+    const finalHash = await sha256Hex(powInput(pow_challenge, fingerprint, powResult.nonce));
+    const difficultyBits = challengeData.bits || POW_DIFFICULTY_BITS;
+    if (!hasLeadingZeroBits(finalHash, difficultyBits)) return jsonResponse({ error: "PoW 解无效" }, 403);
   }
 
   // 签发 token
@@ -308,6 +306,44 @@ async function resolveViewerAlias(viewerId) {
 
 function sanitizeViewerId(value) {
   return typeof value === "string" && /^fp_[a-f0-9]{32}$/.test(value) ? value : "";
+}
+
+async function verifyPowChallenge(challenge, secret) {
+  if (!challenge || typeof challenge !== "string" || !challenge.includes(".")) return null;
+  const [encoded, signature] = challenge.split(".", 2);
+  if (!encoded || !signature) return null;
+  if (await hmacSign(secret, encoded) !== signature) return null;
+
+  let payload;
+  try { payload = JSON.parse(base64UrlDecode(encoded)); } catch { return null; }
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!payload || payload.v !== 2 || payload.alg !== POW_ALGORITHM) return null;
+  if (typeof payload.exp !== "number" || payload.exp < nowSec) return null;
+  if (typeof payload.iat !== "number" || payload.iat > nowSec + 30) return null;
+  if (typeof payload.r !== "string" || !/^[a-f0-9]{64}$/.test(payload.r)) return null;
+  const bits = Number(payload.bits);
+  if (!Number.isFinite(bits) || bits < 12 || bits > 24) return null;
+  return {
+    bits,
+    fp: sanitizePowFingerprintHash(payload.fp || ""),
+  };
+}
+
+function sanitizePowFingerprintHash(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value) ? value : "";
+}
+
+function powInput(challenge, fingerprint, nonce) {
+  return `${POW_ALGORITHM}:${challenge}:${fingerprint}:${nonce}`;
+}
+
+function hasLeadingZeroBits(hex, bits) {
+  const fullNibbles = Math.floor(bits / 4);
+  if (!hex.startsWith("0".repeat(fullNibbles))) return false;
+  const remainder = bits % 4;
+  if (remainder === 0) return true;
+  const next = parseInt(hex[fullNibbles] || "f", 16);
+  return next < (1 << (4 - remainder));
 }
 
 // ── 安全响应头（对所有响应生效）──
@@ -610,6 +646,10 @@ async function isDeviceTokenRequest(request, secret, rawTokens, rawHashes) {
   if (expected.size === 0) return false;
   const hash = await hmacHex(secret, "device:" + token);
   return expected.has(hash) || expected.has(hash.slice(0, 32));
+}
+
+function base64UrlEncode(input) {
+  return btoa(input).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
 }
 
 function base64UrlDecode(input) {

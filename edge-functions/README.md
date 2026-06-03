@@ -7,7 +7,7 @@
 - 读取接口（配置、历史时间线、历史健康数据、历史位置轨迹、历史公开留言）在边缘缓存，不用每次都回源
 - 公开留言按 `slot` URL 分片缓存；当前窗口不缓存，历史窗口可由 CDN 按 URL 命中
 - 缓存响应会同时写入 `Cache-Tag` 和 `ESA-Cache-Tag`，便于按标签刷新 CDN
-- PoW 挑战在边缘生成和验证，不走 CDN
+- PoW 挑战在边缘生成和验证，不走 CDN。当前使用 HMAC 签名并绑定 `sha256(fingerprint)` 的 Hashcash v2：客户端完成 nonce 计算，边缘只做验签、过期检查和一次 SHA-256，避免边缘 CPU 被 `/api/token/issue` 拖满
 - 无效的访客 token 请求会在边缘直接拒绝，公开/私聊留言 POST 也会先做边缘 token 校验和限流
 
 ## 部署（阿里云 ESA）
@@ -39,15 +39,21 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 
 ### 4. 配置路由
 
-函数路由 → 添加一条规则：
+函数路由 → 添加一条规则。若当前 ESA 站点确认 WebSocket Upgrade 可以穿过边缘函数，可以覆盖全部 `/api/*`：
+
+```
+(http.host in {"live.myallinone.online"} and lower(http.request.uri.path) contains "/api/")
+```
+
+此时 `/api/ws` 会先在边缘验证设备 token 或访客 token，再穿透到源站，源站仍会二次校验 token 和连接限流。
+
+如果你的 ESA 配置下 WebSocket 经过函数会失败，则排除 `/api/ws`：
 
 ```
 (http.host in {"live.myallinone.online"} and not lower(http.request.uri.path) contains "/api/ws" and lower(http.request.uri.path) contains "/api/")
 ```
 
-这条规则把所有 `/api/*` 请求路由到边缘函数，但排除 `/api/ws`（WebSocket）。
-
-**为什么排除 WS**：ESA 的 `upgrade` 头在黑名单里，WS 请求经过边缘函数会直接失败，必须直达源站。
+这种模式下 WS 直达源站；源站仍会验证设备/访客 token，并有 IP、viewer 重连频率和总连接数限制。
 
 ## 源站要改什么
 
@@ -67,6 +73,8 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 | PoW 挑战 | 30/min |
 | Token 签发 | 12/min |
 | 已登录用户 | 60/min |
+
+PoW 使用 `difficultyBits=17` 的 bit 级 Hashcash，并要求 `/api/pow/challenge` 携带 `fp_hash=sha256(fingerprint)`。旧版 16K SHA-256 链需要边缘完整重算，属于客户端/边缘对称成本；新版客户端预期工作量不低于旧版，但边缘验证是常数级，能避免刷新时 `/api/token/issue` 因 CPU 超限失败。
 
 ## 缓存标签
 
