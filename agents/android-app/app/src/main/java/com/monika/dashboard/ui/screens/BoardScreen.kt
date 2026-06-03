@@ -19,6 +19,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.LinkedHashSet
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -27,6 +28,8 @@ fun BoardScreen(settings: SettingsStore) {
     val scope = rememberCoroutineScope()
     var tick by remember { mutableIntStateOf(0) }
     var detailMessage by remember { mutableStateOf<com.monika.dashboard.data.VisitorMessage?>(null) }
+    var replyText by remember { mutableStateOf("") }
+    var publicMessages by remember { mutableStateOf<List<ReportClient.PublicMessage>>(emptyList()) }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -36,13 +39,11 @@ fun BoardScreen(settings: SettingsStore) {
                 withContext(Dispatchers.IO) {
                     val client = ReportClient(url, token)
                     try {
-                        val latest = MessageInboxStore.latestServerTimestamp(context)
-                        client.fetchMessageHistory(latest.takeIf { it.isNotBlank() })
-                            .getOrNull()
-                            ?.let { MessageInboxStore.upsertAll(context, it) }
-                    } finally {
-                        client.shutdown()
-                    }
+                        val fresh = client.fetchPublicMessages().getOrDefault(emptyList())
+                        val existing = LinkedHashSet(publicMessages)
+                        existing.addAll(fresh)
+                        publicMessages = existing.toList()
+                    } finally { client.shutdown() }
                 }
             }
             tick++
@@ -50,40 +51,61 @@ fun BoardScreen(settings: SettingsStore) {
         }
     }
 
-    val publicMessages = remember(tick) {
-        MessageInboxStore.recent(context)
-            .filter { it.kind == "public" && it.direction == "viewer" }
-            .sortedByDescending { it.at }
-    }
-
     Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
+        modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text("公开留言板", style = MaterialTheme.typography.titleLarge)
-        if (publicMessages.isEmpty()) {
-            Text("暂无公开留言", style = MaterialTheme.typography.bodyMedium)
-        }
-        publicMessages.forEach { message ->
-            Surface(
-                modifier = Modifier.fillMaxWidth().combinedClickable(
-                    onClick = {},
-                    onLongClick = { detailMessage = message }
-                ),
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = message.viewerRemark.ifBlank { message.viewerName.ifBlank { "游客" } },
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    if (message.viewerRemark.isNotBlank() && message.viewerName.isNotBlank()) {
-                        Text(message.viewerName, style = MaterialTheme.typography.labelSmall)
+
+        Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (publicMessages.isEmpty()) Text("暂无公开留言", style = MaterialTheme.typography.bodyMedium)
+            publicMessages.forEach { message ->
+                val isAdmin = message.kind == "public_reply"
+                Surface(
+                    modifier = Modifier.fillMaxWidth().combinedClickable(
+                        onClick = {},
+                        onLongClick = {
+                            detailMessage = com.monika.dashboard.data.VisitorMessage(
+                                id = message.id, viewerId = message.viewerId,
+                                viewerName = message.viewerName, viewerRemark = "",
+                                kind = message.kind, direction = if (isAdmin) "device" else "viewer",
+                                text = message.text, at = 0L,
+                            )
+                        }
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isAdmin) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = if (isAdmin) "👤 up" else message.viewerName.ifBlank { "游客" },
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        Text(message.text, style = MaterialTheme.typography.bodyMedium)
                     }
-                    Text(message.text, style = MaterialTheme.typography.bodyMedium)
                 }
             }
+        }
+
+        // Reply input
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = replyText, onValueChange = { replyText = it.take(500) },
+                modifier = Modifier.weight(1f), singleLine = true,
+                placeholder = { Text("公开回复") }
+            )
+            Button(enabled = replyText.isNotBlank(), onClick = {
+                val text = replyText.trim()
+                val lastPub = publicMessages.lastOrNull()
+                val msgId = lastPub?.id ?: ""
+                val vId = lastPub?.viewerId?.ifBlank { "__public__" } ?: "__public__"
+                replyText = ""
+                scope.launch(Dispatchers.IO) {
+                    syncMessageAction(settings) { client -> client.replyToMessage(msgId, vId, text) }
+                    delay(200)
+                    tick++
+                }
+            }) { Text("发送") }
         }
     }
 
