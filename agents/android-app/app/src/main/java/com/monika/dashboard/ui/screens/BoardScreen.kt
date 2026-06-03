@@ -78,8 +78,9 @@ fun BoardScreen(settings: SettingsStore) {
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Text(
-                            text = if (isAdmin) "👤 up" else message.viewerName.ifBlank { "游客" },
-                            style = MaterialTheme.typography.labelLarge
+                            text = if (isAdmin) "up" else message.viewerName.ifBlank { "游客" },
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (isAdmin) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                         )
                         Text(message.text, style = MaterialTheme.typography.bodyMedium)
                     }
