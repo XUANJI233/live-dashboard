@@ -368,7 +368,10 @@ function isViewerBlocked(deviceId: string, viewerId: string): boolean {
 
 function cleanViewerName(value: unknown): string {
   if (typeof value !== "string") return "";
-  return value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 32);
+  const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 32);
+  // Prevent visitors from impersonating admin
+  if (/^(up|admin|管理员|博主|owner|root|system)$/i.test(cleaned)) return "";
+  return cleaned;
 }
 
 function cleanKind(value: unknown): "public" | "private" {

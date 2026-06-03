@@ -73,6 +73,12 @@ function cleanUiText(value: unknown, maxLength = 500): string {
     : "";
 }
 
+const RESERVED_NAMES = /^(up|admin|管理员|博主|owner|root|system)$/i;
+function safeViewerName(raw: string): string {
+  const cleaned = cleanUiText(raw, 32);
+  return RESERVED_NAMES.test(cleaned) ? "游客" + cleaned.slice(0, 4) : (cleaned || "游客");
+}
+
 function safeTime(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString();
