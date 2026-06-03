@@ -615,6 +615,16 @@ export const realtimeWebSocket = {
         created_at: new Date().toISOString(),
       });
       send(ws, { type: "ack", message_id: messageId, status: "reply_sent" });
+
+      // Web Push for offline viewer
+      import("./push").then(({ sendPush }) => {
+        sendPush(targetViewerId, {
+          title: "Monika 回复了",
+          body: text.slice(0, 120),
+          icon: "/icon-192.png",
+          url: "/",
+        }).catch(() => {});
+      });
       return;
     }
 
@@ -719,6 +729,16 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
     device_id: device.device_id,
     text,
     created_at: new Date().toISOString(),
+  });
+
+  // Web Push notification for offline viewers
+  import("./push").then(({ sendPush }) => {
+    sendPush(viewerId, {
+      title: "Monika 回复了",
+      body: text.slice(0, 120),
+      icon: "/icon-192.png",
+      url: "/",
+    }).catch(() => {});
   });
 
   return Response.json({ ok: true, delivered: delivered > 0, delivered_sockets: delivered });

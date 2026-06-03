@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { onInstallReady, triggerInstall } from "@/components/PwaRegistrar";
+import PushSubscribe from "@/components/PushSubscribe";
 
 function getGreeting(): { text: string; period: string } {
   const hour = new Date().getHours();
@@ -60,6 +61,7 @@ export default function Header({ serverTime, viewerCount = 0 }: HeaderProps) {
                 ⬇ 安装
               </button>
             )}
+            <PushSubscribe />
             <p className="text-lg font-mono font-medium text-[var(--color-text-secondary)] tabular-nums">
               {timeStr}
             </p>

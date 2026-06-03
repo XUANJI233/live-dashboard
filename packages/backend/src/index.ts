@@ -33,6 +33,8 @@ import {
 } from "./services/realtime";
 import { noStore, withCdnHeaders } from "./services/cdn";
 import { normalizeClientIp } from "./services/visitors";
+import { getVapidKeys, saveSubscription, removeSubscription } from "./services/push";
+import { verifyViewerToken, viewerTokenFromRequest } from "./services/viewer-auth";
 import { injectSiteConfig } from "./services/site-config";
 
 // Start scheduled cleanup tasks (import triggers setInterval registration)
@@ -248,6 +250,27 @@ const server = Bun.serve<WsData>({
         response = await handleViewerTokenIssue(req, clientIp);
       } else if (pathname === "/api/device" && req.method === "DELETE") {
         response = await handleDeleteDevice(req);
+      } else if (pathname === "/api/push/vapid-public-key" && req.method === "GET") {
+        response = Response.json({ publicKey: getVapidKeys().publicKey });
+      } else if (pathname === "/api/push/subscribe" && req.method === "POST") {
+        const viewer = verifyViewerToken(viewerTokenFromRequest(req));
+        if (!viewer) response = Response.json({ error: "Viewer token required" }, { status: 403 });
+        else {
+          const body = await req.json().catch(() => null);
+          if (body?.endpoint && body?.keys?.p256dh && body?.keys?.auth) {
+            saveSubscription(viewer.viewerId, body);
+            response = Response.json({ ok: true });
+          } else {
+            response = Response.json({ error: "subscription required" }, { status: 400 });
+          }
+        }
+      } else if (pathname === "/api/push/unsubscribe" && req.method === "POST") {
+        const viewer = verifyViewerToken(viewerTokenFromRequest(req));
+        if (!viewer) response = Response.json({ error: "Viewer token required" }, { status: 403 });
+        else {
+          removeSubscription(viewer.viewerId);
+          response = Response.json({ ok: true });
+        }
       } else if (!pathname.startsWith("/api/")) {
         // Static file serving disabled if directory doesn't exist
         if (!staticEnabled) {

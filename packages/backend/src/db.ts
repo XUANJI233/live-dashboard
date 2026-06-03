@@ -398,6 +398,35 @@ export const cleanupOldSummaries = db.prepare(`
   DELETE FROM daily_summaries WHERE date < date('now', '-7 days')
 `);
 
+// ── Push notification subscriptions (Web Push API) ──
+db.run(`
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    viewer_id TEXT NOT NULL PRIMARY KEY,
+    endpoint TEXT NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  )
+`);
+
+// ── Server metadata (VAPID keys, etc.) ──
+db.run(`
+  CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )
+`);
+
+export function metaGet(key: string): string | null {
+  const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | null;
+  return row?.value ?? null;
+}
+
+export function metaSet(key: string, value: string): void {
+  db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(key, value);
+}
+
 // ── Device deletion ──
 export const deleteDevice = db.prepare(`
   DELETE FROM device_states WHERE device_id = ?
