@@ -38,17 +38,31 @@ async function fingerprint(): Promise<string> {
   return fpPromise;
 }
 
-async function solvePow(challenge: string, difficulty: number): Promise<string | null> {
-  const targetZeros = difficulty;
+async function solvePow(challenge: string, difficulty: number, segments: number = 16384): Promise<{ nonce: string; lastHash: string } | null> {
   const deadline = Date.now() + 10_000;
+
+  // Phase 1: Build memory chain (512KB sequential SHA-256 — inherently serial)
+  const chain: string[] = new Array(segments);
+  chain[0] = await sha256Hex(challenge);
+  for (let i = 1; i < segments; i++) {
+    if (Date.now() > deadline) return null;
+    chain[i] = await sha256Hex(chain[i - 1]);
+  }
+  const lastHash = chain[segments - 1];
+
+  // Phase 2: Find nonce where SHA256(firstHash + lastHash + nonce) has N leading zeros
+  const firstHash = chain[0];
   for (let nonce = 0; nonce < 10_000_000; nonce += 1) {
     if (Date.now() > deadline) return null;
-    const input = challenge + String(nonce);
-    const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-    const hashHex = Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
-    if (hashHex.startsWith("0".repeat(targetZeros))) return String(nonce);
+    const hashHex = await sha256Hex(firstHash + lastHash + String(nonce));
+    if (hashHex.startsWith("0".repeat(difficulty))) return { nonce: String(nonce), lastHash };
   }
   return null;
+}
+
+async function sha256Hex(data: string): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(data));
+  return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export async function ensureViewerToken(onStatus?: (status: TokenStatus) => void): Promise<ViewerIdentity> {
@@ -64,10 +78,10 @@ export async function ensureViewerToken(onStatus?: (status: TokenStatus) => void
 
     const body: Record<string, string> = { fingerprint: await fingerprint() };
     if (powData.challenge && !powData.skip) {
-      const nonce = await solvePow(powData.challenge, powData.difficulty || 4);
-      if (!nonce) throw new Error("访客验证超时，请重试");
+      const result = await solvePow(powData.challenge, powData.difficulty || 4, powData.segments || 16384);
+      if (!result) throw new Error("访客验证超时，请重试");
       body.pow_challenge = powData.challenge;
-      body.pow_nonce = nonce;
+      body.pow_result = JSON.stringify(result);
     }
 
     onStatus?.("token");

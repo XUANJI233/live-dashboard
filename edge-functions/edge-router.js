@@ -14,6 +14,7 @@
 const CONFIG_NS = "live-dashboard-config";
 const CACHE_TTL = { config: 60, publicMessages: 10, health: 5 };
 const POW_DIFFICULTY = 4;
+const POW_MEMORY_SEGMENTS = 16384; // 16K × 32 bytes = 512 KB memory requirement
 const POW_CHALLENGE_TTL = 300;
 const RATE_WINDOW = 60;
 const RATE_GLOBAL = 300;
@@ -165,15 +166,21 @@ async function handlePowChallenge(clientIp, secret) {
   if (rate >= RATE_POW) return jsonResponse({ error: "PoW 请求过多", retryAfter: 60 }, 429);
   kvPut(kv, `pr:${clientIp}`, String((rate || 0) + 1), RATE_WINDOW);
 
-  // 生成挑战
+  // 生成挑战（内存密集型 PoW：客户端需分配 POW_MEMORY_SEGMENTS × 32B = 512KB）
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   const challenge = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
 
-  // 存储到 KV
-  await kvPutJson(kv, `pc:${challenge}`, { ip: clientIp, ipUpdated: false, createdAt: Date.now() }, POW_CHALLENGE_TTL);
+  // 存储到 KV（含难度和内存参数）
+  await kvPutJson(kv, `pc:${challenge}`, {
+    ip: clientIp, ipUpdated: false, createdAt: Date.now(),
+    difficulty: POW_DIFFICULTY, segments: POW_MEMORY_SEGMENTS,
+  }, POW_CHALLENGE_TTL);
 
-  return noStoreJson({ challenge, difficulty: POW_DIFFICULTY, expiresIn: POW_CHALLENGE_TTL });
+  return noStoreJson({
+    challenge, difficulty: POW_DIFFICULTY,
+    segments: POW_MEMORY_SEGMENTS, expiresIn: POW_CHALLENGE_TTL,
+  });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -186,7 +193,7 @@ async function handleTokenIssue(request, clientIp, secret) {
   let body;
   try { body = await request.json(); } catch { return jsonResponse({ error: "无效 JSON" }, 400); }
 
-  const { fingerprint, pow_challenge, pow_nonce } = body;
+  const { fingerprint, pow_challenge, pow_result } = body;
   if (!fingerprint || typeof fingerprint !== "string") return jsonResponse({ error: "需要 fingerprint" }, 400);
 
   // 限流 12/min
@@ -200,7 +207,7 @@ async function handleTokenIssue(request, clientIp, secret) {
   // PoW 验证
   const ipKnown = clientIp && clientIp !== "unknown";
   if (ipKnown && !isLocalIp(clientIp)) {
-    if (!pow_challenge || !pow_nonce) return jsonResponse({ error: "需要 PoW", code: "POW_REQUIRED" }, 403);
+    if (!pow_challenge || !pow_result) return jsonResponse({ error: "需要 PoW", code: "POW_REQUIRED" }, 403);
 
     const challengeData = kv ? await kvGetJson(kv, `pc:${pow_challenge}`) : null;
     if (!challengeData) return jsonResponse({ error: "PoW 无效或过期", code: "POW_INVALID" }, 403);
@@ -211,11 +218,32 @@ async function handleTokenIssue(request, clientIp, secret) {
       challengeData.ipUpdated = true;
     }
 
-    // 验证 SHA-256
-    const input = pow_challenge + pow_nonce;
-    const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-    const hashHex = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
-    if (!hashHex.startsWith("0".repeat(POW_DIFFICULTY))) return jsonResponse({ error: "PoW 解无效" }, 403);
+    // Parse pow_result JSON
+    let powResult;
+    try { powResult = JSON.parse(pow_result); } catch { return jsonResponse({ error: "PoW 格式无效" }, 403); }
+
+    // 验证内存密集型 PoW：客户端需填充 POW_MEMORY_SEGMENTS 个连续 SHA-256 哈希
+    const segments = challengeData.segments || POW_MEMORY_SEGMENTS;
+    const powResult = body.pow_result; // client submits: { nonce, lastHash }
+    if (!powResult?.nonce || !powResult?.lastHash) {
+      return jsonResponse({ error: "需要完整 PoW 结果 (nonce + lastHash)", code: "POW_INCOMPLETE" }, 403);
+    }
+
+    // 服务端重新计算内存链的最后一个哈希（16K × SHA-256 ≈ 3ms）
+    const firstHash = await sha256Hex(pow_challenge);
+    let chainHash = firstHash;
+    for (let i = 1; i < segments; i++) {
+      chainHash = await sha256Hex(chainHash);
+    }
+    if (chainHash !== powResult.lastHash) {
+      return jsonResponse({ error: "PoW 内存链不匹配", code: "POW_CHAIN_MISMATCH" }, 403);
+    }
+
+    // 验证最终 nonce
+    const finalInput = firstHash + chainHash + powResult.nonce;
+    const finalHash = await sha256Hex(finalInput);
+    const difficulty = challengeData.difficulty || POW_DIFFICULTY;
+    if (!finalHash.startsWith("0".repeat(difficulty))) return jsonResponse({ error: "PoW 解无效" }, 403);
 
     if (kv) await kvDelete(kv, `pc:${pow_challenge}`);
   }
@@ -683,6 +711,11 @@ async function kvDelete(kv, key) {
 }
 
 // ── HMAC (WebCrypto) ──
+
+async function sha256Hex(data) {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(data));
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
 
 async function hmacHex(secret, data) {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
