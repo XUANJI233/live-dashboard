@@ -41,8 +41,13 @@ fun MessagesScreen(settings: SettingsStore) {
         if (url.isNotBlank() && !token.isNullOrBlank()) {
             withContext(Dispatchers.IO) {
                 val client = ReportClient(url, token)
-                try { publicMessages = client.fetchPublicMessages().getOrDefault(emptyList()) }
-                finally { client.shutdown() }
+                try {
+                    val fresh = client.fetchPublicMessages().getOrDefault(emptyList())
+                    // Merge: keep existing messages, add new ones (dedup by id)
+                    val existing = LinkedHashSet(publicMessages)
+                    existing.addAll(fresh)
+                    publicMessages = existing.toList()
+                } finally { client.shutdown() }
             }
         }
     }
