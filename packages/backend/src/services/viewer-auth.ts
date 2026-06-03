@@ -258,9 +258,9 @@ export function verifyPowSolution(challenge: string, nonce: string, ip: string):
   return hashHex.startsWith("0".repeat(POW_DIFFICULTY_HEX));
 }
 
-// ── TLS Fingerprint ──
+// ── TLS Fingerprint (JA4) ──
 export function getTlsFingerprint(req: Request): string | null {
-  return req.headers.get("x-ja3-fingerprint") || req.headers.get("x-ja4") || null;
+  return req.headers.get("x-ja4") || req.headers.get("x-ja4-fingerprint") || req.headers.get("x-ja3-fingerprint") || null;
 }
 
 // ── Token extraction ──

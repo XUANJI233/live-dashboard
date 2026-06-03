@@ -21,7 +21,7 @@ export function handlePowChallenge(req: Request, ipHint: string): Response {
   return noStore(Response.json({ challenge: result.challenge, difficulty: result.difficulty, expiresIn: 300 }));
 }
 
-// POST /api/token/issue — require PoW + JA3 for non-local IPs
+// POST /api/token/issue — require PoW + JA4 for non-local IPs (skip in edge/CDN mode)
 export async function handleViewerTokenIssue(req: Request, ipHint: string): Promise<Response> {
   let body: any;
   try {
@@ -30,14 +30,18 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
     return Response.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  // JA3/JA4 check: reject non-browser TLS fingerprints (non-local only)
-  const tlsFp = getTlsFingerprint(req);
-  const ipKnown2 = ipHint && ipHint !== "unknown";
-  if (!TLS_CHECK_DISABLED && ipKnown2 && !isLocalIp(ipHint) && tlsFp) {
-    // Known bot TLS fingerprints (empty or suspicious)
-    const knownBotFps = ["", "no-tls"];
-    if (knownBotFps.includes(tlsFp.toLowerCase())) {
-      return Response.json({ error: "Suspicious TLS fingerprint" }, { status: 403 });
+  const ipKnown = ipHint && ipHint !== "unknown";
+  const edgeMode = req.headers.get("x-edge-internal") != null || req.headers.get("x-edge-verified") === "true";
+
+  // JA4 check: reject non-browser TLS fingerprints (non-local, non-edge only)
+  // In CDN/edge mode TLS is terminated at the edge, so JA4 isn't available — skip.
+  if (!TLS_CHECK_DISABLED && !edgeMode && ipKnown && !isLocalIp(ipHint)) {
+    const tlsFp = getTlsFingerprint(req);
+    if (tlsFp) {
+      const knownBotFps = ["", "no-tls"];
+      if (knownBotFps.includes(tlsFp.toLowerCase())) {
+        return Response.json({ error: "Suspicious TLS fingerprint" }, { status: 403 });
+      }
     }
   }
 

@@ -149,6 +149,7 @@ const server = Bun.serve<WsData>({
     const clientIpForRate = normalizeClientIp(
       req.headers.get("x-forwarded-for") ||
       req.headers.get("x-real-ip") ||
+      req.headers.get("ali-real-client-ip") ||
       req.headers.get("cf-connecting-ip") ||
       server.requestIP(req)?.address ||
       "unknown"
