@@ -1,17 +1,15 @@
 /**
  * ESA Edge Function — Live Dashboard 边缘计算层
  *
- * 配置存储在 EdgeKV namespace "live-dashboard-config"：
- *   key "origin" → 源站地址 (如 https://live.myallinone.online)
- *   key "secret" → HMAC 密钥 (与源站 HASH_SECRET 一致)
- *   key "device_tokens" → 可选，设备密钥白名单，逗号/空白分隔
- *   key "device_token_hashes" → 可选，HMAC(secret, "device:" + token) 白名单
+ * 配置存储在 EdgeKV namespace "live-dashboard-config"（单个 key "config"）：
+ *   JSON: { origin, secret, device_tokens, device_token_hashes }
  *
- * 部署前至少在 EdgeKV 控制台写入 origin 和 secret。
+ * 部署前至少在 EdgeKV 控制台写入 config 键。
  */
 
 // ── 常量 ──
 const CONFIG_NS = "live-dashboard-config";
+const CONFIG_KEY = "config"; // 合并为单个 key，避免超过 ESA 子请求数限制（4 次 fetch）
 const CACHE_TTL = { config: 60, publicMessages: 10, health: 5 };
 const POW_DIFFICULTY = 4;
 const POW_MEMORY_SEGMENTS = 16384; // 16K × 32 bytes = 512 KB memory requirement
@@ -30,9 +28,23 @@ function withTimeout(promise, ms, fallback) {
   ]);
 }
 
-// ── 配置加载 ──
+// ── 配置加载（单次 EdgeKV 读取，节省子请求配额）──
 async function loadConfig() {
   const kv = new EdgeKV({ namespace: CONFIG_NS });
+  // Try single-json config first, fallback to individual keys
+  const jsonStr = await withTimeout(kv.get(CONFIG_KEY, { type: "text" }), 2000, "");
+  if (jsonStr) {
+    try {
+      const cfg = JSON.parse(jsonStr);
+      return {
+        origin: cfg.origin || "",
+        secret: cfg.secret || "",
+        deviceTokens: cfg.device_tokens || "",
+        deviceTokenHashes: cfg.device_token_hashes || "",
+      };
+    } catch { /* fall through to individual keys */ }
+  }
+  // Legacy: individual keys (one sub-request each — deprecated)
   const [origin, secret, deviceTokens, deviceTokenHashes] = await Promise.all([
     withTimeout(kv.get("origin", { type: "text" }), 2000, ""),
     withTimeout(kv.get("secret", { type: "text" }), 2000, ""),
