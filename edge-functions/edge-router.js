@@ -41,7 +41,8 @@ function getClientIpFromHeaders(headers) {
 async function loadConfig() {
   const kv = new EdgeKV({ namespace: CONFIG_NS });
   const jsonStr = await withTimeout(kv.get(CONFIG_KEY, { type: "text" }), 2000, "");
-  if (!jsonStr) return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "" };
+  if (jsonStr === undefined) return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `missing ${CONFIG_NS}/${CONFIG_KEY}` };
+  if (!jsonStr) return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `empty ${CONFIG_NS}/${CONFIG_KEY}` };
   try {
     const cfg = JSON.parse(jsonStr);
     return {
@@ -49,9 +50,10 @@ async function loadConfig() {
       secret: cfg.secret || "",
       deviceTokens: cfg.device_tokens || "",
       deviceTokenHashes: cfg.device_token_hashes || "",
+      configError: cfg.origin ? "" : `origin empty in ${CONFIG_NS}/${CONFIG_KEY}`,
     };
   } catch {
-    return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "" };
+    return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `invalid JSON in ${CONFIG_NS}/${CONFIG_KEY}` };
   }
 }
 
@@ -60,7 +62,7 @@ export default {
   async fetch(request) {
     const cfg = await loadConfig();
     const { origin, secret, deviceTokens, deviceTokenHashes } = cfg;
-    if (!origin) return new Response("边缘配置缺失：请在 EdgeKV 写入 origin", { status: 500 });
+    if (!origin) return new Response(`边缘配置缺失：${cfg.configError || "origin empty"}`, { status: 500 });
 
     const url = new URL(request.url);
     const { pathname } = url;
