@@ -184,7 +184,7 @@ const getDeviceMessageHistory = db.prepare(`
 const getViewerMessageHistory = db.prepare(`
   SELECT id, device_id, viewer_id, viewer_name, kind, direction, text, created_at
   FROM visitor_messages
-  WHERE viewer_id = ? AND kind != 'public'
+  WHERE viewer_id = ? AND direction = 'device' AND kind = 'reply'
     AND (? = '' OR datetime(created_at) > datetime(?))
   ORDER BY created_at ASC
   LIMIT 100
