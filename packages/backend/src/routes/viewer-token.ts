@@ -1,13 +1,14 @@
-const POW_DISABLED = /^(1|true|yes)$/i.test(process.env.POW_DISABLED || "");
-const TLS_CHECK_DISABLED = /^(1|true|yes)$/i.test(process.env.TLS_CHECK_DISABLED || "");
+const POW_DISABLED = /^(true|yes)$/i.test(process.env.POW_DISABLED || "");
+const TLS_CHECK_DISABLED = /^(true|yes)$/i.test(process.env.TLS_CHECK_DISABLED || "");
+const EDGE_MODE = /^(true|yes)$/i.test(process.env.EDGE_MODE || "");
 
 import { issueViewerToken, issuePowChallenge, verifyPowSolution, getTlsFingerprint, isLocalIp } from "../services/viewer-auth";
 import { noStore } from "../services/cdn";
 
 // GET /api/pow/challenge — issue a PoW challenge
 export function handlePowChallenge(req: Request, ipHint: string): Response {
-  // Auto-detect: if request already came through ESA edge function, skip PoW
-  if (req.headers.get("x-edge-verified") === "true") {
+  // In edge mode, PoW is handled by the edge function
+  if (EDGE_MODE) {
     return Response.json({ skip: true, message: "Edge mode — PoW handled at edge" });
   }
   // Skip PoW for local IPs and unknown IPs (PoW is IP-bound, can't work without valid IP)
@@ -31,11 +32,10 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
   }
 
   const ipKnown = ipHint && ipHint !== "unknown";
-  const edgeMode = req.headers.get("x-edge-internal") != null || req.headers.get("x-edge-verified") === "true";
 
   // JA4 check: reject non-browser TLS fingerprints (non-local, non-edge only)
   // In CDN/edge mode TLS is terminated at the edge, so JA4 isn't available — skip.
-  if (!TLS_CHECK_DISABLED && !edgeMode && ipKnown && !isLocalIp(ipHint)) {
+  if (!TLS_CHECK_DISABLED && !EDGE_MODE && ipKnown && !isLocalIp(ipHint)) {
     const tlsFp = getTlsFingerprint(req);
     if (tlsFp) {
       const knownBotFps = ["", "no-tls"];
@@ -46,11 +46,8 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
   }
 
   // PoW verification: required for non-local IPs with known IP
-  // Skip PoW when IP is unknown (empty/unknown) since PoW is IP-bound and can't be verified
-  const ipKnown = ipHint && ipHint !== "unknown";
-  // Skip PoW if already verified by ESA edge function
-  const edgeVerified = req.headers.get("x-edge-verified") === "true";
-  if (!POW_DISABLED && ipKnown && !isLocalIp(ipHint) && !edgeVerified) {
+  // Skip PoW in edge mode (edge function handles it)
+  if (!POW_DISABLED && !EDGE_MODE && ipKnown && !isLocalIp(ipHint)) {
     const { pow_challenge, pow_nonce } = body;
     if (!pow_challenge || !pow_nonce) {
       return Response.json({ error: "PoW challenge and nonce required", code: "POW_REQUIRED" }, { status: 403 });
