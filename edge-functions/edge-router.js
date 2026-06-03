@@ -58,6 +58,7 @@ export default {
     const { pathname } = url;
     const method = request.method;
     const clientIp = request.headers.get("x-real-ip") ||
+                     request.headers.get("ali-real-client-ip") ||
                      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
 
     // CORS 预检
@@ -384,7 +385,7 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
       headers.set("X-Real-IP", clientIp);
       headers.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
 
-        const resp = await fetch(`${origin}${getPath(request)}${new URL(request.url).search}`, {
+      const resp = await fetch(`${origin}${getPath(request)}${new URL(request.url).search}`, {
         method: request.method, headers,
         body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
       });
@@ -415,20 +416,28 @@ function passthrough(request, origin, clientIp) {
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
   if (clientIp) headers.set("X-Real-IP", clientIp);
-  return fetch(`${origin}${url.pathname}${url.search}`, {
-    method: request.method, headers,
-    body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
-  }).then(applySecurityHeaders);
+  return withTimeout(
+    fetch(`${origin}${url.pathname}${url.search}`, {
+      method: request.method, headers,
+      body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
+    }),
+    30000,
+    new Response("Gateway Timeout", { status: 504 }),
+  ).then(applySecurityHeaders);
 }
 async function passthroughSigned(request, origin, clientIp, secret) {
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
   if (clientIp) headers.set("X-Real-IP", clientIp);
   if (secret) headers.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
-  return fetch(`${origin}${url.pathname}${url.search}`, {
-    method: request.method, headers,
-    body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
-  });
+  return withTimeout(
+    fetch(`${origin}${url.pathname}${url.search}`, {
+      method: request.method, headers,
+      body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
+    }),
+    30000,
+    new Response("Gateway Timeout", { status: 504 }),
+  ).then(applySecurityHeaders);
 }
 
 
