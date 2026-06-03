@@ -56,11 +56,8 @@ async function loadConfig() {
 }
 
 // ══════════════════════════════════════════════════════════════
-addEventListener("fetch", event => {
-  event.respondWith(handleFetch(event.request));
-});
-
-async function handleFetch(request) {
+export default {
+  async fetch(request) {
     const cfg = await loadConfig();
     const { origin, secret, deviceTokens, deviceTokenHashes } = cfg;
     if (!origin) return new Response("边缘配置缺失：请在 EdgeKV 写入 origin", { status: 500 });
@@ -157,7 +154,8 @@ async function handleFetch(request) {
     } catch {
       return applySecurityHeaders(await passthroughSigned(request, origin, clientIp, secret));
     }
-}
+  },
+};
 
 // ══════════════════════════════════════════════════════════════
 // PoW 挑战
