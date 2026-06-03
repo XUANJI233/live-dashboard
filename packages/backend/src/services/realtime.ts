@@ -1,4 +1,4 @@
-import { db } from "../db";
+import { db, metaGet, metaSet } from "../db";
 import { authenticateToken } from "../middleware/auth";
 import { currentHourWindow, currentMessageSlot, noStore, withCdnHeaders } from "./cdn";
 import { verifyViewerToken, viewerTokenFromRequest, viewerTokenRateLimit, edgeViewerIdentity } from "./viewer-auth";
@@ -721,11 +721,14 @@ export function handleViewerMessageHistory(req: Request): Response {
   if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
   if (!viewerTokenRateLimit(viewer.viewerId)) return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
 
-  const url = new URL(req.url);
-  const since = url.searchParams.get("since") || new Date(Date.now() - 86400000).toISOString(); // default 24h
-  const safeSince = !isNaN(new Date(since).getTime()) ? new Date(since).toISOString() : new Date(Date.now() - 86400000).toISOString();
-  const rows = getViewerMessageHistory.all(viewer.viewerId, safeSince, safeSince);
-  return Response.json({ messages: rows, since: safeSince });
+  // Server-side last_read tracking — do not trust client timestamps
+  const lastReadKey = "last_read:" + viewer.viewerId;
+  const lastRead = metaGet(lastReadKey) || new Date(Date.now() - 86400000).toISOString();
+  const rows = getViewerMessageHistory.all(viewer.viewerId, lastRead, lastRead);
+  // Update last_read to now after returning messages
+  const now = new Date().toISOString();
+  metaSet(lastReadKey, now);
+  return noStore(Response.json({ messages: rows, last_read: now }), ["viewer-history", `viewer-${viewer.viewerId}`]);
 }
 
 export async function handleDeviceMessageReply(req: Request): Promise<Response> {

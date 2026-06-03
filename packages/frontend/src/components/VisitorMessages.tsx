@@ -103,14 +103,11 @@ export default function VisitorMessages({ device }: Props) {
 
   useEffect(() => {
     setLines(loadHistory(device?.device_id));
-    // One-time sync of offline replies (only messages after last known)
+    // One-time sync of offline replies (server tracks last_read)
     ensureViewerToken().then(({ token }) => {
-      const existing = loadHistory(device?.device_id);
-      const lastAt = existing.length > 0 ? existing[existing.length - 1]!.at : "";
-      const url = lastAt
-        ? `${API_BASE}/api/messages/viewer/history?since=${encodeURIComponent(lastAt)}`
-        : `${API_BASE}/api/messages/viewer/history`;
+      fetch(`${API_BASE}/api/messages/viewer/history`, {
         headers: { Authorization: `Bearer ${token}` },
+      }).then(r => r.json()).then(data => {
       }).then(r => r.json()).then(data => {
         if (!Array.isArray(data.messages)) return;
         const merged = new Map<string, ChatLine>();
