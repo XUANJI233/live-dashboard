@@ -300,6 +300,39 @@ class ReportClient(
         return post("${serverUrl.trimEnd('/')}/api/messages/remark", body)
     }
 
+    data class PublicMessage(
+        val id: String,
+        val viewerName: String,
+        val kind: String,
+        val text: String,
+        val createdAt: String,
+    )
+
+    fun fetchPublicMessages(): Result<List<PublicMessage>> {
+        return try {
+            val url = "${serverUrl.trimEnd('/')}/api/messages/public"
+            val request = Request.Builder().url(url).addHeader("Authorization", "Bearer $token").get().build()
+            val response = client.newCall(request).execute()
+            response.use {
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}"))
+                val body = it.body?.string() ?: return Result.success(emptyList())
+                val arr = JSONObject(body).optJSONArray("messages") ?: return Result.success(emptyList())
+                val list = mutableListOf<PublicMessage>()
+                for (i in 0 until arr.length()) {
+                    val m = arr.getJSONObject(i)
+                    list.add(PublicMessage(
+                        id = m.optString("id"),
+                        viewerName = m.optString("viewer_name"),
+                        kind = m.optString("kind", "public"),
+                        text = m.optString("text"),
+                        createdAt = m.optString("created_at"),
+                    ))
+                }
+                Result.success(list)
+            }
+        } catch (e: Exception) { Result.failure(e) }
+    }
+
     private fun post(url: String, body: JSONObject): Result<Unit> {
         val request = Request.Builder()
             .url(url)

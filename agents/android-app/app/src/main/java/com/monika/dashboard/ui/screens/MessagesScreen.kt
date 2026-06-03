@@ -27,11 +27,25 @@ fun MessagesScreen(settings: SettingsStore) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var tick by remember { mutableIntStateOf(0) }
+    var tab by remember { mutableIntStateOf(0) } // 0=私聊, 1=公开板
     var selectedViewer by remember { mutableStateOf<String?>(null) }
     var replyText by remember { mutableStateOf("") }
     var detailViewerId by remember { mutableStateOf<String?>(null) }
     var remarkText by remember { mutableStateOf("") }
     var detailMessage by remember { mutableStateOf<com.monika.dashboard.data.VisitorMessage?>(null) }
+    var publicMessages by remember { mutableStateOf<List<ReportClient.PublicMessage>>(emptyList()) }
+
+    val syncPublic: suspend () -> Unit = {
+        val url = settings.serverUrl.first()
+        val token = withContext(Dispatchers.IO) { settings.getToken() }
+        if (url.isNotBlank() && !token.isNullOrBlank()) {
+            withContext(Dispatchers.IO) {
+                val client = ReportClient(url, token)
+                try { publicMessages = client.fetchPublicMessages().getOrDefault(emptyList()) }
+                finally { client.shutdown() }
+            }
+        }
+    }
 
     val syncMessages: suspend () -> Unit = {
         val url = settings.serverUrl.first()
@@ -53,10 +67,14 @@ fun MessagesScreen(settings: SettingsStore) {
 
     LaunchedEffect(Unit) {
         while (true) {
-            syncMessages()
+            if (tab == 0) syncMessages() else syncPublic()
             tick++
             delay(10_000)
         }
+    }
+
+    LaunchedEffect(tab) {
+        if (tab == 1) syncPublic()
     }
 
     val groups = remember(tick) { MessageInboxStore.groupedByViewer(context) }
@@ -64,8 +82,20 @@ fun MessagesScreen(settings: SettingsStore) {
     val activeViewer = selectedViewer ?: groups.firstOrNull()?.first
     val activeMessages = groups.firstOrNull { it.first == activeViewer }?.second.orEmpty()
 
+    Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+        // Tab bar
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(bottom = 8.dp)) {
+            TextButton(onClick = { tab = 0 }) {
+                Text("私聊", color = if (tab == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+            }
+            TextButton(onClick = { tab = 1 }) {
+                Text("公开板", color = if (tab == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+            }
+        }
+
+        if (tab == 0) {
     Row(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
+        modifier = Modifier.weight(1f),
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Column(
@@ -193,6 +223,23 @@ fun MessagesScreen(settings: SettingsStore) {
                     tick++
                 }
             ) { Text("拉黑此访客") }
+        }
+    }
+        } else {
+            // Public board tab
+            Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("公开留言板", style = MaterialTheme.typography.titleMedium)
+                if (publicMessages.isEmpty()) Text("暂无公开留言", style = MaterialTheme.typography.bodySmall)
+                publicMessages.forEach { message ->
+                    val isAdmin = message.kind == "public_reply"
+                    Surface(shape = RoundedCornerShape(8.dp), color = if (isAdmin) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text(text = if (isAdmin) "👤 管理员" else message.viewerName.ifBlank { "游客" }, style = MaterialTheme.typography.labelSmall)
+                            Text(message.text, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
         }
     }
 
