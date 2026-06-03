@@ -175,9 +175,10 @@ fun MessagesScreen(settings: SettingsStore) {
                             syncMessageAction(settings) { client ->
                                 client.replyToMessage(related, viewerId, text)
                             }
+                            delay(200)
                             syncMessages()
+                            tick++
                         }
-                        tick++
                     }
                 ) { Text("发送") }
             }
