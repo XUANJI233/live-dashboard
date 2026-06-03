@@ -175,7 +175,7 @@ const getDeviceMessageHistory = db.prepare(`
          COALESCE(r.remark, '') as viewer_remark
   FROM visitor_messages m
   LEFT JOIN viewer_remarks r ON m.device_id = r.device_id AND m.viewer_id = r.viewer_id
-  WHERE (m.device_id = ? OR (m.device_id = '__public__' AND m.kind = 'public'))
+  WHERE (m.device_id = ? OR m.device_id = '__broadcast__' OR (m.device_id = '__public__' AND m.kind = 'public'))
     AND (? = '' OR datetime(m.created_at) > datetime(?))
   ORDER BY m.created_at ASC
   LIMIT 500
