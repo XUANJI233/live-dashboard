@@ -177,8 +177,11 @@ AppService(
       collectAndUpload({ forceFull: manualFullSync, messenger: this })
     }
 
-    // Setup next alarm before exit
-    setupNextAlarm()
+    // Alarm will be set after async config arrives (requestConfigFromCompanion callback).
+    // Fallback: if restoreConfig already had config, set alarm now.
+    if (enabled && serverUrl && token) {
+      setupNextAlarm()
+    }
   },
 
   onDestroy() {
@@ -246,8 +249,13 @@ function requestConfigFromCompanion(messenger) {
         applyConfig(cfg)
         writeLocalConfig(currentConfigSnapshot())
         console.log('[LiveWatch:device] Config synced from companion')
+        // Config refreshed — reschedule alarm with correct interval
+        setupNextAlarm()
       }, function (e) {
         console.log('[LiveWatch:device] Config sync failed: ' + ((e && e.message) || e))
+        // Even on failure, try to keep the alarm going with existing config
+        setupNextAlarm()
+      })
       })
     }
   } catch (e) {
