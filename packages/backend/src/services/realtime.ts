@@ -721,14 +721,17 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
 
   if (messageId) markMessageReplied.run(messageId);
   const replyId = cleanMessageId(body.reply_id) || crypto.randomUUID();
-  recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text);
 
-  // If replying to a public message, also post as public_reply so other visitors see it
+  // If replying to a public message, only create public_reply (not private)
   if (messageId) {
     const original = db.prepare("SELECT kind FROM visitor_messages WHERE id = ?").get(messageId) as { kind: string } | null;
     if (original?.kind === "public") {
       recordMessage("pub_" + replyId, device.device_id, viewerId, "up", "public_reply", "device", text);
+    } else {
+      recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text);
     }
+  } else {
+    recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text);
   }
   const delivered = sendToViewerSockets(viewerId, {
     type: "device_reply",
