@@ -116,8 +116,7 @@ const server = Bun.serve<WsData>({
       pathname === "/api/health" ||
       pathname === "/api/daily-summary" ||
       pathname === "/api/config" ||
-      pathname === "/api/messages/public" ||
-      pathname === "/api/messages/private" ||
+      (pathname === "/api/messages/public" && req.method === "GET") ||
       pathname === "/api/pow/challenge" ||
       pathname === "/api/token/issue" ||
       (pathname === "/api/health-data" && req.method === "GET") ||
@@ -164,8 +163,15 @@ const server = Bun.serve<WsData>({
       pathname === "/api/health-data" || pathname === "/api/location" || pathname === "/api/ws" || pathname === "/api/messages/viewer/history"
     );
     // Skip rate limit for: device tokens, public GET endpoints, auth endpoints, viewer-auth GETs
-    if (!hasDeviceToken && !(isPublicEndpoint && req.method === "GET") && !isAuthEndpoint && !isViewerAuthGet && !globalIpRateLimit(clientIpForRate)) {
-      return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+    // Public GETs get a softer limit: 30/min instead of 60/min
+    if (!hasDeviceToken && !isAuthEndpoint && !isViewerAuthGet) {
+      if (isPublicEndpoint && req.method === "GET") {
+        if (!globalIpRateLimit(clientIpForRate)) {
+          return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+        }
+      } else if (!globalIpRateLimit(clientIpForRate)) {
+        return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+      }
     }
 
     // PoW challenge endpoint: independent per-IP rate limit (30/min)
