@@ -142,9 +142,9 @@ export default {
       }
 
       // 其他 — 穿透
-      return passthroughSigned(request, origin, clientIp, secret);
+      return applySecurityHeaders(await passthroughSigned(request, origin, clientIp, secret));
     } catch {
-      return passthroughSigned(request, origin, clientIp, secret);
+      return applySecurityHeaders(await passthroughSigned(request, origin, clientIp, secret));
     }
   },
 };
@@ -273,8 +273,13 @@ function sanitizeViewerId(value) {
   return typeof value === "string" && /^fp_[a-f0-9]{32}$/.test(value) ? value : "";
 }
 
-// ══════════════════════════════════════════════════════════════
-// 缓存读取
+// ── 安全响应头（对所有响应生效）──
+function applySecurityHeaders(response) {
+  response.headers.set("X-Content-Type-Options", "nosniff");
+  response.headers.set("X-Frame-Options", "DENY");
+  response.headers.delete("Server");
+  return response;
+}
 // ══════════════════════════════════════════════════════════════
 
 async function handleCachedRead(request, origin, pathname, secret, cacheMeta = getCacheMeta(pathname, request)) {
@@ -385,7 +390,7 @@ function passthrough(request, origin, clientIp) {
   return fetch(`${origin}${url.pathname}${url.search}`, {
     method: request.method, headers,
     body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
-  });
+  }).then(applySecurityHeaders);
 }
 async function passthroughSigned(request, origin, clientIp, secret) {
   const url = new URL(request.url);
@@ -694,11 +699,11 @@ async function hmacSign(secret, data) {
 // ── 响应 ──
 
 function jsonResponse(data, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", ...corsHeaders() } });
+  return applySecurityHeaders(new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", ...corsHeaders() } }));
 }
 
 function noStoreJson(data) {
-  return new Response(JSON.stringify(data), {
+  return applySecurityHeaders(new Response(JSON.stringify(data), {
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, s-maxage=0",
