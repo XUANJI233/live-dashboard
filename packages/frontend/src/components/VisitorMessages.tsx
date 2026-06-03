@@ -24,6 +24,7 @@ interface PublicLine {
   viewer_name?: string;
   text: string;
   created_at: string;
+  kind?: string;
 }
 
 function currentMessageSlot() {
@@ -203,6 +204,7 @@ export default function VisitorMessages({ device }: Props) {
               viewer_name: cleanUiText(message.viewer_name, 32),
               text: cleanUiText(message.text),
               created_at: typeof message.created_at === "string" ? message.created_at : new Date().toISOString(),
+              kind: typeof message.kind === "string" ? message.kind : undefined,
             }))
             .filter((message: PublicLine) => message.text),
         );
@@ -359,7 +361,9 @@ export default function VisitorMessages({ device }: Props) {
         <div className="mb-2 max-h-44 overflow-auto space-y-1 text-xs">
           {publicLines.slice(-12).map((line) => (
             <div key={line.id} className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1">
-              <span className="font-semibold">{line.viewer_name || "害羞访客"}</span>
+              <span className="font-semibold">
+                {line.kind === "public_reply" ? "👤 管理员" : (line.viewer_name || "害羞访客")}
+              </span>
               <span className="ml-2 text-[var(--color-text-muted)]">{safeTime(line.created_at)}</span>
               <div>{line.text}</div>
             </div>

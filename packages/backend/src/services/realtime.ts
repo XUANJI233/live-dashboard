@@ -182,9 +182,9 @@ const getDeviceMessageHistory = db.prepare(`
 `);
 
 const getPublicMessagesByWindow = db.prepare(`
-  SELECT id, device_id, viewer_id, viewer_name, text, created_at
+  SELECT id, device_id, viewer_id, viewer_name, text, created_at, kind
   FROM visitor_messages
-  WHERE kind = 'public'
+  WHERE (kind = 'public' OR kind = 'public_reply')
     AND created_at >= ?
     AND created_at < ?
   ORDER BY created_at ASC
@@ -722,6 +722,14 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
   if (messageId) markMessageReplied.run(messageId);
   const replyId = cleanMessageId(body.reply_id) || crypto.randomUUID();
   recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text);
+
+  // If replying to a public message, also post as public_reply so other visitors see it
+  if (messageId) {
+    const original = db.prepare("SELECT kind FROM visitor_messages WHERE id = ?").get(messageId) as { kind: string } | null;
+    if (original?.kind === "public") {
+      recordMessage("pub_" + replyId, device.device_id, viewerId, device.device_name || "管理员", "public_reply", "device", text);
+    }
+  }
   const delivered = sendToViewerSockets(viewerId, {
     type: "device_reply",
     message_id: replyId,
