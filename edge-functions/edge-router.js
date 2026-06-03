@@ -109,11 +109,26 @@ export default {
         return handleCachedRead(request, origin, pathname, secret, cacheMeta);
       }
 
-      // WebSocket — 穿透
+      // WebSocket — 穿透前验证 token，拒绝无效连接节省源站资源
       if (pathname === "/api/ws") {
-        // ESA upgrade 头在黑名单，无法代理 WS
-        // 直接穿透，源站有 token 验证
-        return passthrough(request, origin, clientIp);
+        const auth = request.headers.get("authorization") || "";
+        const role = url.searchParams.get("role") || "";
+        // Device token: check whitelist at edge
+        if (role === "device") {
+          if (await isDeviceTokenRequest(request, secret, deviceTokens, deviceTokenHashes)) {
+            return passthrough(request, origin, clientIp);
+          }
+          return jsonResponse({ error: "无效的设备令牌" }, 403);
+        }
+        // Viewer token: verify at edge
+        if (role === "viewer") {
+          const token = auth.startsWith("Bearer ") ? auth.slice(7) : auth;
+          if (token && token.length > 20) {
+            return passthrough(request, origin, clientIp); // origin validates full JWT
+          }
+          return jsonResponse({ error: "需要访客令牌" }, 403);
+        }
+        return jsonResponse({ error: "需要 role 参数 (device/viewer)" }, 400);
       }
 
       // 访客写入端点在边缘先验 token 和限流，挡掉无效脚本请求再回源。
