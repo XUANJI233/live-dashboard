@@ -2,7 +2,7 @@ const POW_DISABLED = /^(true|yes)$/i.test(process.env.POW_DISABLED || "");
 const TLS_CHECK_DISABLED = /^(true|yes)$/i.test(process.env.TLS_CHECK_DISABLED || "");
 const EDGE_MODE = /^(true|yes)$/i.test(process.env.EDGE_MODE || "");
 
-import { issueViewerToken, issuePowChallenge, verifyPowSolution, getTlsFingerprint, isLocalIp } from "../services/viewer-auth";
+import { issueViewerToken, issuePowChallenge, verifyPowSolution, getTlsFingerprint, isLocalIp, edgeViewerIdentity } from "../services/viewer-auth";
 import { noStore } from "../services/cdn";
 
 // GET /api/pow/challenge — issue a PoW challenge
@@ -46,8 +46,8 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
   }
 
   // PoW verification: required for non-local IPs with known IP
-  // Skip PoW in edge mode (edge function handles it) or if edge already verified
-  const edgeVerified = req.headers.get("x-edge-verified") === "true";
+  // Skip PoW in edge mode or if edge already verified (HMAC-signed)
+  const edgeVerified = edgeViewerIdentity(req) !== null;
   if (!POW_DISABLED && !EDGE_MODE && !edgeVerified && ipKnown && !isLocalIp(ipHint)) {
     let pow_challenge = body.pow_challenge;
     let pow_nonce = body.pow_nonce;
