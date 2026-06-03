@@ -241,8 +241,13 @@ export default function VisitorMessages({ device }: Props) {
 
   const updateName = (value: string) => {
     const next = cleanUiText(value, 32);
+    if (RESERVED_NAMES.test(next)) {
+      setError("这个名字是保留的喵~ 换一个吧");
+      return;
+    }
     setDisplayName(next);
     localStorage.setItem("live-dashboard-viewer-name", next);
+    if (error?.startsWith("这个名字是保留的")) setError("");
   };
 
   const sendPublic = async () => {
