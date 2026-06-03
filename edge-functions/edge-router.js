@@ -91,7 +91,7 @@ export default {
       }
 
       // 全局 IP 限流
-      if (clientIp !== "unknown" && !isTrustedDevice) {
+      if (clientIp !== "unknown" && !isTrustedDevice && !isEdgeAuthFlow(pathname, method)) {
         const kv = getEdgeKV();
         if (kv) {
           const count = await kvGetNumber(kv, `g:${clientIp}`);
@@ -588,6 +588,11 @@ function isAuthEndpoint(p) {
 
 function isViewerWriteEndpoint(p) {
   return p === "/api/messages/public" || p === "/api/messages/private";
+}
+
+function isEdgeAuthFlow(p, method) {
+  return (p === "/api/pow/challenge" && method === "GET") ||
+    (p === "/api/token/issue" && method === "POST");
 }
 
 function isLocalIp(ip) {

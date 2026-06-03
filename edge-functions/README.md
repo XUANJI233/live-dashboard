@@ -39,21 +39,21 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 
 ### 4. 配置路由
 
-函数路由 → 添加一条规则。若当前 ESA 站点确认 WebSocket Upgrade 可以穿过边缘函数，可以覆盖全部 `/api/*`：
-
-```
-(http.host in {"live.myallinone.online"} and lower(http.request.uri.path) contains "/api/")
-```
-
-此时 `/api/ws` 会先在边缘验证设备 token 或访客 token，再穿透到源站，源站仍会二次校验 token 和连接限流。
-
-如果你的 ESA 配置下 WebSocket 经过函数会失败，则排除 `/api/ws`：
+函数路由 → 添加一条规则。当前线上验证中，WebSocket Upgrade 经过边缘函数会返回 504，因此默认排除 `/api/ws`：
 
 ```
 (http.host in {"live.myallinone.online"} and not lower(http.request.uri.path) contains "/api/ws" and lower(http.request.uri.path) contains "/api/")
 ```
 
 这种模式下 WS 直达源站；源站仍会验证设备/访客 token，并有 IP、viewer 重连频率和总连接数限制。
+
+如果你的 ESA 配置确认 WebSocket Upgrade 可以穿过边缘函数，可以覆盖全部 `/api/*`：
+
+```
+(http.host in {"live.myallinone.online"} and lower(http.request.uri.path) contains "/api/")
+```
+
+此时 `/api/ws` 会先在边缘验证设备 token 或访客 token，再穿透到源站，源站仍会二次校验 token 和连接限流。
 
 ## 源站要改什么
 
