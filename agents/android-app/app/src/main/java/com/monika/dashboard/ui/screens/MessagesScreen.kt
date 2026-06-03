@@ -64,6 +64,7 @@ fun MessagesScreen(settings: SettingsStore) {
     val activeViewer = selectedViewer ?: groups.firstOrNull()?.first
     val activeMessages = groups.firstOrNull { it.first == activeViewer }?.second.orEmpty()
 
+    Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
     Row(
         modifier = Modifier.weight(1f),
         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -194,6 +195,7 @@ fun MessagesScreen(settings: SettingsStore) {
                 }
             ) { Text("拉黑此访客") }
         }
+    }
     }
 
     detailViewerId?.let { viewerId ->
