@@ -576,6 +576,14 @@ export const realtimeWebSocket = {
           if (status === "sent") sent += 1;
           else queued += 1;
         }
+        // Broadcast to all connected viewers so public board updates in real-time
+        const publicPayload = JSON.stringify({
+          type: "public_message",
+          message: { id: messageId, viewer_id: ws.data.id, viewer_name: viewerName, text, created_at: createdAt },
+        });
+        forEachViewerSocket((viewerWs) => {
+          try { viewerWs.send(publicPayload); } catch { /* ignore */ }
+        });
         send(ws, { type: "ack", message_id: messageId, status: sent > 0 ? "sent" : queued > 0 ? "queued" : "recorded", sent, queued });
         return;
       }
