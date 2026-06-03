@@ -421,7 +421,7 @@ function passthrough(request, origin, clientIp) {
       method: request.method, headers,
       body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
     }),
-    30000,
+    8000, // below ESA 10s gateway timeout
     new Response("Gateway Timeout", { status: 504 }),
   ).then(applySecurityHeaders);
 }
@@ -435,7 +435,7 @@ async function passthroughSigned(request, origin, clientIp, secret) {
       method: request.method, headers,
       body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
     }),
-    30000,
+    8000, // below ESA 10s gateway timeout
     new Response("Gateway Timeout", { status: 504 }),
   ).then(applySecurityHeaders);
 }
@@ -764,3 +764,4 @@ function corsHeaders() {
     "Access-Control-Allow-Origin": "*",
   };
 }
+
