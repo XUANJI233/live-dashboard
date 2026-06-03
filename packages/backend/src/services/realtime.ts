@@ -181,6 +181,15 @@ const getDeviceMessageHistory = db.prepare(`
   LIMIT 500
 `);
 
+const getViewerMessageHistory = db.prepare(`
+  SELECT id, device_id, viewer_id, viewer_name, kind, direction, text, created_at
+  FROM visitor_messages
+  WHERE viewer_id = ? AND kind != 'public'
+    AND (? = '' OR datetime(created_at) > datetime(?))
+  ORDER BY created_at ASC
+  LIMIT 100
+`);
+
 const getPublicMessagesByWindow = db.prepare(`
   SELECT id, device_id, viewer_id, viewer_name, text, created_at, kind
   FROM visitor_messages
@@ -704,6 +713,18 @@ export function handleDeviceMessageHistory(req: Request): Response {
   const since = url.searchParams.get("since") || "";
   const safeSince = since && !isNaN(new Date(since).getTime()) ? new Date(since).toISOString() : "";
   const rows = getDeviceMessageHistory.all(device.device_id, safeSince, safeSince);
+  return Response.json({ messages: rows });
+}
+
+export function handleViewerMessageHistory(req: Request): Response {
+  const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
+  if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
+  if (!viewerTokenRateLimit(viewer.viewerId)) return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+
+  const url = new URL(req.url);
+  const since = url.searchParams.get("since") || "";
+  const safeSince = since && !isNaN(new Date(since).getTime()) ? new Date(since).toISOString() : "";
+  const rows = getViewerMessageHistory.all(viewer.viewerId, safeSince, safeSince);
   return Response.json({ messages: rows });
 }
 

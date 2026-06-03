@@ -103,6 +103,28 @@ export default function VisitorMessages({ device }: Props) {
 
   useEffect(() => {
     setLines(loadHistory(device?.device_id));
+    // One-time sync of offline replies
+    ensureViewerToken().then(({ token, viewerId: vid }) => {
+      fetch(`${API_BASE}/api/messages/viewer/history`, {
+        headers: { Authorization: `Bearer ${token}` },
+      }).then(r => r.json()).then(data => {
+        if (!Array.isArray(data.messages)) return;
+        const merged = new Map<string, ChatLine>();
+        for (const l of loadHistory(device?.device_id)) merged.set(l.id, l);
+        for (const m of data.messages) {
+          if (m.direction === "device" && m.kind === "reply") {
+            merged.set(m.id, {
+              id: m.id, from: "device" as const,
+              text: cleanUiText(m.text),
+              at: m.created_at,
+            });
+          }
+        }
+        const next = Array.from(merged.values()).slice(-80);
+        setLines(next);
+        saveHistory(device?.device_id, next);
+      }).catch(() => {});
+    }).catch(() => {});
   }, [device?.device_id]);
 
   useEffect(() => {

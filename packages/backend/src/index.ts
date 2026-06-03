@@ -18,6 +18,7 @@ import {
   handleBlockViewer,
   handleUnblockViewer,
   handleDeviceMessageHistory,
+  handleViewerMessageHistory,
   handleDeviceMessages,
   handleDeviceMessageReply,
   handleDeleteMessage,
@@ -160,7 +161,7 @@ const server = Bun.serve<WsData>({
     // should skip global IP rate limiting — they have their own rate limits or are auth flows
     const isAuthEndpoint = pathname === "/api/pow/challenge" || pathname === "/api/token/issue";
     const isViewerAuthGet = req.method === "GET" && (
-      pathname === "/api/health-data" || pathname === "/api/location" || pathname === "/api/ws"
+      pathname === "/api/health-data" || pathname === "/api/location" || pathname === "/api/ws" || pathname === "/api/messages/viewer/history"
     );
     // Skip rate limit for: device tokens, public GET endpoints, auth endpoints, viewer-auth GETs
     if (!hasDeviceToken && !(isPublicEndpoint && req.method === "GET") && !isAuthEndpoint && !isViewerAuthGet && !globalIpRateLimit(clientIpForRate)) {
@@ -226,6 +227,8 @@ const server = Bun.serve<WsData>({
         response = handleDeviceMessages(req);
       } else if (pathname === "/api/messages/history" && req.method === "GET") {
         response = handleDeviceMessageHistory(req);
+      } else if (pathname === "/api/messages/viewer/history" && req.method === "GET") {
+        response = handleViewerMessageHistory(req);
       } else if (pathname === "/api/messages/reply" && req.method === "POST") {
         response = await handleDeviceMessageReply(req);
       } else if (pathname === "/api/messages/delete" && req.method === "POST") {
