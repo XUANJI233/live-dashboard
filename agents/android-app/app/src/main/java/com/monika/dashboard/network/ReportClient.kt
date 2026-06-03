@@ -302,6 +302,7 @@ class ReportClient(
 
     data class PublicMessage(
         val id: String,
+        val viewerId: String,
         val viewerName: String,
         val kind: String,
         val text: String,
@@ -322,6 +323,7 @@ class ReportClient(
                     val m = arr.getJSONObject(i)
                     list.add(PublicMessage(
                         id = m.optString("id"),
+                        viewerId = m.optString("viewer_id"),
                         viewerName = m.optString("viewer_name"),
                         kind = m.optString("kind", "public"),
                         text = m.optString("text"),

@@ -20,6 +20,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.LinkedHashSet
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -231,18 +232,67 @@ fun MessagesScreen(settings: SettingsStore) {
         }
     }
         } else {
-            // Public board tab
-            Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Public board tab — group chat with reply, delete, notification
+            var pubReplyText by remember { mutableStateOf("") }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("公开留言板", style = MaterialTheme.typography.titleMedium)
-                if (publicMessages.isEmpty()) Text("暂无公开留言", style = MaterialTheme.typography.bodySmall)
-                publicMessages.forEach { message ->
-                    val isAdmin = message.kind == "public_reply"
-                    Surface(shape = RoundedCornerShape(8.dp), color = if (isAdmin) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.padding(10.dp)) {
-                            Text(text = if (isAdmin) "👤 up" else message.viewerName.ifBlank { "游客" }, style = MaterialTheme.typography.labelSmall)
-                            Text(message.text, style = MaterialTheme.typography.bodyMedium)
+                Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (publicMessages.isEmpty()) Text("暂无公开留言", style = MaterialTheme.typography.bodySmall)
+                    publicMessages.forEach { message ->
+                        val isAdmin = message.kind == "public_reply"
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isAdmin) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.fillMaxWidth().combinedClickable(
+                                onClick = {},
+                                onLongClick = {
+                                    detailMessage = com.monika.dashboard.data.VisitorMessage(
+                                        id = message.id,
+                                        viewerId = message.viewerName,
+                                        viewerName = message.viewerName,
+                                        viewerRemark = "",
+                                        kind = message.kind,
+                                        direction = if (isAdmin) "device" else "viewer",
+                                        text = message.text,
+                                        at = 0L,
+                                    )
+                                }
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text(text = if (isAdmin) "👤 up" else message.viewerName.ifBlank { "游客" }, style = MaterialTheme.typography.labelSmall)
+                                Text(message.text, style = MaterialTheme.typography.bodyMedium)
+                            }
                         }
                     }
+                }
+                // Reply input for public board
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = pubReplyText,
+                        onValueChange = { pubReplyText = it.take(500) },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        placeholder = { Text("公开回复") }
+                    )
+                    Button(
+                        enabled = pubReplyText.isNotBlank(),
+                        onClick = {
+                            val text = pubReplyText.trim()
+                            val lastPub = publicMessages.lastOrNull()
+                            val messageId = lastPub?.id ?: ""
+                            val viewerId = lastPub?.viewerId?.ifBlank { "__public__" } ?: "__public__"
+                            pubReplyText = ""
+                            scope.launch(Dispatchers.IO) {
+                                syncMessageAction(settings) { client ->
+                                    client.replyToMessage(messageId, viewerId, text)
+                                }
+                                delay(200)
+                                syncPublic()
+                                tick++
+                            }
+                        }
+                    ) { Text("发送") }
                 }
             }
         }
