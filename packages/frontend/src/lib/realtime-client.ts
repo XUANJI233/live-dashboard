@@ -7,9 +7,13 @@ type StateHandler = (connected: boolean) => void;
 const messageHandlers = new Set<MessageHandler>();
 const stateHandlers = new Set<StateHandler>();
 
+const RECONNECT_BASE_DELAY_MS = 5_000;
+const RECONNECT_MAX_DELAY_MS = 60_000;
+const RECONNECT_JITTER_RATIO = 0.25;
+
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let reconnectDelay = 3_000;
+let reconnectDelay = RECONNECT_BASE_DELAY_MS;
 let connected = false;
 let connecting = false;
 
@@ -40,7 +44,7 @@ async function connect() {
 
     ws.onopen = () => {
       connecting = false;
-      reconnectDelay = 3_000;
+      reconnectDelay = RECONNECT_BASE_DELAY_MS;
       notifyState(true);
     };
 
@@ -71,11 +75,13 @@ async function connect() {
 
 function scheduleReconnect() {
   if (reconnectTimer || messageHandlers.size + stateHandlers.size === 0) return;
+  const jitter = 1 + (Math.random() * 2 - 1) * RECONNECT_JITTER_RATIO;
+  const delay = Math.round(reconnectDelay * jitter);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
+    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_DELAY_MS);
     void connect();
-  }, reconnectDelay);
+  }, delay);
 }
 
 function disconnectIfIdle() {
