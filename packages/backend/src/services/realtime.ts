@@ -727,7 +727,7 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
   if (messageId) {
     const original = db.prepare("SELECT kind FROM visitor_messages WHERE id = ?").get(messageId) as { kind: string } | null;
     if (original?.kind === "public") {
-      recordMessage("pub_" + replyId, device.device_id, viewerId, device.device_name || "管理员", "public_reply", "device", text);
+      recordMessage("pub_" + replyId, device.device_id, viewerId, "up", "public_reply", "device", text);
     }
   }
   const delivered = sendToViewerSockets(viewerId, {

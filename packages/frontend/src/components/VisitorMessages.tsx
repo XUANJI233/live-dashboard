@@ -362,7 +362,7 @@ export default function VisitorMessages({ device }: Props) {
           {publicLines.slice(-12).map((line) => (
             <div key={line.id} className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1">
               <span className="font-semibold">
-                {line.kind === "public_reply" ? "👤 管理员" : (line.viewer_name || "害羞访客")}
+                {line.kind === "public_reply" ? "👤 up" : (line.viewer_name || "害羞访客")}
               </span>
               <span className="ml-2 text-[var(--color-text-muted)]">{safeTime(line.created_at)}</span>
               <div>{line.text}</div>
