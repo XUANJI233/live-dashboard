@@ -2317,7 +2317,9 @@ public final class MonikaXposedModule extends XposedModule {
                     .setShowWhen(true)
                     .setWhen(System.currentTimeMillis())
                     .setCategory(Notification.CATEGORY_MESSAGE)
-                    .setPriority(Notification.PRIORITY_HIGH);
+                    .setPriority(Notification.PRIORITY_HIGH)
+                    .setDefaults(Notification.DEFAULT_VIBRATE | Notification.DEFAULT_SOUND)
+                    .setVisibility(Notification.VISIBILITY_PUBLIC);
             nm.notify(MESSAGE_NOTIFICATION_ID, builder.build());
         } catch (Throwable t) {
             log(Log.DEBUG, TAG, "LSP message notification skipped: " + t.getClass().getSimpleName());
