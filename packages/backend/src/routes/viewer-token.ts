@@ -48,7 +48,12 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
   // PoW verification: required for non-local IPs with known IP
   // Skip PoW in edge mode (edge function handles it)
   if (!POW_DISABLED && !EDGE_MODE && ipKnown && !isLocalIp(ipHint)) {
-    const { pow_challenge, pow_nonce } = body;
+    let pow_challenge = body.pow_challenge;
+    let pow_nonce = body.pow_nonce;
+    // Support new memory-PoW result format (pow_result JSON with nonce + lastHash)
+    if (!pow_nonce && body.pow_result) {
+      try { const r = JSON.parse(body.pow_result); pow_nonce = r.nonce; } catch {}
+    }
     if (!pow_challenge || !pow_nonce) {
       return Response.json({ error: "PoW challenge and nonce required", code: "POW_REQUIRED" }, { status: 403 });
     }
