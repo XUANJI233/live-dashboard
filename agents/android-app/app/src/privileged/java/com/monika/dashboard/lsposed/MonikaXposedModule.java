@@ -669,8 +669,11 @@ public final class MonikaXposedModule extends XposedModule {
                     try {
                         if (metadata == null) return;
                         String pkg = controller.getPackageName();
+                        PlaybackState ps = controller.getPlaybackState();
+                        mediaPlaying = ps != null && ps.getState() == PlaybackState.STATE_PLAYING;
                         mediaPackage = safeString(pkg);
                         mediaApp = safeString(resolveAppLabel(pkg));
+                        mediaState = ps != null ? safeString(playbackStateName(ps)) : mediaState;
                         mediaTitle = safeString(firstNonBlank(
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_TITLE)));
@@ -678,7 +681,7 @@ public final class MonikaXposedModule extends XposedModule {
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ARTIST),
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
-                        log(Log.DEBUG, TAG, "media metadata: pkg=" + pkg + " title=" + mediaTitle + " artist=" + mediaArtist);
+                        log(Log.DEBUG, TAG, "media metadata: pkg=" + pkg + " playing=" + mediaPlaying + " title=" + mediaTitle);
                         maybeDirectUpload(false);
                     } catch (Throwable t) {
                         log(Log.WARN, TAG, "onMetadataChanged failed: " + t.getClass().getSimpleName());
