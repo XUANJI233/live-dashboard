@@ -108,7 +108,6 @@ export default function VisitorMessages({ device }: Props) {
       fetch(`${API_BASE}/api/messages/viewer/history`, {
         headers: { Authorization: `Bearer ${token}` },
       }).then(r => r.json()).then(data => {
-      }).then(r => r.json()).then(data => {
         if (!Array.isArray(data.messages)) return;
         const merged = new Map<string, ChatLine>();
         for (const l of loadHistory(device?.device_id)) merged.set(l.id, l);
