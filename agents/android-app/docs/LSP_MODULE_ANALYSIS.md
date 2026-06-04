@@ -23,6 +23,7 @@
 - 输入状态不再在未知 `EditorInfo` 时默认报 active，改为优先解析 AOSP `StartInputFlags.IS_TEXT_EDITOR`，未知时保守 false。
 - `MediaController` fallback 回调现在按 session token 保存，并在 session 消失或销毁时调用 `unregisterCallback`，避免旧媒体 session 回调泄漏/重复。
 - 浏览器标题 nonce 改为“带 nonce 则校验；缺失不直接拒绝”，避免浏览器进程无法读取 app 普通 SharedPreferences 时被误拦截。API 34+ 仍使用 sender identity，所有版本仍做前台浏览器校验。
+- 去掉重复安装的 base `WebChromeClient#onReceivedTitle` hook，避免同一页面标题进入两条等价 hook 热路径。
 
 ## 生命周期与作用域
 
@@ -122,6 +123,7 @@
 已修正：
 
 - nonce 不再强制必须存在。缺失时依赖 sender identity 与前台浏览器校验；携带 nonce 但不匹配时仍拒绝。
+- base `WebChromeClient#onReceivedTitle` 只安装一次；具体子类 hook 仍保留，用于处理 override 不调用 super 的浏览器实现。
 
 风险：
 

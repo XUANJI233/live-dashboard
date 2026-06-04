@@ -1321,32 +1321,8 @@ public final class MonikaXposedModule extends XposedModule {
             hookWebViewNavigation(webView, packageName, "reload");
             hookWebViewNavigation(webView, packageName, "goBack");
             hookWebViewNavigation(webView, packageName, "goForward");
-            hookWebChromeTitle(cl, webView, packageName);
             hookWebViewClientPageFinished(cl, webView, packageName);
             hookWebViewClientInstallers(webView, packageName);
-        } catch (Throwable ignored) {}
-    }
-
-    private void hookWebChromeTitle(ClassLoader cl, Class<?> webView, String packageName) {
-        try {
-            Class<?> chromeClient = cachedClassForName("android.webkit.WebChromeClient", cl);
-            if (chromeClient == null) throw new ClassNotFoundException("android.webkit.WebChromeClient");
-            Method method = findMethod(chromeClient, "onReceivedTitle", webView, String.class);
-            if (method == null) return;
-            try { deoptimize(method); } catch (Throwable ignored) {}
-            hook(method)
-                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                    .intercept(chain -> {
-                        Object result = chain.proceed();
-                        try {
-                            List<Object> args = chain.getArgs();
-                            if (args.size() > 1 && args.get(1) instanceof String) {
-                                publishTitleFromWebView(args.get(0), packageName, (String) args.get(1));
-                            }
-                        } catch (Throwable ignored) {}
-                        return result;
-                    });
-            log(Log.INFO, TAG, "hooked WebChromeClient#onReceivedTitle for " + packageName);
         } catch (Throwable ignored) {}
     }
 
