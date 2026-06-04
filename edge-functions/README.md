@@ -34,6 +34,7 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 | `secret` | 和服务器 `.env` 的 `HASH_SECRET` 一样 |
 | `device_tokens` | 可选。设备密钥白名单，逗号/空白分隔；也兼容 `token:device_id:name:platform` 这种服务端配置行 |
 | `device_token_hashes` | 可选。`HMAC-SHA256(secret, "device:" + token)` 的 hex 列表，适合不想在 EdgeKV 存明文密钥 |
+| `cors_allowed_origins` | 可选。敏感接口跨域允许来源，逗号/空白分隔；需要和源站 `CORS_ALLOWED_ORIGINS` 保持一致。公开读取、PoW 和 token 签发接口仍使用 `Access-Control-Allow-Origin: *` |
 
 配置 `device_tokens` 或 `device_token_hashes` 后，带有效 `Authorization: Bearer <token>` 的设备/API 管理请求会在边缘直接签名回源，不走访客 token 校验，也不吃边缘全局 IP 限流。`/api/report`、`/api/health-data` 和设备消息接口都按这个路径处理，手表端 Zepp 令牌同样可通过；源站仍会继续校验设备密钥。
 

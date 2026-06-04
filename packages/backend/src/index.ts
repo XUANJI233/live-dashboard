@@ -288,17 +288,12 @@ const server = Bun.serve<WsData>({
           response = Response.json({ error: "Not found" }, { status: 404 });
         } else {
           if (pathname === "/favicon.ico") {
-            const faviconFile = Bun.file(`${REAL_STATIC_ROOT}/favicon.ico`);
-            if (await faviconFile.exists()) {
-              return withCdnHeaders(new Response(faviconFile, {
-                headers: { "Content-Type": "image/x-icon" },
-              }), ["static", "static-favicon-ico"], 60 * 60 * 24 * 30);
-            }
             const iconFile = Bun.file(`${REAL_STATIC_ROOT}/icon.svg`);
             if (await iconFile.exists()) {
-              return withCdnHeaders(new Response(iconFile, {
-                headers: { "Content-Type": "image/svg+xml" },
-              }), ["static", "static-favicon-ico", "static-icon-svg"], 60 * 60 * 24 * 30);
+              return noStore(new Response(null, {
+                status: 302,
+                headers: { Location: "/icon.svg" },
+              }), ["static", "static-favicon-ico", "static-icon-svg"]);
             }
           }
 

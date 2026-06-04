@@ -2,7 +2,7 @@
  * ESA Edge Function — Live Dashboard 边缘计算层
  *
  * 配置存储在 EdgeKV namespace "live-dashboard-config"（单个 key "config"）：
- *   JSON: { origin, secret, device_tokens, device_token_hashes }
+ *   JSON: { origin, secret, device_tokens, device_token_hashes, cors_allowed_origins }
  *
  * 部署前至少在 EdgeKV 控制台写入 config 键。
  */
@@ -74,12 +74,12 @@ async function loadConfig() {
     const kv = new EdgeKV({ namespace: CONFIG_NS });
     jsonStr = await withTimeout(kv.get(CONFIG_KEY, { type: "text" }), 2000, "");
   } catch {
-    result = { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `EdgeKV read failed: ${CONFIG_NS}/${CONFIG_KEY}` };
+    result = { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", corsAllowedOrigins: "", configError: `EdgeKV read failed: ${CONFIG_NS}/${CONFIG_KEY}` };
     configCache = { value: result, expiresAt: now + 5_000 };
     return result;
   }
-  if (jsonStr === undefined) result = { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `missing ${CONFIG_NS}/${CONFIG_KEY}` };
-  if (!result && !jsonStr) result = { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `empty ${CONFIG_NS}/${CONFIG_KEY}` };
+  if (jsonStr === undefined) result = { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", corsAllowedOrigins: "", configError: `missing ${CONFIG_NS}/${CONFIG_KEY}` };
+  if (!result && !jsonStr) result = { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", corsAllowedOrigins: "", configError: `empty ${CONFIG_NS}/${CONFIG_KEY}` };
   if (result) {
     configCache = { value: result, expiresAt: now + 5_000 };
     return result;
@@ -91,12 +91,13 @@ async function loadConfig() {
       secret: cfg.secret || "",
       deviceTokens: cfg.device_tokens || "",
       deviceTokenHashes: cfg.device_token_hashes || "",
+      corsAllowedOrigins: cfg.cors_allowed_origins || cfg.corsAllowedOrigins || "",
       configError: cfg.origin ? "" : `origin empty in ${CONFIG_NS}/${CONFIG_KEY}`,
     };
     configCache = { value: result, expiresAt: now + CONFIG_CACHE_MS };
     return result;
   } catch {
-    result = { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `invalid JSON in ${CONFIG_NS}/${CONFIG_KEY}` };
+    result = { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", corsAllowedOrigins: "", configError: `invalid JSON in ${CONFIG_NS}/${CONFIG_KEY}` };
     configCache = { value: result, expiresAt: now + 5_000 };
     return result;
   }
@@ -106,30 +107,31 @@ async function loadConfig() {
 export default {
   async fetch(request) {
     const cfg = await loadConfig();
-    const { origin, secret, deviceTokens, deviceTokenHashes } = cfg;
-    if (!origin) {
-      return applySecurityHeaders(new Response(`边缘配置缺失：${cfg.configError || "origin empty"}`, {
-        status: 500,
-        headers: corsHeaders(),
-      }));
-    }
-
+    const { origin, secret, deviceTokens, deviceTokenHashes, corsAllowedOrigins } = cfg;
     const url = new URL(request.url);
     const { pathname } = url;
     const method = request.method;
+    const cors = corsHeaders(request, pathname, method, corsAllowedOrigins);
+    if (!origin) {
+      return applySecurityHeaders(new Response(`边缘配置缺失：${cfg.configError || "origin empty"}`, {
+        status: 500,
+        headers: cors,
+      }), cors);
+    }
+
     const clientIp = getClientIpFromHeaders(request.headers);
 
     // CORS 预检
     if (method === "OPTIONS") {
       ignoreRequestBody(request);
-      return applySecurityHeaders(new Response(null, { status: 204, headers: corsHeaders() }));
+      return applySecurityHeaders(new Response(null, { status: 204, headers: cors }), cors);
     }
 
     // 内部请求旁路（HMAC 签名验证，防伪造）
     const internalSig = request.headers.get("x-edge-internal");
     if (internalSig && secret) {
       if (internalSig === await hmacHex(secret, "edge-internal")) {
-        return passthrough(request, origin, clientIp);
+        return passthrough(request, origin, clientIp, cors);
       }
     }
 
@@ -137,35 +139,35 @@ export default {
       // 可信设备请求直接签名回源。放在边缘限流和访客鉴权前，避免管理员设备被误限或误判为 viewer token。
       const isTrustedDevice = await isDeviceTokenRequest(request, secret, deviceTokens, deviceTokenHashes);
       if (isTrustedDevice && isDeviceEndpoint(pathname)) {
-        return passthroughSigned(request, origin, clientIp, secret);
+        return passthroughSigned(request, origin, clientIp, secret, cors);
       }
 
       // 全局 IP 限流
       if (clientIp !== "unknown" && !isTrustedDevice && !hasEndpointRateLimit(pathname, method)) {
         const kv = getEdgeKV();
         if (kv && !(await allowRate(kv, "g", clientIp, RATE_GLOBAL))) {
-          return jsonResponse({ error: "限流", retryAfter: 60 }, 429);
+          return jsonResponse({ error: "限流", retryAfter: 60 }, 429, cors);
         }
       }
 
       // PoW 挑战 — 完全边缘处理
       if (pathname === "/api/pow/challenge" && method === "GET") {
-        const powResp = await handlePowChallenge(request, clientIp, secret);
+        const powResp = await handlePowChallenge(request, clientIp, secret, cors);
         if (powResp) return powResp;
-        return passthroughSigned(request, origin, clientIp, secret);
+        return passthroughSigned(request, origin, clientIp, secret, cors);
       }
 
       // Token 签发 — 边缘验证 PoW + 签发
       if (pathname === "/api/token/issue" && method === "POST") {
-        const tokenResp = await handleTokenIssue(request, clientIp, secret);
+        const tokenResp = await handleTokenIssue(request, clientIp, secret, cors);
         if (tokenResp) return tokenResp;
-        return passthroughSigned(request, origin, clientIp, secret);
+        return passthroughSigned(request, origin, clientIp, secret, cors);
       }
 
       // 由边缘统一管理缓存头/标签的读取。ttl=0 也会经过这里，以便强制 no-store 并补齐 Cache-Tag。
       const cacheMeta = getCacheMeta(pathname, request);
       if (method === "GET" && (cacheMeta.ttl > 0 || (cacheMeta.tags && cacheMeta.tags.length))) {
-        return handleCachedRead(request, origin, pathname, secret, cacheMeta);
+        return handleCachedRead(request, origin, pathname, secret, cacheMeta, cors);
       }
 
       // WebSocket — 穿透前验证 token，拒绝无效连接节省源站资源
@@ -175,38 +177,38 @@ export default {
         // Device token: check whitelist at edge
         if (role === "device") {
           if (await isDeviceTokenRequest(request, secret, deviceTokens, deviceTokenHashes)) {
-            return passthrough(request, origin, clientIp);
+            return passthrough(request, origin, clientIp, cors);
           }
-          return jsonResponse({ error: "无效的设备令牌" }, 403);
+          return jsonResponse({ error: "无效的设备令牌" }, 403, cors);
         }
         // Viewer token: verify at edge
         if (role === "viewer") {
           const token = auth.startsWith("Bearer ") ? auth.slice(7) : (auth || url.searchParams.get("viewer_token") || "");
           const verified = token && secret ? await verifyViewerToken(token, secret, clientIp) : null;
           if (verified) {
-            return passthrough(request, origin, clientIp); // origin validates again before upgrade
+            return passthrough(request, origin, clientIp, cors); // origin validates again before upgrade
           }
           ignoreRequestBody(request);
-          return jsonResponse({ error: "需要访客令牌" }, 403);
+          return jsonResponse({ error: "需要访客令牌" }, 403, cors);
         }
         ignoreRequestBody(request);
-        return jsonResponse({ error: "需要 role 参数 (device/viewer)" }, 400);
+        return jsonResponse({ error: "需要 role 参数 (device/viewer)" }, 400, cors);
       }
 
       // 访客写入端点在边缘先验 token 和限流，挡掉无效脚本请求再回源。
       if (method === "POST" && isViewerWriteEndpoint(pathname)) {
-        return handleAuthenticatedRequest(request, origin, clientIp, secret);
+        return handleAuthenticatedRequest(request, origin, clientIp, secret, cors);
       }
 
       // 需要 token 的端点 — 边缘验证后穿透
       if (method === "GET" && isAuthEndpoint(pathname)) {
-        return handleAuthenticatedRequest(request, origin, clientIp, secret);
+        return handleAuthenticatedRequest(request, origin, clientIp, secret, cors);
       }
 
       // 其他 — 穿透
-      return applySecurityHeaders(await passthroughSigned(request, origin, clientIp, secret));
+      return passthroughSigned(request, origin, clientIp, secret, cors);
     } catch {
-      return applySecurityHeaders(await passthroughSigned(request, origin, clientIp, secret));
+      return passthroughSigned(request, origin, clientIp, secret, cors);
     }
   },
 };
@@ -215,23 +217,24 @@ export default {
 // PoW 挑战
 // ══════════════════════════════════════════════════════════════
 
-async function handlePowChallenge(request, clientIp, secret) {
+async function handlePowChallenge(request, clientIp, secret, cors) {
+  const json = (data, status) => jsonResponse(data, status, cors);
   if (!clientIp || clientIp === "unknown" || isLocalIp(clientIp)) {
-    return jsonResponse({ skip: true, message: "本地 IP 无需 PoW" });
+    return json({ skip: true, message: "本地 IP 无需 PoW" });
   }
   if (!secret) return null; // caller will fallback to passthrough
   const kv = getEdgeKV();
 
   // 限流 30/min
   if (kv && !(await allowRate(kv, "pr", clientIp, RATE_POW))) {
-    return jsonResponse({ error: "PoW 请求过多", retryAfter: 60 }, 429);
+    return json({ error: "PoW 请求过多", retryAfter: 60 }, 429);
   }
 
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   const random = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
   const fpHash = sanitizePowFingerprintHash(new URL(request.url).searchParams.get("fp_hash") || "");
-  if (!fpHash) return jsonResponse({ error: "需要 fingerprint hash", code: "POW_FINGERPRINT_REQUIRED" }, 400);
+  if (!fpHash) return json({ error: "需要 fingerprint hash", code: "POW_FINGERPRINT_REQUIRED" }, 400);
   const nowSec = Math.floor(Date.now() / 1000);
   const payload = {
     v: 2,
@@ -251,59 +254,60 @@ async function handlePowChallenge(request, clientIp, secret) {
     difficultyBits: POW_DIFFICULTY_BITS,
     algorithm: POW_ALGORITHM,
     expiresIn: POW_CHALLENGE_TTL,
-  });
+  }, cors);
 }
 
 // ══════════════════════════════════════════════════════════════
 // Token 签发
 // ══════════════════════════════════════════════════════════════
 
-async function handleTokenIssue(request, clientIp, secret) {
+async function handleTokenIssue(request, clientIp, secret, cors) {
+  const json = (data, status) => jsonResponse(data, status, cors);
   if (!secret) return null; // 回源
 
   let body;
-  try { body = await request.json(); } catch { return jsonResponse({ error: "无效 JSON" }, 400); }
+  try { body = await request.json(); } catch { return json({ error: "无效 JSON" }, 400); }
 
   const { fingerprint, pow_challenge, pow_result } = body;
-  if (!fingerprint || typeof fingerprint !== "string") return jsonResponse({ error: "需要 fingerprint" }, 400);
+  if (!fingerprint || typeof fingerprint !== "string") return json({ error: "需要 fingerprint" }, 400);
 
   // 限流 12/min
   const kv = getEdgeKV();
   if (kv && !(await allowRate(kv, "ir", clientIp, RATE_ISSUE))) {
-    return jsonResponse({ error: "限流" }, 429);
+    return json({ error: "限流" }, 429);
   }
 
   // PoW 验证
   const ipKnown = clientIp && clientIp !== "unknown";
   if (ipKnown && !isLocalIp(clientIp)) {
-    if (!pow_challenge || !pow_result) return jsonResponse({ error: "需要 PoW", code: "POW_REQUIRED" }, 403);
+    if (!pow_challenge || !pow_result) return json({ error: "需要 PoW", code: "POW_REQUIRED" }, 403);
 
     const challengeData = await verifyPowChallenge(pow_challenge, secret);
-    if (!challengeData) return jsonResponse({ error: "PoW 无效或过期", code: "POW_INVALID" }, 403);
+    if (!challengeData) return json({ error: "PoW 无效或过期", code: "POW_INVALID" }, 403);
 
     // Parse pow_result JSON
     let powResult;
-    try { powResult = JSON.parse(pow_result); } catch { return jsonResponse({ error: "PoW 格式无效" }, 403); }
+    try { powResult = JSON.parse(pow_result); } catch { return json({ error: "PoW 格式无效" }, 403); }
 
     if (!powResult || typeof powResult.nonce !== "string" || !powResult.nonce) {
-      return jsonResponse({ error: "需要完整 PoW 结果", code: "POW_INCOMPLETE" }, 403);
+      return json({ error: "需要完整 PoW 结果", code: "POW_INCOMPLETE" }, 403);
     }
 
     if (challengeData.fp) {
       const fingerprintHash = await sha256Hex(fingerprint);
       if (fingerprintHash !== challengeData.fp) {
-        return jsonResponse({ error: "PoW fingerprint 不匹配", code: "POW_FINGERPRINT_MISMATCH" }, 403);
+        return json({ error: "PoW fingerprint 不匹配", code: "POW_FINGERPRINT_MISMATCH" }, 403);
       }
     }
 
     const finalHash = await sha256Hex(powInput(pow_challenge, fingerprint, powResult.nonce));
     const difficultyBits = challengeData.bits || POW_DIFFICULTY_BITS;
-    if (!hasLeadingZeroBits(finalHash, difficultyBits)) return jsonResponse({ error: "PoW 解无效" }, 403);
+    if (!hasLeadingZeroBits(finalHash, difficultyBits)) return json({ error: "PoW 解无效" }, 403);
   }
 
   // 签发 token
   const fp = fingerprint.replace(/[^a-zA-Z0-9:_.,| -]/g, "").trim().slice(0, 512);
-  if (fp.length < 32 || new Set(fp).size < 6) return jsonResponse({ error: "fingerprint 太弱" }, 400);
+  if (fp.length < 32 || new Set(fp).size < 6) return json({ error: "fingerprint 太弱" }, 400);
 
   const viewerId = await resolveViewerId(secret, fp, clientIp);
   const ipHash = (ipKnown && clientIp !== "unknown") ? (await hmacHex(secret, "ip:" + clientIp)).slice(0, 16) : "";
@@ -312,7 +316,7 @@ async function handleTokenIssue(request, clientIp, secret) {
   const encoded = base64UrlEncode(payload);
   const signature = await hmacSign(secret, encoded);
 
-  return noStoreJson({ token: `${encoded}.${signature}`, viewer_id: viewerId, expires_in: 3600 });
+  return noStoreJson({ token: `${encoded}.${signature}`, viewer_id: viewerId, expires_in: 3600 }, cors);
 }
 
 async function resolveViewerId(secret, fingerprint, clientIp) {
@@ -399,9 +403,14 @@ function hasLeadingZeroBits(hex, bits) {
 }
 
 // ── 安全响应头（对所有响应生效）──
-function applySecurityHeaders(response) {
+function applySecurityHeaders(response, cors = null) {
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("X-Frame-Options", "DENY");
+  if (cors) {
+    for (const [key, value] of Object.entries(cors)) {
+      if (value) response.headers.set(key, value);
+    }
+  }
   response.headers.delete("Server");
   return response;
 }
@@ -424,7 +433,7 @@ async function cachePut(edgeCache, key, response) {
 }
 // ══════════════════════════════════════════════════════════════
 
-async function handleCachedRead(request, origin, pathname, secret, cacheMeta = getCacheMeta(pathname, request)) {
+async function handleCachedRead(request, origin, pathname, secret, cacheMeta = getCacheMeta(pathname, request), cors = null) {
   const ttl = cacheMeta.ttl;
   const cacheKey = `http://edge-cache${pathname}${new URL(request.url).search}`;
   const edgeCache = getEdgeCache();
@@ -433,17 +442,17 @@ async function handleCachedRead(request, origin, pathname, secret, cacheMeta = g
     const clientIp = getClientIpFromHeaders(request.headers);
     const token = extractViewerToken(request);
     verified = token && secret ? await verifyViewerToken(token, secret, clientIp) : null;
-    if (!verified) return jsonResponse({ error: "需要 viewer token" }, 403);
+    if (!verified) return jsonResponse({ error: "需要 viewer token" }, 403, cors);
     const kv = getEdgeKV();
     if (kv && !(await allowRate(kv, "vr", verified.viewerId, RATE_VIEWER))) {
-      return jsonResponse({ error: "限流" }, 429);
+      return jsonResponse({ error: "限流" }, 429, cors);
     }
   }
 
   if (ttl > 0 && edgeCache) {
     try {
       const cached = await cacheGet(edgeCache, cacheKey);
-      if (cached) return applySecurityHeaders(withEdgeCacheHeaders(cached, cacheMeta, "HIT"));
+      if (cached) return applySecurityHeaders(withEdgeCacheHeaders(cached, cacheMeta, "HIT"), cors);
     } catch {}
   }
 
@@ -459,9 +468,9 @@ async function handleCachedRead(request, origin, pathname, secret, cacheMeta = g
   const originResp = await fetch(originUrl(origin, pathname, new URL(request.url).search), {
     headers: originHeaders,
   });
-  if (!originResp.ok) return applySecurityHeaders(originResp);
+  if (!originResp.ok) return applySecurityHeaders(originResp, cors);
 
-  const response = applySecurityHeaders(withEdgeCacheHeaders(originResp, cacheMeta, ttl > 0 ? "MISS" : "BYPASS"));
+  const response = applySecurityHeaders(withEdgeCacheHeaders(originResp, cacheMeta, ttl > 0 ? "MISS" : "BYPASS"), cors);
 
   if (ttl > 0 && edgeCache) {
     try { await cachePut(edgeCache, cacheKey, response.clone()); } catch {}
@@ -473,8 +482,8 @@ async function handleCachedRead(request, origin, pathname, secret, cacheMeta = g
 // Token 验证 + 穿透
 // ══════════════════════════════════════════════════════════════
 
-async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
-  if (!secret) return passthroughSigned(request, origin, clientIp, secret);
+async function handleAuthenticatedRequest(request, origin, clientIp, secret, cors = null) {
+  if (!secret) return passthroughSigned(request, origin, clientIp, secret, cors);
 
   const token = extractViewerToken(request);
   if (token) {
@@ -483,7 +492,7 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
       // 限流 60/min/viewer
       const kv = getEdgeKV();
       if (kv && !(await allowRate(kv, "vr", verified.viewerId, RATE_VIEWER))) {
-        return jsonResponse({ error: "限流" }, 429);
+        return jsonResponse({ error: "限流" }, 429, cors);
       }
 
       const headers = new Headers(request.headers);
@@ -501,20 +510,20 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
 
       const cacheMeta = getCacheMeta(getPath(request), request);
       if (request.method === "GET" && resp.ok && cacheMeta.tags && cacheMeta.tags.length) {
-        return applySecurityHeaders(withEdgeCacheHeaders(resp, cacheMeta, "PASS"));
+        return applySecurityHeaders(withEdgeCacheHeaders(resp, cacheMeta, "PASS"), cors);
       }
-      return applySecurityHeaders(resp);
+      return applySecurityHeaders(resp, cors);
     }
     ignoreRequestBody(request);
-    return jsonResponse({ error: "token 无效" }, 403);
+    return jsonResponse({ error: "token 无效" }, 403, cors);
   }
 
   const path = getPath(request);
   if (isAuthEndpoint(path)) {
     ignoreRequestBody(request);
-    return jsonResponse({ error: "需要 viewer token" }, 403);
+    return jsonResponse({ error: "需要 viewer token" }, 403, cors);
   }
-  return passthroughSigned(request, origin, clientIp, secret);
+  return passthroughSigned(request, origin, clientIp, secret, cors);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -534,7 +543,7 @@ function originUrl(origin, pathname, search = "") {
   return new URL(`${pathname.replace(/^\/+/, "")}${search}`, base).href;
 }
 
-function passthrough(request, origin, clientIp) {
+function passthrough(request, origin, clientIp, cors = null) {
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
   if (clientIp) headers.set("X-Real-IP", clientIp);
@@ -546,9 +555,9 @@ function passthrough(request, origin, clientIp) {
     }).catch(() => new Response("Origin Fetch Failed", { status: 502 })),
     8000, // below ESA 10s gateway timeout
     new Response("Gateway Timeout", { status: 504 }),
-  ).then(applySecurityHeaders);
+  ).then((response) => applySecurityHeaders(response, cors));
 }
-async function passthroughSigned(request, origin, clientIp, secret) {
+async function passthroughSigned(request, origin, clientIp, secret, cors = null) {
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
   if (clientIp) headers.set("X-Real-IP", clientIp);
@@ -561,7 +570,7 @@ async function passthroughSigned(request, origin, clientIp, secret) {
     }).catch(() => new Response("Origin Fetch Failed", { status: 502 })),
     8000, // below ESA 10s gateway timeout
     new Response("Gateway Timeout", { status: 504 }),
-  ).then(applySecurityHeaders);
+  ).then((response) => applySecurityHeaders(response, cors));
 }
 
 
@@ -929,11 +938,11 @@ async function hmacSign(secret, data) {
 
 // ── 响应 ──
 
-function jsonResponse(data, status = 200) {
-  return applySecurityHeaders(new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", ...corsHeaders() } }));
+function jsonResponse(data, status = 200, cors = null) {
+  return applySecurityHeaders(new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", ...(cors || {}) } }), cors);
 }
 
-function noStoreJson(data) {
+function noStoreJson(data, cors = null) {
   return applySecurityHeaders(new Response(JSON.stringify(data), {
     headers: {
       "Content-Type": "application/json",
@@ -941,16 +950,50 @@ function noStoreJson(data) {
       "Pragma": "no-cache",
       "Expires": "0",
       "CDN-Cache-Control": "no-store", "Surrogate-Control": "no-store",
-      ...corsHeaders(),
+      ...(cors || {}),
     },
-  }));
+  }), cors);
 }
 
-function corsHeaders() {
-  return {
+function corsHeaders(request, pathname, method, allowedOrigins = "") {
+  const headers = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Allow-Origin": "*",
   };
+  if (isPublicCorsEndpoint(pathname, method)) {
+    headers["Access-Control-Allow-Origin"] = "*";
+    return headers;
+  }
+
+  const origin = request.headers.get("origin") || "";
+  if (origin && isAllowedCorsOrigin(origin, allowedOrigins)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+  }
+  return headers;
+}
+
+function isPublicCorsEndpoint(pathname, method) {
+  return pathname === "/api/current" ||
+    pathname === "/api/timeline" ||
+    pathname === "/api/health" ||
+    pathname === "/api/daily-summary" ||
+    pathname === "/api/config" ||
+    pathname === "/api/pow/challenge" ||
+    pathname === "/api/token/issue" ||
+    (method === "GET" && (
+      pathname === "/api/messages/public" ||
+      pathname === "/api/health-data" ||
+      pathname === "/api/location"
+    ));
+}
+
+function isAllowedCorsOrigin(origin, allowedOrigins) {
+  const items = String(allowedOrigins || "")
+    .split(/[\s,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 50);
+  if (!items.length) return false;
+  return items.includes(origin);
 }
 

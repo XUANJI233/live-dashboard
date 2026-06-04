@@ -72,7 +72,7 @@ export default function SiteMetadataSync() {
     setMeta('meta[property="og:description"]', siteDescription);
     setMeta('meta[name="twitter:title"]', siteTitle);
     setMeta('meta[name="twitter:description"]', siteDescription);
-    setFavicon(siteFavicon);
+    if (siteFavicon !== "/icon.svg") setFavicon(siteFavicon);
   }, [siteTitle, siteDescription, siteFavicon]);
 
   return null;

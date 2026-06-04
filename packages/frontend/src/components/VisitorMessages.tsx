@@ -28,8 +28,7 @@ interface PublicLine {
   kind?: string;
 }
 
-function currentMessageSlot() {
-  const date = new Date();
+function messageSlot(date = new Date()) {
   const roundedMinute = Math.floor(date.getUTCMinutes() / 10) * 10;
   const year = date.getUTCFullYear();
   const month = String(date.getUTCMonth() + 1).padStart(2, "0");
@@ -37,6 +36,11 @@ function currentMessageSlot() {
   const hour = String(date.getUTCHours()).padStart(2, "0");
   const minute = String(roundedMinute).padStart(2, "0");
   return `${year}${month}${day}${hour}${minute}`;
+}
+
+function pollMessageSlots() {
+  const now = new Date();
+  return [messageSlot(now), messageSlot(new Date(now.getTime() - 10 * 60_000))];
 }
 
 function historyKey(_deviceId?: string) {
@@ -275,17 +279,18 @@ export default function VisitorMessages({ device }: Props) {
       try {
         const identity = await ensureViewerToken();
         const initialLoad = isFirstLoad;
-        // First load: get recent persisted messages so restart or midnight does not look like data loss.
-        // Subsequent polls: use 10-min slot for incremental updates.
-        const url = initialLoad
-          ? `${API_BASE}/api/messages/public?recent=1&hours=${PUBLIC_RECENT_HOURS}`
-          : `${API_BASE}/api/messages/public?slot=${currentMessageSlot()}`;
-        const res = await fetch(url, { headers: { Authorization: `Bearer ${identity.token}` } });
-        if (!res.ok || stopped) return;
-        const data = await res.json();
-        if (!Array.isArray(data.messages)) return;
+        const urls = initialLoad
+          ? [`${API_BASE}/api/messages/public?recent=1&hours=${PUBLIC_RECENT_HOURS}`]
+          : pollMessageSlots().map((slot) => `${API_BASE}/api/messages/public?slot=${slot}`);
+        const payloads = await Promise.all(urls.map(async (url) => {
+          const res = await fetch(url, { headers: { Authorization: `Bearer ${identity.token}` } });
+          if (!res.ok || stopped) return [];
+          const data = await res.json();
+          return Array.isArray(data.messages) ? data.messages : [];
+        }));
+        if (stopped) return;
         isFirstLoad = false;
-        const nextMessages = data.messages
+        const nextMessages = payloads.flat()
           .map(normalizePublicMessage)
           .filter((message: PublicLine | null): message is PublicLine => Boolean(message));
         setPublicLines((prev) => initialLoad ? mergePublicLines([], nextMessages) : mergePublicLines(prev, nextMessages));
