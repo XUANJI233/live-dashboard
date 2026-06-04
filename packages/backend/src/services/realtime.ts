@@ -988,8 +988,6 @@ export async function handlePrivateMessagePost(req: Request): Promise<Response> 
 
 export function handlePublicMessages(req: Request): Response {
   const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
-  const device = authenticateToken(req.headers.get("authorization"));
-  if (!viewer && !device) return Response.json({ error: "Viewer or device token required" }, { status: 403 });
   if (viewer) {
     if (!viewerTokenRateLimit(viewer.viewerId)) return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
     if (!apiRateLimit(viewer.viewerId)) return Response.json({ error: "Rate limit exceeded" }, { status: 429 });

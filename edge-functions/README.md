@@ -9,6 +9,7 @@
 - 缓存响应会写入 ESA 默认标签头 `Cache-Tag`，便于按标签刷新 CDN；同时保留 `ESA-Cache-Tag` 兼容别名，但默认刷新以 `Cache-Tag` 为准
 - PoW 挑战在边缘生成和验证，不走 CDN。当前使用 HMAC 签名并绑定 `sha256(fingerprint)` 的 Hashcash v2：客户端完成 nonce 计算，边缘只做验签、过期检查和一次 SHA-256，避免边缘 CPU 被 `/api/token/issue` 拖满
 - 无效的访客 token 请求会在边缘直接拒绝，公开/私聊留言 POST 也会先做边缘 token 校验和限流
+- 边缘函数会为所有自身返回和回源响应补齐安全头与 CORS 头；跨域敏感接口仍需要在 EdgeKV 配置 `cors_allowed_origins`
 
 ## 部署（阿里云 ESA）
 
@@ -37,6 +38,8 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 | `cors_allowed_origins` | 可选。敏感接口跨域允许来源，逗号/空白分隔；需要和源站 `CORS_ALLOWED_ORIGINS` 保持一致。公开读取、PoW 和 token 签发接口仍使用 `Access-Control-Allow-Origin: *` |
 
 配置 `device_tokens` 或 `device_token_hashes` 后，带有效 `Authorization: Bearer <token>` 的设备/API 管理请求会在边缘直接签名回源，不走访客 token 校验，也不吃边缘全局 IP 限流。`/api/report`、`/api/health-data` 和设备消息接口都按这个路径处理，手表端 Zepp 令牌同样可通过；源站仍会继续校验设备密钥。
+
+公开留言读取 `GET /api/messages/public` 是公开读取接口，不需要访客 token；发布公开留言、私聊、订阅推送等写入接口仍需要访客 token，并会在边缘先验证再回源。
 
 ### 4. 配置路由
 
@@ -76,6 +79,8 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 | 已登录用户 | 60/min |
 
 PoW 使用 `difficultyBits=17` 的 bit 级 Hashcash，并要求 `/api/pow/challenge` 携带 `fp_hash=sha256(fingerprint)`。旧版 16K SHA-256 链需要边缘完整重算，属于客户端/边缘对称成本；新版客户端预期工作量不低于旧版，但边缘验证是常数级，能避免刷新时 `/api/token/issue` 因 CPU 超限失败。
+
+ESA Fetch/Cache 子请求预算按次计数，缓存读取路径会优先保留 `config + cache.get + fetch + cache.put` 的 4 次预算。`/api/token/issue` 不再在边缘做额外访客身份 KV 合并，只按浏览器指纹稳定派生 viewer id；同一浏览器不同 IP 仍会合并，同 IP 不同浏览器指纹的进一步合并交给源站路径/后续持久化策略处理，避免边缘签发超出子请求限制。
 
 ## 缓存标签
 

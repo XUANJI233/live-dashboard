@@ -116,6 +116,7 @@ const server = Bun.serve<WsData>({
       pathname === "/api/health" ||
       pathname === "/api/daily-summary" ||
       pathname === "/api/config" ||
+      pathname === "/api/push/vapid-public-key" ||
       (pathname === "/api/messages/public" && req.method === "GET") ||
       pathname === "/api/pow/challenge" ||
       pathname === "/api/token/issue" ||

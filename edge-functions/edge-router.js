@@ -144,8 +144,10 @@ export default {
 
       // 全局 IP 限流
       if (clientIp !== "unknown" && !isTrustedDevice && !hasEndpointRateLimit(pathname, method)) {
-        const kv = getEdgeKV();
-        if (kv && !(await allowRate(kv, "g", clientIp, RATE_GLOBAL))) {
+        const allowed = usesEdgeReadBudget(pathname, method, request)
+          ? allowMemoryRate("r_g", clientIp, RATE_GLOBAL)
+          : await allowRate(getEdgeKV(), "g", clientIp, RATE_GLOBAL);
+        if (!allowed) {
           return jsonResponse({ error: "限流", retryAfter: 60 }, 429, cors);
         }
       }
@@ -309,7 +311,7 @@ async function handleTokenIssue(request, clientIp, secret, cors) {
   const fp = fingerprint.replace(/[^a-zA-Z0-9:_.,| -]/g, "").trim().slice(0, 512);
   if (fp.length < 32 || new Set(fp).size < 6) return json({ error: "fingerprint 太弱" }, 400);
 
-  const viewerId = await resolveViewerId(secret, fp, clientIp);
+  const viewerId = await fingerprintViewerId(secret, fp);
   const ipHash = (ipKnown && clientIp !== "unknown") ? (await hmacHex(secret, "ip:" + clientIp)).slice(0, 16) : "";
   const nowSec = Math.floor(Date.now() / 1000);
   const payload = JSON.stringify({ v: 2, sub: viewerId, ip: ipHash, iat: nowSec, exp: nowSec + 3600 });
@@ -319,49 +321,8 @@ async function handleTokenIssue(request, clientIp, secret, cors) {
   return noStoreJson({ token: `${encoded}.${signature}`, viewer_id: viewerId, expires_in: 3600 }, cors);
 }
 
-async function resolveViewerId(secret, fingerprint, clientIp) {
-  const fpId = `fp_${await hmacHex(secret, fingerprint)}`.slice(0, 35);
-  const ipKnown = clientIp && clientIp !== "unknown";
-  const ih = ipKnown ? (await hmacHex(secret, "ip:" + clientIp)).slice(0, 16) : "";
-  const kv = getEdgeKV();
-  if (!kv) return fpId;
-
-  const fpKey = `vf_${fpId}`;
-  const ipKey = ih ? `vi_${ih}` : "";
-  const [fpViewer, ipViewer] = await Promise.all([
-    kvGetText(kv, fpKey),
-    ipKey ? kvGetText(kv, ipKey) : "",
-  ]);
-  let viewerId = sanitizeViewerId(fpViewer) || sanitizeViewerId(ipViewer) || fpId;
-  if (fpViewer && ipViewer && fpViewer !== ipViewer) {
-    const canonical = fpViewer < ipViewer ? fpViewer : ipViewer;
-    const alias = canonical === fpViewer ? ipViewer : fpViewer;
-    viewerId = sanitizeViewerId(canonical) || viewerId;
-    await kvPutText(kv, `va_${alias}`, viewerId);
-  }
-  const writes = [];
-  if (sanitizeViewerId(fpViewer) !== viewerId) writes.push(kvPutText(kv, fpKey, viewerId));
-  if (ipKey && sanitizeViewerId(ipViewer) !== viewerId) writes.push(kvPutText(kv, ipKey, viewerId));
-  if (writes.length) await Promise.all(writes);
-  return viewerId;
-}
-
-async function resolveViewerAlias(viewerId) {
-  const clean = sanitizeViewerId(viewerId);
-  if (!clean) return viewerId;
-  const kv = getEdgeKV();
-  if (!kv) return clean;
-  let current = clean;
-  for (let i = 0; i < 4; i++) {
-    const next = sanitizeViewerId(await kvGetText(kv, `va_${current}`));
-    if (!next || next === current) return current;
-    current = next;
-  }
-  return current;
-}
-
-function sanitizeViewerId(value) {
-  return typeof value === "string" && /^fp_[a-f0-9]{32}$/.test(value) ? value : "";
+async function fingerprintViewerId(secret, fingerprint) {
+  return `fp_${(await hmacHex(secret, fingerprint)).slice(0, 32)}`;
 }
 
 async function verifyPowChallenge(challenge, secret) {
@@ -404,15 +365,30 @@ function hasLeadingZeroBits(hex, bits) {
 
 // ── 安全响应头（对所有响应生效）──
 function applySecurityHeaders(response, cors = null) {
-  response.headers.set("X-Content-Type-Options", "nosniff");
-  response.headers.set("X-Frame-Options", "DENY");
+  if (response.status === 101) return response;
+  try {
+    setSecurityHeaders(response.headers, cors);
+    return response;
+  } catch {}
+
+  const headers = new Headers(response.headers);
+  setSecurityHeaders(headers, cors);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function setSecurityHeaders(headers, cors = null) {
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("X-Frame-Options", "DENY");
   if (cors) {
     for (const [key, value] of Object.entries(cors)) {
-      if (value) response.headers.set(key, value);
+      if (value) headers.set(key, value);
     }
   }
-  response.headers.delete("Server");
-  return response;
+  headers.delete("Server");
 }
 
 function getEdgeCache() {
@@ -443,8 +419,7 @@ async function handleCachedRead(request, origin, pathname, secret, cacheMeta = g
     const token = extractViewerToken(request);
     verified = token && secret ? await verifyViewerToken(token, secret, clientIp) : null;
     if (!verified) return jsonResponse({ error: "需要 viewer token" }, 403, cors);
-    const kv = getEdgeKV();
-    if (kv && !(await allowRate(kv, "vr", verified.viewerId, RATE_VIEWER))) {
+    if (!allowMemoryRate("r_vr", verified.viewerId, RATE_VIEWER)) {
       return jsonResponse({ error: "限流" }, 429, cors);
     }
   }
@@ -465,9 +440,13 @@ async function handleCachedRead(request, origin, pathname, secret, cacheMeta = g
     originHeaders.set("X-Edge-Viewer-Id", verified.viewerId);
     originHeaders.set("X-Edge-Signature", await hmacHex(secret, "edge:" + verified.viewerId));
   }
-  const originResp = await fetch(originUrl(origin, pathname, new URL(request.url).search), {
-    headers: originHeaders,
-  });
+  const originResp = await withTimeout(
+    fetch(originUrl(origin, pathname, new URL(request.url).search), {
+      headers: originHeaders,
+    }).catch(() => new Response("Origin Fetch Failed", { status: 502 })),
+    8000,
+    new Response("Gateway Timeout", { status: 504 }),
+  );
   if (!originResp.ok) return applySecurityHeaders(originResp, cors);
 
   const response = applySecurityHeaders(withEdgeCacheHeaders(originResp, cacheMeta, ttl > 0 ? "MISS" : "BYPASS"), cors);
@@ -540,7 +519,9 @@ function ignoreRequestBody(request) {
 
 function originUrl(origin, pathname, search = "") {
   const base = origin.endsWith("/") ? origin : `${origin}/`;
-  return new URL(`${pathname.replace(/^\/+/, "")}${search}`, base).href;
+  const url = new URL(pathname.replace(/^\/+/, ""), base);
+  url.search = search.startsWith("?") ? search.slice(1) : search;
+  return url.href;
 }
 
 function passthrough(request, origin, clientIp, cors = null) {
@@ -673,12 +654,16 @@ function hourWindowForOffset(date, tzOffsetMinutes) {
 function isAuthEndpoint(p) {
   return p === "/api/health-data" ||
     p === "/api/location" ||
-    p === "/api/messages/public" ||
-    p === "/api/messages/private";
+    p === "/api/messages/private" ||
+    p === "/api/messages/viewer/history";
 }
 
 function isViewerWriteEndpoint(p) {
-  return p === "/api/messages/public" || p === "/api/messages/private";
+  return p === "/api/messages/public" ||
+    p === "/api/messages/private" ||
+    p === "/api/messages/viewer/delete" ||
+    p === "/api/push/subscribe" ||
+    p === "/api/push/unsubscribe";
 }
 
 function isEdgeAuthFlow(p, method) {
@@ -691,6 +676,12 @@ function hasEndpointRateLimit(p, method) {
     (method === "POST" && isViewerWriteEndpoint(p)) ||
     (method === "GET" && isAuthEndpoint(p)) ||
     p === "/api/ws";
+}
+
+function usesEdgeReadBudget(pathname, method, request) {
+  if (method !== "GET") return false;
+  const cacheMeta = getCacheMeta(pathname, request);
+  return cacheMeta.ttl > 0 || (cacheMeta.tags && cacheMeta.tags.length > 0);
 }
 
 function isLocalIp(ip) {
@@ -827,7 +818,7 @@ async function verifyViewerToken(token, secret, clientIp) {
     // IP hash is advisory. The stable viewer identity is the fingerprint hash;
     // accepting IP changes prevents refreshes through different CDN/mobile egress
     // from creating false offline/extra-viewer states.
-    return { viewerId: payload.v >= 2 ? payload.sub : await resolveViewerAlias(payload.sub) };
+    return { viewerId: payload.sub };
   } catch { return null; }
 }
 
@@ -890,16 +881,8 @@ async function kvGet(kv, key) {
   return await kv.get(key, { type: "text" }) || null;
 }
 
-async function kvGetText(kv, key) {
-  try { return await kv.get(key, { type: "text" }) || ""; } catch { return ""; }
-}
-
 async function kvPut(kv, key, value, ttl) {
   await kv.put(key, `${value}:${Date.now()}`);
-}
-
-async function kvPutText(kv, key, value) {
-  try { await kv.put(key, value); } catch {}
 }
 
 // ── HMAC (WebCrypto) ──
@@ -959,6 +942,7 @@ function corsHeaders(request, pathname, method, allowedOrigins = "") {
   const headers = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Max-Age": "600",
   };
   if (isPublicCorsEndpoint(pathname, method)) {
     headers["Access-Control-Allow-Origin"] = "*";
@@ -968,6 +952,7 @@ function corsHeaders(request, pathname, method, allowedOrigins = "") {
   const origin = request.headers.get("origin") || "";
   if (origin && isAllowedCorsOrigin(origin, allowedOrigins)) {
     headers["Access-Control-Allow-Origin"] = origin;
+    headers["Vary"] = "Origin";
   }
   return headers;
 }
@@ -978,6 +963,7 @@ function isPublicCorsEndpoint(pathname, method) {
     pathname === "/api/health" ||
     pathname === "/api/daily-summary" ||
     pathname === "/api/config" ||
+    pathname === "/api/push/vapid-public-key" ||
     pathname === "/api/pow/challenge" ||
     pathname === "/api/token/issue" ||
     (method === "GET" && (

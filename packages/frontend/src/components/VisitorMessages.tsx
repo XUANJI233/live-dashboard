@@ -277,13 +277,12 @@ export default function VisitorMessages({ device }: Props) {
     let isFirstLoad = true;
     const loadPublic = async () => {
       try {
-        const identity = await ensureViewerToken();
         const initialLoad = isFirstLoad;
         const urls = initialLoad
           ? [`${API_BASE}/api/messages/public?recent=1&hours=${PUBLIC_RECENT_HOURS}`]
           : pollMessageSlots().map((slot) => `${API_BASE}/api/messages/public?slot=${slot}`);
         const payloads = await Promise.all(urls.map(async (url) => {
-          const res = await fetch(url, { headers: { Authorization: `Bearer ${identity.token}` } });
+          const res = await fetch(url);
           if (!res.ok || stopped) return [];
           const data = await res.json();
           return Array.isArray(data.messages) ? data.messages : [];
