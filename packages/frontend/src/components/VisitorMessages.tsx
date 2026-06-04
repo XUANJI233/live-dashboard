@@ -106,6 +106,13 @@ function mergePublicLines(current: PublicLine[], incoming: PublicLine[]): Public
     .slice(-200);
 }
 
+function mergeChatLines(current: ChatLine[], incoming: ChatLine[]): ChatLine[] {
+  const merged = new Map<string, ChatLine>();
+  for (const line of current) merged.set(line.id, line);
+  for (const line of incoming) merged.set(line.id, line);
+  return Array.from(merged.values()).slice(-80);
+}
+
 export default function VisitorMessages({ device }: Props) {
   const [connected, setConnected] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState<"idle" | TokenStatus>("idle");
@@ -134,11 +141,20 @@ export default function VisitorMessages({ device }: Props) {
         const merged = new Map<string, ChatLine>();
         for (const l of loadHistory(device?.device_id)) merged.set(l.id, l);
         for (const m of data.messages) {
+          const text = cleanUiText(m.text);
+          if (!text || typeof m.id !== "string") continue;
           if (m.direction === "device" && m.kind === "reply") {
             merged.set(m.id, {
               id: m.id, from: "device" as const,
-              text: cleanUiText(m.text),
+              text,
               at: m.created_at,
+            });
+          } else if (m.direction === "viewer" && m.kind === "private") {
+            merged.set(m.id, {
+              id: m.id, from: "viewer" as const,
+              text,
+              at: m.created_at,
+              status: "sent",
             });
           }
         }
@@ -207,6 +223,33 @@ export default function VisitorMessages({ device }: Props) {
           saveHistory(device?.device_id, next);
           return next;
         });
+      } else if (data.type === "viewer_message_sent" && data.message) {
+        const text = cleanUiText(data.message.text);
+        const id = typeof data.message.id === "string" ? data.message.id : "";
+        if (!id || !text) return;
+        const line = {
+          id,
+          from: "viewer" as const,
+          text,
+          at: typeof data.message.created_at === "string" ? data.message.created_at : new Date().toISOString(),
+          status: typeof data.status === "string" ? data.status : "sent",
+        };
+        setLines((prev) => {
+          const next = mergeChatLines(prev, [line]);
+          saveHistory(device?.device_id, next);
+          return next;
+        });
+      } else if (data.type === "message_deleted" && typeof data.message_id === "string") {
+        setLines((prev) => {
+          const next = prev.filter((line) => line.id !== data.message_id);
+          saveHistory(device?.device_id, next);
+          return next;
+        });
+      } else if (data.type === "viewer_messages_deleted") {
+        setLines(() => {
+          saveHistory(device?.device_id, []);
+          return [];
+        });
       } else if (data.type === "error") {
         setLines((prev) => [
           ...prev,
@@ -219,6 +262,8 @@ export default function VisitorMessages({ device }: Props) {
       } else if (data.type === "public_message" && data.message) {
         const message = normalizePublicMessage(data.message);
         if (message) setPublicLines((prev) => mergePublicLines(prev, [message]));
+      } else if (data.type === "public_message_deleted" && typeof data.message_id === "string") {
+        setPublicLines((prev) => prev.filter((line) => line.id !== data.message_id));
       }
     });
   }, [device?.device_id]);
@@ -257,7 +302,7 @@ export default function VisitorMessages({ device }: Props) {
   }, []);
 
   const statusText = useMemo(() => {
-    if (!device) return "尚未选择目标设备";
+    if (!device) return "公开留言可用，悄悄话需先选择设备";
     if (!connected && device.is_online !== 1) return "对方离线，消息将稍后送达";
     if (!connected) return "实时通道暂未连上，发送时会用备用通道";
     return device.is_online === 1 ? "可以发送消息了" : "对方离线，消息将稍后送达";
@@ -299,7 +344,7 @@ export default function VisitorMessages({ device }: Props) {
         },
         body: JSON.stringify({
           message_id: id,
-          target_device_id: device?.device_id || "",
+          target_device_id: "",
           viewer_name: cleanUiText(displayName, 32),
           text: cleaned,
         }),

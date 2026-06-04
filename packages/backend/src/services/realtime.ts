@@ -1,4 +1,4 @@
-import { db, metaGet, metaSet } from "../db";
+import { db } from "../db";
 import { authenticateToken } from "../middleware/auth";
 import { currentHourWindow, currentMessageSlot, noStore, withCdnHeaders } from "./cdn";
 import { verifyViewerToken, viewerTokenFromRequest, viewerTokenRateLimit, edgeViewerIdentity } from "./viewer-auth";
@@ -154,11 +154,29 @@ const insertVisitorMessage = db.prepare(`
 
 const deleteVisitorMessage = db.prepare(`
   DELETE FROM visitor_messages
-  WHERE id = ? AND device_id = ?
+  WHERE id = ?
+    AND (device_id = ? OR kind IN ('public', 'public_reply'))
 `);
 
 const deleteVisitorMessagesByViewer = db.prepare(`
   DELETE FROM visitor_messages
+  WHERE device_id = ? AND viewer_id = ? AND kind IN ('private', 'reply')
+`);
+
+const getVisitorMessageForDelete = db.prepare(`
+  SELECT id, device_id, viewer_id, kind
+  FROM visitor_messages
+  WHERE id = ?
+  LIMIT 1
+`);
+
+const deleteDeviceMessage = db.prepare(`
+  DELETE FROM device_messages
+  WHERE id = ?
+`);
+
+const deleteDeviceMessagesByViewer = db.prepare(`
+  DELETE FROM device_messages
   WHERE device_id = ? AND viewer_id = ?
 `);
 
@@ -175,7 +193,8 @@ const getDeviceMessageHistory = db.prepare(`
          COALESCE(r.remark, '') as viewer_remark
   FROM visitor_messages m
   LEFT JOIN viewer_remarks r ON m.device_id = r.device_id AND m.viewer_id = r.viewer_id
-  WHERE (m.device_id = ? OR m.device_id = '__broadcast__' OR (m.device_id = '__public__' AND m.kind = 'public'))
+  WHERE (m.device_id = ? OR m.device_id = '__broadcast__')
+    AND m.kind IN ('private', 'reply')
     AND (? = '' OR datetime(m.created_at) > datetime(?))
   ORDER BY m.created_at ASC
   LIMIT 500
@@ -184,7 +203,11 @@ const getDeviceMessageHistory = db.prepare(`
 const getViewerMessageHistory = db.prepare(`
   SELECT id, device_id, viewer_id, viewer_name, kind, direction, text, created_at
   FROM visitor_messages
-  WHERE viewer_id = ? AND direction = 'device' AND kind = 'reply'
+  WHERE viewer_id = ?
+    AND (
+      (direction = 'device' AND kind = 'reply')
+      OR (direction = 'viewer' AND kind = 'private')
+    )
     AND (? = '' OR datetime(created_at) > datetime(?))
   ORDER BY created_at ASC
   LIMIT 100
@@ -263,6 +286,13 @@ function broadcastPublicMessage(message: {
   created_at: string;
 }) {
   const payload = JSON.stringify({ type: "public_message", message });
+  forEachViewerSocket((viewerWs) => {
+    try { viewerWs.send(payload); } catch { /* ignore */ }
+  });
+}
+
+function broadcastPublicMessageDeleted(messageId: string) {
+  const payload = JSON.stringify({ type: "public_message_deleted", message_id: messageId });
   forEachViewerSocket((viewerWs) => {
     try { viewerWs.send(payload); } catch { /* ignore */ }
   });
@@ -649,7 +679,21 @@ export const realtimeWebSocket = {
         if (status === "sent") sent += 1;
         else queued += 1;
       }
-      send(ws, { type: "ack", message_id: messageId, status: sent > 0 ? "sent" : queued > 0 ? "queued" : "recorded", sent, queued });
+      const status = sent > 0 ? "sent" : queued > 0 ? "queued" : "recorded";
+      sendToViewerSockets(ws.data.id, {
+        type: "viewer_message_sent",
+        message: {
+          id: messageId,
+          device_id: targetDeviceId || "__broadcast__",
+          viewer_id: ws.data.id,
+          viewer_name: viewerName,
+          kind: "private",
+          text,
+          created_at: createdAt,
+        },
+        status,
+      });
+      send(ws, { type: "ack", message_id: messageId, status, sent, queued });
       return;
     }
 
@@ -659,31 +703,33 @@ export const realtimeWebSocket = {
       const messageId = cleanMessageId(data.message_id);
       const replyId = cleanMessageId(data.reply_id) || crypto.randomUUID();
       const createdAt = new Date().toISOString();
-      if (!targetViewerId || !text) {
+      const original = messageId
+        ? db.prepare("SELECT kind FROM visitor_messages WHERE id = ?").get(messageId) as { kind: string } | null
+        : null;
+      const isPublicThread = original?.kind === "public" || original?.kind === "public_reply";
+      if (!text || (!isPublicThread && !targetViewerId)) {
         send(ws, { type: "error", message_id: messageId, error: "target_viewer_id and text required" });
         return;
       }
       if (messageId) markMessageReplied.run(messageId);
-      if (messageId) {
-        const original = db.prepare("SELECT kind FROM visitor_messages WHERE id = ?").get(messageId) as { kind: string } | null;
-        if (original?.kind === "public") {
-          const publicReplyId = "pub_" + replyId;
-          recordMessage(publicReplyId, ws.data.id, targetViewerId, "up", "public_reply", "device", text, createdAt);
-          broadcastPublicMessage({
-            id: publicReplyId,
-            device_id: ws.data.id,
-            viewer_id: targetViewerId,
-            viewer_name: "up",
-            kind: "public_reply",
-            text,
-            created_at: createdAt,
-          });
-        } else {
-          recordMessage(replyId, ws.data.id, targetViewerId, "", "reply", "device", text, createdAt);
-        }
-      } else {
-        recordMessage(replyId, ws.data.id, targetViewerId, "", "reply", "device", text, createdAt);
+
+      if (isPublicThread) {
+        const publicReplyId = "pub_" + replyId;
+        recordMessage(publicReplyId, ws.data.id, "__public__", "up", "public_reply", "device", text, createdAt);
+        broadcastPublicMessage({
+          id: publicReplyId,
+          device_id: ws.data.id,
+          viewer_id: "__public__",
+          viewer_name: "up",
+          kind: "public_reply",
+          text,
+          created_at: createdAt,
+        });
+        send(ws, { type: "ack", message_id: messageId, status: "public_reply_sent" });
+        return;
       }
+
+      recordMessage(replyId, ws.data.id, targetViewerId, "", "reply", "device", text, createdAt);
       sendToViewerSockets(targetViewerId, {
         type: "device_reply",
         message_id: replyId,
@@ -787,14 +833,13 @@ export function handleViewerMessageHistory(req: Request): Response {
   if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
   if (!viewerTokenRateLimit(viewer.viewerId)) return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
 
-  // Server-side last_read tracking — do not trust client timestamps
-  const lastReadKey = "last_read:" + viewer.viewerId;
-  const lastRead = metaGet(lastReadKey) || new Date(Date.now() - 86400000).toISOString();
-  const rows = getViewerMessageHistory.all(viewer.viewerId, lastRead, lastRead);
-  // Update last_read to now after returning messages
-  const now = new Date().toISOString();
-  metaSet(lastReadKey, now);
-  return noStore(Response.json({ messages: rows, last_read: now }), ["viewer-history", `viewer-${viewer.viewerId}`]);
+  const url = new URL(req.url);
+  const sinceParam = url.searchParams.get("since") || "";
+  const since = sinceParam && !isNaN(new Date(sinceParam).getTime())
+    ? new Date(sinceParam).toISOString()
+    : new Date(Date.now() - 86400000).toISOString();
+  const rows = getViewerMessageHistory.all(viewer.viewerId, since, since);
+  return noStore(Response.json({ messages: rows, since }), ["viewer-history", `viewer-${viewer.viewerId}`]);
 }
 
 export async function handleDeviceMessageReply(req: Request): Promise<Response> {
@@ -808,7 +853,11 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
   const viewerId = typeof body.target_viewer_id === "string" ? body.target_viewer_id : "";
   const messageId = cleanMessageId(body.message_id);
   const text = cleanText(body.text);
-  if (!viewerId || !text) {
+  const original = messageId
+    ? db.prepare("SELECT kind FROM visitor_messages WHERE id = ?").get(messageId) as { kind: string } | null
+    : null;
+  const isPublicThread = original?.kind === "public" || original?.kind === "public_reply";
+  if (!text || (!isPublicThread && !viewerId)) {
     return Response.json({ error: "target_viewer_id and text required" }, { status: 400 });
   }
 
@@ -816,27 +865,22 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
   const replyId = cleanMessageId(body.reply_id) || crypto.randomUUID();
   const createdAt = new Date().toISOString();
 
-  // If replying to a public message, only create public_reply (not private)
-  if (messageId) {
-    const original = db.prepare("SELECT kind FROM visitor_messages WHERE id = ?").get(messageId) as { kind: string } | null;
-    if (original?.kind === "public") {
-      const publicReplyId = "pub_" + replyId;
-      recordMessage(publicReplyId, device.device_id, viewerId, "up", "public_reply", "device", text, createdAt);
-      broadcastPublicMessage({
-        id: publicReplyId,
-        device_id: device.device_id,
-        viewer_id: viewerId,
-        viewer_name: "up",
-        kind: "public_reply",
-        text,
-        created_at: createdAt,
-      });
-    } else {
-      recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text, createdAt);
-    }
-  } else {
-    recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text, createdAt);
+  if (isPublicThread) {
+    const publicReplyId = "pub_" + replyId;
+    recordMessage(publicReplyId, device.device_id, "__public__", "up", "public_reply", "device", text, createdAt);
+    broadcastPublicMessage({
+      id: publicReplyId,
+      device_id: device.device_id,
+      viewer_id: "__public__",
+      viewer_name: "up",
+      kind: "public_reply",
+      text,
+      created_at: createdAt,
+    });
+    return Response.json({ ok: true, public: true, message_id: publicReplyId });
   }
+
+  recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text, createdAt);
   const delivered = sendToViewerSockets(viewerId, {
     type: "device_reply",
     message_id: replyId,
@@ -926,6 +970,19 @@ export async function handlePrivateMessagePost(req: Request): Promise<Response> 
   const createdAt = new Date().toISOString();
   recordMessage(messageId, targetDeviceId, viewer.viewerId, viewerName, "private", "viewer", text, createdAt);
   const status = deliverViewerMessage(targetDeviceId, viewer.viewerId, viewerName, "private", text, messageId, createdAt);
+  sendToViewerSockets(viewer.viewerId, {
+    type: "viewer_message_sent",
+    message: {
+      id: messageId,
+      device_id: targetDeviceId,
+      viewer_id: viewer.viewerId,
+      viewer_name: viewerName,
+      kind: "private",
+      text,
+      created_at: createdAt,
+    },
+    status,
+  });
   return Response.json({ ok: true, message_id: messageId, status });
 }
 
@@ -1041,8 +1098,28 @@ export async function handleDeleteMessage(req: Request): Promise<Response> {
     return Response.json({ error: "message_id required" }, { status: 400 });
   }
 
-  deleteVisitorMessage.run(messageId, device.device_id);
-  return Response.json({ ok: true });
+  const existing = getVisitorMessageForDelete.get(messageId) as {
+    id: string;
+    device_id: string;
+    viewer_id: string;
+    kind: string;
+  } | null;
+  if (!existing) return Response.json({ ok: true, deleted: false });
+
+  const result = deleteVisitorMessage.run(messageId, device.device_id);
+  if (result.changes > 0) {
+    deleteDeviceMessage.run(messageId);
+    if (existing.kind === "public" || existing.kind === "public_reply") {
+      broadcastPublicMessageDeleted(messageId);
+    } else if (existing.viewer_id) {
+      sendToViewerSockets(existing.viewer_id, {
+        type: "message_deleted",
+        message_id: messageId,
+        device_id: existing.device_id,
+      });
+    }
+  }
+  return Response.json({ ok: true, deleted: result.changes > 0 });
 }
 
 export async function handleDeleteViewerMessages(req: Request): Promise<Response> {
@@ -1058,8 +1135,15 @@ export async function handleDeleteViewerMessages(req: Request): Promise<Response
     return Response.json({ error: "viewer_id required" }, { status: 400 });
   }
 
-  deleteVisitorMessagesByViewer.run(device.device_id, viewerId);
-  return Response.json({ ok: true });
+  const result = deleteVisitorMessagesByViewer.run(device.device_id, viewerId);
+  deleteDeviceMessagesByViewer.run(device.device_id, viewerId);
+  if (result.changes > 0) {
+    sendToViewerSockets(viewerId, {
+      type: "viewer_messages_deleted",
+      device_id: device.device_id,
+    });
+  }
+  return Response.json({ ok: true, deleted: result.changes });
 }
 
 export async function handleSetRemark(req: Request): Promise<Response> {

@@ -259,7 +259,7 @@ function HomeInner() {
       </div>
 
       {/* Right sidebar: visitor messages (collapsible) */}
-      {current && selectedDevice && (
+      {current && (
         <div className={`flex-shrink-0 overflow-hidden transition-[width,opacity] duration-300 ease-out ${messagesCollapsed ? "w-full opacity-95 lg:w-10" : "w-full opacity-100 lg:w-72"}`}>
           <div className="relative min-h-10">
             <button

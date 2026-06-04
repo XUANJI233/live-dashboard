@@ -47,12 +47,23 @@ function hasLeadingZeroBits(hex: string, bits: number): boolean {
   return next < (1 << (4 - remainder));
 }
 
+async function yieldToBrowser(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      window.requestIdleCallback(() => resolve(), { timeout: 16 });
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
 async function solveHashcashV2(challenge: string, fingerprintValue: string, difficultyBits: number): Promise<{ nonce: string; algorithm: string } | null> {
   const deadline = Date.now() + 20_000;
   const bits = Number.isFinite(difficultyBits) && difficultyBits > 0 ? difficultyBits : 17;
 
   for (let nonce = 0; nonce < 10_000_000; nonce += 1) {
     if (Date.now() > deadline) return null;
+    if (nonce > 0 && nonce % 256 === 0) await yieldToBrowser();
     const hashHex = await sha256Hex(`hashcash-v2:${challenge}:${fingerprintValue}:${nonce}`);
     if (hasLeadingZeroBits(hashHex, bits)) return { nonce: String(nonce), algorithm: "hashcash-v2" };
   }
@@ -67,6 +78,7 @@ async function solvePow(challenge: string, difficulty: number, segments: number 
   chain[0] = await sha256Hex(challenge);
   for (let i = 1; i < segments; i++) {
     if (Date.now() > deadline) return null;
+    if (i % 256 === 0) await yieldToBrowser();
     chain[i] = await sha256Hex(chain[i - 1]);
   }
   const lastHash = chain[segments - 1];
@@ -75,6 +87,7 @@ async function solvePow(challenge: string, difficulty: number, segments: number 
   const firstHash = chain[0];
   for (let nonce = 0; nonce < 10_000_000; nonce += 1) {
     if (Date.now() > deadline) return null;
+    if (nonce > 0 && nonce % 256 === 0) await yieldToBrowser();
     const hashHex = await sha256Hex(firstHash + lastHash + String(nonce));
     if (hashHex.startsWith("0".repeat(difficulty))) return { nonce: String(nonce), lastHash };
   }
