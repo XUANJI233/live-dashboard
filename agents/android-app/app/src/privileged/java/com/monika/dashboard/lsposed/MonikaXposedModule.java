@@ -2,6 +2,7 @@ package com.monika.dashboard.lsposed;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.BroadcastOptions;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -76,6 +77,8 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String ACTION_CONFIG = "com.monika.dashboard.LSPOSED_CONFIG";
     private static final String ACTION_BROWSER_TITLE = "com.monika.dashboard.LSPOSED_BROWSER_TITLE";
     private static final String CONFIG_PERMISSION = "com.monika.dashboard.permission.LSPOSED_CONFIG";
+    private static final String PREFS_DIRECT_UPLOAD = "monika_lsp_direct_upload";
+    private static final String KEY_BROWSER_TITLE_NONCE = "browser_title_nonce";
     private static final String EXTRA_MEDIA_PLAYING = "media_playing";
     private static final String EXTRA_MEDIA_PACKAGE = "media_package";
     private static final String EXTRA_MEDIA_TITLE = "media_title";
@@ -92,6 +95,8 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long WS_RETRY_BASE_MS = 30_000L;  // first retry delay
     private static final long WS_RETRY_MAX_MS = 300_000L;  // max retry delay (5 min)
     private static final long MEDIA_VALIDATE_MS = 60_000L; // low-frequency stale-session guard
+    private static final long BROWSER_NONCE_RELOAD_MS = 60_000L;
+    private static final int START_INPUT_FLAG_IS_TEXT_EDITOR = 1 << 1;
     
     // Static instance for global access
     private static MonikaXposedModule instance;
@@ -154,8 +159,8 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile boolean mediaListenerRegistered = false;
     private volatile boolean internalMediaHooksInstalled = false;
     private volatile boolean screenReceiverRegistered = false;
-    private final java.util.Set<String> registeredMediaControllers =
-            java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private final java.util.Map<Object, MediaControllerRegistration> registeredMediaControllers =
+            java.util.Collections.synchronizedMap(new java.util.HashMap<>());
     private final java.util.Set<String> hookedWebChromeClientClasses =
             java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private final java.util.Set<String> hookedWebViewClientClasses =
@@ -179,6 +184,7 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile boolean directUploadNetwork = true;
     private volatile boolean directUploadVpn = false;
     private volatile boolean directUploadInput = false;
+    private volatile String browserTitleNonce = "";
     private volatile long lastDirectUploadAt = 0L;
     private volatile String pendingDirectBody = "";
     private volatile LspWebSocketClient wsClient = null;
@@ -197,6 +203,7 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile long lastMediaValidationAt = 0L;
     private volatile long lastTitleBroadcastAt = 0L;
     private volatile String lastBroadcastTitle = "";
+    private volatile long lastBrowserNonceLoadAt = 0L;
     private volatile String recentForegroundBrowser = "";
     private volatile long recentForegroundBrowserAt = 0L;
     private volatile long lastScreenOffCheckAt = 0L;
@@ -209,6 +216,20 @@ public final class MonikaXposedModule extends XposedModule {
     private final ConcurrentHashMap<String, Object> classCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> methodLookupCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> fieldLookupCache = new ConcurrentHashMap<>();
+
+    private static final class MediaControllerRegistration {
+        final MediaController controller;
+        final MediaController.Callback callback;
+
+        MediaControllerRegistration(MediaController controller, MediaController.Callback callback) {
+            this.controller = controller;
+            this.callback = callback;
+        }
+
+        void unregister() {
+            try { controller.unregisterCallback(callback); } catch (Throwable ignored) {}
+        }
+    }
 
     @Override
     public void onModuleLoaded(@NonNull XposedModuleInterface.ModuleLoadedParam param) {
@@ -338,9 +359,15 @@ public final class MonikaXposedModule extends XposedModule {
                         .intercept(chain -> {
                             Object result = chain.proceed();
                             if (!inputHookResultSucceeded(result)) return result;
-                            boolean nextActive = inputHookKind > 0;
-                            if (name.contains("startInputOrWindowGainedFocus")) {
+                            boolean nextActive;
+                            if (inputHookKind == 2) {
+                                Boolean requestedShow = firstBooleanArg(chain.getArgs());
+                                if (requestedShow == null) return result;
+                                nextActive = requestedShow;
+                            } else if (name.contains("startInputOrWindowGainedFocus")) {
                                 nextActive = hasTextEditorInfo(chain.getArgs());
+                            } else {
+                                nextActive = inputHookKind > 0;
                             }
                             if (inputActive != nextActive) {
                                 inputActive = nextActive;
@@ -374,6 +401,9 @@ public final class MonikaXposedModule extends XposedModule {
                 || "hideCurrentInputLocked".equals(name)) {
             return -1;
         }
+        if ("onShowHideSoftInputRequested".equals(name)) {
+            return 2;
+        }
         return 0;
     }
 
@@ -383,6 +413,10 @@ public final class MonikaXposedModule extends XposedModule {
 
     private boolean hasTextEditorInfo(List<Object> args) {
         try {
+            int startInputFlags = startInputFlagsFromArgs(args);
+            if (startInputFlags >= 0) {
+                return (startInputFlags & START_INPUT_FLAG_IS_TEXT_EDITOR) != 0;
+            }
             boolean sawEditorInfo = false;
             for (Object arg : args) {
                 if (arg instanceof EditorInfo) {
@@ -391,10 +425,40 @@ public final class MonikaXposedModule extends XposedModule {
                     if (inputType != InputType.TYPE_NULL) return true;
                 }
             }
-            return !sawEditorInfo;
+            return false;
         } catch (Throwable ignored) {
-            return true;
+            return false;
         }
+    }
+
+    private int startInputFlagsFromArgs(List<Object> args) {
+        try {
+            for (int i = 0; i < args.size(); i++) {
+                if (args.get(i) instanceof EditorInfo) {
+                    java.util.ArrayList<Integer> intValues = new java.util.ArrayList<>();
+                    for (int j = 0; j < i; j++) {
+                        Object arg = args.get(j);
+                        if (arg instanceof Integer) intValues.add((Integer) arg);
+                    }
+                    int count = intValues.size();
+                    if (count >= 3) return intValues.get(count - 3);
+                    break;
+                }
+            }
+            if (args.size() > 3 && args.get(3) instanceof Integer) {
+                return (Integer) args.get(3);
+            }
+        } catch (Throwable ignored) {}
+        return -1;
+    }
+
+    private Boolean firstBooleanArg(List<Object> args) {
+        try {
+            for (Object arg : args) {
+                if (arg instanceof Boolean) return (Boolean) arg;
+            }
+        } catch (Throwable ignored) {}
+        return null;
     }
 
     private void startForegroundSampler() {
@@ -532,13 +596,20 @@ public final class MonikaXposedModule extends XposedModule {
                     String pkg = intent.getStringExtra("package_name");
                     String title = intent.getStringExtra("title");
                     String activity = intent.getStringExtra("activity");
+                    String expectedNonce = getBrowserTitleNonce(true);
+                    String actualNonce = safeString(intent.getStringExtra(KEY_BROWSER_TITLE_NONCE));
+                    if (expectedNonce.length() > 0) {
+                        if (actualNonce.length() > 0 && !expectedNonce.equals(actualNonce)) {
+                            log(Log.WARN, TAG, "browser title rejected: nonce mismatch");
+                            return;
+                        }
+                    }
                     if (!isBrowserPackage(pkg)) return;
                     if (title == null || title.trim().isEmpty()) return;
 
-                    // Security: verify sender identity on API 34+
-                    // Note: getSentFromPackage() requires sender to use setShareIdentityEnabled(true),
-                    // which requires sendBroadcast(Intent, String, Bundle) — a non-public API.
-                    // So we rely on the foreground package check below as the primary security measure.
+                    // Security: verify sender identity on API 34+ when the sender enables
+                    // BroadcastOptions#setShareIdentityEnabled(true). Older systems still
+                    // require a nonce match and foreground-browser check.
                     if (android.os.Build.VERSION.SDK_INT >= 34) {
                         try {
                             String sentPkg = getSentFromPackage();
@@ -755,13 +826,11 @@ public final class MonikaXposedModule extends XposedModule {
                             refreshMediaFromControllers(controllers);
                             // Cleanup: remove stale entries from registeredMediaControllers
                             // that are no longer in the active session list
-                            java.util.Set<String> activeKeys = new java.util.HashSet<>();
+                            java.util.Set<Object> activeKeys = new java.util.HashSet<>();
                             for (MediaController c : controllers) {
-                                activeKeys.add(c.getPackageName() + "@" + System.identityHashCode(c));
+                                activeKeys.add(mediaControllerKey(c));
                             }
-                            synchronized (registeredMediaControllers) {
-                                registeredMediaControllers.retainAll(activeKeys);
-                            }
+                            cleanupStaleMediaControllerCallbacks(activeKeys);
                             maybeDirectUpload(!beforeMedia.equals(mediaInfoKey()));
                         } catch (Throwable t) {
                             log(Log.WARN, TAG, "onActiveSessionsChanged failed: " + t.getClass().getSimpleName());
@@ -783,13 +852,12 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void registerMediaControllerCallback(MediaController controller) {
         if (controller == null) return;
-        String key = controller.getPackageName() + "@" + System.identityHashCode(controller);
+        Object key = mediaControllerKey(controller);
         synchronized (registeredMediaControllers) {
-            if (registeredMediaControllers.contains(key)) return;
-            registeredMediaControllers.add(key);
+            if (registeredMediaControllers.containsKey(key)) return;
         }
         try {
-            controller.registerCallback(new MediaController.Callback() {
+            MediaController.Callback callback = new MediaController.Callback() {
                 @Override
                 public void onPlaybackStateChanged(PlaybackState state) {
                     try {
@@ -857,12 +925,73 @@ public final class MonikaXposedModule extends XposedModule {
                         log(Log.WARN, TAG, "onMetadataChanged failed: " + t.getClass().getSimpleName());
                     }
                 }
-            });
+
+                @Override
+                public void onSessionDestroyed() {
+                    try {
+                        unregisterMediaControllerCallback(key);
+                        refreshActiveMediaState();
+                        maybeDirectUpload(true);
+                    } catch (Throwable ignored) {}
+                }
+            };
+            Handler handler = getUploadHandler();
+            if (handler != null) {
+                controller.registerCallback(callback, handler);
+            } else {
+                controller.registerCallback(callback);
+            }
+            boolean duplicate = false;
+            synchronized (registeredMediaControllers) {
+                if (registeredMediaControllers.containsKey(key)) {
+                    duplicate = true;
+                } else {
+                    registeredMediaControllers.put(key, new MediaControllerRegistration(controller, callback));
+                }
+            }
+            if (duplicate) {
+                try { controller.unregisterCallback(callback); } catch (Throwable ignored) {}
+            }
         } catch (Throwable ignored) {
             synchronized (registeredMediaControllers) {
                 registeredMediaControllers.remove(key);
             }
         }
+    }
+
+    private Object mediaControllerKey(MediaController controller) {
+        if (controller == null) return "";
+        try {
+            Object token = controller.getSessionToken();
+            if (token != null) return token;
+        } catch (Throwable ignored) {}
+        return safeString(controller.getPackageName()) + "@" + System.identityHashCode(controller);
+    }
+
+    private void cleanupStaleMediaControllerCallbacks(java.util.Set<Object> activeKeys) {
+        java.util.ArrayList<MediaControllerRegistration> stale = new java.util.ArrayList<>();
+        synchronized (registeredMediaControllers) {
+            java.util.Iterator<java.util.Map.Entry<Object, MediaControllerRegistration>> iterator =
+                    registeredMediaControllers.entrySet().iterator();
+            while (iterator.hasNext()) {
+                java.util.Map.Entry<Object, MediaControllerRegistration> entry = iterator.next();
+                if (!activeKeys.contains(entry.getKey())) {
+                    stale.add(entry.getValue());
+                    iterator.remove();
+                }
+            }
+        }
+        for (MediaControllerRegistration registration : stale) {
+            registration.unregister();
+        }
+    }
+
+    private void unregisterMediaControllerCallback(Object key) {
+        MediaControllerRegistration registration;
+        synchronized (registeredMediaControllers) {
+            registration = registeredMediaControllers.remove(key);
+        }
+        if (registration != null) registration.unregister();
     }
 
     private void refreshMediaFromControllers(List<MediaController> controllers) {
@@ -1509,10 +1638,20 @@ public final class MonikaXposedModule extends XposedModule {
             intent.putExtra("package_name", packageName);
             intent.putExtra("title", title);
             intent.putExtra("activity", safeString(activityName));
+            String nonce = getBrowserTitleNonce(false);
+            if (nonce.length() > 0) {
+                intent.putExtra(KEY_BROWSER_TITLE_NONCE, nonce);
+            }
             // Send broadcast using browser's own context (Activity/ApplicationContext).
             // getSentFromPackage() on API 34+ will return the browser's package because
             // we're sending from the browser's own Context, not system_server's.
-            context.sendBroadcast(intent);
+            if (Build.VERSION.SDK_INT >= 34) {
+                BroadcastOptions options = BroadcastOptions.makeBasic();
+                options.setShareIdentityEnabled(true);
+                context.sendBroadcast(intent, null, options.toBundle());
+            } else {
+                context.sendBroadcast(intent);
+            }
         } catch (Throwable t) {
             log(Log.DEBUG, TAG, "publishBrowserTitleFromProcess failed: " + t.getMessage());
         }
@@ -1991,7 +2130,7 @@ public final class MonikaXposedModule extends XposedModule {
             if (context != null) {
                 try {
                     SharedPreferences dps = context.createDeviceProtectedStorageContext()
-                            .getSharedPreferences("monika_lsp_direct_upload", Context.MODE_PRIVATE);
+                            .getSharedPreferences(PREFS_DIRECT_UPLOAD, Context.MODE_PRIVATE);
                     if (dps.contains("enabled")) {
                         directUploadEnabled = dps.getBoolean("enabled", false);
                         directServerUrl = dps.getString("server_url", "");
@@ -2002,13 +2141,14 @@ public final class MonikaXposedModule extends XposedModule {
                         directUploadNetwork = dps.getBoolean("upload_network", true);
                         directUploadVpn = dps.getBoolean("upload_vpn", false);
                         directUploadInput = dps.getBoolean("upload_input", false);
+                        browserTitleNonce = normalizeNonce(dps.getString(KEY_BROWSER_TITLE_NONCE, ""));
                         log(Log.INFO, TAG, "config loaded from DPS: enabled=" + directUploadEnabled);
                         return;
                     }
                 } catch (Throwable ignored) {}
             }
             // Priority 2: Fallback to getRemotePreferences
-            SharedPreferences prefs = getRemotePreferences("monika_lsp_direct_upload");
+            SharedPreferences prefs = getRemotePreferences(PREFS_DIRECT_UPLOAD);
             directUploadEnabled = prefs.getBoolean("enabled", false);
             directServerUrl = prefs.getString("server_url", "");
             directToken = prefs.getString("token", "");
@@ -2018,6 +2158,7 @@ public final class MonikaXposedModule extends XposedModule {
             directUploadNetwork = prefs.getBoolean("upload_network", true);
             directUploadVpn = prefs.getBoolean("upload_vpn", false);
             directUploadInput = prefs.getBoolean("upload_input", false);
+            browserTitleNonce = normalizeNonce(prefs.getString(KEY_BROWSER_TITLE_NONCE, ""));
             log(Log.INFO, TAG, "config loaded from remote prefs: enabled=" + directUploadEnabled);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "load config failed: " + Log.getStackTraceString(t));
@@ -2035,6 +2176,8 @@ public final class MonikaXposedModule extends XposedModule {
             boolean uploadNetwork = intent.getBooleanExtra("upload_network", true);
             boolean uploadVpn = intent.getBooleanExtra("upload_vpn", false);
             boolean uploadInput = intent.getBooleanExtra("upload_input", false);
+            String incomingBrowserTitleNonce = normalizeNonce(intent.getStringExtra(KEY_BROWSER_TITLE_NONCE));
+            if (incomingBrowserTitleNonce.length() == 0) incomingBrowserTitleNonce = browserTitleNonce;
 
             // Disconnect old WS before changing config (URL/token may have changed)
             boolean configChanged = !serverUrl.equals(directServerUrl) || !token.equals(directToken) || enabled != directUploadEnabled;
@@ -2051,7 +2194,7 @@ public final class MonikaXposedModule extends XposedModule {
             // Write to system_server device-protected storage for persistence across reboots
             try {
                 SharedPreferences prefs = context.createDeviceProtectedStorageContext()
-                        .getSharedPreferences("monika_lsp_direct_upload", Context.MODE_PRIVATE);
+                        .getSharedPreferences(PREFS_DIRECT_UPLOAD, Context.MODE_PRIVATE);
                 prefs.edit()
                         .putBoolean("enabled", enabled)
                         .putString("server_url", serverUrl)
@@ -2062,6 +2205,7 @@ public final class MonikaXposedModule extends XposedModule {
                         .putBoolean("upload_network", uploadNetwork)
                         .putBoolean("upload_vpn", uploadVpn)
                         .putBoolean("upload_input", uploadInput)
+                        .putString(KEY_BROWSER_TITLE_NONCE, incomingBrowserTitleNonce)
                         .commit();
             } catch (Throwable ignored) {}
 
@@ -2078,6 +2222,7 @@ public final class MonikaXposedModule extends XposedModule {
             directUploadNetwork = uploadNetwork;
             directUploadVpn = uploadVpn;
             directUploadInput = uploadInput;
+            browserTitleNonce = incomingBrowserTitleNonce;
             log(Log.INFO, TAG, "config applied from broadcast: enabled=" + enabled + " url=" + serverUrl + " token=" + (token.length() > 0 ? "set" : "empty"));
 
             maybeDirectUpload(true);
@@ -2743,6 +2888,21 @@ public final class MonikaXposedModule extends XposedModule {
 
     private String safeString(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private String normalizeNonce(String value) {
+        String normalized = safeString(value);
+        return normalized.length() >= 24 ? normalized : "";
+    }
+
+    private String getBrowserTitleNonce(boolean forceReload) {
+        String current = browserTitleNonce;
+        if (current.length() > 0) return current;
+        long now = System.currentTimeMillis();
+        if (!forceReload && now - lastBrowserNonceLoadAt < BROWSER_NONCE_RELOAD_MS) return "";
+        lastBrowserNonceLoadAt = now;
+        try { loadDirectUploadConfig(); } catch (Throwable ignored) {}
+        return browserTitleNonce;
     }
 
     private boolean isScreenInteractive() {

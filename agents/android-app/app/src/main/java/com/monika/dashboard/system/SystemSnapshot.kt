@@ -63,11 +63,13 @@ object SystemSnapshotStore {
     private fun mergeForeground(previous: ForegroundInfo?, next: ForegroundInfo?): ForegroundInfo? {
         if (previous == null) return next
         if (next == null) return previous
+        val sameForeground = previous.packageName == next.packageName &&
+            previous.activity == next.activity
         return ForegroundInfo(
             packageName = next.packageName ?: previous.packageName,
             appName = next.appName ?: previous.appName,
             activity = next.activity ?: previous.activity,
-            title = next.title ?: previous.title,
+            title = next.title ?: previous.title.takeIf { sameForeground },
             source = next.source,
             confidence = maxOf(next.confidence, previous.confidence),
         )
