@@ -22,14 +22,20 @@ function setMeta(selector: string, content: string) {
   document.head.appendChild(meta);
 }
 
+function normalizeFaviconHref(href: string) {
+  const trimmed = href.trim();
+  return trimmed === "/favicon.ico" ? "/icon.svg" : trimmed;
+}
+
 function setFavicon(href: string) {
+  const normalizedHref = normalizeFaviconHref(href);
   const selectors = ['link[rel="icon"]', 'link[rel="shortcut icon"]'];
   let updated = false;
 
   for (const selector of selectors) {
     const link = document.head.querySelector<HTMLLinkElement>(selector);
     if (link) {
-      applyFaviconAttributes(link, href);
+      applyFaviconAttributes(link, normalizedHref);
       updated = true;
     }
   }
@@ -37,7 +43,7 @@ function setFavicon(href: string) {
   if (!updated) {
     const link = document.createElement("link");
     link.setAttribute("rel", "icon");
-    applyFaviconAttributes(link, href);
+    applyFaviconAttributes(link, normalizedHref);
     document.head.appendChild(link);
   }
 }
