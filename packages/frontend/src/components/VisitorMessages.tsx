@@ -6,6 +6,7 @@ import { ensureViewerToken, getCachedViewerToken, type TokenStatus } from "@/lib
 import { sendRealtime, subscribeRealtime, subscribeRealtimeState } from "@/lib/realtime-client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
+const PUBLIC_RECENT_HOURS = 48;
 
 interface Props {
   device?: DeviceState;
@@ -82,6 +83,27 @@ function safeViewerName(raw: string): string {
 function safeTime(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString();
+}
+
+function normalizePublicMessage(message: any): PublicLine | null {
+  const text = cleanUiText(message?.text);
+  if (!text) return null;
+  return {
+    id: typeof message?.id === "string" ? message.id : crypto.randomUUID(),
+    viewer_name: cleanUiText(message?.viewer_name, 32),
+    text,
+    created_at: typeof message?.created_at === "string" ? message.created_at : new Date().toISOString(),
+    kind: typeof message?.kind === "string" ? message.kind : undefined,
+  };
+}
+
+function mergePublicLines(current: PublicLine[], incoming: PublicLine[]): PublicLine[] {
+  const merged = new Map<string, PublicLine>();
+  for (const line of current) merged.set(line.id, line);
+  for (const line of incoming) merged.set(line.id, line);
+  return Array.from(merged.values())
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    .slice(-200);
 }
 
 export default function VisitorMessages({ device }: Props) {
@@ -195,22 +217,8 @@ export default function VisitorMessages({ device }: Props) {
           },
         ]);
       } else if (data.type === "public_message" && data.message) {
-        const message = data.message;
-        const text = cleanUiText(message.text);
-        if (typeof message.id === "string" && text) {
-          setPublicLines((prev) => {
-            if (prev.some((line) => line.id === message.id)) return prev;
-            return [
-              ...prev,
-              {
-                id: message.id,
-                viewer_name: cleanUiText(message.viewer_name, 32),
-                text,
-                created_at: typeof message.created_at === "string" ? message.created_at : new Date().toISOString(),
-              },
-            ];
-          });
-        }
+        const message = normalizePublicMessage(data.message);
+        if (message) setPublicLines((prev) => mergePublicLines(prev, [message]));
       }
     });
   }, [device?.device_id]);
@@ -221,27 +229,21 @@ export default function VisitorMessages({ device }: Props) {
     const loadPublic = async () => {
       try {
         const identity = await ensureViewerToken();
-        // First load: get full hour window so restart doesn't lose messages.
+        const initialLoad = isFirstLoad;
+        // First load: get recent persisted messages so restart or midnight does not look like data loss.
         // Subsequent polls: use 10-min slot for incremental updates.
-        const url = isFirstLoad
-          ? `${API_BASE}/api/messages/public`
+        const url = initialLoad
+          ? `${API_BASE}/api/messages/public?recent=1&hours=${PUBLIC_RECENT_HOURS}`
           : `${API_BASE}/api/messages/public?slot=${currentMessageSlot()}`;
-        isFirstLoad = false;
         const res = await fetch(url, { headers: { Authorization: `Bearer ${identity.token}` } });
         if (!res.ok || stopped) return;
         const data = await res.json();
         if (!Array.isArray(data.messages)) return;
-        setPublicLines(
-          data.messages
-            .map((message: any) => ({
-              id: typeof message.id === "string" ? message.id : crypto.randomUUID(),
-              viewer_name: cleanUiText(message.viewer_name, 32),
-              text: cleanUiText(message.text),
-              created_at: typeof message.created_at === "string" ? message.created_at : new Date().toISOString(),
-              kind: typeof message.kind === "string" ? message.kind : undefined,
-            }))
-            .filter((message: PublicLine) => message.text),
-        );
+        isFirstLoad = false;
+        const nextMessages = data.messages
+          .map(normalizePublicMessage)
+          .filter((message: PublicLine | null): message is PublicLine => Boolean(message));
+        setPublicLines((prev) => initialLoad ? mergePublicLines([], nextMessages) : mergePublicLines(prev, nextMessages));
       } catch {
         // Public board is best-effort for visitors.
       }
@@ -281,6 +283,7 @@ export default function VisitorMessages({ device }: Props) {
       viewer_name: cleanUiText(displayName, 32),
       text: cleaned,
       created_at: new Date().toISOString(),
+      kind: "public",
     };
     setPublicText("");
     setPublicLines((prev) => [...prev, optimistic]);

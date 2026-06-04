@@ -200,6 +200,19 @@ const getPublicMessagesByWindow = db.prepare(`
   LIMIT 200
 `);
 
+const getRecentPublicMessages = db.prepare(`
+  SELECT id, device_id, viewer_id, viewer_name, text, created_at, kind
+  FROM (
+    SELECT id, device_id, viewer_id, viewer_name, text, created_at, kind
+    FROM visitor_messages
+    WHERE (kind = 'public' OR kind = 'public_reply')
+      AND datetime(created_at) >= datetime(?)
+    ORDER BY datetime(created_at) DESC
+    LIMIT 200
+  )
+  ORDER BY datetime(created_at) ASC
+`);
+
 const getMessageTargetDevices = db.prepare(`
   SELECT device_id
   FROM device_states
@@ -238,6 +251,21 @@ function forEachViewerSocket(callback: (ws: ServerWebSocket<WsData>) => void) {
   for (const sockets of viewerSockets.values()) {
     for (const viewerWs of sockets) callback(viewerWs);
   }
+}
+
+function broadcastPublicMessage(message: {
+  id: string;
+  device_id: string;
+  viewer_id: string;
+  viewer_name: string;
+  kind: "public" | "public_reply";
+  text: string;
+  created_at: string;
+}) {
+  const payload = JSON.stringify({ type: "public_message", message });
+  forEachViewerSocket((viewerWs) => {
+    try { viewerWs.send(payload); } catch { /* ignore */ }
+  });
 }
 
 function sendToViewerSockets(viewerId: string, payload: unknown): number {
@@ -386,6 +414,12 @@ function cleanViewerName(value: unknown): string {
 
 function cleanKind(value: unknown): "public" | "private" {
   return value === "public" ? "public" : "private";
+}
+
+function publicRecentHours(value: string | null): number {
+  const parsed = value ? Number.parseInt(value, 10) : 48;
+  if (!Number.isFinite(parsed)) return 48;
+  return Math.min(168, Math.max(1, parsed));
 }
 
 function recordMessage(
@@ -591,6 +625,15 @@ export const realtimeWebSocket = {
           if (status === "sent") sent += 1;
           else queued += 1;
         }
+        broadcastPublicMessage({
+          id: messageId,
+          device_id: "__public__",
+          viewer_id: ws.data.id,
+          viewer_name: viewerName,
+          kind: "public",
+          text,
+          created_at: createdAt,
+        });
         send(ws, { type: "ack", message_id: messageId, status: sent > 0 ? "sent" : queued > 0 ? "queued" : "recorded", sent, queued });
         return;
       }
@@ -615,19 +658,39 @@ export const realtimeWebSocket = {
       const text = cleanText(data.text);
       const messageId = cleanMessageId(data.message_id);
       const replyId = cleanMessageId(data.reply_id) || crypto.randomUUID();
+      const createdAt = new Date().toISOString();
       if (!targetViewerId || !text) {
         send(ws, { type: "error", message_id: messageId, error: "target_viewer_id and text required" });
         return;
       }
       if (messageId) markMessageReplied.run(messageId);
-      recordMessage(replyId, ws.data.id, targetViewerId, "", "reply", "device", text);
+      if (messageId) {
+        const original = db.prepare("SELECT kind FROM visitor_messages WHERE id = ?").get(messageId) as { kind: string } | null;
+        if (original?.kind === "public") {
+          const publicReplyId = "pub_" + replyId;
+          recordMessage(publicReplyId, ws.data.id, targetViewerId, "up", "public_reply", "device", text, createdAt);
+          broadcastPublicMessage({
+            id: publicReplyId,
+            device_id: ws.data.id,
+            viewer_id: targetViewerId,
+            viewer_name: "up",
+            kind: "public_reply",
+            text,
+            created_at: createdAt,
+          });
+        } else {
+          recordMessage(replyId, ws.data.id, targetViewerId, "", "reply", "device", text, createdAt);
+        }
+      } else {
+        recordMessage(replyId, ws.data.id, targetViewerId, "", "reply", "device", text, createdAt);
+      }
       sendToViewerSockets(targetViewerId, {
         type: "device_reply",
         message_id: replyId,
         in_reply_to: messageId,
         device_id: ws.data.id,
         text,
-        created_at: new Date().toISOString(),
+        created_at: createdAt,
       });
       send(ws, { type: "ack", message_id: messageId, status: "reply_sent" });
 
@@ -751,17 +814,28 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
 
   if (messageId) markMessageReplied.run(messageId);
   const replyId = cleanMessageId(body.reply_id) || crypto.randomUUID();
+  const createdAt = new Date().toISOString();
 
   // If replying to a public message, only create public_reply (not private)
   if (messageId) {
     const original = db.prepare("SELECT kind FROM visitor_messages WHERE id = ?").get(messageId) as { kind: string } | null;
     if (original?.kind === "public") {
-      recordMessage("pub_" + replyId, device.device_id, viewerId, "up", "public_reply", "device", text);
+      const publicReplyId = "pub_" + replyId;
+      recordMessage(publicReplyId, device.device_id, viewerId, "up", "public_reply", "device", text, createdAt);
+      broadcastPublicMessage({
+        id: publicReplyId,
+        device_id: device.device_id,
+        viewer_id: viewerId,
+        viewer_name: "up",
+        kind: "public_reply",
+        text,
+        created_at: createdAt,
+      });
     } else {
-      recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text);
+      recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text, createdAt);
     }
   } else {
-    recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text);
+    recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text, createdAt);
   }
   const delivered = sendToViewerSockets(viewerId, {
     type: "device_reply",
@@ -769,7 +843,7 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
     in_reply_to: messageId,
     device_id: device.device_id,
     text,
-    created_at: new Date().toISOString(),
+    created_at: createdAt,
   });
 
   // Web Push notification for offline viewers
@@ -814,19 +888,14 @@ export async function handlePublicMessagePost(req: Request): Promise<Response> {
     else queued += 1;
   }
 
-  const payload = JSON.stringify({
-    type: "public_message",
-    message: {
-      id: messageId,
-      device_id: "__public__",
-      viewer_id: viewer.viewerId,
-      viewer_name: viewerName,
-      text,
-      created_at: createdAt,
-    },
-  });
-  forEachViewerSocket((viewerWs) => {
-    try { viewerWs.send(payload); } catch { /* ignore */ }
+  broadcastPublicMessage({
+    id: messageId,
+    device_id: "__public__",
+    viewer_id: viewer.viewerId,
+    viewer_name: viewerName,
+    kind: "public",
+    text,
+    created_at: createdAt,
   });
 
   return Response.json({ ok: true, message_id: messageId, sent, queued });
@@ -870,6 +939,14 @@ export function handlePublicMessages(req: Request): Response {
   }
 
   const url = new URL(req.url);
+  const recentParam = url.searchParams.get("recent");
+  if (recentParam === "1" || recentParam === "true") {
+    const hours = publicRecentHours(url.searchParams.get("hours"));
+    const since = new Date(Date.now() - hours * 60 * 60_000).toISOString();
+    const rows = getRecentPublicMessages.all(since);
+    return noStore(Response.json({ recent: true, hours, messages: rows }), ["public-messages", "public-messages-recent"]);
+  }
+
   const slotParam = url.searchParams.get("slot");
   if (slotParam) {
     if (!/^\d{12}$/.test(slotParam)) {

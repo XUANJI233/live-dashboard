@@ -93,10 +93,8 @@ export default {
       // 全局 IP 限流
       if (clientIp !== "unknown" && !isTrustedDevice && !isEdgeAuthFlow(pathname, method)) {
         const kv = getEdgeKV();
-        if (kv) {
-          const count = await kvGetNumber(kv, `g:${clientIp}`);
-          if (count >= RATE_GLOBAL) return jsonResponse({ error: "限流", retryAfter: 60 }, 429);
-          kvPut(kv, `g:${clientIp}`, String((count || 0) + 1), RATE_WINDOW);
+        if (kv && !(await allowRate(kv, "g", clientIp, RATE_GLOBAL))) {
+          return jsonResponse({ error: "限流", retryAfter: 60 }, 429);
         }
       }
 
@@ -173,10 +171,8 @@ async function handlePowChallenge(request, clientIp, secret) {
   const kv = getEdgeKV();
 
   // 限流 30/min
-  if (kv) {
-    const rate = await kvGetNumber(kv, `pr:${clientIp}`);
-    if (rate >= RATE_POW) return jsonResponse({ error: "PoW 请求过多", retryAfter: 60 }, 429);
-    kvPut(kv, `pr:${clientIp}`, String((rate || 0) + 1), RATE_WINDOW);
+  if (kv && !(await allowRate(kv, "pr", clientIp, RATE_POW))) {
+    return jsonResponse({ error: "PoW 请求过多", retryAfter: 60 }, 429);
   }
 
   const bytes = new Uint8Array(32);
@@ -221,10 +217,8 @@ async function handleTokenIssue(request, clientIp, secret) {
 
   // 限流 12/min
   const kv = getEdgeKV();
-  if (kv) {
-    const rate = await kvGetNumber(kv, `ir:${clientIp}`);
-    if (rate >= RATE_ISSUE) return jsonResponse({ error: "限流" }, 429);
-    kvPut(kv, `ir:${clientIp}`, String((rate || 0) + 1), RATE_WINDOW);
+  if (kv && !(await allowRate(kv, "ir", clientIp, RATE_ISSUE))) {
+    return jsonResponse({ error: "限流" }, 429);
   }
 
   // PoW 验证
@@ -262,7 +256,7 @@ async function handleTokenIssue(request, clientIp, secret) {
   const viewerId = await resolveViewerId(secret, fp, clientIp);
   const ipHash = (ipKnown && clientIp !== "unknown") ? (await hmacHex(secret, "ip:" + clientIp)).slice(0, 16) : "";
   const nowSec = Math.floor(Date.now() / 1000);
-  const payload = JSON.stringify({ sub: viewerId, ip: ipHash, iat: nowSec, exp: nowSec + 3600 });
+  const payload = JSON.stringify({ v: 2, sub: viewerId, ip: ipHash, iat: nowSec, exp: nowSec + 3600 });
   const encoded = btoa(payload).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
   const signature = await hmacSign(secret, encoded);
 
@@ -276,17 +270,23 @@ async function resolveViewerId(secret, fingerprint, clientIp) {
   const kv = getEdgeKV();
   if (!kv) return fpId;
 
-  const fpViewer = await kvGetText(kv, `vf:${fpId}`);
-  const ipViewer = ih ? await kvGetText(kv, `vi:${ih}`) : "";
+  const fpKey = `vf_${fpId}`;
+  const ipKey = ih ? `vi_${ih}` : "";
+  const [fpViewer, ipViewer] = await Promise.all([
+    kvGetText(kv, fpKey),
+    ipKey ? kvGetText(kv, ipKey) : "",
+  ]);
   let viewerId = sanitizeViewerId(fpViewer) || sanitizeViewerId(ipViewer) || fpId;
   if (fpViewer && ipViewer && fpViewer !== ipViewer) {
     const canonical = fpViewer < ipViewer ? fpViewer : ipViewer;
     const alias = canonical === fpViewer ? ipViewer : fpViewer;
     viewerId = sanitizeViewerId(canonical) || viewerId;
-    await kvPutText(kv, `va:${alias}`, viewerId);
+    await kvPutText(kv, `va_${alias}`, viewerId);
   }
-  await kvPutText(kv, `vf:${fpId}`, viewerId);
-  if (ih) await kvPutText(kv, `vi:${ih}`, viewerId);
+  const writes = [];
+  if (sanitizeViewerId(fpViewer) !== viewerId) writes.push(kvPutText(kv, fpKey, viewerId));
+  if (ipKey && sanitizeViewerId(ipViewer) !== viewerId) writes.push(kvPutText(kv, ipKey, viewerId));
+  if (writes.length) await Promise.all(writes);
   return viewerId;
 }
 
@@ -297,7 +297,7 @@ async function resolveViewerAlias(viewerId) {
   if (!kv) return clean;
   let current = clean;
   for (let i = 0; i < 4; i++) {
-    const next = sanitizeViewerId(await kvGetText(kv, `va:${current}`));
+    const next = sanitizeViewerId(await kvGetText(kv, `va_${current}`));
     if (!next || next === current) return current;
     current = next;
   }
@@ -365,10 +365,8 @@ async function handleCachedRead(request, origin, pathname, secret, cacheMeta = g
     verified = token && secret ? await verifyViewerToken(token, secret, clientIp) : null;
     if (!verified) return jsonResponse({ error: "需要 viewer token" }, 403);
     const kv = getEdgeKV();
-    if (kv) {
-      const rate = await kvGetNumber(kv, `vr:${verified.viewerId}`);
-      if (rate >= RATE_VIEWER) return jsonResponse({ error: "限流" }, 429);
-      kvPut(kv, `vr:${verified.viewerId}`, String((rate || 0) + 1), RATE_WINDOW);
+    if (kv && !(await allowRate(kv, "vr", verified.viewerId, RATE_VIEWER))) {
+      return jsonResponse({ error: "限流" }, 429);
     }
   }
 
@@ -414,10 +412,8 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
     if (verified) {
       // 限流 60/min/viewer
       const kv = getEdgeKV();
-      if (kv) {
-        const rate = await kvGetNumber(kv, `vr:${verified.viewerId}`);
-        if (rate >= RATE_VIEWER) return jsonResponse({ error: "限流" }, 429);
-        kvPut(kv, `vr:${verified.viewerId}`, String((rate || 0) + 1), RATE_WINDOW);
+      if (kv && !(await allowRate(kv, "vr", verified.viewerId, RATE_VIEWER))) {
+        return jsonResponse({ error: "限流" }, 429);
       }
 
       const headers = new Headers(request.headers);
@@ -678,6 +674,11 @@ function currentMessageSlot(date = new Date(), slotMinutes = 10) {
 }
 
 function getPublicMessageCacheMeta(url) {
+  const recent = url.searchParams.get("recent");
+  if (recent === "1" || recent === "true") {
+    return { ttl: 0, tags: ["public-messages", "public-messages-recent"] };
+  }
+
   const slot = url.searchParams.get("slot");
   if (slot && /^\d{12}$/.test(slot)) {
     const isCurrent = slot === currentMessageSlot();
@@ -712,7 +713,7 @@ async function verifyViewerToken(token, secret, clientIp) {
     // IP hash is advisory. The stable viewer identity is the fingerprint hash;
     // accepting IP changes prevents refreshes through different CDN/mobile egress
     // from creating false offline/extra-viewer states.
-    return { viewerId: await resolveViewerAlias(payload.sub) };
+    return { viewerId: payload.v >= 2 ? payload.sub : await resolveViewerAlias(payload.sub) };
   } catch { return null; }
 }
 
@@ -728,22 +729,24 @@ async function kvGetNumber(kv, key) {
   const parts = val.split(":");
   const ts = parseInt(parts[1], 10) || 0;
   if (ts && Date.now() - ts > RATE_WINDOW * 1000) {
-    try { await kv.delete(key); } catch {}
     return 0;
   }
   return parseInt(parts[0], 10) || 0;
 }
 
-async function kvGetJson(kv, key) {
-  try {
-    const val = await kv.get(key, { type: "text" });
-    if (!val) return null;
-    const data = JSON.parse(val);
-    if (data.createdAt && Date.now() - data.createdAt > POW_CHALLENGE_TTL * 1000) {
-      await kv.delete(key); return null;
-    }
-    return data;
-  } catch { return null; }
+async function edgeKvKey(prefix, value) {
+  const source = `${prefix}:${value}`;
+  const digest = await sha256Hex(source);
+  return `${prefix}_${digest.slice(0, 32)}`;
+}
+
+async function allowRate(kv, prefix, identity, limit) {
+  const cleanIdentity = String(identity || "unknown");
+  const key = await edgeKvKey(`r_${prefix}`, cleanIdentity);
+  const current = await kvGetNumber(kv, key);
+  if (current >= limit) return false;
+  await kvPut(kv, key, String(current + 1), RATE_WINDOW);
+  return true;
 }
 
 async function kvGet(kv, key) {
@@ -760,14 +763,6 @@ async function kvPut(kv, key, value, ttl) {
 
 async function kvPutText(kv, key, value) {
   try { await kv.put(key, value); } catch {}
-}
-
-async function kvPutJson(kv, key, obj, ttl) {
-  try { await kv.put(key, JSON.stringify(obj)); } catch {}
-}
-
-async function kvDelete(kv, key) {
-  try { await kv.delete(key); } catch {}
 }
 
 // ── HMAC (WebCrypto) ──

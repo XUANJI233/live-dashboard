@@ -6,7 +6,7 @@
 
 - 读取接口（配置、历史时间线、历史健康数据、历史位置轨迹、历史公开留言）在边缘缓存，不用每次都回源
 - 公开留言按 `slot` URL 分片缓存；当前窗口不缓存，历史窗口可由 CDN 按 URL 命中
-- 缓存响应会同时写入 `Cache-Tag` 和 `ESA-Cache-Tag`，便于按标签刷新 CDN
+- 缓存响应会写入 ESA 默认标签头 `Cache-Tag`，便于按标签刷新 CDN；同时保留 `ESA-Cache-Tag` 兼容别名，但默认刷新以 `Cache-Tag` 为准
 - PoW 挑战在边缘生成和验证，不走 CDN。当前使用 HMAC 签名并绑定 `sha256(fingerprint)` 的 Hashcash v2：客户端完成 nonce 计算，边缘只做验签、过期检查和一次 SHA-256，避免边缘 CPU 被 `/api/token/issue` 拖满
 - 无效的访客 token 请求会在边缘直接拒绝，公开/私聊留言 POST 也会先做边缘 token 校验和限流
 
@@ -78,7 +78,7 @@ PoW 使用 `difficultyBits=17` 的 bit 级 Hashcash，并要求 `/api/pow/challe
 
 ## 缓存标签
 
-阿里云 ESA 的默认标签头是 `Cache-Tag`。为了兼容控制台/规则里可能使用的 ESA 命名，本项目源站和边缘函数会同时输出：
+阿里云 ESA 的默认标签头是 `Cache-Tag`。本项目源站和边缘函数都会输出默认 `Cache-Tag`；`ESA-Cache-Tag` 只是兼容别名，未自定义缓存标签名称时按标签刷新应提交 `Cache-Tag` 里的标签值：
 
 | Header | 用途 |
 |--------|------|
@@ -95,6 +95,7 @@ PoW 使用 `difficultyBits=17` 的 bit 级 Hashcash，并要求 `/api/pow/challe
 | `/api/timeline?date=YYYY-MM-DD` | `timeline`, `timeline-YYYY-MM-DD`，带 `window` 时追加 `timeline-window-YYYYMMDDHH`，带 `device_id` 时追加 `timeline-device-<device_id>` |
 | `/api/health-data?date=YYYY-MM-DD` | `health-data`, `health-data-summary`/`health-data-full`, `health-data-YYYY-MM-DD`，带 `window` 时追加 `health-data-window-YYYYMMDDHH`，带 `device_id` 时追加 `health-device-<device_id>` |
 | `/api/location?date=YYYY-MM-DD` | `location`, `location-YYYY-MM-DD`，带 `window` 时追加 `location-window-YYYYMMDDHH`，带 `device_id` 时追加 `location-device-<device_id>` |
+| `/api/messages/public?recent=1` | `public-messages`, `public-messages-recent` |
 | `/api/messages/public?slot=YYYYMMDDHHmm` | `public-messages`, `public-messages-slot-YYYYMMDDHHmm` |
 | `/api/messages/public?window=YYYYMMDDHH` | `public-messages`, `public-messages-YYYYMMDDHH` |
 | `/api/config` | `config` |
@@ -103,7 +104,7 @@ PoW 使用 `difficultyBits=17` 的 bit 级 Hashcash，并要求 `/api/pow/challe
 
 当前状态、当前/上一小时的时间线、当天健康数据、当前/上一小时的位置轨迹、当前公开留言窗口和 WebSocket 不缓存，避免在线状态/时间线/健康/留言/位置显示滞后。更早的同日时间线/位置和历史健康数据按小时窗口缓存，例如 `window=2026060201`；当天健康数据可能由手表延迟补发到过去的小时窗口，因此当天健康窗口也保持不缓存。源站对实时响应也会带 `Cache-Control: no-store`、`CDN-Cache-Control: no-store`、`Expires: 0`，并继续输出对应的 `Cache-Tag`，便于 ESA 规则误缓存后按标签清理。
 
-按标签刷新可使用这些标签：`page`、`static`、`current`、`realtime`、`status`、`timeline`、`timeline-YYYY-MM-DD`、`timeline-window-YYYYMMDDHH`、`health-data`、`health-data-summary`、`health-data-full`、`health-data-YYYY-MM-DD`、`health-data-window-YYYYMMDDHH`、`location`、`location-YYYY-MM-DD`、`location-window-YYYYMMDDHH`、`public-messages-slot-YYYYMMDDHHmm`。ESA 默认标签头仍是 `Cache-Tag`。
+按标签刷新可使用这些标签：`page`、`static`、`current`、`realtime`、`status`、`timeline`、`timeline-YYYY-MM-DD`、`timeline-window-YYYYMMDDHH`、`health-data`、`health-data-summary`、`health-data-full`、`health-data-YYYY-MM-DD`、`health-data-window-YYYYMMDDHH`、`location`、`location-YYYY-MM-DD`、`location-window-YYYYMMDDHH`、`public-messages`、`public-messages-recent`、`public-messages-slot-YYYYMMDDHHmm`、`public-messages-YYYYMMDDHH`。ESA 默认标签头仍是 `Cache-Tag`。
 
 ## HASH_SECRET 要求
 
