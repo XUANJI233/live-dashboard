@@ -1,11 +1,10 @@
-# LSPosed module entry and metadata must survive R8 in release builds.
+# LSPosed loads the module entry from META-INF/xposed/java_init.list and calls
+# lifecycle methods reflectively. Keep the original class name and members in
+# release builds; debug works without this because R8/minify is disabled.
 -adaptresourcefilecontents META-INF/xposed/java_init.list
--keep,allowobfuscation,allowoptimization class * extends io.github.libxposed.api.XposedModule {
-    public void onModuleLoaded(...);
-    public void onPackageLoaded(...);
-    public void onPackageReady(...);
-    public void onSystemServerStarting(...);
-}
+-keep class com.monika.dashboard.lsposed.MonikaXposedModule { *; }
+-keep class com.monika.dashboard.lsposed.MonikaXposedModule$* { *; }
+-keepattributes InnerClasses,EnclosingMethod,Signature,*Annotation*
 -keepclassmembers,allowoptimization class ** implements io.github.libxposed.api.XposedInterface$Hooker {
     public <init>(...);
 }

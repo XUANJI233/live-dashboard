@@ -1,5 +1,6 @@
 package com.monika.dashboard.service
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -9,6 +10,7 @@ import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
+import android.os.Build
 import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.work.*
@@ -448,11 +450,23 @@ class HeartbeatWorker(
         }
     }
 
+    @SuppressLint("MissingPermission")
     private fun detectCellularGeneration(): String? {
         return try {
             val tm = applicationContext.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
                 ?: return null
-            when (tm.dataNetworkType) {
+            val hasReadPhoneState = applicationContext.checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE) ==
+                PackageManager.PERMISSION_GRANTED
+            val hasReadBasicPhoneState = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                applicationContext.checkSelfPermission(android.Manifest.permission.READ_BASIC_PHONE_STATE) ==
+                PackageManager.PERMISSION_GRANTED
+            if (!hasReadPhoneState && !hasReadBasicPhoneState) return null
+            val dataNetworkType = try {
+                tm.dataNetworkType
+            } catch (_: SecurityException) {
+                return null
+            }
+            when (dataNetworkType) {
                 TelephonyManager.NETWORK_TYPE_NR -> "5G"
                 TelephonyManager.NETWORK_TYPE_LTE,
                 TelephonyManager.NETWORK_TYPE_IWLAN -> "4G"

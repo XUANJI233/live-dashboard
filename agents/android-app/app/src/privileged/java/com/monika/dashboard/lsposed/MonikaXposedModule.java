@@ -1,5 +1,6 @@
 package com.monika.dashboard.lsposed;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -13,6 +14,7 @@ import android.content.ComponentName;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
@@ -33,6 +35,7 @@ import android.util.Log;
 import android.view.inputmethod.EditorInfo;
 
 import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
 
 import com.monika.dashboard.BuildConfig;
 
@@ -148,6 +151,8 @@ public final class MonikaXposedModule extends XposedModule {
     private final java.util.Set<String> hookedWebChromeClientClasses =
             java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private final java.util.Set<String> hookedWebViewClientClasses =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private final java.util.Set<String> scheduledWebViewTitleReads =
             java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private MediaSessionManager mediaSessionManager;
     private volatile String currentProcessName = "";
@@ -405,14 +410,13 @@ public final class MonikaXposedModule extends XposedModule {
                     saveDirectUploadConfig(receiverContext, intent);
                 }
             };
-            // 5-param registerReceiver(..., flags) requires API 34.
-            // On API 34+: use 5-param with RECEIVER_EXPORTED + handler + permission.
-            // On API < 34: fall back to 4-param with permission + handler (no explicit export flag).
-            if (android.os.Build.VERSION.SDK_INT >= 34) {
-                context.registerReceiver(configReceiver, filter, CONFIG_PERMISSION, handler, Context.RECEIVER_EXPORTED);
-            } else {
-                context.registerReceiver(configReceiver, filter, CONFIG_PERMISSION, handler);
-            }
+            ContextCompat.registerReceiver(
+                    context,
+                    configReceiver,
+                    filter,
+                    CONFIG_PERMISSION,
+                    handler,
+                    ContextCompat.RECEIVER_EXPORTED);
             configReceiverRegistered = true;
             log(Log.INFO, TAG, "registered direct upload config receiver");
         } catch (Throwable t) {
@@ -534,17 +538,13 @@ public final class MonikaXposedModule extends XposedModule {
                     maybeDirectUpload(true);
                 }
             };
-            // 5-param registerReceiver(..., flags) requires API 34.
-            // On API 34+: use 5-param with RECEIVER_EXPORTED + handler.
-            // On API 33: use 3-param with RECEIVER_EXPORTED (loses handler).
-            // On API < 33: use 4-param with handler (no explicit export flag).
-            if (android.os.Build.VERSION.SDK_INT >= 34) {
-                context.registerReceiver(receiver, filter, null, handler, Context.RECEIVER_EXPORTED);
-            } else if (android.os.Build.VERSION.SDK_INT >= 33) {
-                context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
-            } else {
-                context.registerReceiver(receiver, filter, null, handler);
-            }
+            ContextCompat.registerReceiver(
+                    context,
+                    receiver,
+                    filter,
+                    null,
+                    handler,
+                    ContextCompat.RECEIVER_EXPORTED);
             browserTitleReceiverRegistered = true;
             log(Log.INFO, TAG, "registered browser title receiver");
         } catch (Throwable t) {
@@ -573,6 +573,7 @@ public final class MonikaXposedModule extends XposedModule {
                         try {
                             if (controllers == null) return;
                             log(Log.DEBUG, TAG, "active sessions changed: " + controllers.size());
+                            String beforeMedia = mediaInfoKey();
                             // Check if the currently tracked media package is still active
                             String trackedPkg = mediaPackage;
                             if (trackedPkg.length() > 0) {
@@ -585,12 +586,7 @@ public final class MonikaXposedModule extends XposedModule {
                                 }
                                 if (!stillActive) {
                                     log(Log.DEBUG, TAG, "media session removed: " + trackedPkg + ", clearing media info");
-                                    mediaPlaying = false;
-                                    mediaTitle = "";
-                                    mediaArtist = "";
-                                    mediaPackage = "";
-                                    mediaApp = "";
-                                    mediaState = "";
+                                    clearMediaInfo();
                                 }
                             }
                             for (MediaController controller : controllers) {
@@ -606,7 +602,7 @@ public final class MonikaXposedModule extends XposedModule {
                             synchronized (registeredMediaControllers) {
                                 registeredMediaControllers.retainAll(activeKeys);
                             }
-                            maybeDirectUpload(false);
+                            maybeDirectUpload(!beforeMedia.equals(mediaInfoKey()));
                         } catch (Throwable t) {
                             log(Log.WARN, TAG, "onActiveSessionsChanged failed: " + t.getClass().getSimpleName());
                         }
@@ -638,14 +634,23 @@ public final class MonikaXposedModule extends XposedModule {
                 public void onPlaybackStateChanged(PlaybackState state) {
                     try {
                         if (state == null) return;
+                        String beforeMedia = mediaInfoKey();
                         String pkg = controller.getPackageName();
                         boolean nextPlaying = state.getState() == PlaybackState.STATE_PLAYING;
-                        mediaPlaying = nextPlaying;
+                        if (!nextPlaying) {
+                            refreshActiveMediaState();
+                            log(Log.DEBUG, TAG, "media playback stopped/paused: pkg=" + pkg);
+                            maybeDirectUpload(!beforeMedia.equals(mediaInfoKey()));
+                            return;
+                        }
+                        mediaPlaying = true;
                         mediaPackage = safeString(pkg);
                         mediaApp = safeString(resolveAppLabel(pkg));
                         mediaState = safeString(playbackStateName(state));
+                        mediaTitle = "";
+                        mediaArtist = "";
                         MediaMetadata metadata = controller.getMetadata();
-                        if (nextPlaying && metadata != null) {
+                        if (metadata != null) {
                             mediaTitle = safeString(firstNonBlank(
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_TITLE)));
@@ -653,12 +658,9 @@ public final class MonikaXposedModule extends XposedModule {
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ARTIST),
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
-                        } else if (!nextPlaying) {
-                            mediaTitle = "";
-                            mediaArtist = "";
                         }
                         log(Log.DEBUG, TAG, "media playback: pkg=" + pkg + " playing=" + mediaPlaying + " title=" + mediaTitle);
-                        maybeDirectUpload(false);
+                        maybeDirectUpload(!beforeMedia.equals(mediaInfoKey()));
                     } catch (Throwable t) {
                         log(Log.WARN, TAG, "onPlaybackStateChanged failed: " + t.getClass().getSimpleName());
                     }
@@ -668,12 +670,20 @@ public final class MonikaXposedModule extends XposedModule {
                 public void onMetadataChanged(MediaMetadata metadata) {
                     try {
                         if (metadata == null) return;
+                        String beforeMedia = mediaInfoKey();
                         String pkg = controller.getPackageName();
                         PlaybackState ps = controller.getPlaybackState();
                         mediaPlaying = ps != null && ps.getState() == PlaybackState.STATE_PLAYING;
+                        if (!mediaPlaying) {
+                            refreshActiveMediaState();
+                            maybeDirectUpload(!beforeMedia.equals(mediaInfoKey()));
+                            return;
+                        }
                         mediaPackage = safeString(pkg);
                         mediaApp = safeString(resolveAppLabel(pkg));
                         mediaState = ps != null ? safeString(playbackStateName(ps)) : mediaState;
+                        mediaTitle = "";
+                        mediaArtist = "";
                         mediaTitle = safeString(firstNonBlank(
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_TITLE)));
@@ -682,7 +692,7 @@ public final class MonikaXposedModule extends XposedModule {
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
                         log(Log.DEBUG, TAG, "media metadata: pkg=" + pkg + " playing=" + mediaPlaying + " title=" + mediaTitle);
-                        maybeDirectUpload(false);
+                        maybeDirectUpload(!beforeMedia.equals(mediaInfoKey()));
                     } catch (Throwable t) {
                         log(Log.WARN, TAG, "onMetadataChanged failed: " + t.getClass().getSimpleName());
                     }
@@ -708,10 +718,7 @@ public final class MonikaXposedModule extends XposedModule {
                 }
             }
             if (playing == null) {
-                mediaPlaying = false;
-                mediaTitle = "";
-                mediaArtist = "";
-                mediaState = "paused";
+                clearMediaInfo();
                 return;
             }
             String pkg = playing.getPackageName();
@@ -720,6 +727,8 @@ public final class MonikaXposedModule extends XposedModule {
             mediaApp = safeString(resolveAppLabel(pkg));
             PlaybackState state = playing.getPlaybackState();
             mediaState = safeString(playbackStateName(state));
+            mediaTitle = "";
+            mediaArtist = "";
             MediaMetadata metadata = playing.getMetadata();
             if (metadata != null) {
                 mediaTitle = safeString(firstNonBlank(
@@ -731,8 +740,34 @@ public final class MonikaXposedModule extends XposedModule {
                         mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
             }
         } catch (Throwable t) {
+            clearMediaInfo();
             log(Log.DEBUG, TAG, "refresh media failed: " + t.getClass().getSimpleName());
         }
+    }
+
+    private void refreshActiveMediaState() {
+        try {
+            if (mediaSessionManager == null) {
+                clearMediaInfo();
+                return;
+            }
+            refreshMediaFromControllers(mediaSessionManager.getActiveSessions(null));
+        } catch (Throwable ignored) {
+            clearMediaInfo();
+        }
+    }
+
+    private void clearMediaInfo() {
+        mediaPlaying = false;
+        mediaPackage = "";
+        mediaApp = "";
+        mediaTitle = "";
+        mediaArtist = "";
+        mediaState = "";
+    }
+
+    private String mediaInfoKey() {
+        return mediaPlaying + "|" + mediaPackage + "|" + mediaApp + "|" + mediaTitle + "|" + mediaArtist + "|" + mediaState;
     }
 
     private String mediaTextFromMeta(MediaMetadata metadata, String key) {
@@ -1211,11 +1246,21 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void scheduleWebViewTitleRead(Object webView, String packageName, long delayMs) {
         if (webView == null) return;
+        String key = packageName + ":" + System.identityHashCode(webView) + ":" + delayMs;
         try {
             Method postDelayed = findPublicMethod(webView.getClass(), "postDelayed", Runnable.class, long.class);
             if (postDelayed == null) return;
-            postDelayed.invoke(webView, (Runnable) () -> publishTitleFromWebView(webView, packageName), delayMs);
-        } catch (Throwable ignored) {}
+            if (!scheduledWebViewTitleReads.add(key)) return;
+            postDelayed.invoke(webView, (Runnable) () -> {
+                try {
+                    publishTitleFromWebView(webView, packageName);
+                } finally {
+                    scheduledWebViewTitleReads.remove(key);
+                }
+            }, delayMs);
+        } catch (Throwable ignored) {
+            scheduledWebViewTitleReads.remove(key);
+        }
     }
 
     private void publishTitleFromWebView(Object webView, String packageName) {
@@ -2077,13 +2122,21 @@ public final class MonikaXposedModule extends XposedModule {
         return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ? "Online" : "offline";
     }
 
+    @SuppressLint("MissingPermission")
     private String cellularGeneration() {
         try {
             Context ctx = getSystemContext();
             if (ctx == null) return "";
             TelephonyManager tm = (TelephonyManager) ctx.getSystemService(Context.TELEPHONY_SERVICE);
             if (tm == null) return "";
-            switch (tm.getDataNetworkType()) {
+            if (!hasPhoneStatePermission(ctx)) return "";
+            int dataNetworkType;
+            try {
+                dataNetworkType = tm.getDataNetworkType();
+            } catch (SecurityException ignored) {
+                return "";
+            }
+            switch (dataNetworkType) {
                 case TelephonyManager.NETWORK_TYPE_NR:
                     return "5G";
                 case TelephonyManager.NETWORK_TYPE_LTE:
@@ -2110,6 +2163,18 @@ public final class MonikaXposedModule extends XposedModule {
             }
         } catch (Throwable ignored) {
             return "";
+        }
+    }
+
+    private boolean hasPhoneStatePermission(Context ctx) {
+        try {
+            if (ctx.checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
+                return true;
+            }
+            return Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    && ctx.checkSelfPermission(android.Manifest.permission.READ_BASIC_PHONE_STATE) == PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
