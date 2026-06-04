@@ -331,17 +331,14 @@ public final class MonikaXposedModule extends XposedModule {
             for (Method method : clazz.getDeclaredMethods()) {
                 String name = method.getName();
                 if (name == null) continue;
-                boolean marksActive = name.contains("showSoftInput") ||
-                        name.contains("showCurrentInput") ||
-                        name.contains("startInputOrWindowGainedFocus");
-                boolean marksInactive = name.contains("hideSoftInput") ||
-                        name.contains("hideCurrentInput");
-                if (!marksActive && !marksInactive) continue;
+                int inputHookKind = inputMethodHookKind(name);
+                if (inputHookKind == 0) continue;
                 hook(method)
                         .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                         .intercept(chain -> {
                             Object result = chain.proceed();
-                            boolean nextActive = marksActive && !marksInactive;
+                            if (!inputHookResultSucceeded(result)) return result;
+                            boolean nextActive = inputHookKind > 0;
                             if (name.contains("startInputOrWindowGainedFocus")) {
                                 nextActive = hasTextEditorInfo(chain.getArgs());
                             }
@@ -358,6 +355,30 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable t) {
             log(Log.WARN, TAG, "input method hooks skipped: " + t.getClass().getSimpleName());
         }
+    }
+
+    private int inputMethodHookKind(String name) {
+        if ("startInputOrWindowGainedFocus".equals(name)
+                || "startInputOrWindowGainedFocusAsync".equals(name)) {
+            return 1;
+        }
+        if ("showSoftInput".equals(name)
+                || "showCurrentInput".equals(name)
+                || "showCurrentInputInternal".equals(name)
+                || "showCurrentInputLocked".equals(name)) {
+            return 1;
+        }
+        if ("hideSoftInput".equals(name)
+                || "hideCurrentInput".equals(name)
+                || "hideCurrentInputInternal".equals(name)
+                || "hideCurrentInputLocked".equals(name)) {
+            return -1;
+        }
+        return 0;
+    }
+
+    private boolean inputHookResultSucceeded(Object result) {
+        return !(result instanceof Boolean) || (Boolean) result;
     }
 
     private boolean hasTextEditorInfo(List<Object> args) {
@@ -1010,81 +1031,86 @@ public final class MonikaXposedModule extends XposedModule {
 
             // Hook 1: Activity#setTitle(CharSequence)
             Method setTitleText = findMethod(activity, "setTitle", CharSequence.class);
-            if (setTitleText == null) return;
-            try { deoptimize(setTitleText); } catch (Throwable ignored) {}
-            hook(setTitleText)
-                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                    .intercept(chain -> {
-                        Object result = chain.proceed();
-                        Object owner = chain.getThisObject();
-                        List<Object> args = chain.getArgs();
-                        CharSequence title = args.size() > 0 && args.get(0) instanceof CharSequence
-                                ? (CharSequence) args.get(0)
-                                : owner instanceof Activity ? ((Activity) owner).getTitle() : null;
-                        if (owner instanceof Activity && title != null) {
-                            publishBrowserTitle((Activity) owner, packageName, title.toString());
-                        }
-                        return result;
-                    });
+            if (setTitleText != null) {
+                try { deoptimize(setTitleText); } catch (Throwable ignored) {}
+                hook(setTitleText)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            Object owner = chain.getThisObject();
+                            List<Object> args = chain.getArgs();
+                            CharSequence title = args.size() > 0 && args.get(0) instanceof CharSequence
+                                    ? (CharSequence) args.get(0)
+                                    : owner instanceof Activity ? ((Activity) owner).getTitle() : null;
+                            if (owner instanceof Activity && title != null) {
+                                publishBrowserTitle((Activity) owner, packageName, title.toString());
+                            }
+                            return result;
+                        });
+            }
 
             // Hook 2: Activity#setTitle(int)
             Method setTitleRes = findMethod(activity, "setTitle", int.class);
-            if (setTitleRes == null) return;
-            try { deoptimize(setTitleRes); } catch (Throwable ignored) {}
-            hook(setTitleRes)
-                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                    .intercept(chain -> {
-                        Object result = chain.proceed();
-                        Object owner = chain.getThisObject();
-                        if (owner instanceof Activity) {
-                            CharSequence title = ((Activity) owner).getTitle();
-                            if (title != null) publishBrowserTitle((Activity) owner, packageName, title.toString());
-                        }
-                        return result;
-                    });
+            if (setTitleRes != null) {
+                try { deoptimize(setTitleRes); } catch (Throwable ignored) {}
+                hook(setTitleRes)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            Object owner = chain.getThisObject();
+                            if (owner instanceof Activity) {
+                                CharSequence title = ((Activity) owner).getTitle();
+                                if (title != null) publishBrowserTitle((Activity) owner, packageName, title.toString());
+                            }
+                            return result;
+                        });
+            }
 
             // Hook 3: Activity#setTaskDescription — browsers set page title here
             Class<?> taskDescription = cachedClassForName("android.app.ActivityManager$TaskDescription", cl);
-            if (taskDescription == null) return;
-            Method setTaskDesc = findMethod(activity, "setTaskDescription", taskDescription);
-            if (setTaskDesc == null) return;
-            try { deoptimize(setTaskDesc); } catch (Throwable ignored) {}
-            hook(setTaskDesc)
-                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                    .intercept(chain -> {
-                        Object result = chain.proceed();
-                        try {
-                            Object owner = chain.getThisObject();
-                            List<Object> args = chain.getArgs();
-                            if (owner instanceof Activity && args.size() > 0 && args.get(0) != null) {
-                                Object td = args.get(0);
-                                Method getLabel = findPublicMethod(td.getClass(), "getLabel");
-                                Object label = getLabel != null ? getLabel.invoke(td) : null;
-                                if (label instanceof CharSequence && ((CharSequence) label).length() > 0) {
-                                    publishBrowserTitle((Activity) owner, packageName, label.toString());
-                                }
-                            }
-                        } catch (Throwable ignored) {}
-                        return result;
-                    });
+            if (taskDescription != null) {
+                Method setTaskDesc = findMethod(activity, "setTaskDescription", taskDescription);
+                if (setTaskDesc != null) {
+                    try { deoptimize(setTaskDesc); } catch (Throwable ignored) {}
+                    hook(setTaskDesc)
+                            .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                            .intercept(chain -> {
+                                Object result = chain.proceed();
+                                try {
+                                    Object owner = chain.getThisObject();
+                                    List<Object> args = chain.getArgs();
+                                    if (owner instanceof Activity && args.size() > 0 && args.get(0) != null) {
+                                        Object td = args.get(0);
+                                        Method getLabel = findPublicMethod(td.getClass(), "getLabel");
+                                        Object label = getLabel != null ? getLabel.invoke(td) : null;
+                                        if (label instanceof CharSequence && ((CharSequence) label).length() > 0) {
+                                            publishBrowserTitle((Activity) owner, packageName, label.toString());
+                                        }
+                                    }
+                                } catch (Throwable ignored) {}
+                                return result;
+                            });
+                }
+            }
 
             // Hook 4: Activity#onWindowFocusChanged
             Method focusChanged = findMethod(activity, "onWindowFocusChanged", boolean.class);
-            if (focusChanged == null) return;
-            try { deoptimize(focusChanged); } catch (Throwable ignored) {}
-            hook(focusChanged)
-                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                    .intercept(chain -> {
-                        Object result = chain.proceed();
-                        List<Object> args = chain.getArgs();
-                        boolean hasFocus = args.size() > 0 && Boolean.TRUE.equals(args.get(0));
-                        Object owner = chain.getThisObject();
-                        if (hasFocus && owner instanceof Activity) {
-                            CharSequence title = ((Activity) owner).getTitle();
-                            if (title != null) publishBrowserTitle((Activity) owner, packageName, title.toString());
-                        }
-                        return result;
-                    });
+            if (focusChanged != null) {
+                try { deoptimize(focusChanged); } catch (Throwable ignored) {}
+                hook(focusChanged)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            List<Object> args = chain.getArgs();
+                            boolean hasFocus = args.size() > 0 && Boolean.TRUE.equals(args.get(0));
+                            Object owner = chain.getThisObject();
+                            if (hasFocus && owner instanceof Activity) {
+                                CharSequence title = ((Activity) owner).getTitle();
+                                if (title != null) publishBrowserTitle((Activity) owner, packageName, title.toString());
+                            }
+                            return result;
+                        });
+            }
 
             // Hook 5: Window#setTitle
             try {
