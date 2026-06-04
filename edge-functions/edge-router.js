@@ -15,33 +15,58 @@ const POW_DIFFICULTY = 4;
 const POW_DIFFICULTY_BITS = 17;
 const POW_ALGORITHM = "hashcash-v2";
 const POW_CHALLENGE_TTL = 300;
+const MAX_DEVICE_TOKENS = 100;
 const RATE_WINDOW = 60;
 const RATE_GLOBAL = 300;
 const RATE_POW = 30;
 const RATE_ISSUE = 12;
 const RATE_VIEWER = 60;
+const memoryRate = new Map();
 
 // 超时包装（ESA 推荐模式）
 function withTimeout(promise, ms, fallback) {
-  return Promise.race([
-    promise,
-    new Promise(resolve => setTimeout(() => resolve(fallback), ms)),
-  ]);
+  let timer = null;
+  let settled = false;
+  return new Promise((resolve) => {
+    timer = setTimeout(() => {
+      settled = true;
+      resolve(fallback);
+    }, ms);
+    Promise.resolve(promise)
+      .then((value) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        resolve(value);
+      })
+      .catch(() => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        resolve(fallback);
+      });
+  });
 }
 
 function getClientIpFromHeaders(headers) {
   const forwarded = headers.get("x-forwarded-for") || "";
   const forwardedIp = forwarded ? forwarded.split(",")[0].trim() : "";
-  return headers.get("x-real-ip") ||
-    headers.get("ali-real-client-ip") ||
+  return headers.get("ali-real-client-ip") ||
+    headers.get("x-real-ip") ||
+    headers.get("cf-connecting-ip") ||
     forwardedIp ||
     "unknown";
 }
 
 // ── 配置加载（单次 EdgeKV 读取）──
 async function loadConfig() {
-  const kv = new EdgeKV({ namespace: CONFIG_NS });
-  const jsonStr = await withTimeout(kv.get(CONFIG_KEY, { type: "text" }), 2000, "");
+  let jsonStr = "";
+  try {
+    const kv = new EdgeKV({ namespace: CONFIG_NS });
+    jsonStr = await withTimeout(kv.get(CONFIG_KEY, { type: "text" }), 2000, "");
+  } catch {
+    return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `EdgeKV read failed: ${CONFIG_NS}/${CONFIG_KEY}` };
+  }
   if (jsonStr === undefined) return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `missing ${CONFIG_NS}/${CONFIG_KEY}` };
   if (!jsonStr) return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `empty ${CONFIG_NS}/${CONFIG_KEY}` };
   try {
@@ -63,7 +88,12 @@ export default {
   async fetch(request) {
     const cfg = await loadConfig();
     const { origin, secret, deviceTokens, deviceTokenHashes } = cfg;
-    if (!origin) return new Response(`边缘配置缺失：${cfg.configError || "origin empty"}`, { status: 500 });
+    if (!origin) {
+      return applySecurityHeaders(new Response(`边缘配置缺失：${cfg.configError || "origin empty"}`, {
+        status: 500,
+        headers: corsHeaders(),
+      }));
+    }
 
     const url = new URL(request.url);
     const { pathname } = url;
@@ -72,7 +102,7 @@ export default {
 
     // CORS 预检
     if (method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders() });
+      return applySecurityHeaders(new Response(null, { status: 204, headers: corsHeaders() }));
     }
 
     // 内部请求旁路（HMAC 签名验证，防伪造）
@@ -257,7 +287,7 @@ async function handleTokenIssue(request, clientIp, secret) {
   const ipHash = (ipKnown && clientIp !== "unknown") ? (await hmacHex(secret, "ip:" + clientIp)).slice(0, 16) : "";
   const nowSec = Math.floor(Date.now() / 1000);
   const payload = JSON.stringify({ v: 2, sub: viewerId, ip: ipHash, iat: nowSec, exp: nowSec + 3600 });
-  const encoded = btoa(payload).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  const encoded = base64UrlEncode(payload);
   const signature = await hmacSign(secret, encoded);
 
   return noStoreJson({ token: `${encoded}.${signature}`, viewer_id: viewerId, expires_in: 3600 });
@@ -353,11 +383,29 @@ function applySecurityHeaders(response) {
   response.headers.delete("Server");
   return response;
 }
+
+function getEdgeCache() {
+  if (typeof cache !== "undefined" && cache) return cache;
+  if (typeof caches !== "undefined" && caches.default) return caches.default;
+  return null;
+}
+
+async function cacheGet(edgeCache, key) {
+  if (typeof edgeCache.get === "function") return edgeCache.get(key);
+  if (typeof edgeCache.match === "function") return edgeCache.match(key);
+  return null;
+}
+
+async function cachePut(edgeCache, key, response) {
+  if (typeof edgeCache.put === "function") return edgeCache.put(key, response);
+  return null;
+}
 // ══════════════════════════════════════════════════════════════
 
 async function handleCachedRead(request, origin, pathname, secret, cacheMeta = getCacheMeta(pathname, request)) {
   const ttl = cacheMeta.ttl;
   const cacheKey = `http://edge-cache${pathname}${new URL(request.url).search}`;
+  const edgeCache = getEdgeCache();
   let verified = null;
   if (isAuthEndpoint(pathname)) {
     const clientIp = getClientIpFromHeaders(request.headers);
@@ -370,31 +418,31 @@ async function handleCachedRead(request, origin, pathname, secret, cacheMeta = g
     }
   }
 
-  if (ttl > 0) {
+  if (ttl > 0 && edgeCache) {
     try {
-      const cached = await cache.match(cacheKey);
-      if (cached) return cached;
+      const cached = await cacheGet(edgeCache, cacheKey);
+      if (cached) return applySecurityHeaders(withEdgeCacheHeaders(cached, cacheMeta, "HIT"));
     } catch {}
   }
 
   const originHeaders = new Headers(request.headers);
-  originHeaders.set("X-Forwarded-For", request.headers.get("x-real-ip") || "");
-  originHeaders.set("X-Real-IP", request.headers.get("x-real-ip") || "");
+  originHeaders.set("X-Forwarded-For", getClientIpFromHeaders(request.headers));
+  originHeaders.set("X-Real-IP", getClientIpFromHeaders(request.headers));
   if (secret) originHeaders.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
   if (verified && secret) {
     originHeaders.set("X-Edge-Verified", "true");
     originHeaders.set("X-Edge-Viewer-Id", verified.viewerId);
     originHeaders.set("X-Edge-Signature", await hmacHex(secret, "edge:" + verified.viewerId));
   }
-  const originResp = await fetch(`${origin}${pathname}${new URL(request.url).search}`, {
+  const originResp = await fetch(originUrl(origin, pathname, new URL(request.url).search), {
     headers: originHeaders,
   });
-  if (!originResp.ok) return originResp;
+  if (!originResp.ok) return applySecurityHeaders(originResp);
 
-  const response = withEdgeCacheHeaders(originResp, cacheMeta, ttl > 0 ? "MISS" : "BYPASS");
+  const response = applySecurityHeaders(withEdgeCacheHeaders(originResp, cacheMeta, ttl > 0 ? "MISS" : "BYPASS"));
 
-  if (ttl > 0) {
-    try { await cache.put(cacheKey, response.clone()); } catch {}
+  if (ttl > 0 && edgeCache) {
+    try { await cachePut(edgeCache, cacheKey, response.clone()); } catch {}
   }
   return response;
 }
@@ -421,18 +469,19 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
       headers.set("X-Edge-Viewer-Id", verified.viewerId);
       headers.set("X-Edge-Signature", await hmacHex(secret, "edge:" + verified.viewerId));
       headers.set("X-Real-IP", clientIp);
+      headers.set("X-Forwarded-For", clientIp);
       headers.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
 
-      const resp = await fetch(`${origin}${getPath(request)}${new URL(request.url).search}`, {
+      const resp = await fetch(originUrl(origin, getPath(request), new URL(request.url).search), {
         method: request.method, headers,
         body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
       });
 
       const cacheMeta = getCacheMeta(getPath(request), request);
       if (request.method === "GET" && resp.ok && cacheMeta.tags && cacheMeta.tags.length) {
-        return withEdgeCacheHeaders(resp, cacheMeta, "PASS");
+        return applySecurityHeaders(withEdgeCacheHeaders(resp, cacheMeta, "PASS"));
       }
-      return resp;
+      return applySecurityHeaders(resp);
     }
     return jsonResponse({ error: "token 无效" }, 403);
   }
@@ -450,12 +499,18 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
 
 function getPath(request) { return new URL(request.url).pathname; }
 
+function originUrl(origin, pathname, search = "") {
+  const base = origin.endsWith("/") ? origin : `${origin}/`;
+  return new URL(`${pathname.replace(/^\/+/, "")}${search}`, base).href;
+}
+
 function passthrough(request, origin, clientIp) {
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
   if (clientIp) headers.set("X-Real-IP", clientIp);
+  if (clientIp) headers.set("X-Forwarded-For", clientIp);
   return withTimeout(
-    fetch(`${origin}${url.pathname}${url.search}`, {
+    fetch(originUrl(origin, url.pathname, url.search), {
       method: request.method, headers,
       body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
     }).catch(() => new Response("Origin Fetch Failed", { status: 502 })),
@@ -467,9 +522,10 @@ async function passthroughSigned(request, origin, clientIp, secret) {
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
   if (clientIp) headers.set("X-Real-IP", clientIp);
+  if (clientIp) headers.set("X-Forwarded-For", clientIp);
   if (secret) headers.set("X-Edge-Internal", await hmacHex(secret, "edge-internal"));
   return withTimeout(
-    fetch(`${origin}${url.pathname}${url.search}`, {
+    fetch(originUrl(origin, url.pathname, url.search), {
       method: request.method, headers,
       body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
     }).catch(() => new Response("Origin Fetch Failed", { status: 502 })),
@@ -614,6 +670,7 @@ function parseDeviceTokenList(raw) {
   if (!raw) return [];
   return raw
     .split(/[\s,]+/)
+    .slice(0, MAX_DEVICE_TOKENS)
     .map((entry) => entry.trim())
     .filter(Boolean)
     .map((entry) => entry.includes(":") ? entry.split(":")[0] : entry)
@@ -643,20 +700,28 @@ async function isDeviceTokenRequest(request, secret, rawTokens, rawHashes) {
   if (tokens.includes(token)) return true;
 
   if (!secret || !rawHashes) return false;
-  const expected = new Set(rawHashes.split(/[\s,]+/).map((v) => v.trim()).filter(Boolean));
+  const expected = new Set(rawHashes.split(/[\s,]+/).slice(0, MAX_DEVICE_TOKENS).map((v) => v.trim()).filter(Boolean));
   if (expected.size === 0) return false;
   const hash = await hmacHex(secret, "device:" + token);
   return expected.has(hash) || expected.has(hash.slice(0, 32));
 }
 
 function base64UrlEncode(input) {
-  return btoa(input).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  return bytesToBase64Url(new TextEncoder().encode(input));
 }
 
 function base64UrlDecode(input) {
   const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
-  return atob(padded);
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+function bytesToBase64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
 }
 
 function currentHourWindow(date = new Date()) {
@@ -740,17 +805,40 @@ async function edgeKvKey(prefix, value) {
   return `${prefix}_${digest.slice(0, 32)}`;
 }
 
-async function allowRate(kv, prefix, identity, limit) {
-  const cleanIdentity = String(identity || "unknown");
-  const key = await edgeKvKey(`r_${prefix}`, cleanIdentity);
-  const current = await kvGetNumber(kv, key);
-  if (current >= limit) return false;
-  await kvPut(kv, key, String(current + 1), RATE_WINDOW);
+function allowMemoryRate(prefix, identity, limit) {
+  const key = `${prefix}:${identity}`;
+  const now = Date.now();
+  if (memoryRate.size > 5000) {
+    for (const [itemKey, item] of memoryRate) {
+      if (item.resetAt <= now) memoryRate.delete(itemKey);
+    }
+  }
+  const entry = memoryRate.get(key);
+  if (!entry || entry.resetAt <= now) {
+    memoryRate.set(key, { count: 1, resetAt: now + RATE_WINDOW * 1000 });
+    return true;
+  }
+  if (entry.count >= limit) return false;
+  entry.count += 1;
   return true;
 }
 
+async function allowRate(kv, prefix, identity, limit) {
+  const cleanIdentity = String(identity || "unknown");
+  const key = await edgeKvKey(`r_${prefix}`, cleanIdentity);
+  if (!kv) return allowMemoryRate(`r_${prefix}`, cleanIdentity, limit);
+  try {
+    const current = await kvGetNumber(kv, key);
+    if (current >= limit) return false;
+    await kvPut(kv, key, String(current + 1), RATE_WINDOW);
+    return true;
+  } catch {
+    return allowMemoryRate(`r_${prefix}`, cleanIdentity, limit);
+  }
+}
+
 async function kvGet(kv, key) {
-  try { return await kv.get(key, { type: "text" }) || null; } catch { return null; }
+  return await kv.get(key, { type: "text" }) || null;
 }
 
 async function kvGetText(kv, key) {
@@ -758,7 +846,7 @@ async function kvGetText(kv, key) {
 }
 
 async function kvPut(kv, key, value, ttl) {
-  try { await kv.put(key, `${value}:${Date.now()}`); } catch {}
+  await kv.put(key, `${value}:${Date.now()}`);
 }
 
 async function kvPutText(kv, key, value) {
@@ -781,7 +869,7 @@ async function hmacHex(secret, data) {
 async function hmacSign(secret, data) {
   const hex = await hmacHex(secret, data);
   const bytes = hex.match(/.{2}/g).map(b => parseInt(b, 16));
-  return btoa(String.fromCharCode(...bytes)).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  return bytesToBase64Url(bytes);
 }
 
 // ── 响应 ──
