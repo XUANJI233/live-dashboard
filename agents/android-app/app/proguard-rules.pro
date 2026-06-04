@@ -20,3 +20,10 @@
 -keep class com.monika.dashboard.system.InputInfo { *; }
 -keep class com.monika.dashboard.system.MediaInfo { *; }
 -keep class com.monika.dashboard.system.LocationSnapshot { *; }
+
+# WorkManager keeps its scheduler state in an internal Room database. Some
+# release/R8 combinations can strip or optimize the generated no-arg database
+# implementation constructor, causing WorkManager.getInstance() to fail only in
+# release builds when scheduling starts from the settings screen.
+-keep class androidx.work.impl.WorkDatabase_Impl { *; }
+-keep class androidx.work.impl.model.** { *; }

@@ -10,6 +10,7 @@ import java.io.IOException
 import android.content.Context
 import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.data.VisitorMessage
+import java.net.URLEncoder
 import java.net.URI
 import java.time.Instant
 import java.util.concurrent.TimeUnit
@@ -309,9 +310,14 @@ class ReportClient(
         val createdAt: String,
     )
 
-    fun fetchPublicMessages(): Result<List<PublicMessage>> {
+    fun fetchPublicMessages(recentHours: Int = PUBLIC_RECENT_HOURS, slot: String? = null): Result<List<PublicMessage>> {
         return try {
-            val url = "${serverUrl.trimEnd('/')}/api/messages/public?recent=1&hours=48"
+            val base = "${serverUrl.trimEnd('/')}/api/messages/public"
+            val url = if (slot != null && slot.matches(Regex("^\\d{12}$"))) {
+                "$base?slot=${URLEncoder.encode(slot, "UTF-8")}"
+            } else {
+                "$base?recent=1&hours=${recentHours.coerceIn(1, PUBLIC_RECENT_HOURS)}"
+            }
             val request = Request.Builder().url(url).addHeader("Authorization", "Bearer $token").get().build()
             val response = client.newCall(request).execute()
             response.use {
@@ -357,6 +363,10 @@ class ReportClient(
     fun shutdown() {
         client.dispatcher.executorService.shutdown()
         client.connectionPool.evictAll()
+    }
+
+    companion object {
+        const val PUBLIC_RECENT_HOURS = 168
     }
 
     data class HealthRecord(

@@ -76,6 +76,12 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String ACTION_CONFIG = "com.monika.dashboard.LSPOSED_CONFIG";
     private static final String ACTION_BROWSER_TITLE = "com.monika.dashboard.LSPOSED_BROWSER_TITLE";
     private static final String CONFIG_PERMISSION = "com.monika.dashboard.permission.LSPOSED_CONFIG";
+    private static final String EXTRA_MEDIA_PLAYING = "media_playing";
+    private static final String EXTRA_MEDIA_PACKAGE = "media_package";
+    private static final String EXTRA_MEDIA_TITLE = "media_title";
+    private static final String EXTRA_MEDIA_ARTIST = "media_artist";
+    private static final String EXTRA_MEDIA_APP = "media_app";
+    private static final String EXTRA_MEDIA_STATE = "media_state";
     private static final String MESSAGE_CHANNEL_ID = "monika_lsp_messages";
     private static final int MESSAGE_NOTIFICATION_ID = 2002;
     private static final long HEARTBEAT_MS = 5 * 60_000L; // low-frequency fallback; events drive normal uploads
@@ -85,6 +91,7 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long IDLE_DEBOUNCE_COUNT = 2; // 2 consecutive heartbeats before reporting idle
     private static final long WS_RETRY_BASE_MS = 30_000L;  // first retry delay
     private static final long WS_RETRY_MAX_MS = 300_000L;  // max retry delay (5 min)
+    private static final long MEDIA_VALIDATE_MS = 60_000L; // low-frequency stale-session guard
     
     // Static instance for global access
     private static MonikaXposedModule instance;
@@ -145,6 +152,7 @@ public final class MonikaXposedModule extends XposedModule {
     };
     private volatile boolean samplerStarted = false;
     private volatile boolean mediaListenerRegistered = false;
+    private volatile boolean internalMediaHooksInstalled = false;
     private volatile boolean screenReceiverRegistered = false;
     private final java.util.Set<String> registeredMediaControllers =
             java.util.Collections.synchronizedSet(new java.util.HashSet<>());
@@ -186,6 +194,7 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String mediaTitle = "";
     private volatile String mediaArtist = "";
     private volatile String mediaState = "";
+    private volatile long lastMediaValidationAt = 0L;
     private volatile long lastTitleBroadcastAt = 0L;
     private volatile String lastBroadcastTitle = "";
     private volatile String recentForegroundBrowser = "";
@@ -215,6 +224,7 @@ public final class MonikaXposedModule extends XposedModule {
     public void onSystemServerStarting(@NonNull XposedModuleInterface.SystemServerStartingParam param) {
         ClassLoader cl = param.getClassLoader();
         initUploadThread();
+        installInternalMediaHooks(cl);
         installForegroundSampler(cl);
         installInputMethodHooks(cl);
     }
@@ -554,10 +564,139 @@ public final class MonikaXposedModule extends XposedModule {
 
     /**
      * Initialize MediaSessionManager listener for media capture.
-     * Uses standard Android API (MediaSessionManager.getActiveSessions + MediaController.Callback)
-     * instead of hooking internal MediaSessionRecord methods which may not exist on MIUI/HyperOS.
+     * Public MediaController callbacks are kept as a fallback. The primary path
+     * in system_server is the internal MediaSessionRecord hook installed above.
      * Reference: SuperLyric (PlayStateListener), HyperLyric (MediaMetadataHelper)
      */
+    private void installInternalMediaHooks(ClassLoader cl) {
+        if (internalMediaHooksInstalled) return;
+        try {
+            Class<?> record = cachedClassForName("com.android.server.media.MediaSessionRecord", cl);
+            Class<?> sessionStub = cachedClassForName("com.android.server.media.MediaSessionRecord$SessionStub", cl);
+            if (record == null && sessionStub == null) throw new ClassNotFoundException("MediaSessionRecord");
+            int hooked = 0;
+            if (record != null) {
+                hooked += hookMediaSessionRecordMethod(record, "setPlaybackState");
+                hooked += hookMediaSessionRecordMethod(record, "setMetadata");
+            }
+            if (sessionStub != null) {
+                hooked += hookMediaSessionRecordMethod(sessionStub, "setPlaybackState");
+                hooked += hookMediaSessionRecordMethod(sessionStub, "setMetadata");
+            }
+            if (hooked > 0) {
+                internalMediaHooksInstalled = true;
+                log(Log.INFO, TAG, "hooked MediaSessionRecord media methods: " + hooked);
+            }
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "internal media hooks skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private int hookMediaSessionRecordMethod(Class<?> record, String methodName) {
+        int hooked = 0;
+        for (Method method : record.getDeclaredMethods()) {
+            if (!methodName.equals(method.getName())) continue;
+            try { method.setAccessible(true); } catch (Throwable ignored) {}
+            try { deoptimize(method); } catch (Throwable ignored) {}
+            try {
+                hook(method)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            try {
+                                MediaMetadata metadata = null;
+                                PlaybackState state = null;
+                                for (Object arg : chain.getArgs()) {
+                                    if (arg instanceof MediaMetadata) metadata = (MediaMetadata) arg;
+                                    if (arg instanceof PlaybackState) state = (PlaybackState) arg;
+                                }
+                                updateMediaFromSessionRecord(chain.getThisObject(), state, metadata);
+                            } catch (Throwable t) {
+                                log(Log.DEBUG, TAG, "media record hook ignored: " + t.getClass().getSimpleName());
+                            }
+                            return result;
+                        });
+                hooked++;
+            } catch (Throwable ignored) {}
+        }
+        return hooked;
+    }
+
+    private void updateMediaFromSessionRecord(Object record, PlaybackState state, MediaMetadata metadata) {
+        if (record == null) return;
+        record = mediaRecordFromHookThis(record);
+        if (state == null) state = playbackStateFromRecord(record);
+        if (metadata == null) metadata = metadataFromRecord(record);
+        String pkg = sessionRecordPackage(record);
+        if (pkg.length() == 0 && mediaPackage.length() == 0) return;
+
+        String beforeMedia = mediaInfoKey();
+        boolean knownPlaying = state == null && metadata != null && mediaPlaying
+                && (pkg.length() == 0 || pkg.equals(mediaPackage));
+        boolean nextPlaying = knownPlaying || (state != null && state.getState() == PlaybackState.STATE_PLAYING);
+        if (state == null && !nextPlaying) return;
+        if (!nextPlaying) {
+            if (pkg.length() == 0 || pkg.equals(mediaPackage)) {
+                clearMediaInfo();
+                if (pkg.length() > 0) {
+                    mediaPackage = safeString(pkg);
+                    mediaApp = safeString(resolveAppLabel(pkg));
+                    mediaState = safeString(playbackStateName(state));
+                }
+            }
+            maybeDirectUpload(!beforeMedia.equals(mediaInfoKey()));
+            return;
+        }
+
+        mediaPlaying = true;
+        mediaPackage = safeString(pkg);
+        mediaApp = safeString(resolveAppLabel(pkg));
+        mediaState = safeString(playbackStateName(state));
+        if (metadata != null) {
+            String nextTitle = safeString(firstNonBlank(
+                    mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
+                    mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_TITLE)));
+            String nextArtist = safeString(firstNonBlank(
+                    mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ARTIST),
+                    mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
+                    mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
+            if (nextTitle.length() > 0) mediaTitle = nextTitle;
+            if (nextArtist.length() > 0) mediaArtist = nextArtist;
+        }
+        lastMediaValidationAt = System.currentTimeMillis();
+        maybeDirectUpload(!beforeMedia.equals(mediaInfoKey()));
+    }
+
+    private Object mediaRecordFromHookThis(Object value) {
+        Object outer = readField(value, "this$0");
+        if (outer == null) outer = readField(value, "mSessionRecord");
+        if (outer == null) outer = readField(value, "mRecord");
+        if (outer == null) outer = readField(value, "mSession");
+        return outer != null ? outer : value;
+    }
+
+    private PlaybackState playbackStateFromRecord(Object record) {
+        Object value = callAny(record, "getPlaybackState");
+        if (!(value instanceof PlaybackState)) value = readField(record, "mPlaybackState");
+        if (!(value instanceof PlaybackState)) value = readField(record, "mPlaybackStateCache");
+        return value instanceof PlaybackState ? (PlaybackState) value : null;
+    }
+
+    private MediaMetadata metadataFromRecord(Object record) {
+        Object value = callAny(record, "getMetadata");
+        if (!(value instanceof MediaMetadata)) value = readField(record, "mMetadata");
+        if (!(value instanceof MediaMetadata)) value = readField(record, "mMetadataCache");
+        return value instanceof MediaMetadata ? (MediaMetadata) value : null;
+    }
+
+    private String sessionRecordPackage(Object record) {
+        Object value = callAny(record, "getPackageName");
+        if (!(value instanceof String)) value = readField(record, "mPackageName");
+        if (!(value instanceof String)) value = readField(record, "mOwnerPackageName");
+        if (!(value instanceof String)) value = readField(record, "mCallingPackage");
+        return value instanceof String ? safeString((String) value) : "";
+    }
+
     private void initMediaSessionListener() {
         if (mediaListenerRegistered) return;
         Context context = getSystemContext();
@@ -707,6 +846,7 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void refreshMediaFromControllers(List<MediaController> controllers) {
         try {
+            lastMediaValidationAt = System.currentTimeMillis();
             MediaController playing = null;
             if (controllers != null) {
                 for (MediaController controller : controllers) {
@@ -755,6 +895,13 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable ignored) {
             clearMediaInfo();
         }
+    }
+
+    private void validateMediaStateIfNeeded(long now) {
+        if (!directUploadMedia) return;
+        if (!mediaPlaying && mediaPackage.length() == 0 && mediaState.length() == 0) return;
+        if (now - lastMediaValidationAt < MEDIA_VALIDATE_MS) return;
+        refreshActiveMediaState();
     }
 
     private void clearMediaInfo() {
@@ -1376,6 +1523,7 @@ public final class MonikaXposedModule extends XposedModule {
                 sleepIntent.putExtra("app_name", "sleeping");
                 sleepIntent.putExtra("activity", "");
                 sleepIntent.putExtra("input_active", false);
+                putMediaExtras(sleepIntent);
                 inputActive = false;
                 Context ctx = getSystemContext();
                 if (ctx != null) {
@@ -1470,6 +1618,7 @@ public final class MonikaXposedModule extends XposedModule {
                     intent.putExtra("title", foregroundTitle);
                 }
             }
+            putMediaExtras(intent);
             Context context = getSystemContext();
             if (context != null) {
                 long token = Binder.clearCallingIdentity();
@@ -1479,6 +1628,15 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable t) {
             log(Log.WARN, TAG, "broadcast failed: " + t.getClass().getSimpleName());
         }
+    }
+
+    private void putMediaExtras(Intent intent) {
+        intent.putExtra(EXTRA_MEDIA_PLAYING, mediaPlaying);
+        if (mediaPackage.length() > 0) intent.putExtra(EXTRA_MEDIA_PACKAGE, mediaPackage);
+        if (mediaTitle.length() > 0) intent.putExtra(EXTRA_MEDIA_TITLE, mediaTitle);
+        if (mediaArtist.length() > 0) intent.putExtra(EXTRA_MEDIA_ARTIST, mediaArtist);
+        if (mediaApp.length() > 0) intent.putExtra(EXTRA_MEDIA_APP, mediaApp);
+        if (mediaState.length() > 0) intent.putExtra(EXTRA_MEDIA_STATE, mediaState);
     }
 
     private ComponentName getTopActivityComponentName() {
@@ -1912,25 +2070,26 @@ public final class MonikaXposedModule extends XposedModule {
         long safeInterval = Math.max(MIN_DIRECT_UPLOAD_MS, directIntervalMs);
         if (!force && now - lastDirectUploadAt < safeInterval) return;
         lastDirectUploadAt = now;
-        final String body = buildDirectReportBody(now);
-        if (body == null) return;
-
-        // Diagnostic log: show what we're about to upload
-        try {
-            org.json.JSONObject diag = new org.json.JSONObject(body);
-            log(Log.INFO, TAG, "upload: app_id=" + diag.optString("app_id") + " title=" + diag.optString("window_title"));
-        } catch (Throwable ignored) {}
 
         // Use dedicated upload HandlerThread (single background thread, no unbounded spawning).
         final String url = directServerUrl;
         final String tok = directToken;
+        final long sampleAt = now;
         Handler handler = getUploadHandler();
         if (handler == null) {
-            pendingDirectBody = body;
             log(Log.WARN, TAG, "upload skipped: background handler unavailable");
             return;
         }
         handler.post(() -> {
+            final String body = buildDirectReportBody(sampleAt);
+            if (body == null) return;
+
+            // Diagnostic log: show what we're about to upload
+            try {
+                org.json.JSONObject diag = new org.json.JSONObject(body);
+                log(Log.INFO, TAG, "upload: app_id=" + diag.optString("app_id") + " title=" + diag.optString("window_title"));
+            } catch (Throwable ignored) {}
+
             String pending = pendingDirectBody;
             if (pending.length() > 0 && !pending.equals(body)) {
                 if (sendDirectReport(url, tok, pending)) {
@@ -1975,14 +2134,15 @@ public final class MonikaXposedModule extends XposedModule {
 
     private String buildDirectReportBody(long now) {
         try {
+            validateMediaStateIfNeeded(now);
             String appId = directUploadForeground ? safeString(foregroundPackage) : "";
-            boolean foregroundIsIdle = appId.length() == 0 || "idle".equals(appId);
-            if (foregroundIsIdle) {
-                // When idle but media is playing, use the media package as app_id.
-                // Avoids displaying "idle" when user is actually listening.
+            boolean foregroundCanYieldToMedia = appId.length() == 0 || "idle".equals(appId) || "sleeping".equals(appId);
+            if (foregroundCanYieldToMedia) {
+                // When idle/sleeping but media is playing, use the media package as app_id.
+                // Avoids displaying idle/sleeping as the active app when user is listening.
                 if (directUploadMedia && mediaPlaying && mediaPackage.length() > 0) {
                     appId = mediaPackage;
-                } else {
+                } else if (appId.length() == 0) {
                     appId = "idle";
                 }
             }
@@ -2407,8 +2567,8 @@ public final class MonikaXposedModule extends XposedModule {
     private String primaryDisplayTitle() {
         // Screen off — show sleeping or media info
         if ("sleeping".equals(foregroundPackage)) {
-            if (mediaPlaying && mediaTitle.length() > 0 && mediaApp.length() > 0) {
-                return mediaApp + "正在播放" + mediaTitle;
+            if (mediaPlaying && mediaApp.length() > 0) {
+                return mediaTitle.length() > 0 ? mediaApp + "正在播放" + mediaTitle : mediaApp + "正在播放";
             }
             return "(-.-)zzZ";
         }
@@ -2423,6 +2583,9 @@ public final class MonikaXposedModule extends XposedModule {
         }
         if (!foregroundValid && mediaPlaying && mediaTitle.length() > 0 && mediaApp.length() > 0) {
             return mediaApp + "正在播放" + mediaTitle;
+        }
+        if (!foregroundValid && mediaPlaying && mediaApp.length() > 0) {
+            return mediaApp + "正在播放";
         }
         if (!foregroundValid && mediaPlaying && mediaTitle.length() > 0) {
             return "正在播放" + mediaTitle;

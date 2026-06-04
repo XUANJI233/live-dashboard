@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
+import java.time.ZoneOffset
+import java.time.ZonedDateTime
 import java.util.LinkedHashMap
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -32,7 +34,7 @@ fun BoardScreen(settings: SettingsStore) {
     var replyText by remember { mutableStateOf("") }
     var publicMessages by remember { mutableStateOf<List<ReportClient.PublicMessage>>(emptyList()) }
 
-    suspend fun loadPublicMessages() {
+    suspend fun loadPublicMessages(recent: Boolean = true) {
         val fresh = withContext(Dispatchers.IO) {
             val url = settings.serverUrl.first()
             val token = settings.getToken()
@@ -41,7 +43,13 @@ fun BoardScreen(settings: SettingsStore) {
             } else {
                 val client = ReportClient(url, token)
                 try {
-                    client.fetchPublicMessages().getOrDefault(emptyList())
+                    if (recent) {
+                        client.fetchPublicMessages().getOrDefault(emptyList())
+                    } else {
+                        currentMessageSlots().flatMap { slot ->
+                            client.fetchPublicMessages(slot = slot).getOrDefault(emptyList())
+                        }
+                    }
                 } finally {
                     client.shutdown()
                 }
@@ -51,10 +59,12 @@ fun BoardScreen(settings: SettingsStore) {
     }
 
     LaunchedEffect(Unit) {
+        var recent = true
         while (true) {
-            loadPublicMessages()
+            loadPublicMessages(recent)
+            recent = false
             tick++
-            delay(15_000)
+            delay(30_000)
         }
     }
 
@@ -166,5 +176,23 @@ private fun mergePublicMessages(
     }
     return merged.values
         .sortedBy { runCatching { Instant.parse(it.createdAt).toEpochMilli() }.getOrDefault(0L) }
-        .takeLast(200)
+        .takeLast(MAX_PUBLIC_MESSAGES)
 }
+
+private const val MAX_PUBLIC_MESSAGES = 500
+
+private fun currentMessageSlots(slotMinutes: Int = 10): List<String> {
+    val now = ZonedDateTime.now(ZoneOffset.UTC)
+    return listOf(
+        messageSlot(now, slotMinutes),
+        messageSlot(now.minusMinutes(slotMinutes.toLong()), slotMinutes),
+    ).distinct()
+}
+
+private fun messageSlot(time: ZonedDateTime, slotMinutes: Int): String {
+    val now = time.withZoneSameInstant(ZoneOffset.UTC)
+    val minute = (now.minute / slotMinutes) * slotMinutes
+    return "${now.year}${two(now.monthValue)}${two(now.dayOfMonth)}${two(now.hour)}${two(minute)}"
+}
+
+private fun two(value: Int): String = value.toString().padStart(2, '0')
