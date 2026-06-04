@@ -22,6 +22,11 @@ const RATE_POW = 30;
 const RATE_ISSUE = 12;
 const RATE_VIEWER = 60;
 const memoryRate = new Map();
+const CONFIG_CACHE_MS = 30_000;
+const TEXT_ENCODER = new TextEncoder();
+const TEXT_DECODER = new TextDecoder();
+const hmacKeyCache = new Map();
+let configCache = { value: null, expiresAt: 0 };
 
 // 超时包装（ESA 推荐模式）
 function withTimeout(promise, ms, fallback) {
@@ -60,26 +65,40 @@ function getClientIpFromHeaders(headers) {
 
 // ── 配置加载（单次 EdgeKV 读取）──
 async function loadConfig() {
+  const now = Date.now();
+  if (configCache.value && configCache.expiresAt > now) return configCache.value;
+
   let jsonStr = "";
+  let result = null;
   try {
     const kv = new EdgeKV({ namespace: CONFIG_NS });
     jsonStr = await withTimeout(kv.get(CONFIG_KEY, { type: "text" }), 2000, "");
   } catch {
-    return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `EdgeKV read failed: ${CONFIG_NS}/${CONFIG_KEY}` };
+    result = { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `EdgeKV read failed: ${CONFIG_NS}/${CONFIG_KEY}` };
+    configCache = { value: result, expiresAt: now + 5_000 };
+    return result;
   }
-  if (jsonStr === undefined) return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `missing ${CONFIG_NS}/${CONFIG_KEY}` };
-  if (!jsonStr) return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `empty ${CONFIG_NS}/${CONFIG_KEY}` };
+  if (jsonStr === undefined) result = { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `missing ${CONFIG_NS}/${CONFIG_KEY}` };
+  if (!result && !jsonStr) result = { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `empty ${CONFIG_NS}/${CONFIG_KEY}` };
+  if (result) {
+    configCache = { value: result, expiresAt: now + 5_000 };
+    return result;
+  }
   try {
     const cfg = JSON.parse(jsonStr);
-    return {
+    result = {
       origin: cfg.origin || "",
       secret: cfg.secret || "",
       deviceTokens: cfg.device_tokens || "",
       deviceTokenHashes: cfg.device_token_hashes || "",
       configError: cfg.origin ? "" : `origin empty in ${CONFIG_NS}/${CONFIG_KEY}`,
     };
+    configCache = { value: result, expiresAt: now + CONFIG_CACHE_MS };
+    return result;
   } catch {
-    return { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `invalid JSON in ${CONFIG_NS}/${CONFIG_KEY}` };
+    result = { origin: "", secret: "", deviceTokens: "", deviceTokenHashes: "", configError: `invalid JSON in ${CONFIG_NS}/${CONFIG_KEY}` };
+    configCache = { value: result, expiresAt: now + 5_000 };
+    return result;
   }
 }
 
@@ -102,6 +121,7 @@ export default {
 
     // CORS 预检
     if (method === "OPTIONS") {
+      ignoreRequestBody(request);
       return applySecurityHeaders(new Response(null, { status: 204, headers: corsHeaders() }));
     }
 
@@ -121,7 +141,7 @@ export default {
       }
 
       // 全局 IP 限流
-      if (clientIp !== "unknown" && !isTrustedDevice && !isEdgeAuthFlow(pathname, method)) {
+      if (clientIp !== "unknown" && !isTrustedDevice && !hasEndpointRateLimit(pathname, method)) {
         const kv = getEdgeKV();
         if (kv && !(await allowRate(kv, "g", clientIp, RATE_GLOBAL))) {
           return jsonResponse({ error: "限流", retryAfter: 60 }, 429);
@@ -166,8 +186,10 @@ export default {
           if (verified) {
             return passthrough(request, origin, clientIp); // origin validates again before upgrade
           }
+          ignoreRequestBody(request);
           return jsonResponse({ error: "需要访客令牌" }, 403);
         }
+        ignoreRequestBody(request);
         return jsonResponse({ error: "需要 role 参数 (device/viewer)" }, 400);
       }
 
@@ -483,11 +505,13 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
       }
       return applySecurityHeaders(resp);
     }
+    ignoreRequestBody(request);
     return jsonResponse({ error: "token 无效" }, 403);
   }
 
   const path = getPath(request);
   if (isAuthEndpoint(path)) {
+    ignoreRequestBody(request);
     return jsonResponse({ error: "需要 viewer token" }, 403);
   }
   return passthroughSigned(request, origin, clientIp, secret);
@@ -498,6 +522,12 @@ async function handleAuthenticatedRequest(request, origin, clientIp, secret) {
 // ══════════════════════════════════════════════════════════════
 
 function getPath(request) { return new URL(request.url).pathname; }
+
+function ignoreRequestBody(request) {
+  try {
+    if (request && typeof request.ignore === "function") request.ignore();
+  } catch {}
+}
 
 function originUrl(origin, pathname, search = "") {
   const base = origin.endsWith("/") ? origin : `${origin}/`;
@@ -647,6 +677,13 @@ function isEdgeAuthFlow(p, method) {
     (p === "/api/token/issue" && method === "POST");
 }
 
+function hasEndpointRateLimit(p, method) {
+  return isEdgeAuthFlow(p, method) ||
+    (method === "POST" && isViewerWriteEndpoint(p)) ||
+    (method === "GET" && isAuthEndpoint(p)) ||
+    p === "/api/ws";
+}
+
 function isLocalIp(ip) {
   if (!ip) return false;
   return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1" ||
@@ -707,7 +744,7 @@ async function isDeviceTokenRequest(request, secret, rawTokens, rawHashes) {
 }
 
 function base64UrlEncode(input) {
-  return bytesToBase64Url(new TextEncoder().encode(input));
+  return bytesToBase64Url(TEXT_ENCODER.encode(input));
 }
 
 function base64UrlDecode(input) {
@@ -715,10 +752,13 @@ function base64UrlDecode(input) {
   const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
   const binary = atob(padded);
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
+  return TEXT_DECODER.decode(bytes);
 }
 
 function bytesToBase64Url(bytes) {
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(bytes).toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  }
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
@@ -856,20 +896,35 @@ async function kvPutText(kv, key, value) {
 // ── HMAC (WebCrypto) ──
 
 async function sha256Hex(data) {
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(data));
+  const hash = await crypto.subtle.digest("SHA-256", TEXT_ENCODER.encode(data));
   return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
+async function hmacKey(secret) {
+  const cached = hmacKeyCache.get(secret);
+  if (cached) return cached;
+  if (hmacKeyCache.size >= 8) hmacKeyCache.clear();
+  const imported = crypto.subtle.importKey("raw", TEXT_ENCODER.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  hmacKeyCache.set(secret, imported);
+  try {
+    return await imported;
+  } catch (err) {
+    hmacKeyCache.delete(secret);
+    throw err;
+  }
+}
+
+async function hmacBytes(secret, data) {
+  const sig = await crypto.subtle.sign("HMAC", await hmacKey(secret), TEXT_ENCODER.encode(data));
+  return new Uint8Array(sig);
+}
+
 async function hmacHex(secret, data) {
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
-  return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(await hmacBytes(secret, data)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
 async function hmacSign(secret, data) {
-  const hex = await hmacHex(secret, data);
-  const bytes = hex.match(/.{2}/g).map(b => parseInt(b, 16));
-  return bytesToBase64Url(bytes);
+  return bytesToBase64Url(await hmacBytes(secret, data));
 }
 
 // ── 响应 ──
