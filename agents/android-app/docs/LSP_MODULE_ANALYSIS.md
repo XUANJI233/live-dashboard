@@ -24,6 +24,7 @@
 - `MediaController` fallback 回调现在按 session token 保存，并在 session 消失或销毁时调用 `unregisterCallback`，避免旧媒体 session 回调泄漏/重复。
 - 浏览器标题 nonce 改为“带 nonce 则校验；缺失不直接拒绝”，避免浏览器进程无法读取 app 普通 SharedPreferences 时被误拦截。API 34+ 仍使用 sender identity，所有版本仍做前台浏览器校验。
 - 去掉重复安装的 base `WebChromeClient#onReceivedTitle` hook，避免同一页面标题进入两条等价 hook 热路径。
+- ATMS ready hook 改为优先 `onSystemReady`、兼容旧名 `systemReady`，与 AOSP main 当前方法名对齐。
 
 ## 生命周期与作用域
 
@@ -47,7 +48,7 @@
 
 当前实现：
 
-- hook `ActivityTaskManagerService#systemReady` 启动采样器。
+- hook `ActivityTaskManagerService#onSystemReady` / `systemReady` 启动采样器；实现上优先匹配 AOSP 当前的 `onSystemReady`，旧 ROM/OEM 若保留 `systemReady` 也会 fallback。
 - hook `ActivityTaskManagerService#moveTaskToFront` 做事件触发。
 - `broadcastSnapshot()` 通过 `getFocusedRootTaskInfo()`、`getFocusedStackInfo()`、`getTasks()` 多策略读取顶部 Activity。
 - 熄屏时跳过 ATMS 查询，直接报告 `sleeping`，避免息屏后保留旧前台应用。

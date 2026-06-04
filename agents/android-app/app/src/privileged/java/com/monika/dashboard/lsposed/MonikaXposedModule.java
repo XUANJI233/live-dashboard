@@ -290,18 +290,20 @@ public final class MonikaXposedModule extends XposedModule {
             Class<?> clazz = cachedClassForName("com.android.server.wm.ActivityTaskManagerService", cl);
             if (clazz == null) throw new ClassNotFoundException("ActivityTaskManagerService");
 
-            // Hook systemReady to start the sampler
-            Method systemReady = findMethod(clazz, "systemReady");
-            if (systemReady != null) {
-                try { deoptimize(systemReady); } catch (Throwable ignored) {}
-                hook(systemReady)
+            // AOSP uses onSystemReady on modern releases; keep systemReady as
+            // a legacy/OEM fallback.
+            Method readyMethod = findMethod(clazz, "onSystemReady");
+            if (readyMethod == null) readyMethod = findMethod(clazz, "systemReady");
+            if (readyMethod != null) {
+                try { deoptimize(readyMethod); } catch (Throwable ignored) {}
+                hook(readyMethod)
                         .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                         .intercept(chain -> {
                             Object result = chain.proceed();
                             startForegroundSampler();
                             return result;
                         });
-                log(Log.INFO, TAG, "hooked ActivityTaskManagerService#systemReady");
+                log(Log.INFO, TAG, "hooked ActivityTaskManagerService#" + readyMethod.getName());
             } else {
                 startForegroundSampler();
             }
@@ -608,8 +610,8 @@ public final class MonikaXposedModule extends XposedModule {
                     if (title == null || title.trim().isEmpty()) return;
 
                     // Security: verify sender identity on API 34+ when the sender enables
-                    // BroadcastOptions#setShareIdentityEnabled(true). Older systems still
-                    // require a nonce match and foreground-browser check.
+                    // BroadcastOptions#setShareIdentityEnabled(true). On older systems,
+                    // fall back to optional nonce validation plus foreground-browser check.
                     if (android.os.Build.VERSION.SDK_INT >= 34) {
                         try {
                             String sentPkg = getSentFromPackage();
