@@ -19,7 +19,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.LinkedHashSet
+import java.time.Instant
+import java.util.LinkedHashMap
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -31,21 +32,27 @@ fun BoardScreen(settings: SettingsStore) {
     var replyText by remember { mutableStateOf("") }
     var publicMessages by remember { mutableStateOf<List<ReportClient.PublicMessage>>(emptyList()) }
 
-    LaunchedEffect(Unit) {
-        while (true) {
+    suspend fun loadPublicMessages() {
+        val fresh = withContext(Dispatchers.IO) {
             val url = settings.serverUrl.first()
-            val token = withContext(Dispatchers.IO) { settings.getToken() }
-            if (url.isNotBlank() && !token.isNullOrBlank()) {
-                withContext(Dispatchers.IO) {
-                    val client = ReportClient(url, token)
-                    try {
-                        val fresh = client.fetchPublicMessages().getOrDefault(emptyList())
-                        val existing = LinkedHashSet(publicMessages)
-                        existing.addAll(fresh)
-                        publicMessages = existing.toList()
-                    } finally { client.shutdown() }
+            val token = settings.getToken()
+            if (url.isBlank() || token.isNullOrBlank()) {
+                emptyList()
+            } else {
+                val client = ReportClient(url, token)
+                try {
+                    client.fetchPublicMessages().getOrDefault(emptyList())
+                } finally {
+                    client.shutdown()
                 }
             }
+        }
+        publicMessages = mergePublicMessages(publicMessages, fresh)
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            loadPublicMessages()
             tick++
             delay(15_000)
         }
@@ -95,15 +102,18 @@ fun BoardScreen(settings: SettingsStore) {
                 modifier = Modifier.weight(1f), singleLine = true,
                 placeholder = { Text("公开回复") }
             )
-            Button(enabled = replyText.isNotBlank(), onClick = {
+            val replyTarget = publicMessages.lastOrNull { it.kind == "public" || it.kind == "public_reply" }
+            Button(enabled = replyText.isNotBlank() && replyTarget != null, onClick = {
                 val text = replyText.trim()
-                val lastPub = publicMessages.lastOrNull()
-                val msgId = lastPub?.id ?: ""
-                val vId = lastPub?.viewerId?.ifBlank { "__public__" } ?: "__public__"
+                val target = replyTarget ?: return@Button
+                val msgId = target.id
                 replyText = ""
-                scope.launch(Dispatchers.IO) {
-                    syncMessageAction(settings) { client -> client.replyToMessage(msgId, vId, text) }
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        syncMessageAction(settings) { client -> client.replyToMessage(msgId, "__public__", text) }
+                    }
                     delay(200)
+                    loadPublicMessages()
                     tick++
                 }
             }) { Text("发送") }
@@ -124,8 +134,13 @@ fun BoardScreen(settings: SettingsStore) {
             confirmButton = {
                 TextButton(onClick = {
                     MessageInboxStore.delete(context, message.id)
-                    scope.launch(Dispatchers.IO) {
-                        syncMessageAction(settings) { client -> client.deleteMessage(message.id) }
+                    publicMessages = publicMessages.filterNot { it.id == message.id }
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            syncMessageAction(settings) { client -> client.deleteMessage(message.id) }
+                        }
+                        delay(200)
+                        loadPublicMessages()
                     }
                     tick++
                     detailMessage = null
@@ -136,4 +151,20 @@ fun BoardScreen(settings: SettingsStore) {
             }
         )
     }
+}
+
+private fun mergePublicMessages(
+    current: List<ReportClient.PublicMessage>,
+    incoming: List<ReportClient.PublicMessage>,
+): List<ReportClient.PublicMessage> {
+    val merged = LinkedHashMap<String, ReportClient.PublicMessage>()
+    for (message in current) {
+        if (message.id.isNotBlank()) merged[message.id] = message
+    }
+    for (message in incoming) {
+        if (message.id.isNotBlank()) merged[message.id] = message
+    }
+    return merged.values
+        .sortedBy { runCatching { Instant.parse(it.createdAt).toEpochMilli() }.getOrDefault(0L) }
+        .takeLast(200)
 }

@@ -311,7 +311,7 @@ class ReportClient(
 
     fun fetchPublicMessages(): Result<List<PublicMessage>> {
         return try {
-            val url = "${serverUrl.trimEnd('/')}/api/messages/public"
+            val url = "${serverUrl.trimEnd('/')}/api/messages/public?recent=1&hours=48"
             val request = Request.Builder().url(url).addHeader("Authorization", "Bearer $token").get().build()
             val response = client.newCall(request).execute()
             response.use {

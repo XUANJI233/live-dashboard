@@ -149,7 +149,7 @@ object MessageSocketManager {
         viewerName: String = "",
         kind: String = "private",
     ) {
-        if (!viewerId.isNullOrBlank()) {
+        if (!viewerId.isNullOrBlank() && kind != "public") {
             MessageInboxStore.add(
                 context = context,
                 id = messageId,
