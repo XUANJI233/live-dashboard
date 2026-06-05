@@ -7,6 +7,7 @@ import android.widget.Toast
 import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.network.ReportClient
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 
 class MessageActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -18,7 +19,7 @@ class MessageActionReceiver : BroadcastReceiver() {
         Thread {
             try {
                 val settings = SettingsStore(appContext)
-                val url = settings.serverUrl.first()
+                    val url = runBlocking { settings.serverUrl.first() }
                 val token = settings.getToken()
                 if (url.isNotBlank() && !token.isNullOrBlank()) {
                     val client = ReportClient(url, token)
