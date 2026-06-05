@@ -268,8 +268,9 @@ object MessageSocketManager {
 
         private fun scheduleReconnect() {
             scope.launch {
-                val delayMs = (BASE_RECONNECT_DELAY_MS * (1L shl reconnectAttempts)).coerceAtMost(MAX_RECONNECT_DELAY_MS)
-                reconnectAttempts++
+                val exponent = reconnectAttempts.coerceAtMost(5)
+                val delayMs = (BASE_RECONNECT_DELAY_MS * (1L shl exponent)).coerceAtMost(MAX_RECONNECT_DELAY_MS)
+                reconnectAttempts = (reconnectAttempts + 1).coerceAtMost(30)
                 delay(delayMs)
                 if (socket != null || connecting) return@launch
                 DebugLog.log("消息", "WebSocket尝试重连... (attempt $reconnectAttempts, delay ${delayMs}ms)")

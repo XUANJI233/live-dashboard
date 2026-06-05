@@ -26,6 +26,7 @@
 - 去掉重复安装的 base `WebChromeClient#onReceivedTitle` hook，避免同一页面标题进入两条等价 hook 热路径。
 - ATMS ready hook 改为优先 `onSystemReady`、兼容旧名 `systemReady`，与 AOSP main 当前方法名对齐。
 - WS 已连接后异常断开也会进入重连退避，避免边缘代理/服务端持续关闭时形成即时重连循环。
+- App 侧普通 WebSocket 管理器的重连指数已封顶，避免长时间离线后位移溢出导致延迟计算异常。
 
 ## 生命周期与作用域
 
@@ -166,6 +167,7 @@ LSP direct body：
 - 上传只在 system_server 进程执行，浏览器进程不会直接联网上传。
 - WS 重连使用 30 秒到 5 分钟退避；断线时只调度一次 pending reconnect。
 - WS 已连接后异常 EOF/close/ping/send 失败也会记录退避窗口，延迟触发下一次 snapshot/reconnect，避免服务端或边缘代理持续断开时自我放大。
+- 普通 App `MessageSocketManager` 的指数退避固定封顶到 5 分钟，并限制 attempt 计数继续增长，避免长期断网后 `1L shl reconnectAttempts` 溢出。
 - 网络、电量、VPN 信息只在构建上报 body 时读取，不在 hook 热路径持续查询。
 - WS 客户端现在校验 HTTP 101 状态行、限制帧大小，并对扩展长度读取做 EOF 检查，避免代理异常或资源耗尽把连接伪装成成功。
 
