@@ -29,7 +29,6 @@ import java.util.LinkedHashMap
 fun BoardScreen(settings: SettingsStore) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var tick by remember { mutableIntStateOf(0) }
     var detailMessage by remember { mutableStateOf<com.monika.dashboard.data.VisitorMessage?>(null) }
     var replyText by remember { mutableStateOf("") }
     var publicMessages by remember { mutableStateOf<List<ReportClient.PublicMessage>>(emptyList()) }
@@ -63,7 +62,6 @@ fun BoardScreen(settings: SettingsStore) {
         while (true) {
             loadPublicMessages(recent)
             recent = false
-            tick++
             delay(30_000)
         }
     }
@@ -124,7 +122,7 @@ fun BoardScreen(settings: SettingsStore) {
                     }
                     delay(200)
                     loadPublicMessages()
-                    tick++
+                    // tick removed — publicMessages state change drives recomposition
                 }
             }) { Text("发送") }
         }
@@ -152,7 +150,7 @@ fun BoardScreen(settings: SettingsStore) {
                         delay(200)
                         loadPublicMessages()
                     }
-                    tick++
+                    // tick removed — publicMessages state change drives recomposition
                     detailMessage = null
                 }) { Text("删除") }
             },

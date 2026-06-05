@@ -13,15 +13,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class MessageActionReceiver : BroadcastReceiver() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != MessageSocketManager.ACTION_BLOCK_VIEWER) return
         val pending = goAsync()
         val appContext = context.applicationContext
         val viewerId = intent.getStringExtra(MessageSocketManager.EXTRA_VIEWER_ID).orEmpty()
         MessageSocketManager.blockViewer(appContext, viewerId)
-        scope.launch {
+        Thread {
             try {
                 val settings = SettingsStore(appContext)
                 val url = settings.serverUrl.first()
@@ -37,7 +35,7 @@ class MessageActionReceiver : BroadcastReceiver() {
             } finally {
                 pending.finish()
             }
-        }
+        }.start()
         Toast.makeText(context, "已拉黑该网页访客", Toast.LENGTH_SHORT).show()
     }
 }

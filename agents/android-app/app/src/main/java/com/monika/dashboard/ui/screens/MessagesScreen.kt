@@ -26,7 +26,8 @@ import kotlinx.coroutines.withContext
 fun MessagesScreen(settings: SettingsStore) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var tick by remember { mutableIntStateOf(0) }
+        // In-memory cached messages — updated by WS/HTTP sync, no SharedPreferences re-read needed
+        var allMessages by remember { mutableStateOf(MessageInboxStore.messages.value) }
     var selectedViewer by remember { mutableStateOf<String?>(null) }
     var replyText by remember { mutableStateOf("") }
     var detailViewerId by remember { mutableStateOf<String?>(null) }
@@ -52,18 +53,30 @@ fun MessagesScreen(settings: SettingsStore) {
     }
 
     LaunchedEffect(Unit) {
+            // Collect in-memory message updates — replaces tick-based SharedPreferences reads
+            MessageInboxStore.messages.collect { allMessages = it }
+        }
+
+        LaunchedEffect(Unit) {
         while (true) {
                 // WS is primary channel — only poll HTTP when WS is down
                 if (!MessageSocketManager.isHealthy()) {
                     syncMessages()
                 }
-            tick++
                 delay(15_000)
         }
     }
 
-    val groups = remember(tick) { MessageInboxStore.groupedByViewer(context) }
-    val blockedViewers = remember(tick) { MessageSocketManager.blockedViewers(context).toList().sorted() }
+        // Derive from in-memory cache — no SharedPreferences re-read
+        val groups = remember(allMessages) {
+            allMessages
+                .groupBy { it.viewerId }
+                .mapValues { (_, v) -> v.sortedBy { it.at } }
+                .toList()
+                .sortedByDescending { (_, v) -> v.maxOfOrNull { it.at } ?: 0L }
+        }
+        var blockTick by remember { mutableIntStateOf(0) }
+        val blockedViewers = remember(blockTick) { MessageSocketManager.blockedViewers(context).toList().sorted() }
     val activeViewer = selectedViewer ?: groups.firstOrNull()?.first
     val activeMessages = groups.firstOrNull { it.first == activeViewer }?.second.orEmpty()
 
@@ -123,7 +136,7 @@ fun MessagesScreen(settings: SettingsStore) {
                                 scope.launch(Dispatchers.IO) {
                                     syncMessageAction(settings) { client -> client.unblockViewer(viewerId) }
                                 }
-                                tick++
+                                blockTick++
                             }) { Text("解除") }
                         }
                     }
@@ -181,7 +194,7 @@ fun MessagesScreen(settings: SettingsStore) {
                             }
                             delay(200)
                             syncMessages()
-                            tick++
+                            blockTick++
                         }
                     }
                 ) { Text("发送") }
@@ -194,7 +207,7 @@ fun MessagesScreen(settings: SettingsStore) {
                     scope.launch(Dispatchers.IO) {
                         syncMessageAction(settings) { client -> client.blockViewer(viewerId) }
                     }
-                    tick++
+                    blockTick++
                 }
             ) { Text("拉黑此访客") }
         }
@@ -226,7 +239,7 @@ fun MessagesScreen(settings: SettingsStore) {
                     scope.launch(Dispatchers.IO) {
                         syncMessageAction(settings) { client -> client.setViewerRemark(viewerId, cleaned) }
                     }
-                    tick++
+                    blockTick++
                     detailViewerId = null
                 }) { Text("保存备注") }
             },
@@ -238,7 +251,7 @@ fun MessagesScreen(settings: SettingsStore) {
                         scope.launch(Dispatchers.IO) {
                             syncMessageAction(settings) { client -> client.deleteViewerMessages(viewerId) }
                         }
-                        tick++
+                        blockTick++
                         detailViewerId = null
                     }) { Text("删除会话") }
                     TextButton(onClick = { detailViewerId = null }) { Text("关闭") }
@@ -265,7 +278,7 @@ fun MessagesScreen(settings: SettingsStore) {
                     scope.launch(Dispatchers.IO) {
                         syncMessageAction(settings) { client -> client.deleteMessage(message.id) }
                     }
-                    tick++
+                    blockTick++
                     detailMessage = null
                 }) { Text("删除") }
             },
