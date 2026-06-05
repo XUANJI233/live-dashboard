@@ -99,6 +99,7 @@
 交叉验证：
 
 - AOSP 新版 `MediaSessionRecord#setMetadata` 签名已带额外参数；当前代码按方法名 hook，并从参数中查找 `MediaMetadata` / `PlaybackState`，对签名变化更稳。
+- AOSP 当前 main 中 `MediaSessionRecord.SessionStub#setMetadata(MediaMetadata,long,String)` 会把 null metadata 传入 `sanitizeMediaMetadata()` 并保存为 null；`setPlaybackState(PlaybackState)` 也把 null state 视为 `STATE_NONE`，因此 fallback 路径必须能即时清空旧 metadata。
 - Android SDK 36 公开 API 确认 `MediaController.registerCallback(callback, handler)` 和 `unregisterCallback(callback)` 存在。
 - 本地参考 SuperLyric、lyricon 都保存 callback wrapper，并在 session 变化/销毁时注销。
 
@@ -106,6 +107,7 @@
 
 - 旧 fallback 只保存 key，无法注销 callback。现在保存 `MediaControllerRegistration`，按 session token 清理失效回调，并处理 `onSessionDestroyed()`。
 - system_server 内部 `MediaSessionRecord` hook 在收到播放状态但 metadata 为空/缺字段时会清空旧标题和作者，避免切歌、暂停、关闭后继续沿用上一首媒体标题。
+- fallback listener 注册时会立即读取当前 active sessions，避免 LSP 启动/配置下发前已有媒体播放但没有新 callback 时漏报；`onMetadataChanged(null)` 也会按当前播放状态清空旧标题和作者。
 
 ## 浏览器标题
 
@@ -193,7 +195,7 @@ LSP direct body：
 | 输入 hook | `installInputMethodHooks`、`inputMethodHookKind`、`inputHookResultSucceeded`、`hasTextEditorInfo`、`startInputFlagsFromArgs`、`firstBooleanArg` | 通过，需真机。AOSP `StartInputFlags.IS_TEXT_EDITOR` 和 `InputBindResult` 码值已对照；小米参数顺序仍需日志确认。 |
 | 采样器/receiver | `startForegroundSampler`、`registerConfigReceiver`、`initUploadThread`、`registerScreenStateReceiver`、`getUploadHandler`、`registerBrowserTitleReceiver` | 通过。无高频轮询；配置、息屏、浏览器标题 receiver 均在 system_server context 注册；浏览器标题用 nonce/前台/发送者校验。 |
 | 媒体 hook | `installInternalMediaHooks`、`hookMediaSessionRecordMethod`、`updateMediaFromSessionRecord`、`mediaRecordFromHookThis`、`playbackStateFromRecord`、`metadataFromRecord`、`sessionRecordPackage` | 通过，需真机。方法名 hook 可兼容 AOSP 签名变化；字段名用多候选兜底；OEM 私有字段仍需设备验证。 |
-| 媒体 fallback | `initMediaSessionListener`、`registerMediaControllerCallback`、`mediaControllerKey`、`cleanupStaleMediaControllerCallbacks`、`unregisterMediaControllerCallback`、`refreshMediaFromControllers`、`refreshActiveMediaState`、`validateMediaStateIfNeeded`、`clearMediaInfo`、`mediaInfoKey`、`mediaTextFromMeta` | 通过。SDK 36 `MediaController` callback/register/unregister 对照通过；callback 可注销，暂停/关闭会清旧标题。 |
+| 媒体 fallback | `initMediaSessionListener`、`registerMediaControllerCallback`、`mediaControllerKey`、`cleanupStaleMediaControllerCallbacks`、`unregisterMediaControllerCallback`、`refreshMediaFromControllers`、`refreshActiveMediaState`、`validateMediaStateIfNeeded`、`clearMediaInfo`、`mediaInfoKey`、`mediaTextFromMeta` | 通过。SDK 36 `MediaController` callback/register/unregister 对照通过；callback 可注销，初始化会同步当前 active session，暂停/关闭/空 metadata 会清旧标题。 |
 | 反射缓存 | `findMethod`、`findMethod(...paramTypes)`、`findPublicMethod`、`signatureOf`、`cachedClassForName`、`callAny`、`readField`、`readStaticField` | 通过。缓存命中/缺失均有 sentinel，避免反复反射；类加载器被纳入 class cache key。 |
 | 浏览器标题 hook | `installActivityTitleHooks`、`installWebViewTitleHooks`、`hookWebViewClientInstallers`、`hookSpecificWebChromeClient`、`hookSpecificWebViewClient`、`hookWebViewClientPageFinished`、`installAospBrowserTitleHooks`、`hookAospBrowserPageCallback`、`hookWebViewNavigation`、`scheduleWebViewTitleRead`、`publishTitleFromWebView`、`findActivityContext`、`publishBrowserTitle`、`publishBrowserTitleFromProcess` | 通过，需真机。SDK 36 Activity/WebView/WebChromeClient/WebViewClient/Window 签名已对照；AOSP Browser 私有方法已覆盖；小米浏览器私有 UI 进程仍需实测。 |
 | 前台快照 | `broadcastSnapshot`、`putMediaExtras`、`getTopActivityComponentName`、`componentFromTaskInfo`、`getTopActivityFromTasks`、`findCompatibleGetTasksMethod`、`buildDefaultArgs`、`getRecentTopActivityFallback`、`getFocusedTaskDescription`、`getWindowingMode`、`getDeviceFormFactor`、`getActivityTaskManagerService`、`getSystemContext` | 通过，需真机。focused root/stack/getTasks 多策略覆盖；熄屏跳过 ATMS；MIUI tablet 检测和 recent top fallback 存在。 |

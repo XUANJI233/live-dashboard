@@ -932,13 +932,16 @@ public final class MonikaXposedModule extends XposedModule {
                         }
                     }, null);
             List<MediaController> active = mediaSessionManager.getActiveSessions(null);
+            String beforeMedia = mediaInfoKey();
             if (active != null) {
                 log(Log.INFO, TAG, "initial active media sessions: " + active.size());
                 for (MediaController controller : active) {
                     registerMediaControllerCallback(controller);
                 }
+                refreshMediaFromControllers(active);
             }
             mediaListenerRegistered = true;
+            maybeDirectUpload(!beforeMedia.equals(mediaInfoKey()));
             log(Log.INFO, TAG, "MediaSessionManager listener registered");
         } catch (Throwable t) {
             log(Log.WARN, TAG, "initMediaSessionListener failed: " + t.getClass().getSimpleName());
@@ -992,7 +995,6 @@ public final class MonikaXposedModule extends XposedModule {
                 @Override
                 public void onMetadataChanged(MediaMetadata metadata) {
                     try {
-                        if (metadata == null) return;
                         String beforeMedia = mediaInfoKey();
                         String pkg = controller.getPackageName();
                         PlaybackState ps = controller.getPlaybackState();
