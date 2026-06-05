@@ -3,6 +3,8 @@ Live Dashboard — Windows Agent
 Monitors the foreground window and reports app usage to the dashboard backend.
 """
 
+from __future__ import annotations
+
 import ctypes
 import ctypes.wintypes
 from datetime import datetime, timezone
@@ -92,6 +94,7 @@ class LASTINPUTINFO(ctypes.Structure):
         ("cbSize", ctypes.wintypes.UINT),
         ("dwTime", ctypes.wintypes.DWORD),
     ]
+
 
 GetLastInputInfo = user32.GetLastInputInfo
 GetLastInputInfo.argtypes = [ctypes.POINTER(LASTINPUTINFO)]
