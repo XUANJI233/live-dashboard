@@ -995,7 +995,7 @@ class MessageClient:
 shutdown_event = threading.Event()
 
 
-def _make_tray_icon(color: str = "green") -> "PIL.Image.Image":
+def _make_tray_icon(color: str = "green"):
     """Generate a colored circle icon for the system tray."""
     from PIL import Image, ImageDraw
     size = 64
