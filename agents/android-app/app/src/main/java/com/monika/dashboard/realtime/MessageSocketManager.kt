@@ -55,6 +55,9 @@ object MessageSocketManager {
 
     fun isConnected(): Boolean = connected
 
+        // OkHttp pingInterval=25s handles keepalive; connected implies healthy
+        fun isHealthy(): Boolean = connected
+
     /**
      * Send a device_status message over the WebSocket.
      * Returns true if the message was queued for sending, false if WS is not connected.

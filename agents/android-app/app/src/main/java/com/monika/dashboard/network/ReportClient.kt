@@ -35,11 +35,8 @@ class ReportClient(
             (scheme == "http" && (host == "localhost" || host == "127.0.0.1"))
         ) { "Only HTTPS or http://localhost allowed" }
     }
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .writeTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .build()
+        // Shared OkHttpClient — single connection pool for all operations
+        private val client get() = sharedClient
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
@@ -360,12 +357,27 @@ class ReportClient(
         }
     }
 
-    fun shutdown() {
-        client.dispatcher.executorService.shutdown()
-        client.connectionPool.evictAll()
-    }
+    // shutdown is a no-op — the shared client lives for the process lifetime
+    fun shutdown() {}
 
     companion object {
+        @Volatile
+        private var _shared: OkHttpClient? = null
+
+        val sharedClient: OkHttpClient
+            get() {
+                _shared?.let { return it }
+                synchronized(this) {
+                    _shared?.let { return it }
+                    _shared = OkHttpClient.Builder()
+                        .connectTimeout(10, TimeUnit.SECONDS)
+                        .writeTimeout(10, TimeUnit.SECONDS)
+                        .readTimeout(10, TimeUnit.SECONDS)
+                        .build()
+                    return _shared!!
+                }
+            }
+
         const val PUBLIC_RECENT_HOURS = 168
     }
 

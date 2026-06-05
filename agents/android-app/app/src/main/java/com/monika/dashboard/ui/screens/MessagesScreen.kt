@@ -53,9 +53,12 @@ fun MessagesScreen(settings: SettingsStore) {
 
     LaunchedEffect(Unit) {
         while (true) {
-            syncMessages()
+                // WS is primary channel — only poll HTTP when WS is down
+                if (!MessageSocketManager.isHealthy()) {
+                    syncMessages()
+                }
             tick++
-            delay(10_000)
+                delay(15_000)
         }
     }
 

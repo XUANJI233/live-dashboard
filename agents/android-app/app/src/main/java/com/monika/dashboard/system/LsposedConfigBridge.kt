@@ -15,10 +15,11 @@ object LsposedConfigBridge {
     private const val KEY_BROWSER_TITLE_NONCE = "browser_title_nonce"
 
     suspend fun publish(context: Context, settings: SettingsStore) {
-        if (!BuildConfig.PRIVILEGED_FEATURES || settings.capabilityMode.first() != "lsposed") return
+        if (!BuildConfig.PRIVILEGED_FEATURES) return
+        val capabilityMode = settings.capabilityMode.first()
         val token = settings.getToken().orEmpty()
         val url = settings.serverUrl.first()
-        val enabled = settings.monitoringEnabled.first()
+        val enabled = settings.monitoringEnabled.first() && capabilityMode == "lsposed"
         val interval = settings.reportInterval.first()
         val uploadFg = settings.uploadForeground.first()
         val uploadMedia = settings.uploadMedia.first()

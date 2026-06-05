@@ -574,6 +574,8 @@ class HeartbeatWorker(
     }
 
     private fun syncMessageHistory(client: ReportClient?) {
+            // Skip HTTP poll when WebSocket is healthy — avoid duplicate syncing
+            if (MessageSocketManager.isHealthy()) return
         val safeClient = client ?: return
         val latest = MessageInboxStore.latestServerTimestamp(applicationContext)
         val since = latest.takeIf { it.isNotBlank() }

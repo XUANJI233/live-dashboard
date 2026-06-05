@@ -120,7 +120,7 @@ fun BoardScreen(settings: SettingsStore) {
                 replyText = ""
                 scope.launch {
                     withContext(Dispatchers.IO) {
-                        syncMessageAction(settings) { client -> client.replyToMessage(msgId, "__public__", text) }
+                        boardWriteAction(settings) { client -> client.replyToMessage(msgId, "__public__", text) }
                     }
                     delay(200)
                     loadPublicMessages()
@@ -147,7 +147,7 @@ fun BoardScreen(settings: SettingsStore) {
                     publicMessages = publicMessages.filterNot { it.id == message.id }
                     scope.launch {
                         withContext(Dispatchers.IO) {
-                            syncMessageAction(settings) { client -> client.deleteMessage(message.id) }
+                               boardWriteAction(settings) { client -> client.deleteMessage(message.id) }
                         }
                         delay(200)
                         loadPublicMessages()
@@ -180,6 +180,21 @@ private fun mergePublicMessages(
 }
 
 private const val MAX_PUBLIC_MESSAGES = 500
+
+private suspend fun boardWriteAction(
+    settings: SettingsStore,
+    action: (ReportClient) -> Result<Unit>,
+) {
+    val url = settings.serverUrl.first()
+    val token = settings.getToken()
+    if (url.isBlank() || token.isNullOrBlank()) return
+    val client = ReportClient(url, token)
+    try {
+        action(client)
+    } finally {
+        client.shutdown()
+    }
+}
 
 private fun currentMessageSlots(slotMinutes: Int = 10): List<String> {
     val now = ZonedDateTime.now(ZoneOffset.UTC)

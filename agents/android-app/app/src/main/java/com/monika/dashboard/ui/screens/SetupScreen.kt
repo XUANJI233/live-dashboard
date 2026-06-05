@@ -85,6 +85,11 @@ fun SetupScreen(settings: SettingsStore) {
         scope.launch { snackbarHostState.showSnackbar(message) }
     }
 
+    suspend fun publishLsposedConfig() {
+        if (!BuildConfig.PRIVILEGED_FEATURES) return
+        withContext(Dispatchers.IO) { LsposedConfigBridge.publish(context, settings) }
+    }
+
     fun rescheduleIfMonitoring() {
         if (monitoringEnabled) {
             val minInterval = if (highFrequencyInput) {
@@ -146,7 +151,7 @@ fun SetupScreen(settings: SettingsStore) {
                 body = "只上报在线、电量和健康数据，不读取当前应用"
             ) {
                 modeInput = "normal"
-                scope.launch { settings.setCapabilityMode("normal"); notifySaved() }
+                scope.launch { settings.setCapabilityMode("normal"); publishLsposedConfig(); notifySaved() }
             }
             if (BuildConfig.PRIVILEGED_FEATURES) {
                 CapabilityOption(
@@ -155,7 +160,7 @@ fun SetupScreen(settings: SettingsStore) {
                     body = "由 LSPosed 模块直接上传；App 仅负责配置。若模块未激活，则不会上传当前应用/媒体状态。"
                 ) {
                     modeInput = "lsposed"
-                    scope.launch { settings.setCapabilityMode("lsposed"); notifySaved() }
+                    scope.launch { settings.setCapabilityMode("lsposed"); publishLsposedConfig(); notifySaved() }
                 }
             } else {
                 Text(
@@ -402,6 +407,7 @@ fun SetupScreen(settings: SettingsStore) {
                         MessageSocketManager.ensureStarted(context)
                         statusMsg = "监听已开启，当前间隔 ${seconds} 秒"
                     } else {
+                        LsposedConfigBridge.publish(context, settings)
                         HeartbeatWorker.cancel(context)
                         MessageSocketManager.stop()
                         statusMsg = "监听已关闭"
