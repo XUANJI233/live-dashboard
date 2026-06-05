@@ -24,6 +24,31 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Backend — install & lint
+        working-directory: packages/backend
+        run: |
+          bun install --frozen-lockfile
+          bun run lint
+
+      - name: Backend — test
+        working-directory: packages/backend
+        run: bun test
+
+      - name: Frontend — install & lint
+        working-directory: packages/frontend
+        run: |
+          bun install --frozen-lockfile
+          bun run lint
+
+      - name: Frontend — test
+        working-directory: packages/frontend
+        run: bun run test
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
