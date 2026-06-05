@@ -67,16 +67,16 @@ fun MessagesScreen(settings: SettingsStore) {
         }
     }
 
-        // Derive from in-memory cache — no SharedPreferences re-read
-        val groups = remember(allMessages) {
-            allMessages
-                .groupBy { it.viewerId }
-                .mapValues { (_, v) -> v.sortedBy { it.at } }
-                .toList()
-                .sortedByDescending { (_, v) -> v.maxOfOrNull { it.at } ?: 0L }
-        }
-        var blockTick by remember { mutableIntStateOf(0) }
-        val blockedViewers = remember(blockTick) { MessageSocketManager.blockedViewers(context).toList().sorted() }
+    // Derive from in-memory cache — no SharedPreferences re-read
+    val groups = remember(allMessages) {
+        allMessages
+            .groupBy { it.viewerId }
+            .mapValues { (_, v) -> v.sortedBy { it.at } }
+            .toList()
+            .sortedByDescending { (_, v) -> v.maxOfOrNull { it.at } ?: 0L }
+    }
+    var blockTick by remember { mutableIntStateOf(0) }
+    val blockedViewers = remember(blockTick) { MessageSocketManager.blockedViewers(context).toList().sorted() }
     val activeViewer = selectedViewer ?: groups.firstOrNull()?.first
     val activeMessages = groups.firstOrNull { it.first == activeViewer }?.second.orEmpty()
 

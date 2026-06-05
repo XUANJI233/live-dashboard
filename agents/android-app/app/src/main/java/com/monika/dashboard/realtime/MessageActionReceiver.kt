@@ -6,11 +6,7 @@ import android.content.Intent
 import android.widget.Toast
 import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.network.ReportClient
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 
 class MessageActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {

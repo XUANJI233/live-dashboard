@@ -23,17 +23,17 @@ object MessageInboxStore {
     private const val KEY_RECENT = "recent"
     private const val MAX_MESSAGES = 500
 
-        // In-memory cache — initialized lazily from SharedPreferences
-        private val _messages = MutableStateFlow<List<VisitorMessage>>(emptyList())
-        val messages: StateFlow<List<VisitorMessage>> = _messages.asStateFlow()
+    // In-memory cache — initialized lazily from SharedPreferences
+    private val _messages = MutableStateFlow<List<VisitorMessage>>(emptyList())
+    val messages: StateFlow<List<VisitorMessage>> = _messages.asStateFlow()
 
-        @Synchronized
-        private fun ensureLoaded(context: Context) {
-            if (_messages.value.isNotEmpty()) return
-            _messages.value = loadFromPrefs(context)
-        }
+    @Synchronized
+    private fun ensureLoaded(context: Context) {
+        if (_messages.value.isNotEmpty()) return
+        _messages.value = loadFromPrefs(context)
+    }
 
-        private fun loadFromPrefs(context: Context): List<VisitorMessage> {
+    private fun loadFromPrefs(context: Context): List<VisitorMessage> {
             val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_RECENT, "[]")
             return runCatching {
                 val arr = JSONArray(raw)
@@ -50,7 +50,7 @@ object MessageInboxStore {
                             text = item.optString("text"),
                             at = item.optLong("at"),
                         ))
-                    }
+                }
                 }
             }.getOrElse { emptyList() }
         }
