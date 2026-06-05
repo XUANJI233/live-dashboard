@@ -27,3 +27,8 @@ agents/android-app/build/
 agents/android-app/keystore.properties
 agents/android-app/*.keystore
 *.hprof
+*.jks
+*.p12
+*.pem
+**/keystore/
+**/keystore/**
