@@ -1764,7 +1764,7 @@ public final class MonikaXposedModule extends XposedModule {
                 Context ctx = getSystemContext();
                 if (ctx != null) {
                     long token = Binder.clearCallingIdentity();
-                    try { ctx.sendBroadcast(sleepIntent); } finally { Binder.restoreCallingIdentity(token); }
+                    try { ctx.sendBroadcast(sleepIntent, CONFIG_PERMISSION); } finally { Binder.restoreCallingIdentity(token); }
                 }
                 maybeDirectUpload(forceDirectUpload);
                 return;
@@ -1855,7 +1855,7 @@ public final class MonikaXposedModule extends XposedModule {
             Context context = getSystemContext();
             if (context != null) {
                 long token = Binder.clearCallingIdentity();
-                try { context.sendBroadcast(intent); } finally { Binder.restoreCallingIdentity(token); }
+                try { context.sendBroadcast(intent, CONFIG_PERMISSION); } finally { Binder.restoreCallingIdentity(token); }
             }
             maybeDirectUpload(forceDirectUpload);
         } catch (Throwable t) {

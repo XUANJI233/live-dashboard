@@ -202,6 +202,12 @@ LSP direct body：
 | 展示文本/工具 | `primaryDisplayTitle`、`isoTime`、`playbackStateName`、`resolveAppLabel`、`firstNonBlank`、`safeString`、`normalizeNonce`、`getBrowserTitleNonce`、`isScreenInteractive`、`isIgnoredPackage`、`isBrowserPackage`、`cleanTitle` | 通过。`upload_media=false` 不再通过 `window_title` 泄露媒体；标题裁剪 256；nonce 长度要求 >=24。 |
 | App 侧交叉路径 | `LsposedConfigBridge.publish/getOrCreateBrowserTitleNonce`、`LsposedBridgeReceiver.handleStatus/handleMessage`、`SystemSnapshotStore.updateFromLsposed/mergeForeground/mergeMedia`、`HeartbeatWorker.collectSystemSnapshot/buildStatusPayload`、`ReportClient.reportApp`、`MessageSocketManager.scheduleReconnect` | 通过。配置字段、广播 extras、HTTP/WS payload 与服务端契约一致；普通 App WS 退避已封顶。 |
 
+广播权限链：
+
+- App 主 manifest 定义 `com.monika.dashboard.permission.LSPOSED_CONFIG` 为 signature 权限，并声明自身使用该权限。
+- privileged receiver `LsposedBridgeReceiver` 要求同一权限；LSP 状态和消息广播均为显式 component，并使用 `CONFIG_PERMISSION` 作为 receiver permission。
+- App -> system_server 的配置广播由 `LsposedConfigBridge` 使用同一权限发送；system_server 动态 config receiver 也以同一权限注册。
+
 ## 本地验证
 
 已执行：
