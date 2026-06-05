@@ -41,7 +41,8 @@
 
 - libxposed `package-info.java` 说明 `scope.list` 定义注入包，system_server 应使用特殊虚拟包名 `system`。
 - libxposed `XposedModuleInterface.java` 说明 system_server 使用 `onSystemServerStarting()` 替代第一阶段 package load callback。
-- 当前 `scope.list` 同时包含 `system` 和浏览器包，符合“system_server 采集 + 浏览器进程标题 hook”的设计。
+- `java_init.list` 指向 `com.monika.dashboard.lsposed.MonikaXposedModule`，`module.prop` 为 `minApiVersion=101` / `targetApiVersion=101` / `staticScope=true` / `exceptionMode=protective`。
+- 当前 `scope.list` 同时包含 `system` 和 48 个浏览器包；脚本化集合比较确认它与 `BROWSER_PACKAGES` 完全一致，没有“代码识别但未注入”或“注入但代码不识别”的包。
 
 风险：
 
