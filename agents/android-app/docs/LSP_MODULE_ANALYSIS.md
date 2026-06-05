@@ -61,6 +61,7 @@
 交叉验证：
 
 - AOSP `ActivityTaskManagerService` 存在 focused root task / focused stack / task list 这类路径；普通 Activity 启动/恢复还会经过 RootWindowContainer/Task resume 路径，因此只 hook `moveTaskToFront` 覆盖不完整。
+- AOSP 官方当前 main 已核对：`ActivityTaskManagerService#startActivityAsUser` / `setFocusedTask`、`RootWindowContainer#resumeFocusedTasksTopActivities`、`Task#resumeTopActivityUncheckedLocked` 均存在，且 resume 方法返回 boolean 表示是否发生恢复动作。
 - 本地参考项目 EdgeX 也通过 `ActivityTaskManager.getService()` / `ServiceManager activity_task` 获取 ATMS。
 - 小米兼容性：代码已读取 `miui.os.Build.IS_TABLET` 判断设备形态，并保留 `getTasks()` fallback。
 
