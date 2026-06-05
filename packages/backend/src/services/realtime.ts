@@ -987,6 +987,12 @@ export async function handlePrivateMessagePost(req: Request): Promise<Response> 
 }
 
 export function handlePublicMessages(req: Request): Response {
+  // 管理员设备 token 鉴权（抗 DoS/CC，边缘函数模式也生效）
+  const device = authenticateToken(req.headers.get("authorization"));
+  if (device) {
+    if (!apiRateLimit(device.device_id)) return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
+
   const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
   if (viewer) {
     if (!viewerTokenRateLimit(viewer.viewerId)) return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
