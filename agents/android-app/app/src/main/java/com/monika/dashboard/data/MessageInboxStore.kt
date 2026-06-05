@@ -173,4 +173,13 @@ object MessageInboxStore {
             .putString(KEY_RECENT, arr.toString())
             .apply()
     }
+
+        /** For tests only: clear in-memory cache and SharedPreferences. */
+        fun clearForTest(context: Context) {
+            _messages.value = emptyList()
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .clear()
+                .apply()
+        }
 }

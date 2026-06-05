@@ -21,7 +21,6 @@ import androidx.compose.ui.unit.sp
 import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.health.HealthConnectManager
 import com.monika.dashboard.health.HealthSyncWorker
-import com.monika.dashboard.network.ReportClient
 import com.monika.dashboard.realtime.MessageSocketManager
 import com.monika.dashboard.ui.screens.BoardScreen
 import com.monika.dashboard.ui.screens.HealthScreen

@@ -1,0 +1,75 @@
+# detekt configuration — focuses on real bugs over style nitpicks
+# buildUponDefaultConfig=true means this merges with detekt's defaults
+
+style:
+  active: true
+  MagicNumber:
+    active: false
+  WildcardImport:
+    active: true
+  UnusedPrivateMember:
+    active: true
+  UnusedImports:
+    active: true
+  MaxLineLength:
+    active: false
+  ForbiddenComment:
+    active: false
+  ReturnCount:
+    active: false
+  ThrowsCount:
+    active: false
+  LoopWithTooManyJumpStatements:
+    active: false
+  SpacingBetweenPackageAndImports:
+    active: true
+  NoTabs:
+    active: true
+
+complexity:
+  active: true
+  LongParameterList:
+    active: true
+    functionThreshold: 8
+    constructorThreshold: 8
+  LargeClass:
+    active: false
+  TooManyFunctions:
+    active: false
+  CyclomaticComplexMethod:
+    active: false
+  LongMethod:
+    active: false
+
+exceptions:
+  active: true
+  TooGenericExceptionCaught:
+    active: true
+  InstanceOfCheckForException:
+    active: true
+
+potential-bugs:
+  active: true
+  UnsafeCallOnNullableType:
+    active: true
+  EqualsWithHashCodeExist:
+    active: true
+
+coroutines:
+  active: true
+  GlobalCoroutineUsage:
+    active: true
+  SuspendFunWithCoroutineScopeReceiver:
+    active: true
+  SuspendFunWithFlowReturnType:
+    active: true
+
+naming:
+  active: true
+  FunctionNaming:
+    active: false
+  VariableNaming:
+    active: false
+  TopLevelPropertyNaming:
+    active: true
+    constantPattern: '[A-Z][A-Za-z0-9_]*'

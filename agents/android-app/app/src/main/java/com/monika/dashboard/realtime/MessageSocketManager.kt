@@ -24,7 +24,6 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
-import java.net.URI
 import java.util.concurrent.TimeUnit
 
 object MessageSocketManager {

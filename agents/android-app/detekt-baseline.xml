@@ -1,0 +1,50 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>ComplexCondition:MainActivity.kt$enabledTypes.isNotEmpty() &amp;&amp; url.isNotEmpty() &amp;&amp; !token.isNullOrEmpty() &amp;&amp; HealthConnectManager.isAvailable(context)</ID>
+    <ID>ComplexCondition:RootSystemCollector.kt$RootSystemCollector$activity == null &amp;&amp; window == null &amp;&amp; input == null &amp;&amp; media == null</ID>
+    <ID>ComplexCondition:StatusScreen.kt$needsBgPerm &amp;&amp; !bgPermGranted &amp;&amp; (bgFeatureAvailable || bgFeatureCheckFailed)</ID>
+    <ID>EmptyFunctionBlock:ReportClient.kt$ReportClient${}</ID>
+    <ID>LongParameterList:HeartbeatWorker.kt$HeartbeatWorker$( appId: String, windowTitle: String, batteryPercent: Int?, batteryCharging: Boolean?, networkConnected: Boolean?, networkType: String?, cellularGeneration: String?, vpnActive: Boolean?, vpnName: String?, location: LocationSnapshot?, snapshot: SystemSnapshot?, )</ID>
+    <ID>LongParameterList:HeartbeatWorker.kt$HeartbeatWorker$( foreground: Boolean, media: Boolean, network: Boolean, location: Boolean, vpn: Boolean, input: Boolean, ok: Boolean, message: String, )</ID>
+    <ID>LongParameterList:MessageInboxStore.kt$MessageInboxStore$( context: Context, id: String, viewerId: String, text: String, viewerName: String = "", viewerRemark: String = "", kind: String = "private", direction: String = "viewer", at: Long = System.currentTimeMillis(), )</ID>
+    <ID>LongParameterList:ReportClient.kt$ReportClient$( appId: String, windowTitle: String, batteryPercent: Int? = null, batteryCharging: Boolean? = null, networkConnected: Boolean? = null, networkType: String? = null, cellularGeneration: String? = null, vpnActive: Boolean? = null, vpnName: String? = null, location: LocationSnapshot? = null, snapshot: SystemSnapshot? = null, musicTitle: String? = null, musicArtist: String? = null, musicApp: String? = null )</ID>
+    <ID>MatchingDeclarationName:HealthDataTypes.kt$HealthDataType</ID>
+    <ID>NestedBlockDepth:HeartbeatWorker.kt$HeartbeatWorker$override suspend fun doWork(): Result</ID>
+    <ID>SwallowedException:HealthConnectManager.kt$HealthConnectManager$e: kotlinx.coroutines.TimeoutCancellationException</ID>
+    <ID>TooGenericExceptionCaught:HealthConnectManager.kt$HealthConnectManager$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:HealthSyncWorker.kt$HealthSyncWorker$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:HeartbeatWorker.kt$HeartbeatWorker$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:LsposedConfigBridge.kt$LsposedConfigBridge$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:MessageSocketManager.kt$MessageSocketManager$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:ReportClient.kt$ReportClient$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:SettingsStore.kt$SettingsStore$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:SetupScreen.kt$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:StatusScreen.kt$e2: Exception</ID>
+    <ID>TooGenericExceptionCaught:StatusScreen.kt$e: Exception</ID>
+    <ID>WildcardImport:BoardScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:BoardScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:BoardScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:HealthConnectManager.kt$import androidx.health.connect.client.records.*</ID>
+    <ID>WildcardImport:HealthDataTypes.kt$import androidx.health.connect.client.records.*</ID>
+    <ID>WildcardImport:HealthScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:HealthScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:HealthScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:HealthSyncWorker.kt$import androidx.work.*</ID>
+    <ID>WildcardImport:HeartbeatWorker.kt$import androidx.work.*</ID>
+    <ID>WildcardImport:MainActivity.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:MainActivity.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:MainActivity.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:MessagesScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:MessagesScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:MessagesScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:SettingsStore.kt$import androidx.datastore.preferences.core.*</ID>
+    <ID>WildcardImport:SetupScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:SetupScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:SetupScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:StatusScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:StatusScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:StatusScreen.kt$import androidx.compose.runtime.*</ID>
+  </CurrentIssues>
+</SmellBaseline>

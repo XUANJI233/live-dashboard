@@ -471,25 +471,6 @@ private fun isAccessibilityEnabled(context: android.content.Context): Boolean {
     }
 }
 
-@Composable
-private fun InfoRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(0.3f)
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.weight(0.7f)
-        )
-    }
-}
-
 /** Status row with check/cross and optional fix button */
 @Composable
 private fun ServiceStatusRow(label: String, ok: Boolean, onFix: () -> Unit) {

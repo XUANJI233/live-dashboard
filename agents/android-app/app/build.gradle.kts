@@ -3,6 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
+        id("io.gitlab.arturbosch.detekt")
 }
 
 android {
@@ -47,6 +48,10 @@ android {
         disable += "NewApi"
     }
 
+        testOptions {
+            unitTests.isIncludeAndroidResources = true
+            unitTests.isReturnDefaultValues = true
+        }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -63,6 +68,13 @@ kotlin {
         jvmTarget.set(JvmTarget.JVM_17)
     }
 }
+
+    detekt {
+        buildUponDefaultConfig = true
+        allRules = false
+        config.setFrom("$rootDir/detekt.yml")
+        baseline = file("$rootDir/detekt-baseline.xml")
+    }
 
 dependencies {
     // Compose BOM
@@ -101,4 +113,11 @@ dependencies {
 
     // Core
     implementation("androidx.core:core-ktx:1.15.0")
+
+        // ── Testing ──
+        testImplementation("junit:junit:4.13.2")
+        testImplementation("org.robolectric:robolectric:4.14.1")
+        testImplementation("androidx.test:core:1.6.1")
+        testImplementation("androidx.test.ext:junit:1.2.1")
+        testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }

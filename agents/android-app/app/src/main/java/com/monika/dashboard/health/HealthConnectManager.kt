@@ -38,7 +38,6 @@ class HealthConnectManager(private val context: Context) {
 
     companion object {
         private const val TAG = "HealthConnect"
-        private const val PAGE_SIZE = 1000
         private val ISO_FORMAT = DateTimeFormatter.ISO_INSTANT
 
         fun isAvailable(context: Context): Boolean {

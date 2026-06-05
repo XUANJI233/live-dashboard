@@ -59,6 +59,19 @@ jobs:
       - name: Verify Gradle wrapper
         working-directory: agents/android-app
         run: chmod +x ./gradlew && ./gradlew --version
+      - name: Static analysis (detekt)
+        working-directory: agents/android-app
+        run: ./gradlew detekt --stacktrace
+      - name: Unit tests (Robolectric)
+        working-directory: agents/android-app
+        run: ./gradlew testNormalDebugUnitTest --stacktrace
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-reports-${{ matrix.variant }}
+          path: agents/android-app/**/build/reports/tests/**
+          if-no-files-found: ignore
       - name: Build ${{ matrix.variant }}
         working-directory: agents/android-app
         run: ./gradlew ${{ matrix.tasks }} --stacktrace
