@@ -18,13 +18,14 @@
 
 当前 LSP 实现总体方向正确：模块作用域包含 `system` 和浏览器包；system_server 负责前台、输入、媒体、上传；浏览器进程只负责页面标题捕获并广播给 system_server。已确认没有高频轮询：常规路径是 hook/系统回调驱动，5 分钟 heartbeat 只作为低频兜底。
 
-本次修正了三个实际问题：
+本次修正了多个实际问题：
 
 - 输入状态不再在未知 `EditorInfo` 时默认报 active，改为优先解析 AOSP `StartInputFlags.IS_TEXT_EDITOR`，未知时保守 false。
 - `MediaController` fallback 回调现在按 session token 保存，并在 session 消失或销毁时调用 `unregisterCallback`，避免旧媒体 session 回调泄漏/重复。
-- 浏览器标题 nonce 改为“带 nonce 则校验；缺失不直接拒绝”，避免浏览器进程无法读取 app 普通 SharedPreferences 时被误拦截。API 34+ 仍使用 sender identity，所有版本仍做前台浏览器校验。
+- 浏览器标题 nonce 改为 system_server 已持有 nonce 时必须匹配；API 34+ 仍使用 sender identity，所有版本仍做前台浏览器校验。
 - 去掉重复安装的 base `WebChromeClient#onReceivedTitle` hook，避免同一页面标题进入两条等价 hook 热路径。
 - ATMS ready hook 改为优先 `onSystemReady`、兼容旧名 `systemReady`，与 AOSP main 当前方法名对齐。
+- WS 已连接后异常断开也会进入重连退避，避免边缘代理/服务端持续关闭时形成即时重连循环。
 
 ## 生命周期与作用域
 
@@ -79,6 +80,8 @@
 已修正：
 
 - 旧逻辑在没看到 `EditorInfo` 时返回 true，会把部分窗口焦点事件误判为输入中。现在未知签名返回 false，show/hide 事件仍会独立更新状态。
+- `startInputOrWindowGainedFocus*` 现在会读取隐藏类 `InputBindResult` 的 `result` 码，不再把失败返回误判成输入激活。
+- AOSP `InputBindResult` 当前分支中 0-4 与 16 是 success-ish 结果（含 IME session/binding、window focus only、user/accessibility 相关成功状态），错误结果字符串为 `ERROR_*`。当前代码按这些成功码放行，并用 `ERROR_` 字符串兜底，错误码不会激活输入状态。
 
 ## 媒体状态
 
@@ -97,6 +100,7 @@
 已修正：
 
 - 旧 fallback 只保存 key，无法注销 callback。现在保存 `MediaControllerRegistration`，按 session token 清理失效回调，并处理 `onSessionDestroyed()`。
+- system_server 内部 `MediaSessionRecord` hook 在收到播放状态但 metadata 为空/缺字段时会清空旧标题和作者，避免切歌、暂停、关闭后继续沿用上一首媒体标题。
 
 ## 浏览器标题
 
@@ -123,7 +127,7 @@
 
 已修正：
 
-- nonce 不再强制必须存在。缺失时依赖 sender identity 与前台浏览器校验；携带 nonce 但不匹配时仍拒绝。
+- `LsposedConfigBridge` 生成并下发 `browser_title_nonce`；system_server 已加载 nonce 时，浏览器标题广播必须带相同 nonce。这样 API 34 以下不只依赖“当前前台浏览器”这个弱校验。
 - base `WebChromeClient#onReceivedTitle` 只安装一次；具体子类 hook 仍保留，用于处理 override 不调用 super 的浏览器实现。
 
 风险：
@@ -139,6 +143,10 @@ LSP direct body：
 - `extra.foreground`：`package_name`、`app_name`、`activity`、`title`、`source`、`confidence`
 - `extra.media`：`playing`、`title`、`artist`、`app`、`package_name`、`state`、`source`
 - `extra.input`：`input_active`、`is_typing`、`source`
+
+已修正：
+
+- `primaryDisplayTitle()` 现在只有 `upload_media` 开启时才会把媒体状态拼进 `window_title`。关闭媒体上报时，媒体信息不会通过标题侧路继续显示。
 
 交叉验证：
 
@@ -157,13 +165,16 @@ LSP direct body：
 - 没有高频轮询。前台 5 分钟、媒体 60 秒都是低频 stale guard。
 - 上传只在 system_server 进程执行，浏览器进程不会直接联网上传。
 - WS 重连使用 30 秒到 5 分钟退避；断线时只调度一次 pending reconnect。
+- WS 已连接后异常 EOF/close/ping/send 失败也会记录退避窗口，延迟触发下一次 snapshot/reconnect，避免服务端或边缘代理持续断开时自我放大。
 - 网络、电量、VPN 信息只在构建上报 body 时读取，不在 hook 热路径持续查询。
+- WS 客户端现在校验 HTTP 101 状态行、限制帧大小，并对扩展长度读取做 EOF 检查，避免代理异常或资源耗尽把连接伪装成成功。
 
 仍需真机验证：
 
 - 小米/HyperOS 上 `InputMethodManagerService` start input 参数顺序是否与 AOSP 相同。
 - 小米浏览器是否走标准 WebView/Activity/TaskDescription 标题路径。
 - 内部 `MediaSessionRecord` 字段名在目标 ROM 上是否保留；fallback 已可工作但需要媒体切换/暂停/关闭真机日志验证。
+- WebSocket 握手和断线恢复还需要真机/服务端继续观察，确认大帧、异常关闭和代理返回异常状态行不会误判。
 
 ## 本地验证
 

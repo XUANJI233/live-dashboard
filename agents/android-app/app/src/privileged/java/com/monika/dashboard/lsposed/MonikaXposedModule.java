@@ -101,7 +101,6 @@ public final class MonikaXposedModule extends XposedModule {
     // Static instance for global access
     private static MonikaXposedModule instance;
     
-    private volatile boolean foregroundRecentlyChanged = false;
     private volatile int idleConsecutiveCount = 0;
     private volatile long wsLastFailAt = 0L;
     private volatile long wsRetryDelayMs = WS_RETRY_BASE_MS;
@@ -334,7 +333,6 @@ public final class MonikaXposedModule extends XposedModule {
                         .intercept(chain -> {
                             Object result = chain.proceed();
                             // Foreground changed — trigger immediate snapshot
-                            foregroundRecentlyChanged = true;
                             try { broadcastSnapshot(); } catch (Throwable ignored) {}
                             return result;
                         });
@@ -410,7 +408,20 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private boolean inputHookResultSucceeded(Object result) {
-        return !(result instanceof Boolean) || (Boolean) result;
+        if (result == null) return true;
+        if (result instanceof Boolean) return (Boolean) result;
+        String className = result.getClass().getName();
+        if (className.endsWith("InputBindResult")) {
+            Object code = readField(result, "result");
+            if (!(code instanceof Integer)) code = readField(result, "mResult");
+            if (code instanceof Integer) {
+                int value = (Integer) code;
+                return value == 0 || value == 1 || value == 2 || value == 3 || value == 4 || value == 16;
+            }
+            String text = safeString(String.valueOf(result));
+            return text.length() == 0 || !text.contains("ERROR_");
+        }
+        return true;
     }
 
     private boolean hasTextEditorInfo(List<Object> args) {
@@ -553,7 +564,6 @@ public final class MonikaXposedModule extends XposedModule {
                     } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
                         lastForegroundKey = "";
                         lastScreenOffCheckAt = 0L;
-                        foregroundRecentlyChanged = true;
                         handler.postDelayed(() -> {
                             try { broadcastSnapshot(); } catch (Throwable ignored) {}
                         }, 500L);
@@ -601,7 +611,7 @@ public final class MonikaXposedModule extends XposedModule {
                     String expectedNonce = getBrowserTitleNonce(true);
                     String actualNonce = safeString(intent.getStringExtra(KEY_BROWSER_TITLE_NONCE));
                     if (expectedNonce.length() > 0) {
-                        if (actualNonce.length() > 0 && !expectedNonce.equals(actualNonce)) {
+                        if (!expectedNonce.equals(actualNonce)) {
                             log(Log.WARN, TAG, "browser title rejected: nonce mismatch");
                             return;
                         }
@@ -746,6 +756,8 @@ public final class MonikaXposedModule extends XposedModule {
         mediaPackage = safeString(pkg);
         mediaApp = safeString(resolveAppLabel(pkg));
         mediaState = safeString(playbackStateName(state));
+        mediaTitle = "";
+        mediaArtist = "";
         if (metadata != null) {
             String nextTitle = safeString(firstNonBlank(
                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_DISPLAY_TITLE),
@@ -754,8 +766,8 @@ public final class MonikaXposedModule extends XposedModule {
                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ARTIST),
                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
-            if (nextTitle.length() > 0) mediaTitle = nextTitle;
-            if (nextArtist.length() > 0) mediaArtist = nextArtist;
+            mediaTitle = nextTitle;
+            mediaArtist = nextArtist;
         }
         lastMediaValidationAt = System.currentTimeMillis();
         maybeDirectUpload(!beforeMedia.equals(mediaInfoKey()));
@@ -1718,10 +1730,7 @@ public final class MonikaXposedModule extends XposedModule {
                 String key = packageName + "/" + activityName;
                 if (!key.equals(lastForegroundKey)) {
                     log(Log.INFO, TAG, "foreground: " + key + " title=" + (taskDescription != null ? taskDescription : ""));
-                    foregroundRecentlyChanged = true;
                     forceDirectUpload = true;
-                } else {
-                    foregroundRecentlyChanged = false;
                 }
                 if (key.equals(lastForegroundKey) && now - lastForegroundBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
                 lastForegroundKey = key;
@@ -2607,6 +2616,11 @@ public final class MonikaXposedModule extends XposedModule {
         if (!directUploadEnabled || directServerUrl.length() == 0 || directToken.length() == 0 || !"system".equals(currentProcessName)) return;
         if (wsReconnectPending) return;
         wsReconnectPending = true;
+        long delayMs = 0L;
+        long lastFail = wsLastFailAt;
+        if (lastFail > 0) {
+            delayMs = Math.max(0L, wsRetryDelayMs - (System.currentTimeMillis() - lastFail));
+        }
         // Reconnect and immediately send the current snapshot. Reconnecting alone
         // would leave the dashboard stale until the next 5-minute heartbeat.
         Handler handler = getUploadHandler();
@@ -2614,10 +2628,20 @@ public final class MonikaXposedModule extends XposedModule {
             wsReconnectPending = false;
             return;
         }
-        handler.post(() -> {
+        handler.postDelayed(() -> {
             wsReconnectPending = false;
             maybeDirectUpload(true);
-        });
+        }, delayMs);
+    }
+
+    private void recordWsDisconnectedForBackoff() {
+        long now = System.currentTimeMillis();
+        synchronized (this) {
+            if (wsRetryDelayMs < WS_RETRY_BASE_MS) wsRetryDelayMs = WS_RETRY_BASE_MS;
+            if (wsLastFailAt <= 0 || now - wsLastFailAt >= wsRetryDelayMs) {
+                wsLastFailAt = now;
+            }
+        }
     }
 
     private void forwardViewerMessageToApp(String payloadText) {
@@ -2714,9 +2738,10 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private String primaryDisplayTitle() {
+        boolean includeMedia = directUploadMedia && mediaPlaying;
         // Screen off — show sleeping or media info
         if ("sleeping".equals(foregroundPackage)) {
-            if (mediaPlaying && mediaApp.length() > 0) {
+            if (includeMedia && mediaApp.length() > 0) {
                 return mediaTitle.length() > 0 ? mediaApp + "正在播放" + mediaTitle : mediaApp + "正在播放";
             }
             return "(-.-)zzZ";
@@ -2724,19 +2749,19 @@ public final class MonikaXposedModule extends XposedModule {
         boolean foregroundValid = foregroundApp.length() > 0
                 && !"idle".equals(foregroundPackage)
                 && !"idle".equals(foregroundApp);
-        if (foregroundValid && mediaPlaying && mediaTitle.length() > 0 && mediaApp.length() > 0 && !mediaApp.equals(foregroundApp)) {
+        if (foregroundValid && includeMedia && mediaTitle.length() > 0 && mediaApp.length() > 0 && !mediaApp.equals(foregroundApp)) {
             return "正在用" + foregroundApp + "，后台" + mediaApp + "正在播放" + mediaTitle;
         }
-        if (foregroundValid && mediaPlaying && mediaTitle.length() > 0) {
+        if (foregroundValid && includeMedia && mediaTitle.length() > 0) {
             return "正在用" + foregroundApp + "播放" + mediaTitle;
         }
-        if (!foregroundValid && mediaPlaying && mediaTitle.length() > 0 && mediaApp.length() > 0) {
+        if (!foregroundValid && includeMedia && mediaTitle.length() > 0 && mediaApp.length() > 0) {
             return mediaApp + "正在播放" + mediaTitle;
         }
-        if (!foregroundValid && mediaPlaying && mediaApp.length() > 0) {
+        if (!foregroundValid && includeMedia && mediaApp.length() > 0) {
             return mediaApp + "正在播放";
         }
-        if (!foregroundValid && mediaPlaying && mediaTitle.length() > 0) {
+        if (!foregroundValid && includeMedia && mediaTitle.length() > 0) {
             return "正在播放" + mediaTitle;
         }
         if (foregroundValid && foregroundTitle.length() > 0) {
@@ -2939,6 +2964,7 @@ public final class MonikaXposedModule extends XposedModule {
         private static final int OP_PONG  = 0xA;
         private static final String WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         private static final int RECEIVE_BUF = 8192;
+        private static final int MAX_WS_FRAME_BYTES = 256 * 1024;
         private static final int SOCKET_TIMEOUT_MS = 60_000; // 60s read timeout
         private static final int PING_INTERVAL_MS = 30_000;  // send ping every 30s
         private final byte[] recvBuf = new byte[RECEIVE_BUF];
@@ -2972,107 +2998,119 @@ public final class MonikaXposedModule extends XposedModule {
         }
 
         void connect() throws Exception {
-            URI uri = URI.create(wsUrl);
-            manualDisconnect = false;
-            String host = uri.getHost();
-            String scheme = uri.getScheme();
-            boolean isWss = "wss".equalsIgnoreCase(scheme);
-            int defaultPort = isWss ? 443 : 80;
-            int port = uri.getPort() > 0 ? uri.getPort() : defaultPort;
-            String path = uri.getRawPath();
-            String query = uri.getRawQuery();
-            String resource = path + (query != null ? "?" + query : "");
-            if (resource.isEmpty()) resource = "/";
+            boolean success = false;
+            try {
+                URI uri = URI.create(wsUrl);
+                manualDisconnect = false;
+                String host = uri.getHost();
+                String scheme = uri.getScheme();
+                boolean isWss = "wss".equalsIgnoreCase(scheme);
+                int defaultPort = isWss ? 443 : 80;
+                int port = uri.getPort() > 0 ? uri.getPort() : defaultPort;
+                String path = uri.getRawPath();
+                String query = uri.getRawQuery();
+                String resource = path + (query != null ? "?" + query : "");
+                if (resource.isEmpty()) resource = "/";
 
-            if (isWss) {
-                SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
-                SSLSocket ssl = (SSLSocket) factory.createSocket();
-                ssl.setTcpNoDelay(true);
-                ssl.setSoTimeout(SOCKET_TIMEOUT_MS); // read timeout — detect dead connections
-                // SNI (Server Name Indication) — required for virtual-hosted TLS.
-                // Skip SNI for IP addresses (SNIHostName throws on raw IP).
-                boolean isIp = host.matches("[0-9.]+|[:0-9a-fA-F]+");
-                javax.net.ssl.SSLParameters params = ssl.getSSLParameters();
-                if (!isIp) {
-                    params.setServerNames(java.util.Collections.singletonList(
-                        new javax.net.ssl.SNIHostName(host)));
+                if (isWss) {
+                    SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+                    SSLSocket ssl = (SSLSocket) factory.createSocket();
+                    ssl.setTcpNoDelay(true);
+                    ssl.setSoTimeout(SOCKET_TIMEOUT_MS); // read timeout — detect dead connections
+                    // SNI (Server Name Indication) — required for virtual-hosted TLS.
+                    // Skip SNI for IP addresses (SNIHostName throws on raw IP).
+                    boolean isIp = host.matches("[0-9.]+|[:0-9a-fA-F]+");
+                    javax.net.ssl.SSLParameters params = ssl.getSSLParameters();
+                    if (!isIp) {
+                        params.setServerNames(java.util.Collections.singletonList(
+                            new javax.net.ssl.SNIHostName(host)));
+                    }
+                    // Hostname verification — prevents MITM with valid cert for wrong host
+                    params.setEndpointIdentificationAlgorithm("HTTPS");
+                    ssl.setSSLParameters(params);
+                    ssl.connect(new InetSocketAddress(host, port), 8000);
+                    ssl.startHandshake();
+                    // Verify hostname post-handshake (defense-in-depth)
+                    javax.net.ssl.HostnameVerifier verifier = javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier();
+                    if (!verifier.verify(host, ssl.getSession())) {
+                        throw new IOException("Hostname verification failed: " + host);
+                    }
+                    socket = ssl;
+                } else {
+                    java.net.Socket plain = new java.net.Socket();
+                    plain.setTcpNoDelay(true);
+                    plain.setSoTimeout(SOCKET_TIMEOUT_MS);
+                    plain.connect(new InetSocketAddress(host, port), 8000);
+                    socket = plain;
                 }
-                // Hostname verification — prevents MITM with valid cert for wrong host
-                params.setEndpointIdentificationAlgorithm("HTTPS");
-                ssl.setSSLParameters(params);
-                ssl.connect(new InetSocketAddress(host, port), 8000);
-                ssl.startHandshake();
-                // Verify hostname post-handshake (defense-in-depth)
-                javax.net.ssl.HostnameVerifier verifier = javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier();
-                if (!verifier.verify(host, ssl.getSession())) {
-                    throw new IOException("Hostname verification failed: " + host);
+                in = socket.getInputStream();
+                out = socket.getOutputStream();
+
+                // WebSocket handshake
+                byte[] keyBytes = new byte[16];
+                secureRandom.nextBytes(keyBytes);
+                String secKey = Base64.getEncoder().encodeToString(keyBytes);
+
+                StringBuilder req = new StringBuilder();
+                req.append("GET ").append(resource).append(" HTTP/1.1\r\n");
+                req.append("Host: ").append(host);
+                if (port != 443 && port != 80) req.append(":").append(port);
+                req.append("\r\n");
+                req.append("Upgrade: websocket\r\n");
+                req.append("Connection: Upgrade\r\n");
+                req.append("Sec-WebSocket-Key: ").append(secKey).append("\r\n");
+                req.append("Sec-WebSocket-Version: 13\r\n");
+                req.append("Authorization: ").append(authHeader).append("\r\n");
+                req.append("\r\n");
+
+                out.write(req.toString().getBytes(StandardCharsets.UTF_8));
+                out.flush();
+
+                // Read HTTP response
+                StringBuilder response = new StringBuilder();
+                int b;
+                while ((b = in.read()) != -1) {
+                    response.append((char) b);
+                    String s = response.toString();
+                    if (s.endsWith("\r\n\r\n")) break;
+                    if (s.length() > 8192) throw new IOException("response too large");
                 }
-                socket = ssl;
-            } else {
-                java.net.Socket plain = new java.net.Socket();
-                plain.setTcpNoDelay(true);
-                plain.setSoTimeout(SOCKET_TIMEOUT_MS);
-                plain.connect(new InetSocketAddress(host, port), 8000);
-                socket = plain;
+
+                String respStr = response.toString();
+                String statusLine = respStr.split("\r\n", 2)[0];
+                if (!statusLine.matches("^HTTP/1\\.1 101\\b.*")) {
+                    throw new IOException("handshake failed: " + statusLine);
+                }
+
+                // Verify Sec-WebSocket-Accept
+                MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+                sha1.update((secKey + WS_GUID).getBytes(StandardCharsets.UTF_8));
+                String expectedAccept = Base64.getEncoder().encodeToString(sha1.digest());
+                if (!respStr.contains(expectedAccept)) {
+                    throw new IOException("Sec-WebSocket-Accept mismatch");
+                }
+
+                // Start reader thread
+                running = true;
+                connected = true;
+                readerThread = new Thread(this::readerLoop, "LspWsReader");
+                readerThread.setDaemon(true);
+                readerThread.start();
+
+                // Start ping thread — sends periodic pings to keep connection alive
+                // and detect dead connections early (server pong timeout = 2x PING_INTERVAL)
+                pingThread = new Thread(this::pingLoop, "LspWsPing");
+                pingThread.setDaemon(true);
+                pingThread.start();
+                success = true;
+            } finally {
+                if (!success) {
+                    connected = false;
+                    running = false;
+                    closeQuietly();
+                    clearModuleClientIfCurrent();
+                }
             }
-            in = socket.getInputStream();
-            out = socket.getOutputStream();
-
-            // WebSocket handshake
-            byte[] keyBytes = new byte[16];
-            secureRandom.nextBytes(keyBytes);
-            String secKey = Base64.getEncoder().encodeToString(keyBytes);
-
-            StringBuilder req = new StringBuilder();
-            req.append("GET ").append(resource).append(" HTTP/1.1\r\n");
-            req.append("Host: ").append(host);
-            if (port != 443 && port != 80) req.append(":").append(port);
-            req.append("\r\n");
-            req.append("Upgrade: websocket\r\n");
-            req.append("Connection: Upgrade\r\n");
-            req.append("Sec-WebSocket-Key: ").append(secKey).append("\r\n");
-            req.append("Sec-WebSocket-Version: 13\r\n");
-            req.append("Authorization: ").append(authHeader).append("\r\n");
-            req.append("\r\n");
-
-            out.write(req.toString().getBytes(StandardCharsets.UTF_8));
-            out.flush();
-
-            // Read HTTP response
-            StringBuilder response = new StringBuilder();
-            int b;
-            while ((b = in.read()) != -1) {
-                response.append((char) b);
-                String s = response.toString();
-                if (s.endsWith("\r\n\r\n")) break;
-                if (s.length() > 8192) throw new IOException("response too large");
-            }
-
-            String respStr = response.toString();
-            if (!respStr.contains("101")) {
-                throw new IOException("handshake failed: " + respStr.split("\r\n")[0]);
-            }
-
-            // Verify Sec-WebSocket-Accept
-            MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
-            sha1.update((secKey + WS_GUID).getBytes(StandardCharsets.UTF_8));
-            String expectedAccept = Base64.getEncoder().encodeToString(sha1.digest());
-            if (!respStr.contains(expectedAccept)) {
-                throw new IOException("Sec-WebSocket-Accept mismatch");
-            }
-
-            // Start reader thread
-            running = true;
-            connected = true;
-            readerThread = new Thread(this::readerLoop, "LspWsReader");
-            readerThread.setDaemon(true);
-            readerThread.start();
-
-            // Start ping thread — sends periodic pings to keep connection alive
-            // and detect dead connections early (server pong timeout = 2x PING_INTERVAL)
-            pingThread = new Thread(this::pingLoop, "LspWsPing");
-            pingThread.setDaemon(true);
-            pingThread.start();
         }
 
         void disconnect() {
@@ -3110,7 +3148,10 @@ public final class MonikaXposedModule extends XposedModule {
             } catch (Throwable t) {
                 connected = false;
                 closeQuietly();
-                if (!manualDisconnect) scheduleWsReconnect();
+                if (!manualDisconnect) {
+                    recordWsDisconnectedForBackoff();
+                    scheduleWsReconnect();
+                }
                 return false;
             }
         }
@@ -3131,6 +3172,9 @@ public final class MonikaXposedModule extends XposedModule {
 
         private void sendFrame(int opcode, byte[] payload, boolean mask) throws IOException {
             int len = payload != null ? payload.length : 0;
+            if (len > MAX_WS_FRAME_BYTES) {
+                throw new IOException("frame too large");
+            }
             // Byte 0: FIN(0x80) | opcode
             out.write(0x80 | opcode);
 
@@ -3144,8 +3188,9 @@ public final class MonikaXposedModule extends XposedModule {
                 out.write(len & 0xFF);
             } else {
                 out.write(maskBit | 127);
+                long value = len & 0xFFFFFFFFL;
                 for (int i = 7; i >= 0; i--) {
-                    out.write((int) ((len >> (i * 8)) & 0xFF));
+                    out.write((int) ((value >> (i * 8)) & 0xFF));
                 }
             }
 
@@ -3212,7 +3257,10 @@ public final class MonikaXposedModule extends XposedModule {
                             running = false;
                             closeQuietly();
                             clearModuleClientIfCurrent();
-                            if (!manualDisconnect) scheduleWsReconnect();
+                            if (!manualDisconnect) {
+                                recordWsDisconnectedForBackoff();
+                                scheduleWsReconnect();
+                            }
                             return;
                         default:
                             // Ignore other frame types (ack, messages, etc.)
@@ -3223,13 +3271,17 @@ public final class MonikaXposedModule extends XposedModule {
                 // Connection lost — trigger immediate reconnect
                 log(Log.DEBUG, TAG, "WS reader error: " + t.getClass().getSimpleName());
                 connected = false;
-                if (!manualDisconnect) scheduleWsReconnect();
+                if (!manualDisconnect) {
+                    recordWsDisconnectedForBackoff();
+                    scheduleWsReconnect();
+                }
             } finally {
                 connected = false;
                 running = false;
                 closeQuietly();
                 clearModuleClientIfCurrent();
                 if (unexpectedDisconnect && !manualDisconnect) {
+                    recordWsDisconnectedForBackoff();
                     scheduleWsReconnect();
                 }
             }
@@ -3266,6 +3318,7 @@ public final class MonikaXposedModule extends XposedModule {
                 running = false;
                 closeQuietly();
                 clearModuleClientIfCurrent();
+                recordWsDisconnectedForBackoff();
                 scheduleWsReconnect();
             }
         }
@@ -3284,15 +3337,21 @@ public final class MonikaXposedModule extends XposedModule {
 
             // Read extended length
             if (len == 126) {
-                len = ((in.read() & 0xFF) << 8) | (in.read() & 0xFF);
+                int b2 = in.read();
+                int b3 = in.read();
+                if (b2 < 0 || b3 < 0) return null;
+                len = ((b2 & 0xFF) << 8) | (b3 & 0xFF);
             } else if (len == 127) {
                 long longLen = 0;
                 for (int i = 0; i < 8; i++) {
-                    longLen = (longLen << 8) | (in.read() & 0xFF);
+                    int next = in.read();
+                    if (next < 0) return null;
+                    longLen = (longLen << 8) | (next & 0xFFL);
                 }
                 if (longLen > Integer.MAX_VALUE) throw new IOException("frame too large");
                 len = (int) longLen;
             }
+            if (len > MAX_WS_FRAME_BYTES) throw new IOException("frame too large");
 
             // Read mask key (server frames shouldn't be masked, but spec allows)
             byte[] maskKey = null;
@@ -3314,6 +3373,7 @@ public final class MonikaXposedModule extends XposedModule {
                 while (remaining > 0) {
                     int read = in.read(recvBuf, 0, Math.min(recvBuf.length, remaining));
                     if (read < 0) return null;
+                    if (read == 0) continue;
                     if (masked) {
                         for (int i = 0; i < read; i++) {
                             recvBuf[i] ^= maskKey[(offset - 1 + i) % 4];
