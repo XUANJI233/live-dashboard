@@ -28,3 +28,8 @@ agents/android-app/keystore.properties
 agents/android-app/*.keystore
 *.hprof
 /.idea/
+*.jks
+*.p12
+*.pem
+**/keystore/
+**/keystore/**
