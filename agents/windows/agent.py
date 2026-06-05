@@ -928,6 +928,22 @@ class MessageClient:
             log.debug("删除留言失败: %s", exc)
         return False
 
+        def delete_viewer(self, viewer_id: str) -> bool:
+            """POST /api/messages/viewer/delete — remove all messages from a viewer."""
+            try:
+                r = self._session.post(
+                    f"{self._server_url}/api/messages/viewer/delete",
+                    json={"viewer_id": viewer_id}, timeout=10,
+                )
+                if r.status_code == 200:
+                    with self._lock:
+                        self._cache = [m for m in self._cache
+                                       if m.get("viewer_id") != viewer_id]
+                    return True
+            except Exception as exc:
+                log.debug("删除访客对话失败: %s", exc)
+            return False
+
     def remark(self, viewer_id: str, remark: str) -> bool:
         """POST /api/messages/remark — set viewer remark."""
         try:
