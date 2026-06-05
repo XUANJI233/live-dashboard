@@ -519,8 +519,9 @@ function ignoreRequestBody(request) {
 
 function originUrl(origin, pathname, search = "") {
   const base = origin.endsWith("/") ? origin : `${origin}/`;
-  const url = new URL(pathname.replace(/^\/+/, ""), base);
-  url.search = search.startsWith("?") ? search.slice(1) : search;
+  const path = pathname.startsWith("/") ? pathname.slice(1) : pathname;
+  const query = search && !search.startsWith("?") ? `?${search}` : search;
+  const url = new URL(`${path}${query || ""}`, base);
   return url.href;
 }
 
@@ -849,8 +850,9 @@ function allowMemoryRate(prefix, identity, limit) {
   const key = `${prefix}:${identity}`;
   const now = Date.now();
   if (memoryRate.size > 5000) {
-    for (const [itemKey, item] of memoryRate) {
-      if (item.resetAt <= now) memoryRate.delete(itemKey);
+    for (const itemKey of Array.from(memoryRate.keys())) {
+      const item = memoryRate.get(itemKey);
+      if (!item || item.resetAt <= now) memoryRate.delete(itemKey);
     }
   }
   const entry = memoryRate.get(key);
@@ -881,7 +883,7 @@ async function kvGet(kv, key) {
   return await kv.get(key, { type: "text" }) || null;
 }
 
-async function kvPut(kv, key, value, ttl) {
+async function kvPut(kv, key, value, _ttl) {
   await kv.put(key, `${value}:${Date.now()}`);
 }
 
