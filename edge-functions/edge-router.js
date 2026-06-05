@@ -883,8 +883,8 @@ async function kvGet(kv, key) {
   return await kv.get(key, { type: "text" }) || null;
 }
 
-async function kvPut(kv, key, value, _ttl) {
-  await kv.put(key, `${value}:${Date.now()}`);
+async function kvPut(kv, key, value, ttl = RATE_WINDOW) {
+  try { await kv.put(key, `${value}:${Date.now()}`, { expirationTtl: ttl }); } catch {}
 }
 
 // ── HMAC (WebCrypto) ──
