@@ -180,6 +180,27 @@ LSP direct body：
 - 内部 `MediaSessionRecord` 字段名在目标 ROM 上是否保留；fallback 已可工作但需要媒体切换/暂停/关闭真机日志验证。
 - WebSocket 握手和断线恢复还需要真机/服务端继续观察，确认大帧、异常关闭和代理返回异常状态行不会误判。
 
+## 方法级复核矩阵
+
+以下矩阵按 `MonikaXposedModule.java` 当前 HEAD 的方法清单逐项归类。结论里的“通过”表示本地代码路径、字段契约、SDK 36/API 签名和 AOSP 对照未发现静态问题；“需真机”表示隐藏 API/OEM ROM 行为无法仅靠本地编译证明。
+
+| 范围 | 方法 | 复核结论 |
+| --- | --- | --- |
+| 生命周期 | `onModuleLoaded`、`onSystemServerStarting`、`onPackageReady`、`shouldHookBrowserProcess` | 通过。作用域和进程过滤与 LSPosed system/browser 双进程设计一致；renderer/gpu/service 子进程被排除。 |
+| 前台 hook 安装 | `installForegroundSampler`、`installForegroundResumeEventHooks`、`hookForegroundEventMethods`、`isNamed`、`foregroundEventLikelyChanged`、`scheduleForegroundSnapshot` | 通过，需真机。AOSP 前台恢复路径覆盖 ATMS/RWC/Task，事件被 300-600ms 延迟和 pending flag 合并；小米若改类名会自动跳过并回退。 |
+| 输入 hook | `installInputMethodHooks`、`inputMethodHookKind`、`inputHookResultSucceeded`、`hasTextEditorInfo`、`startInputFlagsFromArgs`、`firstBooleanArg` | 通过，需真机。AOSP `StartInputFlags.IS_TEXT_EDITOR` 和 `InputBindResult` 码值已对照；小米参数顺序仍需日志确认。 |
+| 采样器/receiver | `startForegroundSampler`、`registerConfigReceiver`、`initUploadThread`、`registerScreenStateReceiver`、`getUploadHandler`、`registerBrowserTitleReceiver` | 通过。无高频轮询；配置、息屏、浏览器标题 receiver 均在 system_server context 注册；浏览器标题用 nonce/前台/发送者校验。 |
+| 媒体 hook | `installInternalMediaHooks`、`hookMediaSessionRecordMethod`、`updateMediaFromSessionRecord`、`mediaRecordFromHookThis`、`playbackStateFromRecord`、`metadataFromRecord`、`sessionRecordPackage` | 通过，需真机。方法名 hook 可兼容 AOSP 签名变化；字段名用多候选兜底；OEM 私有字段仍需设备验证。 |
+| 媒体 fallback | `initMediaSessionListener`、`registerMediaControllerCallback`、`mediaControllerKey`、`cleanupStaleMediaControllerCallbacks`、`unregisterMediaControllerCallback`、`refreshMediaFromControllers`、`refreshActiveMediaState`、`validateMediaStateIfNeeded`、`clearMediaInfo`、`mediaInfoKey`、`mediaTextFromMeta` | 通过。SDK 36 `MediaController` callback/register/unregister 对照通过；callback 可注销，暂停/关闭会清旧标题。 |
+| 反射缓存 | `findMethod`、`findMethod(...paramTypes)`、`findPublicMethod`、`signatureOf`、`cachedClassForName`、`callAny`、`readField`、`readStaticField` | 通过。缓存命中/缺失均有 sentinel，避免反复反射；类加载器被纳入 class cache key。 |
+| 浏览器标题 hook | `installActivityTitleHooks`、`installWebViewTitleHooks`、`hookWebViewClientInstallers`、`hookSpecificWebChromeClient`、`hookSpecificWebViewClient`、`hookWebViewClientPageFinished`、`installAospBrowserTitleHooks`、`hookAospBrowserPageCallback`、`hookWebViewNavigation`、`scheduleWebViewTitleRead`、`publishTitleFromWebView`、`findActivityContext`、`publishBrowserTitle`、`publishBrowserTitleFromProcess` | 通过，需真机。SDK 36 Activity/WebView/WebChromeClient/WebViewClient/Window 签名已对照；AOSP Browser 私有方法已覆盖；小米浏览器私有 UI 进程仍需实测。 |
+| 前台快照 | `broadcastSnapshot`、`putMediaExtras`、`getTopActivityComponentName`、`componentFromTaskInfo`、`getTopActivityFromTasks`、`findCompatibleGetTasksMethod`、`buildDefaultArgs`、`getRecentTopActivityFallback`、`getFocusedTaskDescription`、`getWindowingMode`、`getDeviceFormFactor`、`getActivityTaskManagerService`、`getSystemContext` | 通过，需真机。focused root/stack/getTasks 多策略覆盖；熄屏跳过 ATMS；MIUI tablet 检测和 recent top fallback 存在。 |
+| 配置与上报 | `loadDirectUploadConfig`、`saveDirectUploadConfig`、`maybeDirectUpload`、`sendDirectReport`、`clampDirectInterval`、`buildDirectReportBody`、`fillBatteryExtras`、`fillNetworkExtras`、`networkType`、`cellularGeneration`、`hasPhoneStatePermission`、`postDirectReportFallback`、`fetchQueuedMessagesFallback`、`readUtf8` | 通过。HTTP/WS 共享 `/api/report` 契约；网络/VPN/电量只在构建 payload 时读取；消息 fallback 有 256KB 读取上限。 |
+| LSP WebSocket | `ensureWsConnected`、`scheduleWsReconnect`、`recordWsDisconnectedForBackoff`、`buildLspWsUrl`、`LspWebSocketClient.clearModuleClientIfCurrent`、`connect`、`disconnect`、`closeQuietly`、`sendText`、`sendCloseFrame`、`sendFrame`、`readerLoop`、`pingLoop`、`readFrame` | 通过。握手校验 101 和 `Sec-WebSocket-Accept`，client frame masked，帧大小 256KB，上下行异常进入退避；真实代理关闭行为需观察。 |
+| 消息转发/通知 | `forwardViewerMessageToApp`、`postViewerMessageNotification` | 通过。WS/HTTP fallback 的 `viewer_message` 字段转成 app receiver extras；通知使用 app package launch intent 和 immutable pending intent。 |
+| 展示文本/工具 | `primaryDisplayTitle`、`isoTime`、`playbackStateName`、`resolveAppLabel`、`firstNonBlank`、`safeString`、`normalizeNonce`、`getBrowserTitleNonce`、`isScreenInteractive`、`isIgnoredPackage`、`isBrowserPackage`、`cleanTitle` | 通过。`upload_media=false` 不再通过 `window_title` 泄露媒体；标题裁剪 256；nonce 长度要求 >=24。 |
+| App 侧交叉路径 | `LsposedConfigBridge.publish/getOrCreateBrowserTitleNonce`、`LsposedBridgeReceiver.handleStatus/handleMessage`、`SystemSnapshotStore.updateFromLsposed/mergeForeground/mergeMedia`、`HeartbeatWorker.collectSystemSnapshot/buildStatusPayload`、`ReportClient.reportApp`、`MessageSocketManager.scheduleReconnect` | 通过。配置字段、广播 extras、HTTP/WS payload 与服务端契约一致；普通 App WS 退避已封顶。 |
+
 ## 本地验证
 
 已执行：
