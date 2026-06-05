@@ -3,7 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
-    id("io.gitlab.arturbosch.detekt")
+        id("io.gitlab.arturbosch.detekt")
 }
 
 android {
@@ -14,8 +14,8 @@ android {
         applicationId = "com.monika.dashboard"
         minSdk = 26
         targetSdk = 36
-        versionCode = gitCommitCount()
-        versionName = gitVersionName()
+        versionCode = 1
+        versionName = "1.0.0"
     }
 
     flavorDimensions += "capability"
@@ -31,26 +31,6 @@ android {
         }
     }
 
-    signingConfigs {
-        getByName("debug")
-        create("release") {
-            enableV3Signing = true
-            enableV2Signing = true
-            val ksPath = System.getenv("ANDROID_KEYSTORE_PATH")
-            if (!ksPath.isNullOrBlank()) {
-                storeFile = rootProject.file(ksPath)
-                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: ""
-                keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: ""
-                keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: storePassword
-            } else {
-                storeFile = rootProject.file("app/keystore/release.jks")
-                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: "monika2026"
-                keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: "upload"
-                keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: storePassword
-            }
-        }
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -58,7 +38,6 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
         }
     }
 
@@ -69,10 +48,10 @@ android {
         disable += "NewApi"
     }
 
-    testOptions {
-        unitTests.isIncludeAndroidResources = true
-        unitTests.isReturnDefaultValues = true
-    }
+        testOptions {
+            unitTests.isIncludeAndroidResources = true
+            unitTests.isReturnDefaultValues = true
+        }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -90,12 +69,12 @@ kotlin {
     }
 }
 
-detekt {
-    buildUponDefaultConfig = true
-    allRules = false
-    config.setFrom("$rootDir/detekt.yml")
-    baseline = file("$rootDir/detekt-baseline.xml")
-}
+    detekt {
+        buildUponDefaultConfig = true
+        allRules = false
+        config.setFrom("$rootDir/detekt.yml")
+        baseline = file("$rootDir/detekt-baseline.xml")
+    }
 
 dependencies {
     // Compose BOM
@@ -135,31 +114,10 @@ dependencies {
     // Core
     implementation("androidx.core:core-ktx:1.15.0")
 
-    // ── Testing ──
-    testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.14.1")
-    testImplementation("androidx.test:core:1.6.1")
-    testImplementation("androidx.test.ext:junit:1.2.1")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
-}
-
-// ── Auto versionCode / versionName from git commit count ──
-fun gitCommitCount(): Int {
-    return runCatching {
-        val proc = ProcessBuilder("git", "rev-list", "--count", "HEAD")
-            .directory(rootProject.projectDir)
-            .redirectErrorStream(true)
-            .start()
-        val count = proc.inputStream.bufferedReader().use { it.readText().trim() }
-        proc.waitFor()
-        count.toInt()
-    }.getOrDefault(1)
-}
-
-fun gitVersionName(): String {
-    val count = gitCommitCount()
-    val major = count / 100
-    val minor = (count % 100) / 10
-    val patch = count % 10
-    return "$major.$minor.$patch"
+        // ── Testing ──
+        testImplementation("junit:junit:4.13.2")
+        testImplementation("org.robolectric:robolectric:4.14.1")
+        testImplementation("androidx.test:core:1.6.1")
+        testImplementation("androidx.test.ext:junit:1.2.1")
+        testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }
