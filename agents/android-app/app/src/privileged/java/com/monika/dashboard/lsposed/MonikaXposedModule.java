@@ -102,6 +102,7 @@ public final class MonikaXposedModule extends XposedModule {
     private static MonikaXposedModule instance;
     
     private volatile int idleConsecutiveCount = 0;
+    private volatile boolean foregroundSnapshotPending = false;
     private volatile long wsLastFailAt = 0L;
     private volatile long wsRetryDelayMs = WS_RETRY_BASE_MS;
     private static final String[] BROWSER_PACKAGES = new String[] {
@@ -333,14 +334,94 @@ public final class MonikaXposedModule extends XposedModule {
                         .intercept(chain -> {
                             Object result = chain.proceed();
                             // Foreground changed — trigger immediate snapshot
-                            try { broadcastSnapshot(); } catch (Throwable ignored) {}
+                            scheduleForegroundSnapshot(300L);
                             return result;
                         });
                 log(Log.INFO, TAG, "hooked ActivityTaskManagerService#moveTaskToFront (event-driven)");
             }
+            int foregroundHooks = installForegroundResumeEventHooks(cl);
+            if (foregroundHooks > 0) {
+                log(Log.INFO, TAG, "hooked foreground resume event methods: " + foregroundHooks);
+            }
         } catch (Throwable t) {
             log(Log.WARN, TAG, "foreground sampler hook skipped: " + t.getClass().getSimpleName());
             startForegroundSampler();
+        }
+    }
+
+    private int installForegroundResumeEventHooks(ClassLoader cl) {
+        int hooked = 0;
+        hooked += hookForegroundEventMethods(cl,
+                "com.android.server.wm.ActivityTaskManagerService",
+                600L,
+                "startActivityAsUser",
+                "setFocusedTask");
+        hooked += hookForegroundEventMethods(cl,
+                "com.android.server.wm.RootWindowContainer",
+                300L,
+                "resumeFocusedTasksTopActivities");
+        hooked += hookForegroundEventMethods(cl,
+                "com.android.server.wm.Task",
+                300L,
+                "resumeTopActivityUncheckedLocked");
+        return hooked;
+    }
+
+    private int hookForegroundEventMethods(ClassLoader cl, String className, long delayMs, String... methodNames) {
+        try {
+            Class<?> clazz = cachedClassForName(className, cl);
+            if (clazz == null) return 0;
+            int hooked = 0;
+            for (Method method : clazz.getDeclaredMethods()) {
+                if (!isNamed(method.getName(), methodNames)) continue;
+                try { method.setAccessible(true); } catch (Throwable ignored) {}
+                try { deoptimize(method); } catch (Throwable ignored) {}
+                try {
+                    hook(method)
+                            .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                            .intercept(chain -> {
+                                Object result = chain.proceed();
+                                if (foregroundEventLikelyChanged(result)) {
+                                    scheduleForegroundSnapshot(delayMs);
+                                }
+                                return result;
+                            });
+                    hooked++;
+                } catch (Throwable ignored) {}
+            }
+            return hooked;
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "foreground event hook skipped for " + className + ": " + t.getClass().getSimpleName());
+            return 0;
+        }
+    }
+
+    private boolean isNamed(String value, String... names) {
+        if (value == null || names == null) return false;
+        for (String name : names) {
+            if (value.equals(name)) return true;
+        }
+        return false;
+    }
+
+    private boolean foregroundEventLikelyChanged(Object result) {
+        if (result instanceof Boolean) return (Boolean) result;
+        if (result instanceof Integer) return ((Integer) result) >= 0;
+        return true;
+    }
+
+    private void scheduleForegroundSnapshot(long delayMs) {
+        if (foregroundSnapshotPending) return;
+        foregroundSnapshotPending = true;
+        try {
+            Handler handler = new Handler(Looper.getMainLooper());
+            handler.postDelayed(() -> {
+                foregroundSnapshotPending = false;
+                try { broadcastSnapshot(); } catch (Throwable ignored) {}
+            }, Math.max(0L, delayMs));
+        } catch (Throwable t) {
+            foregroundSnapshotPending = false;
+            try { broadcastSnapshot(); } catch (Throwable ignored) {}
         }
     }
 

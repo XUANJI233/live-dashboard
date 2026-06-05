@@ -25,6 +25,7 @@
 - 浏览器标题 nonce 改为 system_server 已持有 nonce 时必须匹配；API 34+ 仍使用 sender identity，所有版本仍做前台浏览器校验。
 - 去掉重复安装的 base `WebChromeClient#onReceivedTitle` hook，避免同一页面标题进入两条等价 hook 热路径。
 - ATMS ready hook 改为优先 `onSystemReady`、兼容旧名 `systemReady`，与 AOSP main 当前方法名对齐。
+- 前台变化不再只依赖 `moveTaskToFront` 和 5 分钟兜底；补充 hook ATMS `startActivityAsUser/setFocusedTask`、`RootWindowContainer#resumeFocusedTasksTopActivities`、`Task#resumeTopActivityUncheckedLocked`，并用 pending flag 合并短时间多次 resume 事件。
 - WS 已连接后异常断开也会进入重连退避，避免边缘代理/服务端持续关闭时形成即时重连循环。
 - App 侧普通 WebSocket 管理器的重连指数已封顶，避免长时间离线后位移溢出导致延迟计算异常。
 
@@ -51,19 +52,20 @@
 当前实现：
 
 - hook `ActivityTaskManagerService#onSystemReady` / `systemReady` 启动采样器；实现上优先匹配 AOSP 当前的 `onSystemReady`，旧 ROM/OEM 若保留 `systemReady` 也会 fallback。
-- hook `ActivityTaskManagerService#moveTaskToFront` 做事件触发。
+- hook `ActivityTaskManagerService#moveTaskToFront`、`startActivityAsUser`、`setFocusedTask`，以及 `RootWindowContainer#resumeFocusedTasksTopActivities`、`Task#resumeTopActivityUncheckedLocked` 做事件触发。
 - `broadcastSnapshot()` 通过 `getFocusedRootTaskInfo()`、`getFocusedStackInfo()`、`getTasks()` 多策略读取顶部 Activity。
 - 熄屏时跳过 ATMS 查询，直接报告 `sleeping`，避免息屏后保留旧前台应用。
+- 前台事件触发会通过 `scheduleForegroundSnapshot()` 延迟 300-600ms 后读取，并用 `foregroundSnapshotPending` 合并同一轮启动/恢复中的多次回调，避免 hook 热路径直接重复查询 ATMS。
 
 交叉验证：
 
-- AOSP `ActivityTaskManagerService` 存在 focused root task / focused stack / task list 这类路径，但隐藏 API 和 ROM 差异较大。
+- AOSP `ActivityTaskManagerService` 存在 focused root task / focused stack / task list 这类路径；普通 Activity 启动/恢复还会经过 RootWindowContainer/Task resume 路径，因此只 hook `moveTaskToFront` 覆盖不完整。
 - 本地参考项目 EdgeX 也通过 `ActivityTaskManager.getService()` / `ServiceManager activity_task` 获取 ATMS。
 - 小米兼容性：代码已读取 `miui.os.Build.IS_TABLET` 判断设备形态，并保留 `getTasks()` fallback。
 
 风险：
 
-- `moveTaskToFront` 不是所有前台切换的唯一入口。当前 5 分钟兜底能防止长期错误，但普通 Activity 启动可能仍依赖 focused task 查询时机。若后续要进一步提高实时性，应继续验证 AOSP `ActivityRecord`/`RootWindowContainer` 的 resume 事件，不应改成高频轮询。
+- `RootWindowContainer` / `Task` 属于隐藏 system_server 实现，小米/HyperOS 可能改名或拆分；当前 hook 按类/方法名逐个保护安装，失败时仍保留低频 heartbeat 和 ATMS focused task 查询兜底。
 
 ## 输入状态
 
