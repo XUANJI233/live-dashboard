@@ -931,21 +931,21 @@ class MessageClient:
             log.debug("删除留言失败: %s", exc)
         return False
 
-        def delete_viewer(self, viewer_id: str) -> bool:
-            """POST /api/messages/viewer/delete — remove all messages from a viewer."""
-            try:
-                r = self._session.post(
-                    f"{self._server_url}/api/messages/viewer/delete",
-                    json={"viewer_id": viewer_id}, timeout=10,
-                )
-                if r.status_code == 200:
-                    with self._lock:
-                        self._cache = [m for m in self._cache
-                                       if m.get("viewer_id") != viewer_id]
-                    return True
-            except Exception as exc:
-                log.debug("删除访客对话失败: %s", exc)
-            return False
+    def delete_viewer(self, viewer_id: str) -> bool:
+        """POST /api/messages/viewer/delete — remove all messages from a viewer."""
+        try:
+            r = self._session.post(
+                f"{self._server_url}/api/messages/viewer/delete",
+                json={"viewer_id": viewer_id}, timeout=10,
+            )
+            if r.status_code == 200:
+                with self._lock:
+                    self._cache = [m for m in self._cache
+                                   if m.get("viewer_id") != viewer_id]
+                return True
+        except Exception as exc:
+            log.debug("删除访客对话失败: %s", exc)
+        return False
 
     def remark(self, viewer_id: str, remark: str) -> bool:
         """POST /api/messages/remark — set viewer remark."""
@@ -1036,7 +1036,7 @@ class TrayAgent:
         if self._icon:
             self._icon.update_menu()
 
-    def _get_unread_label(self) -> str:
+    def _get_unread_label(self, _item=None) -> str:
         with self._lock:
             n = self._unread_count
         if n > 0:
@@ -1089,7 +1089,7 @@ class TrayAgent:
             tip += f"\n{status}"
             self._icon.title = tip[:127]
 
-    def _toggle_log(self):
+    def _toggle_log(self, _icon=None, _item=None):
         enabled = _file_handler is None
         set_file_logging(enabled)
         cfg = load_config()
@@ -1098,7 +1098,7 @@ class TrayAgent:
         if self._icon:
             self._icon.update_menu()
 
-    def _toggle_autostart(self):
+    def _toggle_autostart(self, _icon=None, _item=None):
         enabled = is_autostart_enabled()
         if enabled:
             registry_ok = _set_registry_autostart(False)
@@ -1123,12 +1123,12 @@ class TrayAgent:
         if self._icon:
             self._icon.update_menu()
 
-    def _open_settings(self):
+    def _open_settings(self, _icon=None, _item=None):
         self._settings_requested = True
         if self._icon:
             self._icon.stop()
 
-    def _show_messages(self):
+    def _show_messages(self, _icon=None, _item=None):
         """Show recent messages in a dialog."""
         if not self._msg_client:
             return
@@ -1150,7 +1150,7 @@ class TrayAgent:
         if self._icon:
             self._icon.update_menu()
 
-    def _quit(self):
+    def _quit(self, _icon=None, _item=None):
         shutdown_event.set()
         if self._icon:
             self._icon.stop()
