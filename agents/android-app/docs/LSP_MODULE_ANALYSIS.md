@@ -22,7 +22,7 @@
 
 - 输入状态不再在未知 `EditorInfo` 时默认报 active，改为优先解析 AOSP `StartInputFlags.IS_TEXT_EDITOR`，未知时保守 false。
 - `MediaController` fallback 回调现在按 session token 保存，并在 session 消失或销毁时调用 `unregisterCallback`，避免旧媒体 session 回调泄漏/重复。
-- 浏览器标题 nonce 改为 system_server 已持有 nonce 时必须匹配；API 34+ 仍使用 sender identity，所有版本仍做前台浏览器校验。
+- 浏览器标题校验改为 API 34+ 优先使用 sender identity；低版本或拿不到 sender identity 时使用 nonce，所有版本仍做前台浏览器校验。
 - 去掉重复安装的 base `WebChromeClient#onReceivedTitle` hook，避免同一页面标题进入两条等价 hook 热路径。
 - ATMS ready hook 改为优先 `onSystemReady`、兼容旧名 `systemReady`，与 AOSP main 当前方法名对齐。
 - 前台变化不再只依赖 `moveTaskToFront` 和 5 分钟兜底；补充 hook ATMS `startActivityAsUser/setFocusedTask`、`RootWindowContainer#resumeFocusedTasksTopActivities`、`Task#resumeTopActivityUncheckedLocked`，并用 pending flag 合并短时间多次 resume 事件。
@@ -134,8 +134,10 @@
 
 已修正：
 
-- `LsposedConfigBridge` 生成并下发 `browser_title_nonce`；system_server 已加载 nonce 时，浏览器标题广播必须带相同 nonce。这样 API 34 以下不只依赖“当前前台浏览器”这个弱校验。
+- `LsposedConfigBridge` 生成并下发 `browser_title_nonce`；API 34 以下或拿不到 sender identity 时，浏览器标题广播必须带相同 nonce。这样低版本不只依赖“当前前台浏览器”这个弱校验。
 - base `WebChromeClient#onReceivedTitle` 只安装一次；具体子类 hook 仍保留，用于处理 override 不调用 super 的浏览器实现。
+- API 34+ 先验证 `BroadcastReceiver#getSentFromPackage()`；发送者身份已匹配时不再因为浏览器进程暂时读不到 nonce 而误拒绝标题广播。API 34 以下仍使用 nonce 与前台浏览器校验。
+- 标题上报现在带 `source`，并过滤 `浏览器`、`Browser`、`New Tab`、应用名等泛标题。Activity/Window 的泛标题不能覆盖 WebView/AOSP 页面标题；WebView/AOSP 明确回报泛标题时会清空旧标题，避免显示上一页或“正在用浏览器看浏览器”。
 
 风险：
 
@@ -197,7 +199,7 @@ LSP direct body：
 | 媒体 hook | `installInternalMediaHooks`、`hookMediaSessionRecordMethod`、`updateMediaFromSessionRecord`、`mediaRecordFromHookThis`、`playbackStateFromRecord`、`metadataFromRecord`、`sessionRecordPackage` | 通过，需真机。方法名 hook 可兼容 AOSP 签名变化；字段名用多候选兜底；OEM 私有字段仍需设备验证。 |
 | 媒体 fallback | `initMediaSessionListener`、`registerMediaControllerCallback`、`mediaControllerKey`、`cleanupStaleMediaControllerCallbacks`、`unregisterMediaControllerCallback`、`refreshMediaFromControllers`、`refreshActiveMediaState`、`validateMediaStateIfNeeded`、`clearMediaInfo`、`mediaInfoKey`、`mediaTextFromMeta` | 通过。SDK 36 `MediaController` callback/register/unregister 对照通过；callback 可注销，初始化会同步当前 active session，暂停/关闭/空 metadata 会清旧标题。 |
 | 反射缓存 | `findMethod`、`findMethod(...paramTypes)`、`findPublicMethod`、`signatureOf`、`cachedClassForName`、`callAny`、`readField`、`readStaticField` | 通过。缓存命中/缺失均有 sentinel，避免反复反射；类加载器被纳入 class cache key。 |
-| 浏览器标题 hook | `installActivityTitleHooks`、`installWebViewTitleHooks`、`hookWebViewClientInstallers`、`hookSpecificWebChromeClient`、`hookSpecificWebViewClient`、`hookWebViewClientPageFinished`、`installAospBrowserTitleHooks`、`hookAospBrowserPageCallback`、`hookWebViewNavigation`、`scheduleWebViewTitleRead`、`publishTitleFromWebView`、`findActivityContext`、`publishBrowserTitle`、`publishBrowserTitleFromProcess` | 通过，需真机。SDK 36 Activity/WebView/WebChromeClient/WebViewClient/Window 签名已对照；AOSP Browser 私有方法已覆盖；小米浏览器私有 UI 进程仍需实测。 |
+| 浏览器标题 hook | `installActivityTitleHooks`、`installWebViewTitleHooks`、`hookWebViewClientInstallers`、`hookSpecificWebChromeClient`、`hookSpecificWebViewClient`、`hookWebViewClientPageFinished`、`installAospBrowserTitleHooks`、`hookAospBrowserPageCallback`、`hookWebViewNavigation`、`scheduleWebViewTitleRead`、`publishTitleFromWebView`、`findActivityContext`、`publishBrowserTitle`、`publishBrowserTitleFromProcess`、`cleanBrowserTitle`、`isGenericBrowserTitle`、`isWebTitleSource` | 通过，需真机。SDK 36 Activity/WebView/WebChromeClient/WebViewClient/Window 签名已对照；AOSP Browser 私有方法已覆盖；Android 14+ sender identity 通过时不再被 nonce 误拒；Activity/Window 泛标题不会覆盖 WebView/AOSP 页面标题；小米浏览器私有 UI 进程仍需实测。 |
 | 前台快照 | `broadcastSnapshot`、`putMediaExtras`、`getTopActivityComponentName`、`componentFromTaskInfo`、`getTopActivityFromTasks`、`findCompatibleGetTasksMethod`、`buildDefaultArgs`、`getRecentTopActivityFallback`、`getFocusedTaskDescription`、`getWindowingMode`、`getDeviceFormFactor`、`getActivityTaskManagerService`、`getSystemContext` | 通过，需真机。focused root/stack/getTasks 多策略覆盖；熄屏跳过 ATMS；MIUI tablet 检测和 recent top fallback 存在。 |
 | 配置与上报 | `loadDirectUploadConfig`、`saveDirectUploadConfig`、`maybeDirectUpload`、`sendDirectReport`、`clampDirectInterval`、`buildDirectReportBody`、`fillBatteryExtras`、`fillNetworkExtras`、`networkType`、`cellularGeneration`、`hasPhoneStatePermission`、`postDirectReportFallback`、`fetchQueuedMessagesFallback`、`readUtf8` | 通过。HTTP/WS 共享 `/api/report` 契约；网络/VPN/电量只在构建 payload 时读取；消息 fallback 有 256KB 读取上限。 |
 | LSP WebSocket | `ensureWsConnected`、`scheduleWsReconnect`、`recordWsDisconnectedForBackoff`、`buildLspWsUrl`、`LspWebSocketClient.clearModuleClientIfCurrent`、`connect`、`disconnect`、`closeQuietly`、`sendText`、`sendCloseFrame`、`sendFrame`、`readerLoop`、`pingLoop`、`readFrame` | 通过。握手校验 101 和 `Sec-WebSocket-Accept`，client frame masked，帧大小 256KB，上下行异常进入退避；真实代理关闭行为需观察。 |

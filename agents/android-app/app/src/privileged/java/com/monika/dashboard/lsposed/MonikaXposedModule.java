@@ -689,20 +689,18 @@ public final class MonikaXposedModule extends XposedModule {
                     String pkg = intent.getStringExtra("package_name");
                     String title = intent.getStringExtra("title");
                     String activity = intent.getStringExtra("activity");
-                    String expectedNonce = getBrowserTitleNonce(true);
-                    String actualNonce = safeString(intent.getStringExtra(KEY_BROWSER_TITLE_NONCE));
-                    if (expectedNonce.length() > 0) {
-                        if (!expectedNonce.equals(actualNonce)) {
-                            log(Log.WARN, TAG, "browser title rejected: nonce mismatch");
-                            return;
-                        }
-                    }
+                    String source = safeString(intent.getStringExtra("source"));
                     if (!isBrowserPackage(pkg)) return;
-                    if (title == null || title.trim().isEmpty()) return;
+                    String cleanTitle = cleanBrowserTitle(pkg, title);
+                    boolean genericTitle = cleanTitle == null && isGenericBrowserTitle(pkg, title);
+                    boolean clearGenericTitle = genericTitle
+                            && (intent.getBooleanExtra("clear_title", false) || isWebTitleSource(source));
+                    if (cleanTitle == null && !clearGenericTitle) return;
 
                     // Security: verify sender identity on API 34+ when the sender enables
                     // BroadcastOptions#setShareIdentityEnabled(true). On older systems,
                     // fall back to optional nonce validation plus foreground-browser check.
+                    boolean senderVerified = false;
                     if (android.os.Build.VERSION.SDK_INT >= 34) {
                         try {
                             String sentPkg = getSentFromPackage();
@@ -710,7 +708,14 @@ public final class MonikaXposedModule extends XposedModule {
                                 log(Log.WARN, TAG, "browser title rejected: sender=" + sentPkg + " claimed=" + pkg);
                                 return;
                             }
+                            senderVerified = sentPkg != null && sentPkg.equals(pkg);
                         } catch (Throwable ignored) {}
+                    }
+                    String expectedNonce = getBrowserTitleNonce(true);
+                    String actualNonce = safeString(intent.getStringExtra(KEY_BROWSER_TITLE_NONCE));
+                    if (!senderVerified && expectedNonce.length() > 0 && !expectedNonce.equals(actualNonce)) {
+                        log(Log.WARN, TAG, "browser title rejected: nonce mismatch");
+                        return;
                     }
 
                     // Verify the claimed package is (or recently was) the foreground browser.
@@ -728,8 +733,8 @@ public final class MonikaXposedModule extends XposedModule {
                     foregroundPackage = pkg;
                     foregroundApp = safeString(resolveAppLabel(pkg));
                     foregroundActivity = safeString(activity);
-                    foregroundTitle = cleanTitle(title);
-                    log(Log.DEBUG, TAG, "browser title received: " + pkg + " title=" + foregroundTitle);
+                    foregroundTitle = cleanTitle != null ? cleanTitle : "";
+                    log(Log.DEBUG, TAG, "browser title received: " + pkg + " title=" + foregroundTitle + " source=" + source);
                     maybeDirectUpload(true);
                 }
             };
@@ -1269,7 +1274,7 @@ public final class MonikaXposedModule extends XposedModule {
                                     ? (CharSequence) args.get(0)
                                     : owner instanceof Activity ? ((Activity) owner).getTitle() : null;
                             if (owner instanceof Activity && title != null) {
-                                publishBrowserTitle((Activity) owner, packageName, title.toString());
+                                publishBrowserTitle((Activity) owner, packageName, title.toString(), "activity");
                             }
                             return result;
                         });
@@ -1286,7 +1291,7 @@ public final class MonikaXposedModule extends XposedModule {
                             Object owner = chain.getThisObject();
                             if (owner instanceof Activity) {
                                 CharSequence title = ((Activity) owner).getTitle();
-                                if (title != null) publishBrowserTitle((Activity) owner, packageName, title.toString());
+                                if (title != null) publishBrowserTitle((Activity) owner, packageName, title.toString(), "activity");
                             }
                             return result;
                         });
@@ -1310,7 +1315,7 @@ public final class MonikaXposedModule extends XposedModule {
                                         Method getLabel = findPublicMethod(td.getClass(), "getLabel");
                                         Object label = getLabel != null ? getLabel.invoke(td) : null;
                                         if (label instanceof CharSequence && ((CharSequence) label).length() > 0) {
-                                            publishBrowserTitle((Activity) owner, packageName, label.toString());
+                                            publishBrowserTitle((Activity) owner, packageName, label.toString(), "task");
                                         }
                                     }
                                 } catch (Throwable ignored) {}
@@ -1332,7 +1337,7 @@ public final class MonikaXposedModule extends XposedModule {
                             Object owner = chain.getThisObject();
                             if (hasFocus && owner instanceof Activity) {
                                 CharSequence title = ((Activity) owner).getTitle();
-                                if (title != null) publishBrowserTitle((Activity) owner, packageName, title.toString());
+                                if (title != null) publishBrowserTitle((Activity) owner, packageName, title.toString(), "focus");
                             }
                             return result;
                         });
@@ -1358,7 +1363,7 @@ public final class MonikaXposedModule extends XposedModule {
                                     Object ctx = getContext != null ? getContext.invoke(windowObj) : null;
                                     Activity activityCtx = findActivityContext(ctx);
                                     if (activityCtx != null) {
-                                        publishBrowserTitle(activityCtx, packageName, title);
+                                        publishBrowserTitle(activityCtx, packageName, title, "window");
                                     }
                                 }
                             } catch (Throwable ignored) {}
@@ -1387,11 +1392,11 @@ public final class MonikaXposedModule extends XposedModule {
                                     Object ctx = getContext != null ? getContext.invoke(webView) : null;
                                     Activity activityCtx = findActivityContext(ctx);
                                     if (activityCtx != null) {
-                                        publishBrowserTitle(activityCtx, packageName, title);
+                                        publishBrowserTitle(activityCtx, packageName, title, "webchrome");
                                     } else {
                                         // WebView context is not an Activity — use it directly as send context
                                         Context sendCtx = ctx instanceof Context ? (Context) ctx : null;
-                                        publishBrowserTitleFromProcess(sendCtx, packageName, title, "");
+                                        publishBrowserTitleFromProcess(sendCtx, packageName, title, "", "webchrome");
                                     }
                                 }
                             } catch (Throwable ignored) {}
@@ -1485,7 +1490,7 @@ public final class MonikaXposedModule extends XposedModule {
                         try {
                             List<Object> args = chain.getArgs();
                             if (args.size() > 1 && args.get(1) instanceof String) {
-                                publishTitleFromWebView(args.get(0), packageName, (String) args.get(1));
+                                publishTitleFromWebView(args.get(0), packageName, (String) args.get(1), "webchrome");
                             }
                         } catch (Throwable ignored) {}
                         return result;
@@ -1563,7 +1568,7 @@ public final class MonikaXposedModule extends XposedModule {
                                 Object owner = chain.getThisObject();
                                 List<Object> args = chain.getArgs();
                                 if (owner instanceof Activity && args.size() > 1 && args.get(1) instanceof String) {
-                                    publishBrowserTitle((Activity) owner, packageName, (String) args.get(1));
+                                    publishBrowserTitle((Activity) owner, packageName, (String) args.get(1), "aosp");
                                 }
                             } catch (Throwable ignored) {}
                             return result;
@@ -1639,10 +1644,14 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private void publishTitleFromWebView(Object webView, String packageName) {
-        publishTitleFromWebView(webView, packageName, "");
+        publishTitleFromWebView(webView, packageName, "", "webview");
     }
 
     private void publishTitleFromWebView(Object webView, String packageName, String explicitTitle) {
+        publishTitleFromWebView(webView, packageName, explicitTitle, "webview");
+    }
+
+    private void publishTitleFromWebView(Object webView, String packageName, String explicitTitle, String source) {
         try {
             Object rawTitle = explicitTitle != null && explicitTitle.trim().length() > 0 ? explicitTitle : null;
             if (rawTitle == null) {
@@ -1657,9 +1666,9 @@ public final class MonikaXposedModule extends XposedModule {
             Object ctx = getContext.invoke(webView);
             Activity activityCtx = findActivityContext(ctx);
             if (activityCtx != null) {
-                publishBrowserTitle(activityCtx, packageName, title);
+                publishBrowserTitle(activityCtx, packageName, title, source);
             } else {
-                publishBrowserTitleFromProcess(ctx instanceof Context ? (Context) ctx : null, packageName, title, "");
+                publishBrowserTitleFromProcess(ctx instanceof Context ? (Context) ctx : null, packageName, title, "", source);
             }
         } catch (Throwable ignored) {}
     }
@@ -1680,9 +1689,14 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private void publishBrowserTitle(Activity activity, String packageName, String title) {
+        publishBrowserTitle(activity, packageName, title, "activity");
+    }
+
+    private void publishBrowserTitle(Activity activity, String packageName, String title, String source) {
         try {
             String clean = cleanTitle(title);
             if (clean == null || isIgnoredPackage(packageName)) return;
+            if (isGenericBrowserTitle(packageName, clean) && !isWebTitleSource(source)) return;
             // Debounce: skip if same title or within 1 second
             long now = System.currentTimeMillis();
             if (clean.equals(lastBroadcastTitle) && now - lastTitleBroadcastAt < 1000L) return;
@@ -1697,20 +1711,30 @@ public final class MonikaXposedModule extends XposedModule {
                 sendContext = activity.getApplicationContext();
             } catch (Throwable ignored) {}
             if (sendContext == null) sendContext = activity;
-            publishBrowserTitleFromProcess(sendContext, packageName, clean, activity.getClass().getName());
+            publishBrowserTitleFromProcess(sendContext, packageName, clean, activity.getClass().getName(), source);
         } catch (Throwable t) {
             log(Log.DEBUG, TAG, "publishBrowserTitle failed: " + t.getMessage());
         }
     }
 
     private void publishBrowserTitleFromProcess(Context context, String packageName, String title, String activityName) {
+        publishBrowserTitleFromProcess(context, packageName, title, activityName, "activity");
+    }
+
+    private void publishBrowserTitleFromProcess(Context context, String packageName, String title, String activityName, String source) {
         try {
             if (context == null) context = getSystemContext();
             if (context == null) return;
+            String clean = cleanTitle(title);
+            if (clean == null || isIgnoredPackage(packageName)) return;
+            boolean genericTitle = isGenericBrowserTitle(packageName, clean);
+            if (genericTitle && !isWebTitleSource(source)) return;
             Intent intent = new Intent(ACTION_BROWSER_TITLE);
             intent.putExtra("package_name", packageName);
-            intent.putExtra("title", title);
+            intent.putExtra("title", clean);
             intent.putExtra("activity", safeString(activityName));
+            intent.putExtra("source", safeString(source));
+            if (genericTitle) intent.putExtra("clear_title", true);
             String nonce = getBrowserTitleNonce(false);
             if (nonce.length() > 0) {
                 intent.putExtra(KEY_BROWSER_TITLE_NONCE, nonce);
@@ -1829,8 +1853,12 @@ public final class MonikaXposedModule extends XposedModule {
                 // For browsers, extract page title from Android task description
                 // (works for Chrome, Firefox, WebView browsers — Activity.setTitle is unreliable)
                 if (isBrowserPackage(packageName) && taskDescription != null && taskDescription.length() > 0) {
-                    foregroundTitle = cleanTitle(taskDescription);
-                    if (foregroundTitle == null) foregroundTitle = "";
+                    String browserTitle = cleanBrowserTitle(packageName, taskDescription);
+                    if (browserTitle != null) {
+                        foregroundTitle = browserTitle;
+                    } else if (isGenericBrowserTitle(packageName, taskDescription)) {
+                        foregroundTitle = "";
+                    }
                 } else if (!isBrowserPackage(packageName)) {
                     foregroundTitle = "";
                 }
@@ -3026,6 +3054,64 @@ public final class MonikaXposedModule extends XposedModule {
             if (browser.equals(packageName)) return true;
         }
         return false;
+    }
+
+    private String cleanBrowserTitle(String packageName, String title) {
+        String cleaned = cleanTitle(title);
+        if (cleaned == null) return null;
+        return isGenericBrowserTitle(packageName, cleaned) ? null : cleaned;
+    }
+
+    private boolean isWebTitleSource(String source) {
+        String normalized = safeString(source).toLowerCase(Locale.US);
+        return normalized.startsWith("web") || normalized.startsWith("aosp");
+    }
+
+    private boolean isGenericBrowserTitle(String packageName, String title) {
+        String normalized = normalizeBrowserTitleForCompare(title);
+        if (normalized.length() == 0) return false;
+        String appLabel = normalizeBrowserTitleForCompare(resolveAppLabel(packageName));
+        if (appLabel.length() > 0 && normalized.equals(appLabel)) return true;
+        switch (normalized) {
+            case "browser":
+            case "web browser":
+            case "internet":
+            case "webview":
+            case "chrome":
+            case "google chrome":
+            case "firefox":
+            case "mozilla firefox":
+            case "edge":
+            case "microsoft edge":
+            case "brave":
+            case "opera":
+            case "vivaldi":
+            case "duckduckgo":
+            case "samsung internet":
+            case "mi browser":
+            case "uc browser":
+            case "new tab":
+            case "about:blank":
+            case "about:home":
+            case "浏览器":
+            case "系统浏览器":
+            case "小米浏览器":
+            case "网页":
+            case "新标签页":
+            case "空白页":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private String normalizeBrowserTitleForCompare(String title) {
+        String cleaned = cleanTitle(title);
+        if (cleaned == null) return "";
+        return cleaned.toLowerCase(Locale.US)
+                .replaceAll("\\s+", " ")
+                .replaceAll("[\\p{Punct}。！？、，；：~～]+$", "")
+                .trim();
     }
 
     private String cleanTitle(String title) {
