@@ -2432,6 +2432,8 @@ public final class MonikaXposedModule extends XposedModule {
             device.put("capability_mode", "lsposed");
             device.put("uploader", "lsposed");
             device.put("last_sample_at", isoTime(now));
+            device.put("energy_policy", "system_server_direct");
+            device.put("min_interval_ms", Math.max(MIN_DIRECT_UPLOAD_MS, directIntervalMs));
             // Multi-window / tablet detection
             device.put("device_kind", getDeviceFormFactor());
             String wm = getWindowingMode();

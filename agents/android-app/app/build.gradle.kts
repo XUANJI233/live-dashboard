@@ -6,6 +6,19 @@ plugins {
         id("io.gitlab.arturbosch.detekt")
 }
 
+val ciVersionCode = providers.environmentVariable("ANDROID_VERSION_CODE")
+    .orElse(providers.environmentVariable("GITHUB_RUN_NUMBER"))
+    .map { it.toIntOrNull()?.coerceAtLeast(1) ?: 1 }
+    .orElse(1)
+val releaseKeystorePath = providers.environmentVariable("ANDROID_KEYSTORE_PATH")
+val releaseKeystorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD")
+val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS")
+val releaseKeyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD")
+val releaseSigningReady =
+    releaseKeystorePath.orNull?.isNotBlank() == true &&
+        releaseKeystorePassword.orNull?.isNotBlank() == true &&
+        releaseKeyAlias.orNull?.isNotBlank() == true
+
 android {
     namespace = "com.monika.dashboard"
     compileSdk = 36
@@ -14,7 +27,7 @@ android {
         applicationId = "com.monika.dashboard"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
+        versionCode = ciVersionCode.get()
         versionName = "1.0.0"
     }
 
@@ -31,8 +44,28 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            if (releaseSigningReady) {
+                storeFile = file(releaseKeystorePath.get())
+                storePassword = releaseKeystorePassword.get()
+                keyAlias = releaseKeyAlias.get()
+                keyPassword = releaseKeyPassword.orNull?.takeIf { it.isNotBlank() }
+                    ?: releaseKeystorePassword.get()
+                storeType = "pkcs12"
+                enableV1Signing = false
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = false
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (releaseSigningReady) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

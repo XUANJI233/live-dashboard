@@ -75,6 +75,10 @@ class ReportClient(
             snapshot?.let {
                 device.put("capability_mode", it.capabilityMode)
                 device.put("last_sample_at", Instant.ofEpochMilli(it.sampledAt).toString())
+                device.put(
+                    "energy_policy",
+                    if (it.capabilityMode == "root") "app_workmanager_root" else "app_workmanager"
+                )
             }
             if (device.length() > 0) extra.put("device", device)
 

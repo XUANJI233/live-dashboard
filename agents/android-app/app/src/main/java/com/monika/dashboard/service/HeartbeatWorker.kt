@@ -34,9 +34,10 @@ import java.time.Instant
 import java.util.concurrent.TimeUnit
 
 /**
- * WorkManager-based heartbeat that survives Xiaomi/HyperOS process freezer.
- * Uses self-rescheduling OneTimeWorkRequest to bypass the 15-min periodic minimum.
- * AlarmManager under the hood wakes the app even when frozen by cgroup freezer.
+ * App-process heartbeat fallback. LSPosed direct mode is preferred for
+ * screen-off and Xiaomi/HyperOS reliability because it uploads from system_server.
+ * This self-reschedules OneTimeWorkRequest to bypass the 15-min periodic minimum,
+ * but OEM background policies can still delay app-process execution.
  */
 class HeartbeatWorker(
     appContext: Context,
@@ -262,6 +263,10 @@ class HeartbeatWorker(
         snapshot?.let {
             device.put("capability_mode", it.capabilityMode)
             device.put("last_sample_at", Instant.ofEpochMilli(it.sampledAt).toString())
+            device.put(
+                "energy_policy",
+                if (it.capabilityMode == "root") "app_workmanager_root" else "app_workmanager"
+            )
         }
         // Device form factor detection
         device.put("device_kind", detectDeviceKind())

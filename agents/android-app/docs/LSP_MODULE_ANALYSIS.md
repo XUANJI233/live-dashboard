@@ -156,7 +156,7 @@
 LSP direct body：
 
 - top-level：`app_id`、`window_title`、`timestamp`、`extra`
-- `extra.device`：`capability_mode=lsposed`、`uploader=lsposed`、`last_sample_at`、`device_kind`、可选 `window_mode`、网络/VPN 字段
+- `extra.device`：`capability_mode=lsposed`、`uploader=lsposed`、`last_sample_at`、`energy_policy=system_server_direct`、`min_interval_ms`、`device_kind`、可选 `window_mode`、网络/VPN 字段
 - `extra.foreground`：`package_name`、`app_name`、`activity`、`title`、`source`、`confidence`
 - `extra.media`：`playing`、`title`、`artist`、`app`、`package_name`、`state`、`source`
 - `extra.input`：`input_active`、`is_typing`、`source`
@@ -168,7 +168,7 @@ LSP direct body：
 交叉验证：
 
 - `ReportClient.reportApp()` 使用同一套 `/api/report` 主体结构。
-- `HeartbeatWorker` 在 LSPosed mode 只下发配置，不做 app 侧上传，避免双重上报。
+- `HeartbeatWorker` 在 LSPosed mode 只下发配置，不做 app 侧上传，避免双重上报；普通/root fallback 仍走 App 进程 WorkManager，并在 `extra.device.energy_policy` 中标记诊断信息。
 - `LsposedBridgeReceiver` 的广播字段和 LSP intent extras 对齐，并写入 `SystemSnapshotStore`。
 
 已修正：
@@ -182,6 +182,7 @@ LSP direct body：
 
 - 没有高频轮询。前台 5 分钟、媒体 60 秒都是低频 stale guard。
 - 上传只在 system_server 进程执行，浏览器进程不会直接联网上传。
+- 息屏时 LSP 直传仍由 system_server 的 `ACTION_SCREEN_OFF` receiver 触发，普通 APK/WorkManager 路径不具备同等级保障，尤其在小米/HyperOS 后台冻结场景只能作为 fallback。
 - WS 重连使用 30 秒到 5 分钟退避；断线时只调度一次 pending reconnect。
 - WS 已连接后异常 EOF/close/ping/send 失败也会记录退避窗口，延迟触发下一次 snapshot/reconnect，避免服务端或边缘代理持续断开时自我放大。
 - 普通 App `MessageSocketManager` 的指数退避固定封顶到 5 分钟，并限制 attempt 计数继续增长，避免长期断网后 `1L shl reconnectAttempts` 溢出。
