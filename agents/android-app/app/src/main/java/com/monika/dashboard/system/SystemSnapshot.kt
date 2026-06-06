@@ -49,6 +49,12 @@ object SystemSnapshotStore {
     @Volatile
     private var latestNotification: SystemSnapshot? = null
 
+    fun clearForTest() {
+        latestLsposed = null
+        latestAccessibility = null
+        latestNotification = null
+    }
+
     fun updateFromLsposed(snapshot: SystemSnapshot) {
         val previous = latestLsposedFresh(maxAgeMs = 10 * 60_000L)
         latestLsposed = SystemSnapshot(

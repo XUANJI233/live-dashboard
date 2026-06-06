@@ -96,6 +96,7 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long WS_RETRY_MAX_MS = 300_000L;  // max retry delay (5 min)
     private static final long MEDIA_VALIDATE_MS = 60_000L; // low-frequency stale-session guard
     private static final long BROWSER_NONCE_RELOAD_MS = 60_000L;
+    private static final long BROWSER_WEB_TITLE_FRESH_MS = 10_000L;
     private static final int START_INPUT_FLAG_IS_TEXT_EDITOR = 1 << 1;
     
     // Static instance for global access
@@ -200,6 +201,8 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String mediaTitle = "";
     private volatile String mediaArtist = "";
     private volatile String mediaState = "";
+    private volatile String foregroundTitleSource = "";
+    private volatile long foregroundTitleUpdatedAt = 0L;
     private volatile long lastMediaValidationAt = 0L;
     private volatile long lastTitleBroadcastAt = 0L;
     private volatile String lastBroadcastTitle = "";
@@ -733,7 +736,12 @@ public final class MonikaXposedModule extends XposedModule {
                     foregroundPackage = pkg;
                     foregroundApp = safeString(resolveAppLabel(pkg));
                     foregroundActivity = safeString(activity);
-                    foregroundTitle = cleanTitle != null ? cleanTitle : "";
+                    if (!shouldApplyBrowserTitleCandidate(pkg, cleanTitle, source)) {
+                        log(Log.DEBUG, TAG, "browser title ignored by source priority: " + pkg + " title=" + cleanTitle + " source=" + source);
+                        return;
+                    }
+
+                    applyForegroundTitle(cleanTitle != null ? cleanTitle : "", source);
                     log(Log.DEBUG, TAG, "browser title received: " + pkg + " title=" + foregroundTitle + " source=" + source);
                     maybeDirectUpload(true);
                 }
@@ -1776,7 +1784,7 @@ public final class MonikaXposedModule extends XposedModule {
                 foregroundPackage = "sleeping";
                 foregroundApp = "sleeping";
                 foregroundActivity = "";
-                foregroundTitle = "";
+                applyForegroundTitle("", "sleep");
                 log(Log.INFO, TAG, "screen off → sleeping");
                 forceDirectUpload = true;
                 Intent sleepIntent = new Intent(ACTION_STATUS);
@@ -1829,7 +1837,7 @@ public final class MonikaXposedModule extends XposedModule {
                 foregroundPackage = "idle";
                 foregroundApp = "idle";
                 foregroundActivity = "";
-                foregroundTitle = "";
+                applyForegroundTitle("", "idle");
             } else {
                 idleConsecutiveCount = 0; // reset on valid foreground
                 String packageName = top.getPackageName();
@@ -1855,12 +1863,14 @@ public final class MonikaXposedModule extends XposedModule {
                 if (isBrowserPackage(packageName) && taskDescription != null && taskDescription.length() > 0) {
                     String browserTitle = cleanBrowserTitle(packageName, taskDescription);
                     if (browserTitle != null) {
-                        foregroundTitle = browserTitle;
+                        if (shouldApplyBrowserTitleCandidate(packageName, browserTitle, "task")) {
+                            applyForegroundTitle(browserTitle, "task");
+                        }
                     } else if (isGenericBrowserTitle(packageName, taskDescription)) {
-                        foregroundTitle = "";
+                        applyForegroundTitle("", "task");
                     }
                 } else if (!isBrowserPackage(packageName)) {
-                    foregroundTitle = "";
+                    applyForegroundTitle("", "foreground");
                 }
                 // else: keep previous title if browser package and no new description
             }
@@ -1877,7 +1887,7 @@ public final class MonikaXposedModule extends XposedModule {
                 intent.putExtra("app_name", foregroundApp);
                 intent.putExtra("activity", foregroundActivity);
                 intent.putExtra("input_active", inputActive);
-                if (foregroundTitle.length() > 0) {
+                if (foregroundTitle.length() > 0 || isBrowserPackage(foregroundPackage)) {
                     intent.putExtra("title", foregroundTitle);
                 }
             }
@@ -2434,7 +2444,9 @@ public final class MonikaXposedModule extends XposedModule {
                 foreground.put("package_name", foregroundPackage);
                 if (foregroundApp.length() > 0) foreground.put("app_name", foregroundApp);
                 if (foregroundActivity.length() > 0) foreground.put("activity", foregroundActivity);
-                if (foregroundTitle.length() > 0) foreground.put("title", foregroundTitle);
+                if (foregroundTitle.length() > 0 || isBrowserPackage(foregroundPackage)) {
+                    foreground.put("title", foregroundTitle);
+                }
                 foreground.put("source", "lsposed");
                 foreground.put("confidence", 0.95);
                 extra.put("foreground", foreground);
@@ -3059,7 +3071,54 @@ public final class MonikaXposedModule extends XposedModule {
     private String cleanBrowserTitle(String packageName, String title) {
         String cleaned = cleanTitle(title);
         if (cleaned == null) return null;
+        cleaned = stripBrowserTitleDecoration(packageName, cleaned);
+        if (cleaned == null) return null;
+        if (isUrlLikeBrowserTitle(cleaned)) return null;
         return isGenericBrowserTitle(packageName, cleaned) ? null : cleaned;
+    }
+
+    private void applyForegroundTitle(String title, String source) {
+        foregroundTitle = safeString(title);
+        foregroundTitleSource = safeString(source);
+        foregroundTitleUpdatedAt = System.currentTimeMillis();
+    }
+
+    private boolean shouldApplyBrowserTitleCandidate(String packageName, String title, String source) {
+        if (!isBrowserPackage(packageName)) return true;
+        String incomingTitle = safeString(title);
+        if (incomingTitle.length() == 0) return true;
+        String currentTitle = foregroundTitle;
+        if (currentTitle.length() == 0) return true;
+        if (!packageName.equals(foregroundPackage)) return true;
+
+        int currentRank = browserTitleSourceRank(foregroundTitleSource);
+        int incomingRank = browserTitleSourceRank(source);
+        boolean currentFresh = System.currentTimeMillis() - foregroundTitleUpdatedAt < BROWSER_WEB_TITLE_FRESH_MS;
+        if (!currentFresh || incomingRank >= currentRank) return true;
+
+        String currentNormalized = normalizeBrowserTitleForCompare(currentTitle);
+        String incomingNormalized = normalizeBrowserTitleForCompare(incomingTitle);
+        if (incomingNormalized.equals(currentNormalized)) return false;
+        if (incomingNormalized.contains(currentNormalized)) return false;
+        return !isVolatileBrowserTitleSource(source);
+    }
+
+    private int browserTitleSourceRank(String source) {
+        String normalized = safeString(source).toLowerCase(Locale.US);
+        if (isWebTitleSource(normalized)) return 3;
+        if (normalized.startsWith("task")) return 2;
+        if (normalized.startsWith("activity")
+                || normalized.startsWith("window")
+                || normalized.startsWith("focus")) {
+            return 1;
+        }
+        return 0;
+    }
+
+    private boolean isVolatileBrowserTitleSource(String source) {
+        String normalized = safeString(source).toLowerCase(Locale.US);
+        return normalized.startsWith("window")
+                || normalized.startsWith("focus");
     }
 
     private boolean isWebTitleSource(String source) {
@@ -3105,6 +3164,97 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
+    private String stripBrowserTitleDecoration(String packageName, String title) {
+        String cleaned = cleanTitle(title);
+        if (cleaned == null) return null;
+
+        String strippedPrefix = stripUrlPrefixFromTitle(cleaned);
+        if (strippedPrefix != null) cleaned = strippedPrefix;
+
+        for (int i = 0; i < 2; i++) {
+            String withoutSuffix = stripBrowserSuffix(packageName, cleaned);
+            if (withoutSuffix == null || withoutSuffix.equals(cleaned)) break;
+            cleaned = withoutSuffix;
+        }
+        return cleanTitle(cleaned);
+    }
+
+    private String stripUrlPrefixFromTitle(String title) {
+        String cleaned = cleanTitle(title);
+        if (cleaned == null) return null;
+        String[] separators = new String[] {": ", " - ", " – ", " — ", " | "};
+        for (String separator : separators) {
+            int index = cleaned.indexOf(separator);
+            if (index <= 0 || index + separator.length() >= cleaned.length()) continue;
+            String head = cleaned.substring(0, index).trim();
+            String tail = cleaned.substring(index + separator.length()).trim();
+            if (tail.length() == 0) continue;
+            if (isUrlLikeBrowserTitle(head)) return tail;
+        }
+        return cleaned;
+    }
+
+    private String stripBrowserSuffix(String packageName, String title) {
+        String cleaned = cleanTitle(title);
+        if (cleaned == null) return null;
+        String[] separators = new String[] {" - ", " – ", " — ", " | ", " · "};
+        for (String separator : separators) {
+            int index = cleaned.lastIndexOf(separator);
+            if (index <= 0 || index + separator.length() >= cleaned.length()) continue;
+            String head = cleaned.substring(0, index).trim();
+            String tail = cleaned.substring(index + separator.length()).trim();
+            if (head.length() == 0 || tail.length() == 0) continue;
+            if (isKnownBrowserLabel(packageName, tail)) return head;
+        }
+        return cleaned;
+    }
+
+    private boolean isKnownBrowserLabel(String packageName, String value) {
+        String normalized = normalizeBrowserTitleForCompare(value);
+        if (normalized.length() == 0) return false;
+        String appLabel = normalizeBrowserTitleForCompare(resolveAppLabel(packageName));
+        if (appLabel.length() > 0 && normalized.equals(appLabel)) return true;
+        switch (normalized) {
+            case "browser":
+            case "web browser":
+            case "internet":
+            case "chrome":
+            case "google chrome":
+            case "firefox":
+            case "mozilla firefox":
+            case "edge":
+            case "microsoft edge":
+            case "brave":
+            case "opera":
+            case "vivaldi":
+            case "duckduckgo":
+            case "samsung internet":
+            case "mi browser":
+            case "uc browser":
+            case "浏览器":
+            case "系统浏览器":
+            case "小米浏览器":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private boolean isUrlLikeBrowserTitle(String title) {
+        String cleaned = cleanTitle(title);
+        if (cleaned == null) return false;
+        String lower = cleaned.toLowerCase(Locale.US);
+        if (lower.startsWith("http://")
+                || lower.startsWith("https://")
+                || lower.startsWith("file://")
+                || lower.startsWith("content://")
+                || lower.startsWith("about:")
+                || lower.startsWith("chrome://")) {
+            return true;
+        }
+        return lower.matches("^[a-z0-9][a-z0-9.-]*\\.[a-z]{2,}(:\\d+)?(/.*)?$");
+    }
+
     private String normalizeBrowserTitleForCompare(String title) {
         String cleaned = cleanTitle(title);
         if (cleaned == null) return "";
@@ -3116,7 +3266,11 @@ public final class MonikaXposedModule extends XposedModule {
 
     private String cleanTitle(String title) {
         if (title == null) return null;
-        String cleaned = title.replace('\n', ' ').replace('\r', ' ').trim();
+        String cleaned = title
+                .replace('\n', ' ')
+                .replace('\r', ' ')
+                .replaceAll("[\\u200B-\\u200D\\uFEFF]", "")
+                .trim();
         if (cleaned.length() == 0 || "null".equals(cleaned)) return null;
         if (cleaned.length() > 256) return cleaned.substring(0, 256);
         return cleaned;
