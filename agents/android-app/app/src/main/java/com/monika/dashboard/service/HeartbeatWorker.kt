@@ -26,6 +26,8 @@ import com.monika.dashboard.system.LsposedConfigBridge
 import com.monika.dashboard.system.LocationSnapshot
 import com.monika.dashboard.system.SystemSnapshot
 import com.monika.dashboard.system.SystemSnapshotStore
+import com.monika.dashboard.system.isActiveForegroundId
+import com.monika.dashboard.system.isSleeping
 import kotlinx.coroutines.flow.first
 import org.json.JSONObject
 import java.time.Instant
@@ -125,10 +127,15 @@ class HeartbeatWorker(
 
             val battery = getBatteryInfo()
             val snapshot = collectSystemSnapshot(capabilityMode, uploadInputState, uploadForeground, uploadMedia)
-            val appId = snapshot.foreground?.packageName?.takeIf { it.isNotBlank() && it != "idle" }
-                ?: snapshot.media?.packageName?.takeIf { snapshot.media?.playing == true }
-                ?: snapshot.media?.app
-                ?: "idle"
+            val mediaPackage = snapshot.media?.packageName?.takeIf { snapshot.media?.playing == true }
+            val appId = when {
+                snapshot.isSleeping() && mediaPackage != null -> mediaPackage
+                snapshot.isSleeping() -> "sleeping"
+                else -> snapshot.foreground?.packageName?.takeIf { it.isActiveForegroundId() }
+                    ?: mediaPackage
+                    ?: snapshot.media?.app
+                    ?: "idle"
+            }
             val windowTitle = snapshot.primaryDisplayTitle()
             val vpnState = if (uploadVpnStatus) getVpnState() else null
             val location = if (uploadLocation) getLowPowerLocation() else null
@@ -244,6 +251,7 @@ class HeartbeatWorker(
         val extra = JSONObject()
         batteryPercent?.let { extra.put("battery_percent", it) }
         batteryCharging?.let { extra.put("battery_charging", it) }
+        if (snapshot?.isSleeping() == true) extra.put("sleeping", true)
 
         val device = JSONObject()
         networkConnected?.let { device.put("network_connected", it) }
@@ -352,8 +360,9 @@ class HeartbeatWorker(
     }
 
     private fun SystemSnapshot.hasUsefulPrivilegedData(): Boolean {
-        val foregroundUseful = foreground?.packageName?.takeIf { it != "idle" }?.isNotBlank() == true ||
-            foreground?.appName?.takeIf { it != "idle" }?.isNotBlank() == true ||
+        val foregroundUseful = isSleeping() ||
+            foreground?.packageName?.isActiveForegroundId() == true ||
+            foreground?.appName?.isActiveForegroundId() == true ||
             foreground?.title?.isNotBlank() == true ||
             foreground?.activity?.isNotBlank() == true
         return foregroundUseful ||
@@ -363,10 +372,18 @@ class HeartbeatWorker(
     }
 
     private fun SystemSnapshot.primaryDisplayTitle(): String {
-        val appName = foreground?.appName?.takeIf { it.isNotBlank() && it != "idle" }
-        val foregroundTitle = foreground?.title?.takeIf { it.isNotBlank() }
         val mediaTitle = media?.title?.takeIf { media.playing == true && it.isNotBlank() }
         val mediaApp = media?.app?.takeIf { it.isNotBlank() }
+        if (isSleeping()) {
+            return when {
+                mediaTitle != null && mediaApp != null -> "${mediaApp}正在播放${mediaTitle}"
+                mediaApp != null -> "${mediaApp}正在播放"
+                mediaTitle != null -> "正在播放${mediaTitle}"
+                else -> "(-.-)zzZ"
+            }
+        }
+        val appName = foreground?.appName?.takeIf { it.isActiveForegroundId() }
+        val foregroundTitle = foreground?.title?.takeIf { it.isNotBlank() }
         return when {
             appName != null && mediaTitle != null && mediaApp != null && mediaApp != appName ->
                 "正在用${appName}，后台${mediaApp}正在播放${mediaTitle}"

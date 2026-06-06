@@ -43,4 +43,20 @@ class SystemSnapshotStoreTest {
         assertNotNull(latest)
         assertEquals("", latest?.foreground?.title)
     }
+
+    @Test
+    fun sleepingForegroundIsNotActiveAppId() {
+        val snapshot = SystemSnapshot(
+            capabilityMode = "lsposed",
+            foreground = ForegroundInfo(
+                packageName = "sleeping",
+                appName = "sleeping",
+                source = "lsposed",
+            ),
+        )
+
+        assertEquals(true, snapshot.isSleeping())
+        assertEquals(false, snapshot.foreground?.packageName.isActiveForegroundId())
+        assertEquals(false, snapshot.foreground?.appName.isActiveForegroundId())
+    }
 }

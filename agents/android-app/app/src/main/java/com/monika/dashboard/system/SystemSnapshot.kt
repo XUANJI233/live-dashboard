@@ -41,6 +41,21 @@ data class LocationSnapshot(
     val recordedAt: Long = System.currentTimeMillis(),
 )
 
+private const val FOREGROUND_IDLE = "idle"
+private const val FOREGROUND_SLEEPING = "sleeping"
+
+fun String?.isActiveForegroundId(): Boolean {
+    return !isNullOrBlank() && this != FOREGROUND_IDLE && this != FOREGROUND_SLEEPING
+}
+
+fun ForegroundInfo?.isSleepingForeground(): Boolean {
+    return this?.packageName == FOREGROUND_SLEEPING || this?.appName == FOREGROUND_SLEEPING
+}
+
+fun SystemSnapshot.isSleeping(): Boolean {
+    return foreground.isSleepingForeground()
+}
+
 object SystemSnapshotStore {
     @Volatile
     private var latestLsposed: SystemSnapshot? = null

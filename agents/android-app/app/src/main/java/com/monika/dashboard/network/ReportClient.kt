@@ -16,6 +16,7 @@ import java.time.Instant
 import java.util.concurrent.TimeUnit
 import com.monika.dashboard.system.LocationSnapshot
 import com.monika.dashboard.system.SystemSnapshot
+import com.monika.dashboard.system.isSleeping
 
 /**
  * HTTP client for reporting app activity and health data.
@@ -64,6 +65,7 @@ class ReportClient(
             val extra = JSONObject()
             batteryPercent?.let { extra.put("battery_percent", it) }
             batteryCharging?.let { extra.put("battery_charging", it) }
+            if (snapshot?.isSleeping() == true) extra.put("sleeping", true)
             val device = JSONObject()
             networkConnected?.let { device.put("network_connected", it) }
             networkType?.takeIf { it.isNotBlank() }?.let { device.put("network_type", it.take(64)) }

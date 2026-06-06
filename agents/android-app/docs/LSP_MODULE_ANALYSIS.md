@@ -1,6 +1,6 @@
 # LSPosed 实现交叉复核记录
 
-复核日期：2026-06-05
+复核日期：2026-06-06
 
 复核范围：
 
@@ -12,7 +12,8 @@
 - `app/src/main/java/com/monika/dashboard/service/HeartbeatWorker.kt`
 - 本地 libxposed API：`E:/live/api/api/src/main/java/io/github/libxposed/api/`
 - 本地 Android SDK 36：`E:/live/android-sdk/platforms/android-36/android.jar`
-- AOSP：`frameworks/base` 中 `ActivityTaskManagerService`、`InputMethodManagerService`、`MediaSessionRecord`
+- AOSP：`frameworks/base` 当前 main 中 `ActivityTaskManagerService`、`RootWindowContainer`、`Task`、`InputMethodManagerService`、`StartInputFlags`、`InputBindResult`、`TaskInfo`、`ActivityManager.TaskDescription`、`MediaSessionRecord`、`WebView`、`WebChromeClient`、`WebViewClient`
+- AOSP Browser：`packages/apps/Browser` froyo 分支中的 `BrowserActivity`
 
 ## 结论
 
@@ -62,6 +63,7 @@
 
 - AOSP `ActivityTaskManagerService` 存在 focused root task / focused stack / task list 这类路径；普通 Activity 启动/恢复还会经过 RootWindowContainer/Task resume 路径，因此只 hook `moveTaskToFront` 覆盖不完整。
 - AOSP 官方当前 main 已核对：`ActivityTaskManagerService#startActivityAsUser` / `setFocusedTask`、`RootWindowContainer#resumeFocusedTasksTopActivities`、`Task#resumeTopActivityUncheckedLocked` 均存在，且 resume 方法返回 boolean 表示是否发生恢复动作。
+- AOSP 官方当前 main 已核对：`TaskInfo` 包含 `topActivity`、`topActivityInfo`、`baseActivity`、`origActivity`、`taskDescription`；`ActivityManager.TaskDescription#getLabel()` 返回任务描述 label。
 - 本地参考项目 EdgeX 也通过 `ActivityTaskManager.getService()` / `ServiceManager activity_task` 获取 ATMS。
 - 小米兼容性：代码已读取 `miui.os.Build.IS_TABLET` 判断设备形态，并保留 `getTasks()` fallback。
 
@@ -87,6 +89,7 @@
 - 旧逻辑在没看到 `EditorInfo` 时返回 true，会把部分窗口焦点事件误判为输入中。现在未知签名返回 false，show/hide 事件仍会独立更新状态。
 - `startInputOrWindowGainedFocus*` 现在会读取隐藏类 `InputBindResult` 的 `result` 码，不再把失败返回误判成输入激活。
 - AOSP `InputBindResult` 当前分支中 0-4 与 16 是 success-ish 结果（含 IME session/binding、window focus only、user/accessibility 相关成功状态），错误结果字符串为 `ERROR_*`。当前代码按这些成功码放行，并用 `ERROR_` 字符串兜底，错误码不会激活输入状态。
+- AOSP `StartInputFlags` 当前分支中 `IS_TEXT_EDITOR = 1 << 1`，与代码常量一致。
 
 ## 媒体状态
 
@@ -100,6 +103,7 @@
 
 - AOSP 新版 `MediaSessionRecord#setMetadata` 签名已带额外参数；当前代码按方法名 hook，并从参数中查找 `MediaMetadata` / `PlaybackState`，对签名变化更稳。
 - AOSP 当前 main 中 `MediaSessionRecord.SessionStub#setMetadata(MediaMetadata,long,String)` 会把 null metadata 传入 `sanitizeMediaMetadata()` 并保存为 null；`setPlaybackState(PlaybackState)` 也把 null state 视为 `STATE_NONE`，因此 fallback 路径必须能即时清空旧 metadata。
+- AOSP 当前 main 中 `MediaSessionRecord#getPackageName()`、`getMetadata()`、`getPlaybackState()` 存在；代码优先调用方法，失败再读取字段候选。
 - Android SDK 36 公开 API 确认 `MediaController.registerCallback(callback, handler)` 和 `unregisterCallback(callback)` 存在。
 - 本地参考 SuperLyric、lyricon 都保存 callback wrapper，并在 session 变化/销毁时注销。
 
@@ -130,6 +134,8 @@
 
 - Android SDK 36 公开 API 确认 `BroadcastOptions#setShareIdentityEnabled`、`BroadcastReceiver#getSentFromPackage`、`Context#sendBroadcast(Intent,String,Bundle)` 存在。
 - Android SDK 36 公开 API 确认 WebView/WebChromeClient/WebViewClient/Activity/Window 相关公开方法签名存在。
+- AOSP 当前 main 已核对 `WebChromeClient#onReceivedTitle(WebView,String)`、`WebViewClient#onPageFinished(WebView,String)`、`WebView#getTitle()`、`loadUrl()`、`postUrl()`、`reload()`、`goBack()`、`goForward()`、`setWebViewClient()`、`setWebChromeClient()`。
+- AOSP Browser froyo 分支已核对 `BrowserActivity#setUrlTitle(String,String)`、`onPageFinished(WebView,String)` 和 `resetTitleAndIcon(WebView)` 调用链；系统自带浏览器旧实现确实会从 WebView/Tab title 更新 Activity 标题。
 - libxposed `getRemotePreferences()` 是框架远程偏好，hooked app 中只读；它不等同于 app 普通 SharedPreferences。因此浏览器进程不能被假定一定能读取 app 生成的 nonce。
 
 已修正：
@@ -168,6 +174,7 @@ LSP direct body：
 已修正：
 
 - `SystemSnapshotStore.mergeForeground()` 现在只有同一 package/activity 才继承旧 title，避免切到其他 app 后继续显示旧浏览器标题。
+- App 侧共享 `isActiveForegroundId()` / `isSleeping()`：`sleeping` 不会被当作活跃应用名，App fallback/普通上报会设置 `extra.sleeping=true`，与 LSP direct body 的息屏语义一致。
 
 ## 性能与稳定性
 
@@ -191,6 +198,7 @@ LSP direct body：
 ## 方法级复核矩阵
 
 以下矩阵按 `MonikaXposedModule.java` 当前 HEAD 的方法清单逐项归类。结论里的“通过”表示本地代码路径、字段契约、SDK 36/API 签名和 AOSP 对照未发现静态问题；“需真机”表示隐藏 API/OEM ROM 行为无法仅靠本地编译证明。
+匿名内部类方法也计入覆盖：采样器 `run()` 归入采样器行；配置/息屏/浏览器标题 `onReceive()` 归入 receiver 行；媒体 callback 的 `onPlaybackStateChanged()`、`onMetadataChanged()`、`onSessionDestroyed()` 归入媒体 fallback 行。
 
 | 范围 | 方法 | 复核结论 |
 | --- | --- | --- |
@@ -204,10 +212,10 @@ LSP direct body：
 | 浏览器标题 hook | `installActivityTitleHooks`、`installWebViewTitleHooks`、`hookWebViewClientInstallers`、`hookSpecificWebChromeClient`、`hookSpecificWebViewClient`、`hookWebViewClientPageFinished`、`installAospBrowserTitleHooks`、`hookAospBrowserPageCallback`、`hookWebViewNavigation`、`scheduleWebViewTitleRead`、`publishTitleFromWebView`、`findActivityContext`、`publishBrowserTitle`、`publishBrowserTitleFromProcess`、`applyForegroundTitle`、`shouldApplyBrowserTitleCandidate`、`browserTitleSourceRank`、`isVolatileBrowserTitleSource`、`cleanBrowserTitle`、`stripBrowserTitleDecoration`、`stripUrlPrefixFromTitle`、`stripBrowserSuffix`、`isKnownBrowserLabel`、`isUrlLikeBrowserTitle`、`isGenericBrowserTitle`、`isWebTitleSource`、`normalizeBrowserTitleForCompare` | 通过，需真机。SDK 36 Activity/WebView/WebChromeClient/WebViewClient/Window 签名已对照；AOSP Browser 私有方法已覆盖；Android 14+ sender identity 通过时不再被 nonce 误拒；URL/host、浏览器后缀和泛标题会被清洗；Web/AOSP 标题优先于装饰性 Activity/Window/Focus 标题；小米浏览器私有 UI 进程仍需实测。 |
 | 前台快照 | `broadcastSnapshot`、`putMediaExtras`、`getTopActivityComponentName`、`componentFromTaskInfo`、`getTopActivityFromTasks`、`findCompatibleGetTasksMethod`、`buildDefaultArgs`、`getRecentTopActivityFallback`、`getFocusedTaskDescription`、`getWindowingMode`、`getDeviceFormFactor`、`getActivityTaskManagerService`、`getSystemContext` | 通过，需真机。focused root/stack/getTasks 多策略覆盖；熄屏跳过 ATMS；MIUI tablet 检测和 recent top fallback 存在。 |
 | 配置与上报 | `loadDirectUploadConfig`、`saveDirectUploadConfig`、`maybeDirectUpload`、`sendDirectReport`、`clampDirectInterval`、`buildDirectReportBody`、`fillBatteryExtras`、`fillNetworkExtras`、`networkType`、`cellularGeneration`、`hasPhoneStatePermission`、`postDirectReportFallback`、`fetchQueuedMessagesFallback`、`readUtf8` | 通过。HTTP/WS 共享 `/api/report` 契约；网络/VPN/电量只在构建 payload 时读取；消息 fallback 有 256KB 读取上限。 |
-| LSP WebSocket | `ensureWsConnected`、`scheduleWsReconnect`、`recordWsDisconnectedForBackoff`、`buildLspWsUrl`、`LspWebSocketClient.clearModuleClientIfCurrent`、`isConnected`、`connect`、`disconnect`、`closeQuietly`、`sendText`、`sendCloseFrame`、`sendFrame`、`readerLoop`、`pingLoop`、`readFrame` | 通过。握手校验 101 和 `Sec-WebSocket-Accept`，client frame masked，帧大小 256KB，上下行异常进入退避；真实代理关闭行为需观察。 |
+| LSP WebSocket | `ensureWsConnected`、`scheduleWsReconnect`、`recordWsDisconnectedForBackoff`、`buildLspWsUrl`、`LspWebSocketClient.clearModuleClientIfCurrent`、`isConnected`、`connect`、`disconnect`、`closeQuietly`、`sendText`、`sendCloseFrame`、`sendFrame`、`readerLoop`、`pingLoop`、`readFrame` | 通过。握手校验 101 和 `Sec-WebSocket-Accept`，client frame masked，帧大小 256KB，上下行异常进入退避；`clearModuleClientIfCurrent()` 已纳入内部类审计；真实代理关闭行为需观察。 |
 | 消息转发/通知 | `forwardViewerMessageToApp`、`postViewerMessageNotification` | 通过。WS/HTTP fallback 的 `viewer_message` 字段转成 app receiver extras；通知使用 app package launch intent 和 immutable pending intent。 |
 | 展示文本/工具 | `primaryDisplayTitle`、`isoTime`、`playbackStateName`、`resolveAppLabel`、`firstNonBlank`、`safeString`、`normalizeNonce`、`getBrowserTitleNonce`、`isScreenInteractive`、`isIgnoredPackage`、`isBrowserPackage`、`cleanTitle` | 通过。`upload_media=false` 不再通过 `window_title` 泄露媒体；标题裁剪 256；nonce 长度要求 >=24；浏览器泛标题归一化已纳入浏览器标题 hook 行。 |
-| App 侧交叉路径 | `LsposedConfigBridge.publish/getOrCreateBrowserTitleNonce`、`LsposedBridgeReceiver.handleStatus/handleMessage`、`SystemSnapshotStore.updateFromLsposed/mergeForeground/mergeMedia/clearForTest`、`HeartbeatWorker.collectSystemSnapshot/buildStatusPayload`、`ReportClient.reportApp`、`MessageSocketManager.scheduleReconnect` | 通过。配置字段、广播 extras、HTTP/WS payload 与服务端契约一致；浏览器空标题会覆盖旧标题；普通 App WS 退避已封顶。 |
+| App 侧交叉路径 | `LsposedConfigBridge.publish/getOrCreateBrowserTitleNonce`、`LsposedBridgeReceiver.handleStatus/handleMessage`、`SystemSnapshotStore.updateFromLsposed/mergeForeground/mergeMedia/clearForTest`、`isActiveForegroundId`、`isSleepingForeground`、`isSleeping`、`HeartbeatWorker.collectSystemSnapshot/buildStatusPayload`、`ReportClient.reportApp`、`MessageSocketManager.scheduleReconnect` | 通过。配置字段、广播 extras、HTTP/WS payload 与服务端契约一致；浏览器空标题会覆盖旧标题；`sleeping` 不会被显示成“正在用sleeping”；普通 App WS 退避已封顶。 |
 
 广播权限链：
 
