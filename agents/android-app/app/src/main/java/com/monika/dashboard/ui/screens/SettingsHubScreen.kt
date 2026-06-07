@@ -36,9 +36,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.monika.dashboard.BuildConfig
 import com.monika.dashboard.data.DebugLog
 import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.network.ReportClient
+import com.monika.dashboard.system.LsposedConfigBridge
 import com.monika.dashboard.ui.components.CompactPageHeader
 import com.monika.dashboard.ui.components.DashboardCard
 import com.monika.dashboard.ui.components.DashboardTone
@@ -50,6 +52,7 @@ import com.monika.dashboard.ui.theme.Border
 import com.monika.dashboard.ui.theme.TextMuted
 import java.time.Instant
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -114,6 +117,18 @@ private fun SummarySettingsPane(settings: SettingsStore) {
     var dailySummaryTime by rememberSaveable { mutableStateOf("21:00") }
     var weeklySummaryWeekday by rememberSaveable { mutableIntStateOf(7) }
     var weeklySummaryTime by rememberSaveable { mutableStateOf("21:30") }
+    var supervisionEnabled by rememberSaveable { mutableStateOf(false) }
+    var supervisionCheckMode by rememberSaveable { mutableStateOf("hourly") }
+    var supervisionCheckIntervalMinutes by rememberSaveable { mutableStateOf("60") }
+    var supervisionBlacklistMinutes by rememberSaveable { mutableStateOf("20") }
+    var supervisionTargetMinMinutes by rememberSaveable { mutableStateOf("25") }
+    var supervisionVibrate by rememberSaveable { mutableStateOf(true) }
+    var supervisionSkipWatchSleep by rememberSaveable { mutableStateOf(true) }
+    var supervisionLspFreeze by rememberSaveable { mutableStateOf(false) }
+    var supervisionRulesUpdatedAt by remember { mutableStateOf<String?>(null) }
+    var supervisionRulesError by remember { mutableStateOf<String?>(null) }
+    var unfreezeCountdown by rememberSaveable { mutableIntStateOf(0) }
+    var unfreezeReady by rememberSaveable { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var aiLoading by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
@@ -155,6 +170,16 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     dailySummaryTime = it.dailySummaryTime
                     weeklySummaryWeekday = it.weeklySummaryWeekday
                     weeklySummaryTime = it.weeklySummaryTime
+                    supervisionEnabled = it.supervisionEnabled
+                    supervisionCheckMode = it.supervisionCheckMode
+                    supervisionCheckIntervalMinutes = it.supervisionCheckIntervalMinutes.toString()
+                    supervisionBlacklistMinutes = it.supervisionBlacklistMinutes.toString()
+                    supervisionTargetMinMinutes = it.supervisionTargetMinMinutes.toString()
+                    supervisionVibrate = it.supervisionVibrate
+                    supervisionSkipWatchSleep = it.supervisionSkipWatchSleep
+                    supervisionLspFreeze = it.supervisionLspFreeze
+                    supervisionRulesUpdatedAt = it.supervisionRulesUpdatedAt
+                    supervisionRulesError = it.supervisionRulesError
                     updatedAt = it.updatedAt
                     localEditedAt = null
                     status = "已同步服务器设置"
@@ -183,6 +208,14 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                             dailySummaryTime = dailySummaryTime,
                             weeklySummaryWeekday = weeklySummaryWeekday,
                             weeklySummaryTime = weeklySummaryTime,
+                            supervisionEnabled = supervisionEnabled,
+                            supervisionCheckMode = supervisionCheckMode,
+                            supervisionCheckIntervalMinutes = supervisionCheckIntervalMinutes.toIntervalSetting(60),
+                            supervisionBlacklistMinutes = supervisionBlacklistMinutes.toMinuteSetting(20),
+                            supervisionTargetMinMinutes = supervisionTargetMinMinutes.toMinuteSetting(25),
+                            supervisionVibrate = supervisionVibrate,
+                            supervisionSkipWatchSleep = supervisionSkipWatchSleep,
+                            supervisionLspFreeze = supervisionLspFreeze,
                             clientUpdatedAt = localEditedAt ?: updatedAt ?: Instant.now().toString(),
                         ),
                     )
@@ -197,6 +230,16 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     dailySummaryTime = it.dailySummaryTime
                     weeklySummaryWeekday = it.weeklySummaryWeekday
                     weeklySummaryTime = it.weeklySummaryTime
+                    supervisionEnabled = it.supervisionEnabled
+                    supervisionCheckMode = it.supervisionCheckMode
+                    supervisionCheckIntervalMinutes = it.supervisionCheckIntervalMinutes.toString()
+                    supervisionBlacklistMinutes = it.supervisionBlacklistMinutes.toString()
+                    supervisionTargetMinMinutes = it.supervisionTargetMinMinutes.toString()
+                    supervisionVibrate = it.supervisionVibrate
+                    supervisionSkipWatchSleep = it.supervisionSkipWatchSleep
+                    supervisionLspFreeze = it.supervisionLspFreeze
+                    supervisionRulesUpdatedAt = it.supervisionRulesUpdatedAt
+                    supervisionRulesError = it.supervisionRulesError
                     updatedAt = it.updatedAt
                     localEditedAt = null
                     if (it.syncStatus == "ignored_stale") {
@@ -324,6 +367,15 @@ private fun SummarySettingsPane(settings: SettingsStore) {
         loadAiConfig()
     }
 
+    LaunchedEffect(unfreezeCountdown) {
+        if (unfreezeCountdown > 0) {
+            delay(1000)
+            val next = unfreezeCountdown - 1
+            unfreezeCountdown = next
+            if (next == 0) unfreezeReady = true
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -442,6 +494,196 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     weeklySummaryWeekday = it + 1
                 },
             )
+            SectionTitle("监督模式")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "偏离目标时主动提醒",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        text = "保存计划时会让 AI 生成应用匹配规则；每小时触发阈值后再由 AI 复核一次。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextMuted,
+                    )
+                }
+                Switch(
+                    checked = supervisionEnabled,
+                    onCheckedChange = {
+                        markSummaryEdited()
+                        supervisionEnabled = it
+                    },
+                    enabled = !loading,
+                )
+            }
+            if (supervisionEnabled) {
+                SegmentedControl(
+                    options = listOf("定时复核", "阈值触发"),
+                    selectedIndex = if (supervisionCheckMode == "triggered") 1 else 0,
+                    onSelect = {
+                        markSummaryEdited()
+                        supervisionCheckMode = if (it == 1) "triggered" else "hourly"
+                    },
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OutlinedTextField(
+                        value = supervisionCheckIntervalMinutes,
+                        onValueChange = {
+                            markSummaryEdited()
+                            supervisionCheckIntervalMinutes = it.filter { ch -> ch.isDigit() }.take(3)
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = !loading,
+                        label = { Text("复核间隔分钟") },
+                        singleLine = true,
+                    )
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "偏离时震动",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                text = "切回目标应用后停止",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextMuted,
+                            )
+                        }
+                        Switch(
+                            checked = supervisionVibrate,
+                            onCheckedChange = {
+                                markSummaryEdited()
+                                supervisionVibrate = it
+                            },
+                            enabled = !loading,
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "睡着时跳过",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            text = "仅使用手表睡眠数据判断，避免手机息屏误判。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextMuted,
+                        )
+                    }
+                    Switch(
+                        checked = supervisionSkipWatchSleep,
+                        onCheckedChange = {
+                            markSummaryEdited()
+                            supervisionSkipWatchSleep = it
+                        },
+                        enabled = !loading,
+                    )
+                }
+                if (BuildConfig.PRIVILEGED_FEATURES) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "LSPosed 短时冻结偏离应用",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                text = "优先使用系统挂起，图标变灰且不能启动；失败时才短时停止应用。系统、桌面、安全组件和本应用会硬保护。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextMuted,
+                            )
+                        }
+                        Switch(
+                            checked = supervisionLspFreeze,
+                            onCheckedChange = {
+                                markSummaryEdited()
+                                supervisionLspFreeze = it
+                            },
+                            enabled = !loading,
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            if (unfreezeReady) {
+                                val ok = LsposedConfigBridge.clearSupervisionFreeze(context.applicationContext)
+                                unfreezeReady = false
+                                unfreezeCountdown = 0
+                                Toast.makeText(
+                                    context,
+                                    if (ok) "已请求解冻所有短时冻结应用" else "LSPosed 解冻广播发送失败",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            } else {
+                                unfreezeCountdown = 30
+                                unfreezeReady = false
+                            }
+                        },
+                        enabled = supervisionLspFreeze && !loading && unfreezeCountdown == 0,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            when {
+                                unfreezeCountdown > 0 -> "解冻倒计时 ${unfreezeCountdown}s"
+                                unfreezeReady -> "确认解冻所有冻结应用"
+                                else -> "强制解冻所有冻结应用"
+                            },
+                        )
+                    }
+                }
+                if (supervisionCheckMode == "triggered") {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = supervisionBlacklistMinutes,
+                            onValueChange = {
+                                markSummaryEdited()
+                                supervisionBlacklistMinutes = it.filter { ch -> ch.isDigit() }.take(2)
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = !loading,
+                            label = { Text("黑名单分钟") },
+                            singleLine = true,
+                        )
+                        OutlinedTextField(
+                            value = supervisionTargetMinMinutes,
+                            onValueChange = {
+                                markSummaryEdited()
+                                supervisionTargetMinMinutes = it.filter { ch -> ch.isDigit() }.take(2)
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = !loading,
+                            label = { Text("目标低于分钟") },
+                            singleLine = true,
+                        )
+                    }
+                }
+                val supervisionMeta = when {
+                    !supervisionRulesError.isNullOrBlank() -> "规则生成失败：${supervisionRulesError.orEmpty()}"
+                    !supervisionRulesUpdatedAt.isNullOrBlank() -> "规则已更新 ${formatClock(supervisionRulesUpdatedAt.orEmpty())}"
+                    else -> "保存后生成监督规则"
+                }
+                StatusPill(
+                    text = supervisionMeta,
+                    tone = if (!supervisionRulesError.isNullOrBlank()) DashboardTone.Warn else DashboardTone.Neutral,
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -642,6 +884,16 @@ private fun weekdayLabel(weekday: Int): String =
 
 private fun normalizeClockInput(value: String): String =
     value.filter { it.isDigit() || it == ':' }.take(5)
+
+private fun String.toMinuteSetting(fallback: Int): Int =
+    toIntOrNull()?.coerceIn(1, 55) ?: fallback
+
+private fun String.toIntervalSetting(fallback: Int): Int =
+    toIntOrNull()?.coerceIn(30, 240) ?: fallback
+
+private fun formatClock(value: String): String =
+    runCatching { java.time.ZonedDateTime.parse(value).toLocalTime().toString().take(5) }
+        .getOrDefault(value.take(16))
 
 private fun isAiStatusError(status: String?): Boolean {
     val value = status ?: return false

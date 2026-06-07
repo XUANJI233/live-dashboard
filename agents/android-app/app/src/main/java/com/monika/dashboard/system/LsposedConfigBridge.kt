@@ -13,6 +13,8 @@ object LsposedConfigBridge {
     private const val PERMISSION = "com.monika.dashboard.permission.LSPOSED_CONFIG"
     private const val PREFS_NAME = "monika_lsp_direct_upload"
     private const val KEY_BROWSER_TITLE_NONCE = "browser_title_nonce"
+    private const val EXTRA_COMMAND = "command"
+    private const val COMMAND_CLEAR_SUPERVISION_FREEZE = "clear_supervision_freeze"
 
     suspend fun publish(context: Context, settings: SettingsStore) {
         if (!BuildConfig.PRIVILEGED_FEATURES) return
@@ -65,6 +67,21 @@ object LsposedConfigBridge {
             DebugLog.log("LSPosed", "Config broadcast failed: ${e.message}")
         }
         DebugLog.log("LSPosed", if (enabled) "已下发直传配置" else "已通知直传暂停")
+    }
+
+    fun clearSupervisionFreeze(context: Context): Boolean {
+        if (!BuildConfig.PRIVILEGED_FEATURES) return false
+        val intent = Intent(ACTION_CONFIG).apply {
+            putExtra(EXTRA_COMMAND, COMMAND_CLEAR_SUPERVISION_FREEZE)
+        }
+        return try {
+            context.sendBroadcast(intent, PERMISSION)
+            DebugLog.log("LSPosed", "已请求清空监督冻结状态")
+            true
+        } catch (e: Exception) {
+            DebugLog.log("LSPosed", "清空监督冻结广播失败: ${e.message}")
+            false
+        }
     }
 
     private fun getOrCreateBrowserTitleNonce(context: Context): String {

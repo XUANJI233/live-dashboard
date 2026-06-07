@@ -213,6 +213,7 @@ class ReportClient(
                                 viewerName = item.optString("viewer_name"),
                                 kind = item.optString("kind", "private"),
                                 text = item.optString("text"),
+                                payload = item.optJSONObject("payload")?.toString(),
                             )
                         )
                     }
@@ -378,6 +379,16 @@ class ReportClient(
         val dailySummaryTime: String,
         val weeklySummaryWeekday: Int,
         val weeklySummaryTime: String,
+        val supervisionEnabled: Boolean,
+        val supervisionCheckMode: String,
+        val supervisionCheckIntervalMinutes: Int,
+        val supervisionBlacklistMinutes: Int,
+        val supervisionTargetMinMinutes: Int,
+        val supervisionVibrate: Boolean,
+        val supervisionSkipWatchSleep: Boolean,
+        val supervisionLspFreeze: Boolean,
+        val supervisionRulesUpdatedAt: String?,
+        val supervisionRulesError: String?,
         val updatedAt: String?,
         val syncStatus: String?,
     )
@@ -390,6 +401,14 @@ class ReportClient(
         val dailySummaryTime: String,
         val weeklySummaryWeekday: Int,
         val weeklySummaryTime: String,
+        val supervisionEnabled: Boolean,
+        val supervisionCheckMode: String,
+        val supervisionCheckIntervalMinutes: Int,
+        val supervisionBlacklistMinutes: Int,
+        val supervisionTargetMinMinutes: Int,
+        val supervisionVibrate: Boolean,
+        val supervisionSkipWatchSleep: Boolean,
+        val supervisionLspFreeze: Boolean,
         val clientUpdatedAt: String?,
     )
 
@@ -557,6 +576,14 @@ class ReportClient(
             put("daily_summary_time", update.dailySummaryTime)
             put("weekly_summary_weekday", update.weeklySummaryWeekday.coerceIn(1, 7))
             put("weekly_summary_time", update.weeklySummaryTime)
+            put("supervision_enabled", update.supervisionEnabled)
+            put("supervision_check_mode", update.supervisionCheckMode)
+            put("supervision_check_interval_minutes", update.supervisionCheckIntervalMinutes.coerceIn(30, 240))
+            put("supervision_blacklist_minutes", update.supervisionBlacklistMinutes.coerceIn(1, 55))
+            put("supervision_target_min_minutes", update.supervisionTargetMinMinutes.coerceIn(1, 55))
+            put("supervision_vibrate", update.supervisionVibrate)
+            put("supervision_skip_watch_sleep", update.supervisionSkipWatchSleep)
+            put("supervision_lsp_freeze", update.supervisionLspFreeze)
             if (!update.clientUpdatedAt.isNullOrBlank()) {
                 put("client_updated_at", update.clientUpdatedAt)
             }
@@ -738,6 +765,16 @@ class ReportClient(
                         dailySummaryTime = json.optString("daily_summary_time", "21:00"),
                         weeklySummaryWeekday = json.optInt("weekly_summary_weekday", 7).coerceIn(1, 7),
                         weeklySummaryTime = json.optString("weekly_summary_time", "21:30"),
+                        supervisionEnabled = json.optBoolean("supervision_enabled", false),
+                        supervisionCheckMode = json.optString("supervision_check_mode", "hourly"),
+                        supervisionCheckIntervalMinutes = json.optInt("supervision_check_interval_minutes", 60).coerceIn(30, 240),
+                        supervisionBlacklistMinutes = json.optInt("supervision_blacklist_minutes", 20).coerceIn(1, 55),
+                        supervisionTargetMinMinutes = json.optInt("supervision_target_min_minutes", 25).coerceIn(1, 55),
+                        supervisionVibrate = json.optBoolean("supervision_vibrate", true),
+                        supervisionSkipWatchSleep = json.optBoolean("supervision_skip_watch_sleep", true),
+                        supervisionLspFreeze = json.optBoolean("supervision_lsp_freeze", false),
+                        supervisionRulesUpdatedAt = json.optString("supervision_rules_updated_at").takeIf { value -> value.isNotBlank() && value != "null" },
+                        supervisionRulesError = json.optString("supervision_rules_error").takeIf { value -> value.isNotBlank() && value != "null" },
                         updatedAt = json.optString("updated_at").takeIf { value -> value.isNotBlank() && value != "null" },
                         syncStatus = json.optString("sync_status").takeIf { value -> value.isNotBlank() && value != "null" },
                     ),
@@ -928,6 +965,7 @@ class ReportClient(
         val viewerName: String = "",
         val kind: String = "private",
         val text: String,
+        val payload: String? = null,
     )
 }
 

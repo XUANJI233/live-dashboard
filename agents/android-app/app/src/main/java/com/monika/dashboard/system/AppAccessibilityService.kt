@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.content.pm.PackageManager
 import android.view.accessibility.AccessibilityEvent
 import com.monika.dashboard.data.DebugLog
+import com.monika.dashboard.realtime.SupervisionAlertController
 
 class AppAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -17,15 +18,16 @@ class AppAccessibilityService : AccessibilityService() {
         val title = safeEvent.text?.joinToString(" ")?.take(256)?.takeIf { it.isNotBlank() }
         if (packageName == null && title == null) return
 
-        SystemSnapshotStore.updateFromAccessibility(
-            ForegroundInfo(
-                packageName = packageName,
-                appName = packageName?.let(::resolveAppName) ?: packageName,
-                activity = title ?: className,
-                source = "accessibility",
-                confidence = 0.65,
-            )
+        val foreground = ForegroundInfo(
+            packageName = packageName,
+            appName = packageName?.let(::resolveAppName) ?: packageName,
+            activity = title ?: className,
+            title = title,
+            source = "accessibility",
+            confidence = 0.65,
         )
+        SystemSnapshotStore.updateFromAccessibility(foreground)
+        SupervisionAlertController.onSnapshot(applicationContext, SystemSnapshot(foreground = foreground))
     }
 
     override fun onInterrupt() {

@@ -150,7 +150,9 @@ object MessageSocketManager {
         messageId: String = "",
         viewerName: String = "",
         kind: String = "private",
+        payloadText: String? = null,
     ) {
+        SupervisionAlertController.handleIncoming(context.applicationContext, messageId, payloadText)
         if (!viewerId.isNullOrBlank() && kind != "public") {
             MessageInboxStore.add(
                 context = context,
@@ -172,7 +174,7 @@ object MessageSocketManager {
         )
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("网页游客消息")
+            .setContentTitle(if (viewerId == "__supervisor__") "监督模式" else "网页游客消息")
             .setContentText(text.take(120))
             .setStyle(NotificationCompat.BigTextStyle().bigText(text.take(500)))
             .setContentIntent(pending)
@@ -180,7 +182,7 @@ object MessageSocketManager {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setAutoCancel(true)
-        if (!viewerId.isNullOrBlank()) {
+        if (!viewerId.isNullOrBlank() && viewerId != "__supervisor__") {
             val blockIntent = Intent(context, MessageActionReceiver::class.java).apply {
                 action = ACTION_BLOCK_VIEWER
                 putExtra(EXTRA_VIEWER_ID, viewerId)
@@ -245,11 +247,11 @@ object MessageSocketManager {
             val viewerId = data.optString("viewer_id")
             val viewerName = data.optString("viewer_name")
             val kind = data.optString("kind", "private")
-            if (isViewerBlocked(context, viewerId)) {
+            if (viewerId != "__supervisor__" && isViewerBlocked(context, viewerId)) {
                 DebugLog.log("消息", "已忽略拉黑访客消息: $viewerId")
                 return
             }
-            notifyIncoming(context, message, viewerId, messageId, viewerName, kind)
+            notifyIncoming(context, message, viewerId, messageId, viewerName, kind, data.optJSONObject("payload")?.toString())
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {

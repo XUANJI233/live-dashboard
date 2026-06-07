@@ -79,6 +79,8 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String CONFIG_PERMISSION = "com.monika.dashboard.permission.LSPOSED_CONFIG";
     private static final String PREFS_DIRECT_UPLOAD = "monika_lsp_direct_upload";
     private static final String KEY_BROWSER_TITLE_NONCE = "browser_title_nonce";
+    private static final String EXTRA_CONFIG_COMMAND = "command";
+    private static final String COMMAND_CLEAR_SUPERVISION_FREEZE = "clear_supervision_freeze";
     private static final String EXTRA_MEDIA_PLAYING = "media_playing";
     private static final String EXTRA_MEDIA_PACKAGE = "media_package";
     private static final String EXTRA_MEDIA_TITLE = "media_title";
@@ -97,6 +99,7 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long MEDIA_VALIDATE_MS = 60_000L; // low-frequency stale-session guard
     private static final long BROWSER_NONCE_RELOAD_MS = 60_000L;
     private static final long BROWSER_WEB_TITLE_FRESH_MS = 10_000L;
+    private static final long SUPERVISION_DEFAULT_FREEZE_MS = 10 * 60_000L;
     private static final int START_INPUT_FLAG_IS_TEXT_EDITOR = 1 << 1;
     
     // Static instance for global access
@@ -210,6 +213,8 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String recentForegroundBrowser = "";
     private volatile long recentForegroundBrowserAt = 0L;
     private volatile long lastScreenOffCheckAt = 0L;
+    private volatile SupervisionFreezeAlert activeFreezeAlert = null;
+    private final ConcurrentHashMap<String, FrozenPackageRecord> frozenPackages = new ConcurrentHashMap<>();
     private static final long SCREEN_OFF_DEBOUNCE_MS = 30_000L; // 30s debounce for sleep detection
     private static final long TOP_ACTIVITY_FALLBACK_MS = 120_000L;
     private volatile ComponentName lastKnownTopComponent = null;
@@ -599,6 +604,11 @@ public final class MonikaXposedModule extends XposedModule {
                 @Override
                 public void onReceive(Context receiverContext, Intent intent) {
                     if (!ACTION_CONFIG.equals(intent.getAction())) return;
+                    String command = safeString(intent.getStringExtra(EXTRA_CONFIG_COMMAND));
+                    if (COMMAND_CLEAR_SUPERVISION_FREEZE.equals(command)) {
+                        clearSupervisionFreeze("app command");
+                        return;
+                    }
                     saveDirectUploadConfig(receiverContext, intent);
                 }
             };
@@ -1877,6 +1887,8 @@ public final class MonikaXposedModule extends XposedModule {
                 // else: keep previous title if browser package and no new description
             }
 
+            maybeApplySupervisionFreeze(foregroundPackage, foregroundApp, foregroundTitle);
+
             Intent intent = new Intent(ACTION_STATUS);
             intent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
             if (idleCandidate) {
@@ -2441,6 +2453,8 @@ public final class MonikaXposedModule extends XposedModule {
             String wm = getWindowingMode();
             if (wm != null) device.put("window_mode", wm);
             fillNetworkExtras(device);
+            JSONArray frozen = frozenPackagesJson(now);
+            if (frozen.length() > 0) device.put("frozen_packages", frozen);
             extra.put("device", device);
             extra.put("sleeping", "sleeping".equals(foregroundPackage));
             if (directUploadForeground && foregroundPackage.length() > 0 && !"idle".equals(foregroundPackage)) {
@@ -2681,6 +2695,12 @@ public final class MonikaXposedModule extends XposedModule {
                         .put("viewer_name", item.optString("viewer_name", ""))
                         .put("kind", item.optString("kind", "private"))
                         .put("text", item.optString("text", ""));
+                Object payload = item.opt("payload");
+                if (payload instanceof JSONObject) {
+                    data.put("payload", payload);
+                } else if (payload instanceof String && ((String) payload).length() > 0) {
+                    try { data.put("payload", new JSONObject((String) payload)); } catch (Throwable ignored) {}
+                }
                 forwardViewerMessageToApp(data.toString());
             }
             log(Log.DEBUG, TAG, "message fallback fetch delivered " + messages.length());
@@ -2786,12 +2806,17 @@ public final class MonikaXposedModule extends XposedModule {
             intent.putExtra("viewer_name", data.optString("viewer_name", ""));
             intent.putExtra("kind", data.optString("kind", "private"));
             intent.putExtra("text", text);
+            JSONObject payload = data.optJSONObject("payload");
+            if (payload != null) intent.putExtra("payload", payload.toString());
+            handleSupervisionPayload(payload, text);
             Context ctx = getSystemContext();
             if (ctx != null) {
                 long token = Binder.clearCallingIdentity();
                 try {
                     ctx.sendBroadcast(intent, CONFIG_PERMISSION);
-                    postViewerMessageNotification(ctx, data, text, viewerId);
+                    if (!isSupervisionPayload(data)) {
+                        postViewerMessageNotification(ctx, data, text, viewerId);
+                    }
                 } finally {
                     Binder.restoreCallingIdentity(token);
                 }
@@ -2799,6 +2824,307 @@ public final class MonikaXposedModule extends XposedModule {
             }
         } catch (Throwable t) {
             log(Log.DEBUG, TAG, "viewer message forward ignored: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private boolean isSupervisionPayload(JSONObject data) {
+        try {
+            JSONObject payload = data.optJSONObject("payload");
+            return payload != null && "supervision_alert".equals(payload.optString("type"));
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private void handleSupervisionPayload(JSONObject payload, String text) {
+        try {
+            if (payload == null || !"supervision_alert".equals(payload.optString("type"))) return;
+            if (!payload.optBoolean("freeze", false)) {
+                activeFreezeAlert = null;
+                return;
+            }
+            long now = System.currentTimeMillis();
+            long activeUntil = parseIsoMillis(payload.optString("active_until"), now + SUPERVISION_DEFAULT_FREEZE_MS);
+            long freezeUntil = parseIsoMillis(payload.optString("freeze_until"), now + SUPERVISION_DEFAULT_FREEZE_MS);
+            if (activeUntil <= now || freezeUntil <= now) {
+                activeFreezeAlert = null;
+                return;
+            }
+            java.util.List<java.util.regex.Pattern> patterns = compileSafePatterns(payload.optJSONArray("violation_regex"));
+            if (patterns.isEmpty()) {
+                activeFreezeAlert = null;
+                return;
+            }
+            activeFreezeAlert = new SupervisionFreezeAlert(
+                    payload.optString("alert_id", "supervision"),
+                    patterns,
+                    Math.min(activeUntil, freezeUntil),
+                    freezeUntil,
+                    safeString(payload.optString("reason", text)));
+            log(Log.INFO, TAG, "supervision freeze armed until " + isoTime(freezeUntil));
+            maybeApplySupervisionFreeze(foregroundPackage, foregroundApp, foregroundTitle);
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "supervision payload ignored: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void maybeApplySupervisionFreeze(String packageName, String appName, String title) {
+        try {
+            SupervisionFreezeAlert alert = activeFreezeAlert;
+            if (alert == null) return;
+            long now = System.currentTimeMillis();
+            if (now > alert.activeUntil || now > alert.freezeUntil) {
+                activeFreezeAlert = null;
+                cleanupFrozenPackages(now);
+                return;
+            }
+            String pkg = safeString(packageName);
+            if (pkg.length() == 0 || isProtectedFreezePackage(pkg)) return;
+            FrozenPackageRecord existing = frozenPackages.get(pkg);
+            if (existing != null && existing.until > now) return;
+            String matchText = pkg + " " + safeString(appName) + " " + safeString(title);
+            boolean matched = false;
+            for (java.util.regex.Pattern pattern : alert.violationPatterns) {
+                if (pattern.matcher(matchText).find()) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) return;
+            long until = Math.min(alert.freezeUntil, now + SUPERVISION_DEFAULT_FREEZE_MS);
+            boolean suspended = setPackageSuspended(pkg, true);
+            boolean stopped = forceStopPackage(pkg);
+            if (!suspended && !stopped) return;
+            frozenPackages.put(pkg, new FrozenPackageRecord(
+                    pkg,
+                    safeString(appName),
+                    now,
+                    until,
+                    alert.reason,
+                    suspended ? "suspended" : "force_stopped"));
+            log(Log.WARN, TAG, "supervision froze " + pkg + " mode=" + (suspended ? "suspended" : "force_stopped") + " until " + isoTime(until));
+            maybeDirectUpload(true);
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "supervision freeze skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void clearSupervisionFreeze(String reason) {
+        try {
+            activeFreezeAlert = null;
+            for (FrozenPackageRecord record : frozenPackages.values()) {
+                if ("suspended".equals(record.mode)) setPackageSuspended(record.packageName, false);
+            }
+            frozenPackages.clear();
+            log(Log.WARN, TAG, "supervision freeze cleared: " + safeString(reason));
+            maybeDirectUpload(true);
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "clear supervision freeze failed: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private boolean setPackageSuspended(String packageName, boolean suspended) {
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return false;
+            PackageManager pm = ctx.getPackageManager();
+            if (pm == null) return false;
+            Method method = findCompatibleSetPackagesSuspendedMethod(pm.getClass());
+            if (method == null) return false;
+            Object[] args = buildPackageSuspendedArgs(method.getParameterTypes(), packageName, suspended);
+            long token = Binder.clearCallingIdentity();
+            Object result;
+            try {
+                result = method.invoke(pm, args);
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+            if (result instanceof String[]) return ((String[]) result).length == 0;
+            return true;
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "setPackagesSuspended failed: " + t.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    private Method findCompatibleSetPackagesSuspendedMethod(Class<?> clazz) {
+        if (clazz == null) return null;
+        String cacheKey = clazz.getName() + "#compatibleSetPackagesSuspended";
+        Object cached = methodLookupCache.get(cacheKey);
+        if (cached instanceof Method) return (Method) cached;
+        if (cached == REFLECTION_MISS) return null;
+        Method method = findSetPackagesSuspendedIn(clazz.getMethods());
+        if (method == null) method = findSetPackagesSuspendedIn(clazz.getDeclaredMethods());
+        if (method != null) {
+            try { method.setAccessible(true); } catch (Throwable ignored) {}
+            methodLookupCache.put(cacheKey, method);
+            return method;
+        }
+        methodLookupCache.put(cacheKey, REFLECTION_MISS);
+        return null;
+    }
+
+    private Method findSetPackagesSuspendedIn(Method[] methods) {
+        for (Method method : methods) {
+            if (!"setPackagesSuspended".equals(method.getName())) continue;
+            Class<?>[] params = method.getParameterTypes();
+            boolean hasPackages = false;
+            boolean hasSuspended = false;
+            for (Class<?> param : params) {
+                if (param.isArray() && param.getComponentType() == String.class) hasPackages = true;
+                if (param == boolean.class) hasSuspended = true;
+            }
+            if (hasPackages && hasSuspended) return method;
+        }
+        return null;
+    }
+
+    private Object[] buildPackageSuspendedArgs(Class<?>[] params, String packageName, boolean suspended) {
+        Object[] args = new Object[params.length];
+        String message = suspended ? "Monika 监督模式短时冻结" : null;
+        for (int i = 0; i < params.length; i++) {
+            Class<?> type = params[i];
+            if (type.isArray() && type.getComponentType() == String.class) {
+                args[i] = new String[]{packageName};
+            } else if (type == boolean.class) {
+                args[i] = suspended;
+            } else if (type == int.class) {
+                args[i] = 0;
+            } else if (type == String.class) {
+                args[i] = message;
+            } else {
+                args[i] = null;
+            }
+        }
+        return args;
+    }
+
+    private boolean forceStopPackage(String packageName) {
+        if (!"system".equals(currentProcessName)) return false;
+        try {
+            Context ctx = getSystemContext();
+            if (ctx != null) {
+                Object activityManager = ctx.getSystemService(Context.ACTIVITY_SERVICE);
+                if (activityManager != null) {
+                    Method method = findMethod(activityManager.getClass(), "forceStopPackage", String.class);
+                    if (method != null) {
+                        method.invoke(activityManager, packageName);
+                        return true;
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "ActivityManager forceStopPackage failed: " + t.getClass().getSimpleName());
+        }
+        try {
+            Class<?> am = cachedClassForName("android.app.ActivityManager");
+            Method getService = am != null ? findMethod(am, "getService") : null;
+            Object service = getService != null ? getService.invoke(null) : null;
+            if (service == null) return false;
+            Method method = findMethod(service.getClass(), "forceStopPackage", String.class, int.class);
+            if (method == null) method = findMethod(service.getClass(), "forceStopPackageAsUser", String.class, int.class);
+            if (method == null) return false;
+            method.invoke(service, packageName, 0);
+            return true;
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "IActivityManager forceStopPackage failed: " + t.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    private JSONArray frozenPackagesJson(long now) {
+        cleanupFrozenPackages(now);
+        JSONArray arr = new JSONArray();
+        try {
+            for (FrozenPackageRecord record : frozenPackages.values()) {
+                if (record.until <= now) continue;
+                arr.put(new JSONObject()
+                        .put("package_name", record.packageName)
+                        .put("app_name", record.appName)
+                        .put("frozen_at", isoTime(record.frozenAt))
+                        .put("until", isoTime(record.until))
+                        .put("mode", record.mode)
+                        .put("reason", record.reason));
+                if (arr.length() >= 8) break;
+            }
+        } catch (Throwable ignored) {}
+        return arr;
+    }
+
+    private void cleanupFrozenPackages(long now) {
+        try {
+            for (String pkg : frozenPackages.keySet()) {
+                FrozenPackageRecord record = frozenPackages.get(pkg);
+                if (record == null || record.until <= now) {
+                    if (record != null && "suspended".equals(record.mode)) {
+                        setPackageSuspended(record.packageName, false);
+                    }
+                    frozenPackages.remove(pkg);
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private java.util.List<java.util.regex.Pattern> compileSafePatterns(JSONArray arr) {
+        java.util.ArrayList<java.util.regex.Pattern> out = new java.util.ArrayList<>();
+        if (arr == null) return out;
+        for (int i = 0; i < arr.length(); i++) {
+            String pattern = safeString(arr.optString(i));
+            if (!isSafeSupervisionPattern(pattern)) continue;
+            try {
+                out.add(java.util.regex.Pattern.compile(pattern, java.util.regex.Pattern.CASE_INSENSITIVE));
+            } catch (Throwable ignored) {}
+            if (out.size() >= 12) break;
+        }
+        return out;
+    }
+
+    private boolean isSafeSupervisionPattern(String pattern) {
+        if (pattern == null || pattern.length() == 0 || pattern.length() > 120) return false;
+        if (pattern.matches(".*\\\\[1-9].*")) return false;
+        if (pattern.contains("(?<=") || pattern.contains("(?<!")) return false;
+        if (pattern.matches(".*\\([^)]*[+*][^)]*\\)[+*{].*")) return false;
+        if (pattern.matches(".*(?:\\.\\*){3,}.*")) return false;
+        return true;
+    }
+
+    private long parseIsoMillis(String value, long fallback) {
+        try {
+            if (value == null || value.length() == 0) return fallback;
+            return java.time.Instant.parse(value).toEpochMilli();
+        } catch (Throwable ignored) {
+            return fallback;
+        }
+    }
+
+    private boolean isProtectedFreezePackage(String packageName) {
+        if (isIgnoredPackage(packageName)) return true;
+        if (TARGET_PACKAGE.equals(packageName)) return true;
+        if (packageName.startsWith("com.monika.dashboard")) return true;
+        if (packageName.startsWith("com.android.inputmethod")) return true;
+        if (packageName.startsWith("com.google.android.inputmethod")) return true;
+        switch (packageName) {
+            case "com.android.settings":
+            case "com.miui.securitycenter":
+            case "com.miui.securityadd":
+            case "com.miui.powerkeeper":
+            case "com.xiaomi.xmsf":
+            case "com.google.android.gms":
+            case "com.android.permissioncontroller":
+            case "com.google.android.permissioncontroller":
+            case "com.android.packageinstaller":
+            case "com.google.android.packageinstaller":
+            case "com.android.providers.downloads":
+            case "com.android.providers.media":
+            case "com.android.phone":
+            case "com.google.android.dialer":
+            case "com.android.contacts":
+            case "com.android.server.telecom":
+            case "com.android.bluetooth":
+            case "com.android.nfc":
+                return true;
+            default:
+                return false;
         }
     }
 
@@ -3284,6 +3610,45 @@ public final class MonikaXposedModule extends XposedModule {
     //  Minimal WebSocket client for LSPosed data upload
     //  Uses javax.net.ssl.SSLSocket — no external dependencies
     // ──────────────────────────────────────────────
+    private static final class SupervisionFreezeAlert {
+        final String id;
+        final java.util.List<java.util.regex.Pattern> violationPatterns;
+        final long activeUntil;
+        final long freezeUntil;
+        final String reason;
+
+        SupervisionFreezeAlert(
+                String id,
+                java.util.List<java.util.regex.Pattern> violationPatterns,
+                long activeUntil,
+                long freezeUntil,
+                String reason) {
+            this.id = id;
+            this.violationPatterns = violationPatterns;
+            this.activeUntil = activeUntil;
+            this.freezeUntil = freezeUntil;
+            this.reason = reason;
+        }
+    }
+
+    private static final class FrozenPackageRecord {
+        final String packageName;
+        final String appName;
+        final long frozenAt;
+        final long until;
+        final String reason;
+        final String mode;
+
+        FrozenPackageRecord(String packageName, String appName, long frozenAt, long until, String reason, String mode) {
+            this.packageName = packageName;
+            this.appName = appName;
+            this.frozenAt = frozenAt;
+            this.until = until;
+            this.reason = reason;
+            this.mode = mode;
+        }
+    }
+
     private class LspWebSocketClient {
         private static final int OP_TEXT  = 0x1;
         private static final int OP_CLOSE = 0x8;

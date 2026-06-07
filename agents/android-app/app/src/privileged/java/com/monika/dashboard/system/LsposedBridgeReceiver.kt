@@ -5,16 +5,17 @@ import android.content.Context
 import android.content.Intent
 import com.monika.dashboard.data.DebugLog
 import com.monika.dashboard.realtime.MessageSocketManager
+import com.monika.dashboard.realtime.SupervisionAlertController
 
 class LsposedBridgeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
-            ACTION_STATUS -> handleStatus(intent)
+            ACTION_STATUS -> handleStatus(context, intent)
             ACTION_MESSAGE -> handleMessage(context, intent)
         }
     }
 
-    private fun handleStatus(intent: Intent) {
+    private fun handleStatus(context: Context, intent: Intent) {
         val packageName = intent.getStringExtra(EXTRA_PACKAGE)
             ?.takeIf { it.isNotBlank() && it != "idle" && it != "android" && it != "com.android.systemui" }
         val foreground = ForegroundInfo(
@@ -44,14 +45,14 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
             state = intent.getStringExtra(EXTRA_MEDIA_STATE),
             source = "lsposed",
         )
-        SystemSnapshotStore.updateFromLsposed(
-            SystemSnapshot(
-                capabilityMode = "lsposed",
-                foreground = foreground.takeIf { it.packageName != null || it.activity != null || it.title != null },
-                input = input.takeIf { it.inputActive != null },
-                media = media.takeIf { it.playing != null || it.title != null || it.app != null },
-            )
+        val snapshot = SystemSnapshot(
+            capabilityMode = "lsposed",
+            foreground = foreground.takeIf { it.packageName != null || it.activity != null || it.title != null },
+            input = input.takeIf { it.inputActive != null },
+            media = media.takeIf { it.playing != null || it.title != null || it.app != null },
         )
+        SystemSnapshotStore.updateFromLsposed(snapshot)
+        SupervisionAlertController.onSnapshot(context.applicationContext, snapshot)
         DebugLog.log("LSPosed", "收到系统状态事件")
     }
 
@@ -60,7 +61,7 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
         val viewerId = intent.getStringExtra(EXTRA_VIEWER_ID).orEmpty()
         val text = intent.getStringExtra(EXTRA_TEXT).orEmpty().take(500)
         if (viewerId.isBlank() || text.isBlank()) return
-        if (MessageSocketManager.isViewerBlocked(appContext, viewerId)) {
+        if (viewerId != "__supervisor__" && MessageSocketManager.isViewerBlocked(appContext, viewerId)) {
             DebugLog.log("LSPosed", "已忽略拉黑访客消息: $viewerId")
             return
         }
@@ -71,6 +72,7 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
             messageId = intent.getStringExtra(EXTRA_MESSAGE_ID).orEmpty(),
             viewerName = intent.getStringExtra(EXTRA_VIEWER_NAME).orEmpty(),
             kind = intent.getStringExtra(EXTRA_KIND).orEmpty().ifBlank { "private" },
+            payloadText = intent.getStringExtra(EXTRA_PAYLOAD),
         )
         DebugLog.log("LSPosed", "收到网页访客消息")
     }
@@ -94,5 +96,6 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
         const val EXTRA_VIEWER_NAME = "viewer_name"
         const val EXTRA_KIND = "kind"
         const val EXTRA_TEXT = "text"
+        const val EXTRA_PAYLOAD = "payload"
     }
 }

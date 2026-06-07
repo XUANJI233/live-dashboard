@@ -21,6 +21,7 @@ import com.monika.dashboard.data.UploadItem
 import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.network.ReportClient
 import com.monika.dashboard.realtime.MessageSocketManager
+import com.monika.dashboard.realtime.SupervisionAlertController
 import com.monika.dashboard.system.RootSystemCollector
 import com.monika.dashboard.system.LsposedConfigBridge
 import com.monika.dashboard.system.LocationSnapshot
@@ -128,6 +129,7 @@ class HeartbeatWorker(
 
             val battery = getBatteryInfo()
             val snapshot = collectSystemSnapshot(capabilityMode, uploadInputState, uploadForeground, uploadMedia)
+            SupervisionAlertController.onSnapshot(applicationContext, snapshot)
             val mediaPackage = snapshot.media?.packageName?.takeIf { snapshot.media?.playing == true }
             val appId = when {
                 snapshot.isSleeping() && mediaPackage != null -> mediaPackage
@@ -584,6 +586,7 @@ class HeartbeatWorker(
                 message.id,
                 message.viewerName,
                 message.kind,
+                message.payload,
             )
         }
     }
