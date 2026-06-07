@@ -14,11 +14,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -32,6 +35,7 @@ import com.monika.dashboard.ui.components.DashboardTone
 import com.monika.dashboard.ui.components.EmptyState
 import com.monika.dashboard.ui.components.InitialBadge
 import com.monika.dashboard.ui.components.ScreenHeader
+import com.monika.dashboard.ui.components.SegmentedControl
 import com.monika.dashboard.ui.components.SectionTitle
 import com.monika.dashboard.ui.components.StatusPill
 import com.monika.dashboard.ui.theme.TextMuted
@@ -42,21 +46,54 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
 fun OverviewScreen(settings: SettingsStore) {
     val today = remember { LocalDate.now() }
+    val scope = rememberCoroutineScope()
     var selectedDate by rememberSaveable { mutableStateOf(today.toString()) }
+    var selectedPeriod by rememberSaveable { mutableIntStateOf(0) }
     var loading by remember { mutableStateOf(false) }
+    var refreshing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var dailySummary by remember { mutableStateOf<ReportClient.DailySummary?>(null) }
+    var weeklySummary by remember { mutableStateOf<ReportClient.WeeklySummary?>(null) }
     var timeline by remember { mutableStateOf<ReportClient.TimelineResponse?>(null) }
+    val isWeekly = selectedPeriod == 1
 
-    LaunchedEffect(selectedDate) {
+    fun refreshSummary() {
+        scope.launch {
+            refreshing = true
+            error = null
+            val result = withContext(Dispatchers.IO) {
+                val url = settings.serverUrl.first()
+                val token = settings.getToken()
+                if (url.isBlank() || token.isNullOrBlank()) {
+                    Result.failure(IllegalStateException("请先在设置中配置服务器和 Token"))
+                } else {
+                    val client = ReportClient(url, token)
+                    if (isWeekly) client.refreshWeeklySummary(selectedDate) else client.refreshDailySummary(selectedDate)
+                }
+            }
+            result
+                .onSuccess { summary ->
+                    when (summary) {
+                        is ReportClient.WeeklySummary -> weeklySummary = summary
+                        is ReportClient.DailySummary -> dailySummary = summary
+                    }
+                }
+                .onFailure { error = it.message ?: it.javaClass.simpleName }
+            refreshing = false
+        }
+    }
+
+    LaunchedEffect(selectedDate, selectedPeriod) {
         loading = true
         error = null
         dailySummary = null
+        weeklySummary = null
         timeline = null
         val result = withContext(Dispatchers.IO) {
             val url = settings.serverUrl.first()
@@ -66,23 +103,41 @@ fun OverviewScreen(settings: SettingsStore) {
             } else {
                 val client = ReportClient(url, token)
                 try {
-                    val summaryResult = client.fetchDailySummary(selectedDate)
-                    val timelineResult = client.fetchTimeline(selectedDate)
-                    summaryResult.fold(
-                        onSuccess = { summary ->
-                            timelineResult.map { timelineResponse -> summary to timelineResponse }
-                        },
-                        onFailure = { failure -> Result.failure(failure) },
-                    )
+                    if (isWeekly) {
+                        val summary = client.fetchWeeklySummary(selectedDate).getOrThrow()
+                        val segments = weekDatesFor(selectedDate)
+                            .flatMap { date -> client.fetchTimeline(date).getOrThrow().segments }
+                        Result.success(
+                            OverviewLoad(
+                                dailySummary = null,
+                                weeklySummary = summary,
+                                timeline = ReportClient.TimelineResponse(
+                                    date = selectedDate,
+                                    segments = segments,
+                                    summary = emptyMap(),
+                                ),
+                            ),
+                        )
+                    } else {
+                        val summary = client.fetchDailySummary(selectedDate).getOrThrow()
+                        val timelineResponse = client.fetchTimeline(selectedDate).getOrThrow()
+                        Result.success(
+                            OverviewLoad(
+                                dailySummary = summary,
+                                weeklySummary = null,
+                                timeline = timelineResponse,
+                            ),
+                        )
+                    }
                 } finally {
                     client.shutdown()
                 }
             }
         }
-        result
-            .onSuccess { (summary, timelineResponse) ->
-                dailySummary = summary
-                timeline = timelineResponse
+        result.onSuccess { data ->
+                dailySummary = data.dailySummary
+                weeklySummary = data.weeklySummary
+                timeline = data.timeline
             }
             .onFailure { error = it.message ?: it.javaClass.simpleName }
         loading = false
@@ -103,8 +158,16 @@ fun OverviewScreen(settings: SettingsStore) {
         item {
             ScreenHeader(
                 title = "概览",
-                subtitle = "AI 日总结、日历和当天应用时长。",
-                meta = if (loading) "同步中" else selectedDate,
+                subtitle = "AI 总结、日历和应用时长。",
+                meta = if (loading) "同步中" else if (isWeekly) "本周" else selectedDate,
+            )
+        }
+
+        item {
+            SegmentedControl(
+                options = listOf("日总结", "周总结"),
+                selectedIndex = selectedPeriod,
+                onSelect = { selectedPeriod = it },
             )
         }
 
@@ -134,13 +197,33 @@ fun OverviewScreen(settings: SettingsStore) {
 
         item {
             DashboardCard(tone = DashboardTone.Info) {
-                SectionTitle(
-                    title = "AI 日总结",
-                    meta = dailySummary?.generatedAt?.let { "生成 ${formatClock(it)}" },
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    SectionTitle(
+                        title = if (isWeekly) "AI 周总结" else "AI 日总结",
+                        meta = (if (isWeekly) weeklySummary?.generatedAt else dailySummary?.generatedAt)?.let { "生成 ${formatClock(it)}" },
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = { refreshSummary() },
+                        enabled = !loading && !refreshing,
+                    ) {
+                        Text(if (refreshing) "刷新中" else "刷新")
+                    }
+                }
+                StatusPill(
+                    text = summaryModeLabel(if (isWeekly) weeklySummary?.mode else dailySummary?.mode),
+                    tone = DashboardTone.Neutral,
                 )
                 Text(
-                    text = dailySummary?.summary
-                        ?: "服务端还没有生成这天的 AI 总结；配置 AI_API_URL / AI_API_KEY 后会自动生成。",
+                    text = if (isWeekly) {
+                        weeklySummary?.summary ?: "服务端还没有生成这一周的 AI 总结；点击刷新可让服务器立即生成。"
+                    } else {
+                        dailySummary?.summary ?: "服务端还没有生成这天的 AI 总结；点击刷新可让服务器立即生成。"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
@@ -158,7 +241,7 @@ fun OverviewScreen(settings: SettingsStore) {
 
         item {
             SectionTitle(
-                title = "当天使用",
+                title = if (isWeekly) "本周使用" else "当天使用",
                 meta = formatDuration(totalSeconds),
             )
         }
@@ -166,8 +249,8 @@ fun OverviewScreen(settings: SettingsStore) {
         if (appUsage.isEmpty() && !loading) {
             item {
                 EmptyState(
-                    title = "这天还没有时间线",
-                    body = "设备上报后会在这里显示每天用了什么、各用了多久。",
+                    title = if (isWeekly) "这一周还没有时间线" else "这天还没有时间线",
+                    body = "设备上报后会在这里显示用了什么、各用了多久。",
                 )
             }
         } else {
@@ -193,6 +276,12 @@ private data class UsageItem(
     val appName: String,
     val deviceName: String,
     val durationSeconds: Int,
+)
+
+private data class OverviewLoad(
+    val dailySummary: ReportClient.DailySummary?,
+    val weeklySummary: ReportClient.WeeklySummary?,
+    val timeline: ReportClient.TimelineResponse,
 )
 
 private fun aggregateUsage(segments: List<ReportClient.TimelineSegment>): List<UsageItem> =
@@ -272,6 +361,19 @@ private fun dayLabel(day: LocalDate, today: LocalDate): String =
         today -> "今天"
         today.minusDays(1) -> "昨天"
         else -> day.dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, Locale.CHINA)
+    }
+
+private fun weekDatesFor(date: String): List<String> {
+    val selected = runCatching { LocalDate.parse(date) }.getOrDefault(LocalDate.now())
+    val start = selected.minusDays((selected.dayOfWeek.value - 1).toLong())
+    return (0L..6L).map { start.plusDays(it).toString() }
+}
+
+private fun summaryModeLabel(mode: String?): String =
+    when (mode) {
+        "gentle" -> "温和"
+        "sharp" -> "锐评"
+        else -> "一般"
     }
 
 private fun formatDuration(seconds: Int): String {

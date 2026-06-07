@@ -34,6 +34,12 @@
 2. `MessageSocketManager` 使用 `GET /api/ws?role=device` 的 WebSocket 通道接收私聊和公开留言变更
 3. 连接断开时消息页面会通过 HTTP 历史记录补齐，不再使用全局 TopAppBar 显示连接状态，避免顶部信息重复和误导
 
+### AI 总结流程
+1. 概览页通过 `GET /api/daily-summary` 或 `GET /api/weekly-summary` 读取服务端缓存总结
+2. 用户点击刷新时，App 使用设备 Bearer token 调用 `POST /api/daily-summary` 或 `POST /api/weekly-summary` 让服务端重新生成
+3. 设置页“总结”分段通过 `GET/POST /api/summary-settings` 读取和保存总结模式（温和/一般/锐评）与近期目标
+4. 模式和目标只存在服务器；公开读取总结时不会返回目标文本
+
 ### 健康数据同步流程
 1. 用户在 HealthScreen 授权 Health Connect 权限
 2. 若设备开放 `FEATURE_READ_HEALTH_DATA_IN_BACKGROUND`（以设备与 Health Connect 的 feature 检测结果为准），再额外授权后台读取权限
@@ -63,6 +69,11 @@
 | GET | `/api/messages` | 拉取离线排队的游客消息 | HeartbeatWorker |
 | POST | `/api/messages/reply` | 回复游客消息 | HeartbeatWorker |
 | WS | `/api/ws?role=device` | 实时双向消息 | MessageSocketManager |
+| GET | `/api/daily-summary` | 读取日总结 | OverviewScreen |
+| POST | `/api/daily-summary` | 管理员刷新日总结 | OverviewScreen |
+| GET | `/api/weekly-summary` | 读取周总结 | OverviewScreen |
+| POST | `/api/weekly-summary` | 管理员刷新周总结 | OverviewScreen |
+| GET/POST | `/api/summary-settings` | 读取/保存总结模式和目标 | SettingsHubScreen |
 | GET | `/api/health` | 连接测试 | MainActivity |
 
 ## DataStore 配置键

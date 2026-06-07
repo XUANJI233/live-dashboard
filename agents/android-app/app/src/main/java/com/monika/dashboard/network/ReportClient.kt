@@ -349,6 +349,21 @@ class ReportClient(
         val date: String,
         val summary: String?,
         val generatedAt: String?,
+        val mode: String?,
+    )
+
+    data class WeeklySummary(
+        val weekStart: String,
+        val weekEnd: String,
+        val summary: String?,
+        val generatedAt: String?,
+        val mode: String?,
+    )
+
+    data class SummarySettings(
+        val mode: String,
+        val target: String,
+        val updatedAt: String?,
     )
 
     data class TimelineSegment(
@@ -386,12 +401,99 @@ class ReportClient(
                         date = json.optString("date", date),
                         summary = json.optString("summary").takeIf { value -> value.isNotBlank() && value != "null" },
                         generatedAt = json.optString("generated_at").takeIf { value -> value.isNotBlank() && value != "null" },
+                        mode = json.optString("mode").takeIf { value -> value.isNotBlank() && value != "null" },
                     ),
                 )
             }
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    fun fetchWeeklySummary(date: String): Result<WeeklySummary> {
+        return try {
+            val request = Request.Builder()
+                .url("${serverUrl.trimEnd('/')}/api/weekly-summary?date=${URLEncoder.encode(date, "UTF-8")}")
+                .addHeader("Authorization", "Bearer $token")
+                .get()
+                .build()
+            executeSummaryRequest(request, date)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun refreshDailySummary(date: String): Result<DailySummary> {
+        val body = JSONObject().apply {
+            put("date", date)
+            put("tz", clientTimezoneOffsetMinutes())
+        }
+        val request = Request.Builder()
+            .url("${serverUrl.trimEnd('/')}/api/daily-summary")
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Content-Type", "application/json")
+            .post(body.toString().toRequestBody(jsonMediaType))
+            .build()
+
+        return try {
+            val response = client.newCall(request).execute()
+            response.use {
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(it.body?.string())}"))
+                val json = JSONObject(it.body?.string().orEmpty())
+                Result.success(
+                    DailySummary(
+                        date = json.optString("date", date),
+                        summary = json.optString("summary").takeIf { value -> value.isNotBlank() && value != "null" },
+                        generatedAt = json.optString("generated_at").takeIf { value -> value.isNotBlank() && value != "null" },
+                        mode = json.optString("mode").takeIf { value -> value.isNotBlank() && value != "null" },
+                    ),
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun refreshWeeklySummary(date: String): Result<WeeklySummary> {
+        val body = JSONObject().apply {
+            put("date", date)
+            put("tz", clientTimezoneOffsetMinutes())
+        }
+        val request = Request.Builder()
+            .url("${serverUrl.trimEnd('/')}/api/weekly-summary")
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Content-Type", "application/json")
+            .post(body.toString().toRequestBody(jsonMediaType))
+            .build()
+
+        return try {
+            executeSummaryRequest(request, date)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun fetchSummarySettings(): Result<SummarySettings> {
+        val request = Request.Builder()
+            .url("${serverUrl.trimEnd('/')}/api/summary-settings")
+            .addHeader("Authorization", "Bearer $token")
+            .get()
+            .build()
+        return executeSettingsRequest(request)
+    }
+
+    fun updateSummarySettings(mode: String, target: String): Result<SummarySettings> {
+        val body = JSONObject().apply {
+            put("mode", mode)
+            put("target", target.take(240))
+        }
+        val request = Request.Builder()
+            .url("${serverUrl.trimEnd('/')}/api/summary-settings")
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Content-Type", "application/json")
+            .post(body.toString().toRequestBody(jsonMediaType))
+            .build()
+        return executeSettingsRequest(request)
     }
 
     fun fetchTimeline(date: String): Result<TimelineResponse> {
@@ -482,6 +584,45 @@ class ReportClient(
 
         const val PUBLIC_RECENT_HOURS = 168
     }
+
+    private fun executeSummaryRequest(request: Request, fallbackDate: String): Result<WeeklySummary> {
+        val response = client.newCall(request).execute()
+        response.use {
+            if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(it.body?.string())}"))
+            val json = JSONObject(it.body?.string().orEmpty())
+            return Result.success(
+                WeeklySummary(
+                    weekStart = json.optString("week_start", fallbackDate),
+                    weekEnd = json.optString("week_end", fallbackDate),
+                    summary = json.optString("summary").takeIf { value -> value.isNotBlank() && value != "null" },
+                    generatedAt = json.optString("generated_at").takeIf { value -> value.isNotBlank() && value != "null" },
+                    mode = json.optString("mode").takeIf { value -> value.isNotBlank() && value != "null" },
+                ),
+            )
+        }
+    }
+
+    private fun executeSettingsRequest(request: Request): Result<SummarySettings> {
+        return try {
+            val response = client.newCall(request).execute()
+            response.use {
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(it.body?.string())}"))
+                val json = JSONObject(it.body?.string().orEmpty())
+                Result.success(
+                    SummarySettings(
+                        mode = json.optString("mode", "normal"),
+                        target = json.optString("target", ""),
+                        updatedAt = json.optString("updated_at").takeIf { value -> value.isNotBlank() && value != "null" },
+                    ),
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun errorText(raw: String?): String =
+        raw.orEmpty().take(160).ifBlank { "request failed" }
 
     data class HealthRecord(
         val type: String,

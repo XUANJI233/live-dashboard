@@ -14,15 +14,19 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -30,10 +34,20 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.monika.dashboard.data.DebugLog
 import com.monika.dashboard.data.SettingsStore
+import com.monika.dashboard.network.ReportClient
 import com.monika.dashboard.ui.components.CompactPageHeader
+import com.monika.dashboard.ui.components.DashboardCard
+import com.monika.dashboard.ui.components.DashboardTone
+import com.monika.dashboard.ui.components.PrimaryActionColors
 import com.monika.dashboard.ui.components.SegmentedControl
+import com.monika.dashboard.ui.components.SectionTitle
+import com.monika.dashboard.ui.components.StatusPill
 import com.monika.dashboard.ui.theme.Border
 import com.monika.dashboard.ui.theme.TextMuted
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsHubScreen(settings: SettingsStore) {
@@ -58,7 +72,7 @@ fun SettingsHubScreen(settings: SettingsStore) {
                 },
             )
             SegmentedControl(
-                options = listOf("配置", "健康", "诊断"),
+                options = listOf("配置", "健康", "总结", "诊断"),
                 selectedIndex = selected,
                 onSelect = { selected = it },
             )
@@ -67,7 +81,8 @@ fun SettingsHubScreen(settings: SettingsStore) {
         Box(modifier = Modifier.weight(1f)) {
             when (selected) {
                 1 -> HealthScreen(settings = settings, showHeader = false)
-                2 -> StatusScreen(showHeader = false, showUploadStatus = false)
+                2 -> SummarySettingsPane(settings)
+                3 -> StatusScreen(showHeader = false, showUploadStatus = false)
                 else -> SetupScreen(settings = settings, showHeader = false)
             }
         }
@@ -80,6 +95,146 @@ fun SettingsHubScreen(settings: SettingsStore) {
                 exportLogs(context)
             },
         )
+    }
+}
+
+@Composable
+private fun SummarySettingsPane(settings: SettingsStore) {
+    val scope = rememberCoroutineScope()
+    var mode by rememberSaveable { mutableStateOf("normal") }
+    var target by rememberSaveable { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var updatedAt by remember { mutableStateOf<String?>(null) }
+
+    fun loadRemote() {
+        scope.launch {
+            loading = true
+            status = null
+            val result = withContext(Dispatchers.IO) {
+                val url = settings.serverUrl.first()
+                val token = settings.getToken()
+                if (url.isBlank() || token.isNullOrBlank()) {
+                    Result.failure(IllegalStateException("请先配置服务器和 Token"))
+                } else {
+                    ReportClient(url, token).fetchSummarySettings()
+                }
+            }
+            result
+                .onSuccess {
+                    mode = it.mode
+                    target = it.target
+                    updatedAt = it.updatedAt
+                    status = "已同步服务器设置"
+                }
+                .onFailure { status = it.message ?: "同步失败" }
+            loading = false
+        }
+    }
+
+    fun saveRemote() {
+        scope.launch {
+            loading = true
+            status = null
+            val result = withContext(Dispatchers.IO) {
+                val url = settings.serverUrl.first()
+                val token = settings.getToken()
+                if (url.isBlank() || token.isNullOrBlank()) {
+                    Result.failure(IllegalStateException("请先配置服务器和 Token"))
+                } else {
+                    ReportClient(url, token).updateSummarySettings(mode, target)
+                }
+            }
+            result
+                .onSuccess {
+                    mode = it.mode
+                    target = it.target
+                    updatedAt = it.updatedAt
+                    status = "总结设置已保存"
+                }
+                .onFailure { status = it.message ?: "保存失败" }
+            loading = false
+        }
+    }
+
+    LaunchedEffect(Unit) { loadRemote() }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        DashboardCard(tone = DashboardTone.Info) {
+            SectionTitle(
+                title = "AI 总结",
+                meta = updatedAt?.let { "已更新" } ?: if (loading) "同步中" else null,
+            )
+            SegmentedControl(
+                options = listOf("温和", "一般", "锐评"),
+                selectedIndex = when (mode) {
+                    "gentle" -> 0
+                    "sharp" -> 2
+                    else -> 1
+                },
+                onSelect = {
+                    mode = when (it) {
+                        0 -> "gentle"
+                        2 -> "sharp"
+                        else -> "normal"
+                    }
+                },
+            )
+            OutlinedTextField(
+                value = target,
+                onValueChange = { target = it.take(240) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("近期目标") },
+                minLines = 3,
+                maxLines = 5,
+                supportingText = { Text("${target.length}/240") },
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Button(
+                    onClick = { saveRemote() },
+                    enabled = !loading,
+                    colors = PrimaryActionColors(),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (loading) "处理中" else "保存")
+                }
+                TextButton(
+                    onClick = { loadRemote() },
+                    enabled = !loading,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("重新读取")
+                }
+            }
+            if (!status.isNullOrBlank()) {
+                StatusPill(
+                    text = status.orEmpty(),
+                    tone = if (status?.contains("失败") == true || status?.startsWith("HTTP") == true) {
+                        DashboardTone.Bad
+                    } else {
+                        DashboardTone.Good
+                    },
+                )
+            }
+        }
+
+        DashboardCard {
+            SectionTitle("提示词行为")
+            Text(
+                text = "模式和目标保存在服务器。日总结和周总结手动刷新时会读取这份设置，并把目标加入提示词；公开读取只返回总结文本，不返回目标。",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextMuted,
+            )
+        }
     }
 }
 
