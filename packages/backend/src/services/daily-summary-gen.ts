@@ -9,7 +9,7 @@ import {
   upsertWeeklySummary,
 } from "../db";
 import { buildTimelineSegments } from "../routes/timeline";
-import { getAiRuntimeConfig } from "./ai-config";
+import { getAiRuntimeConfig, requestAiChatCompletion } from "./ai-config";
 import { safeTimezoneOffset, utcRangeForLocalDate } from "./cdn";
 
 /**
@@ -29,7 +29,18 @@ export type SummaryKind = "daily" | "weekly";
 export interface SummarySettings {
   mode: SummaryMode;
   target: string;
+  planned_rest: boolean;
+  weekly_plan: SummaryPlanDay[];
+  daily_summary_time: string;
+  weekly_summary_weekday: number;
+  weekly_summary_time: string;
   updated_at: string | null;
+}
+
+export interface SummaryPlanDay {
+  weekday: number;
+  target: string;
+  planned_rest: boolean;
 }
 
 export interface SummaryGenerationResult {
@@ -49,6 +60,16 @@ interface SummaryRow {
   summary: string;
   generated_at: string | null;
   mode?: string;
+}
+
+interface SummaryContextDay {
+  date: string;
+  weekday: number;
+  weekday_label: string;
+  summary: string | null;
+  segments: TimelineSegment[];
+  target: string;
+  planned_rest: boolean;
 }
 
 const MODE_LABELS: Record<SummaryMode, string> = {
@@ -78,6 +99,11 @@ export function getSummarySettings(): SummarySettings {
     return {
       mode: normalizeSummaryMode(parsed.mode),
       target: sanitizeTarget(parsed.target),
+      planned_rest: normalizeBoolean(parsed.planned_rest ?? (parsed as Record<string, unknown>).plannedRest),
+      weekly_plan: normalizeWeeklyPlan(parsed.weekly_plan ?? (parsed as Record<string, unknown>).weeklyPlan),
+      daily_summary_time: normalizeClockTime(parsed.daily_summary_time ?? (parsed as Record<string, unknown>).dailySummaryTime, "21:00"),
+      weekly_summary_weekday: normalizeWeekday(parsed.weekly_summary_weekday ?? (parsed as Record<string, unknown>).weeklySummaryWeekday, 7),
+      weekly_summary_time: normalizeClockTime(parsed.weekly_summary_time ?? (parsed as Record<string, unknown>).weeklySummaryTime, "21:30"),
       updated_at: typeof parsed.updated_at === "string" ? parsed.updated_at : null,
     };
   } catch {
@@ -91,6 +117,21 @@ export function updateSummarySettings(input: unknown): SummarySettings {
   const next: SummarySettings = {
     mode: source.mode === undefined ? current.mode : normalizeSummaryMode(source.mode),
     target: source.target === undefined ? current.target : sanitizeTarget(source.target),
+    planned_rest: source.planned_rest === undefined && source.plannedRest === undefined
+      ? current.planned_rest
+      : normalizeBoolean(source.planned_rest ?? source.plannedRest),
+    weekly_plan: source.weekly_plan === undefined && source.weeklyPlan === undefined
+      ? current.weekly_plan
+      : normalizeWeeklyPlan(source.weekly_plan ?? source.weeklyPlan),
+    daily_summary_time: source.daily_summary_time === undefined && source.dailySummaryTime === undefined
+      ? current.daily_summary_time
+      : normalizeClockTime(source.daily_summary_time ?? source.dailySummaryTime, current.daily_summary_time),
+    weekly_summary_weekday: source.weekly_summary_weekday === undefined && source.weeklySummaryWeekday === undefined
+      ? current.weekly_summary_weekday
+      : normalizeWeekday(source.weekly_summary_weekday ?? source.weeklySummaryWeekday, current.weekly_summary_weekday),
+    weekly_summary_time: source.weekly_summary_time === undefined && source.weeklySummaryTime === undefined
+      ? current.weekly_summary_time
+      : normalizeClockTime(source.weekly_summary_time ?? source.weeklySummaryTime, current.weekly_summary_time),
     updated_at: new Date().toISOString(),
   };
   metaSet(SUMMARY_SETTINGS_KEY, JSON.stringify(next));
@@ -115,14 +156,16 @@ export async function generateDailySummary(options: {
     return { ok: false, kind: "daily", date, reason: "Invalid date" };
   }
 
-  const rows = getActivityRows.all(range.start, range.end) as ActivityRecord[];
-  const segments = buildTimelineSegments(rows, { openLast: false });
-  const settings = getSummarySettings();
+  const segments = getTimelineSegmentsForRange(range.start, range.end);
+  const baseSettings = getSummarySettings();
+  const contextDays = getDailyContextDays(date, tzOffsetMinutes, 2, baseSettings);
+  const settings = settingsForDate(baseSettings, date);
   const generated = await generateSummaryText({
     kind: "daily",
     periodLabel: date,
     segments,
     settings,
+    contextDays,
   });
 
   if (!generated.ok || !generated.summary) {
@@ -159,14 +202,16 @@ export async function generateWeeklySummary(options: {
     return { ok: false, kind: "weekly", week_start: weekStart, week_end: weekEnd, reason: "Invalid week" };
   }
 
-  const rows = getActivityRows.all(startRange.start, endRange.start) as ActivityRecord[];
-  const segments = buildTimelineSegments(rows, { openLast: false });
-  const settings = getSummarySettings();
+  const segments = getTimelineSegmentsForRange(startRange.start, endRange.start);
+  const baseSettings = getSummarySettings();
+  const contextDays = getWeekContextDays(weekStart, tzOffsetMinutes, baseSettings);
+  const settings = baseSettings;
   const generated = await generateSummaryText({
     kind: "weekly",
     periodLabel: `${weekStart} 至 ${weekEnd}`,
     segments,
     settings,
+    contextDays,
   });
 
   if (!generated.ok || !generated.summary) {
@@ -207,7 +252,16 @@ export function validDateString(value: unknown): value is string {
 }
 
 function defaultSummarySettings(): SummarySettings {
-  return { mode: "normal", target: "", updated_at: null };
+  return {
+    mode: "normal",
+    target: "",
+    planned_rest: false,
+    weekly_plan: defaultWeeklyPlan(),
+    daily_summary_time: "21:00",
+    weekly_summary_weekday: 7,
+    weekly_summary_time: "21:30",
+    updated_at: null,
+  };
 }
 
 function sanitizeTarget(value: unknown): string {
@@ -217,6 +271,119 @@ function sanitizeTarget(value: unknown): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 240);
+}
+
+function normalizeBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  const raw = String(value || "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on" || raw === "计划休息";
+}
+
+function normalizeWeeklyPlan(value: unknown): SummaryPlanDay[] {
+  const byWeekday = new Map<number, SummaryPlanDay>();
+  const items = Array.isArray(value) ? value : [];
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const source = item as Record<string, unknown>;
+    const weekday = normalizeWeekday(source.weekday, 0);
+    if (weekday < 1 || weekday > 7) continue;
+    byWeekday.set(weekday, {
+      weekday,
+      target: sanitizeTarget(source.target),
+      planned_rest: normalizeBoolean(source.planned_rest ?? source.plannedRest),
+    });
+  }
+  return defaultWeeklyPlan().map((item) => byWeekday.get(item.weekday) ?? item);
+}
+
+function defaultWeeklyPlan(): SummaryPlanDay[] {
+  return Array.from({ length: 7 }, (_, index) => ({
+    weekday: index + 1,
+    target: "",
+    planned_rest: false,
+  }));
+}
+
+function normalizeClockTime(value: unknown, fallback: string): string {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return fallback;
+  return `${match[1]!.padStart(2, "0")}:${match[2]}`;
+}
+
+export function normalizeWeekday(value: unknown, fallback = 1): number {
+  const n = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(n) && n >= 1 && n <= 7 ? n : fallback;
+}
+
+export function isoWeekday(date: Date | string): number {
+  const d = typeof date === "string" ? dateFromString(date) : date;
+  if (!d) return 1;
+  const day = d.getUTCDay();
+  return day === 0 ? 7 : day;
+}
+
+export function weekdayLabel(weekday: number): string {
+  return ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][normalizeWeekday(weekday) - 1] ?? "周一";
+}
+
+function settingsForDate(settings: SummarySettings, date: string): SummarySettings {
+  const weekday = isoWeekday(date);
+  const plan = settings.weekly_plan.find((item) => item.weekday === weekday);
+  if (!plan || (!plan.target && !plan.planned_rest)) return settings;
+  return {
+    ...settings,
+    target: plan.target || settings.target,
+    planned_rest: plan.planned_rest,
+  };
+}
+
+function getTimelineSegmentsForRange(start: string, end: string): TimelineSegment[] {
+  const rows = getActivityRows.all(start, end) as ActivityRecord[];
+  return buildTimelineSegments(rows, { openLast: false });
+}
+
+function getDailyContextDays(date: string, tzOffsetMinutes: number, days: number, settings: SummarySettings): SummaryContextDay[] {
+  const out: SummaryContextDay[] = [];
+  for (let offset = days; offset >= 1; offset -= 1) {
+    const contextDate = addDays(date, -offset);
+    const range = utcRangeForLocalDate(contextDate, tzOffsetMinutes);
+    if (!range) continue;
+    const row = getDailySummary.get(contextDate) as SummaryRow | null;
+    const effective = settingsForDate(settings, contextDate);
+    const weekday = isoWeekday(contextDate);
+    out.push({
+      date: contextDate,
+      weekday,
+      weekday_label: weekdayLabel(weekday),
+      summary: row?.summary ?? null,
+      segments: getTimelineSegmentsForRange(range.start, range.end),
+      target: effective.target,
+      planned_rest: effective.planned_rest,
+    });
+  }
+  return out;
+}
+
+function getWeekContextDays(weekStart: string, _tzOffsetMinutes: number, settings: SummarySettings): SummaryContextDay[] {
+  const out: SummaryContextDay[] = [];
+  for (let offset = 0; offset < 7; offset += 1) {
+    const date = addDays(weekStart, offset);
+    const row = getDailySummary.get(date) as SummaryRow | null;
+    const effective = settingsForDate(settings, date);
+    const weekday = isoWeekday(date);
+    out.push({
+      date,
+      weekday,
+      weekday_label: weekdayLabel(weekday),
+      summary: row?.summary ?? null,
+      segments: [],
+      target: effective.target,
+      planned_rest: effective.planned_rest,
+    });
+  }
+  return out;
 }
 
 function todayStr() {
@@ -229,6 +396,7 @@ async function generateSummaryText(input: {
   periodLabel: string;
   segments: TimelineSegment[];
   settings: SummarySettings;
+  contextDays?: SummaryContextDay[];
 }): Promise<Pick<SummaryGenerationResult, "ok" | "skipped" | "reason" | "summary">> {
   const aiConfig = await getAiRuntimeConfig();
   if (!aiConfig) {
@@ -239,77 +407,69 @@ async function generateSummaryText(input: {
     return { ok: false, skipped: true, reason: "No activity data" };
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30_000);
   try {
-    const res = await fetch(aiConfig.apiUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${aiConfig.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: aiConfig.model,
-        messages: [
-          { role: "system", content: buildSystemPrompt(input.kind, input.settings) },
-          { role: "user", content: buildUserPrompt(input.kind, input.periodLabel, usefulSegments) },
-        ],
-        max_tokens: input.kind === "weekly" ? 420 : 240,
-        temperature: input.settings.mode === "sharp" ? 0.85 : 0.72,
-      }),
-      signal: controller.signal,
+    const rawSummary = await requestAiChatCompletion(aiConfig, {
+      messages: [
+        { role: "system", content: buildSystemPrompt(input.kind, input.settings) },
+        { role: "user", content: buildUserPrompt(input.kind, input.periodLabel, usefulSegments, input.contextDays ?? []) },
+      ],
+      maxTokens: input.kind === "weekly" ? 420 : 240,
+      temperature: input.settings.mode === "sharp" ? 0.85 : 0.72,
+      timeoutMs: 30_000,
     });
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      console.error(`[ai-summary] API returned ${res.status}: ${body.slice(0, 500)}`);
-      return { ok: false, reason: `AI API returned ${res.status}` };
-    }
-
-    const data = await res.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const summary = data?.choices?.[0]?.message?.content?.trim();
+    const summary = sanitizeAiSummary(rawSummary, input.kind);
     if (!summary) {
-      console.error("[ai-summary] Empty response from AI");
-      return { ok: false, reason: "Empty AI response" };
+      return { ok: false, reason: "AI response was empty after sanitization" };
     }
     return { ok: true, summary };
   } catch (e) {
     console.error("[ai-summary] Failed to generate:", e);
-    return { ok: false, reason: "AI generation failed" };
-  } finally {
-    clearTimeout(timeoutId);
+    const reason = e instanceof Error ? e.message : "AI generation failed";
+    return { ok: false, reason: reason.slice(0, 160) };
   }
 }
 
 function buildSystemPrompt(kind: SummaryKind, settings: SummarySettings): string {
   const isWeekly = kind === "weekly";
   const lengthRule = isWeekly ? "写一段120-200字的中文周总结" : "写一段60-100字的中文日总结";
+  const restRule = settings.planned_rest
+    ? "用户已标记这段时间为计划休息。评价时优先关注恢复质量、娱乐边界、睡眠和是否过度消耗；不要按普通工作日强度批评，也不要强行套用每日同一个目标。"
+    : "";
   const targetRule = settings.target
-    ? `用户当前目标：${settings.target}。请判断这段时间的活动节奏和目标是否一致，并给出自然提醒。`
+    ? `${settings.planned_rest ? "休息计划或近期目标" : "用户当前目标"}：${settings.target}。请判断这段时间的活动节奏和目标是否一致，并给出自然提醒。`
     : "用户没有设置额外目标，不要虚构目标。";
 
   return `你是一个简洁、准确、有审美的日记助手。根据设备活动时间线，${lengthRule}。
 当前模式：${MODE_LABELS[settings.mode]}。
 模式要求：${MODE_INSTRUCTIONS[settings.mode]}
+休息设置：${restRule || "未标记计划休息。"}
 目标要求：${targetRule}
 通用要求：
 - 基于时间线时长和顺序总结，不要按原始上报条数判断
 - 提炼节奏、主题、偏离和收获，不要逐条罗列应用
 - 可以提到主要应用或任务，但不要泄露过细窗口标题
+- 历史上下文只用于连续性，不要把前两天或其他日期的事件说成当前周期发生
+- 可以使用安全 Markdown（短段落、加粗、短列表），不要返回 HTML、代码块、链接、命令、脚本或可执行内容
 - 不要使用 emoji
 - 不要编造没有出现在时间线里的事件`;
 }
 
-function buildUserPrompt(kind: SummaryKind, periodLabel: string, segments: TimelineSegment[]): string {
+function buildUserPrompt(
+  kind: SummaryKind,
+  periodLabel: string,
+  segments: TimelineSegment[],
+  contextDays: SummaryContextDay[],
+): string {
   const topApps = aggregateByApp(segments).slice(0, kind === "weekly" ? 12 : 8);
   const byDay = aggregateByDay(segments);
-  const timelineLimit = kind === "weekly" ? 80 : 48;
+  const timelineLimit = kind === "weekly" ? segments.length : 64;
   const totalMinutes = segments.reduce((sum, segment) => sum + segmentMinutes(segment), 0);
+  const firstDate = kind === "weekly" ? periodLabel.slice(0, 10) : periodLabel;
+  const weekday = validDateString(firstDate) ? isoWeekday(firstDate) : null;
 
   const lines: string[] = [
     `范围: ${periodLabel}`,
+    ...(weekday && kind === "daily" ? [`星期: ${weekdayLabel(weekday)}`] : []),
     `类型: ${kind === "weekly" ? "周总结" : "日总结"}`,
     `总记录时长: ${formatMinutes(totalMinutes)}`,
     "",
@@ -318,9 +478,20 @@ function buildUserPrompt(kind: SummaryKind, periodLabel: string, segments: Timel
   ];
 
   if (kind === "weekly") {
+    lines.push("", "本周每日计划:");
+    for (const item of contextDays) {
+      const plan = item.target || item.planned_rest
+        ? `${item.target || "未填写目标"}${item.planned_rest ? "（计划休息）" : ""}`
+        : "沿用通用目标";
+      lines.push(`- ${item.date} ${item.weekday_label}: ${plan}`);
+    }
     lines.push("", "每日节奏:");
     for (const item of byDay) {
-      lines.push(`- ${item.date}: ${formatMinutes(item.minutes)}，主要 ${item.topApps.join("、") || "无"}`);
+      lines.push(`- ${item.date} ${weekdayLabel(isoWeekday(item.date))}: ${formatMinutes(item.minutes)}，主要 ${item.topApps.join("、") || "无"}`);
+    }
+    lines.push("", "7天AI评价:");
+    for (const item of contextDays) {
+      lines.push(`- ${item.date} ${item.weekday_label}: ${sanitizeContextText(item.summary) || "未生成"}`);
     }
   }
 
@@ -335,7 +506,55 @@ function buildUserPrompt(kind: SummaryKind, periodLabel: string, segments: Timel
     lines.push(`- 其余 ${segments.length - timelineLimit} 段已省略，请以主要应用和每日节奏为准。`);
   }
 
+  if (kind === "daily" && contextDays.length > 0) {
+    lines.push("", "前两天上下文（只用于连续性，不计入今天完成情况）:");
+    for (const item of contextDays) {
+      const plan = item.target || item.planned_rest
+        ? `${item.target || "未填写目标"}${item.planned_rest ? "（计划休息）" : ""}`
+        : "沿用通用目标";
+      lines.push(`## ${item.date} ${item.weekday_label}`);
+      lines.push(`计划: ${plan}`);
+      lines.push(`AI评价: ${sanitizeContextText(item.summary) || "未生成"}`);
+      lines.push("时间线:");
+      for (const segment of item.segments) {
+        const title = segment.display_title ? `，标题: ${segment.display_title.slice(0, 80)}` : "";
+        lines.push(
+          `- ${formatSegmentTime(segment)} ${segment.device_name}: ${segment.app_name} ${formatMinutes(segmentMinutes(segment))}${title}`,
+        );
+      }
+      if (item.segments.length === 0) lines.push("- 无记录");
+    }
+  }
+
   return lines.join("\n");
+}
+
+function sanitizeAiSummary(value: string, kind: SummaryKind): string {
+  const maxLength = kind === "weekly" ? 900 : 520;
+  const safe = value
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<\/?[^>]+>/g, " ")
+    .replace(/\[([^\]]+)]\((?:https?:\/\/|javascript:|data:)[^)]+\)/gi, "$1")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\b(?:curl|wget|powershell|cmd\.exe|bash|sh|sudo|chmod|rm\s+-rf|invoke-webrequest)\b/gi, " ")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ");
+  return safe
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, maxLength);
+}
+
+function sanitizeContextText(value: string | null | undefined): string {
+  if (!value) return "";
+  return value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
 }
 
 function aggregateByApp(segments: TimelineSegment[]): Array<{ appName: string; minutes: number; count: number; devices: string[] }> {

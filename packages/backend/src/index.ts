@@ -13,6 +13,7 @@ import {
   handleDailySummary,
   handleDailySummaryRefresh,
   handleAiConfig,
+  handleAiConfigTest,
   handleAiConfigUpdate,
   handleSummarySettings,
   handleSummarySettingsUpdate,
@@ -254,6 +255,8 @@ const server = Bun.serve<WsData>({
         response = await handleAiConfig(req);
       } else if (pathname === "/api/ai-config" && req.method === "POST") {
         response = await handleAiConfigUpdate(req);
+      } else if (pathname === "/api/ai-config/test" && req.method === "POST") {
+        response = await handleAiConfigTest(req);
       } else if (pathname === "/api/location" && req.method === "GET") {
         response = handleLocationQuery(url, req);
       } else if (pathname === "/api/messages" && req.method === "GET") {

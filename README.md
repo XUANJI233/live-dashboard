@@ -120,7 +120,11 @@ echo "Token: $TOKEN  ← Agent 配置用"
 | `AI_API_KEY` | 空 | AI API 密钥 |
 | `AI_MODEL` | `gpt-4o-mini` | AI 模型名称 |
 
-AI 总结支持日总结和周总结。`GET /api/daily-summary`、`GET /api/weekly-summary` 可公开读取缓存结果；`POST /api/daily-summary`、`POST /api/weekly-summary` 会强制重新生成，`GET/POST /api/summary-settings` 用于读取和保存总结模式（温和/一般/锐评）与近期目标，这些管理接口都需要 `DEVICE_TOKEN_*` Bearer token。`AI_API_URL` / `AI_API_KEY` 环境变量优先级最高；如果服务器没有设置环境变量，Android App 可通过 `GET/POST /api/ai-config` 配置 AI 端点、Key 和模型。AI Key 上传使用 v2 密封 payload：服务端 X25519 公钥、客户端临时 X25519 密钥、HKDF-SHA256、AES-256-GCM，并把当前服务端公钥写入 HKDF transcript 和 GCM AAD；设备 token 只用于管理员鉴权和 HMAC-SHA256 payload 签名。如果服务器已有环境变量，接口会返回锁定提示并拒绝覆盖。
+AI 总结支持日总结和周总结。`GET /api/daily-summary`、`GET /api/weekly-summary` 可公开读取缓存结果；`POST /api/daily-summary`、`POST /api/weekly-summary` 会强制重新生成，`GET/POST /api/summary-settings` 用于读取和保存总结模式（温和/一般/锐评）、通用目标、计划休息、每周 7 天目标计划、日总结时间和周总结星期/时间，这些管理接口都需要 `DEVICE_TOKEN_*` Bearer token。日总结会把当前日期、星期几、当天时间线、前两天时间线和前两天 AI 评价一起发给 AI；周总结会发送 7 天完整时间线、7 天目标计划和 7 天 AI 评价。AI 返回内容按不可信输入处理，只保留安全 Markdown 子集，清理 HTML、代码块、链接、命令、脚本和控制字符后保存。服务端使用 Vercel AI SDK 的 OpenAI-compatible provider 发起非流式文本生成。
+
+自动总结由服务端定时器读取 `summary-settings` 触发生成；当前只负责写入服务端缓存。管理员 App 尚未实现可接收 AI 总结主动推送的订阅通道，因此不会假装“已推送到 App”。
+
+`AI_API_URL` / `AI_API_KEY` 环境变量优先级最高；如果服务器没有设置环境变量，Android App 可通过 `GET/POST /api/ai-config` 配置 AI 端点、Key 和模型，保存前可调用 `POST /api/ai-config/test` 加密试连并获取模型列表。AI Key 上传使用 v2 密封 payload：服务端 X25519 公钥、客户端临时 X25519 密钥、HKDF-SHA256、AES-256-GCM，并把当前服务端公钥写入 HKDF transcript 和 GCM AAD；设备 token 只用于管理员鉴权和 HMAC-SHA256 payload 签名。如果服务器已有环境变量，接口会返回锁定提示并拒绝覆盖。
 
 App 管理的 AI 配置会存进 SQLite `meta` 表：`ai_runtime_config` 保存 AI 端点、Key、模型，`ai_curve25519_keypair` 保存服务端 X25519 密钥对。两者都用 `HASH_SECRET` 经 HKDF-SHA256 按 meta key 分离派生 AES-256-GCM key 后密封保存；源站读取时再解封。AI API URL 必须是 HTTPS，且不能包含用户名、密码、query 或 fragment，避免把密钥藏进 URL。
 

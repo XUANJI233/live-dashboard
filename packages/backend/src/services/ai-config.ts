@@ -1,5 +1,7 @@
 import { HASH_SECRET, metaGet, metaSet } from "../db";
 import { x25519 } from "@noble/curves/ed25519.js";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { generateText } from "ai";
 
 const ENV_AI_API_URL = process.env.AI_API_URL || "";
 const ENV_AI_API_KEY = process.env.AI_API_KEY || "";
@@ -19,6 +21,17 @@ export interface AiRuntimeConfig {
   apiKey: string;
   model: string;
   source: "env" | "server";
+}
+
+export interface AiConfigTestResult {
+  ok: boolean;
+  message: string;
+  models: string[];
+  selected_model: string;
+  model_available: boolean | null;
+  models_url: string;
+  chat_checked: boolean;
+  models_error?: string;
 }
 
 export interface AiConfigDescription {
@@ -48,6 +61,11 @@ interface CurveKeypair {
   privateKey: string;
   publicKey: string;
   createdAt: string;
+}
+
+export interface AiChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
 }
 
 export function isAiEnvConfigured(): boolean {
@@ -122,6 +140,124 @@ export async function saveEncryptedAiConfigFromDevice(input: unknown, deviceToke
   const config = await decryptDevicePayload(input, deviceToken);
   await writeStoredAiConfig(config);
   return describeAiConfig();
+}
+
+export async function testEncryptedAiConfigFromDevice(input: unknown, deviceToken: string): Promise<AiConfigTestResult> {
+  if (isAiEnvConfigured()) {
+    throw Object.assign(new Error("AI 配置由服务器环境变量提供，App 不能覆盖。"), { code: "AI_CONFIG_LOCKED", status: 409 });
+  }
+  if (!deviceToken) {
+    throw Object.assign(new Error("Missing device token"), { code: "TOKEN_REQUIRED", status: 401 });
+  }
+  const config = await decryptDevicePayload(input, deviceToken);
+  return testAiConfigConnection(config);
+}
+
+export async function testAiConfigConnection(config: Pick<AiRuntimeConfig, "apiUrl" | "apiKey" | "model">): Promise<AiConfigTestResult> {
+  const normalized: AiRuntimeConfig = {
+    apiUrl: normalizeAiApiUrl(config.apiUrl),
+    apiKey: config.apiKey,
+    model: String(config.model || ENV_AI_MODEL || "gpt-4o-mini").trim(),
+    source: "server",
+  };
+  const modelsUrl = modelsUrlFromAiApiUrl(normalized.apiUrl);
+  let models: string[] = [];
+  let modelsError: string | undefined;
+  try {
+    models = await fetchAiModels(normalized, modelsUrl);
+  } catch (e) {
+    modelsError = safeErrorMessage(e);
+  }
+
+  const modelAvailable = models.length > 0 ? models.includes(normalized.model) : null;
+  try {
+    await requestAiChatCompletion(normalized, {
+      messages: [
+        { role: "system", content: "你是连接测试助手。只返回 OK。" },
+        { role: "user", content: "ping" },
+      ],
+      maxTokens: 8,
+      temperature: 0,
+      timeoutMs: 20_000,
+    });
+  } catch (e) {
+    const detail = safeErrorMessage(e);
+    return {
+      ok: false,
+      message: models.length > 0
+        ? `模型列表获取成功，但聊天端点测试失败：${detail}`
+        : `AI 连接测试失败：${detail}`,
+      models,
+      selected_model: normalized.model,
+      model_available: modelAvailable,
+      models_url: modelsUrl,
+      chat_checked: true,
+      ...(modelsError ? { models_error: modelsError } : {}),
+    };
+  }
+
+  const availabilityText = modelAvailable === false
+    ? `，但模型列表里没有 ${normalized.model}`
+    : "";
+  const modelText = models.length > 0
+    ? `已获取 ${models.length} 个模型`
+    : `聊天测试通过，模型列表不可用：${modelsError || "供应商未返回模型列表"}`;
+  return {
+    ok: true,
+    message: `${modelText}${availabilityText}`,
+    models,
+    selected_model: normalized.model,
+    model_available: modelAvailable,
+    models_url: modelsUrl,
+    chat_checked: true,
+    ...(modelsError ? { models_error: modelsError } : {}),
+  };
+}
+
+export async function requestAiChatCompletion(
+  config: Pick<AiRuntimeConfig, "apiUrl" | "apiKey" | "model">,
+  options: {
+    messages: AiChatMessage[];
+    maxTokens: number;
+    temperature?: number;
+    timeoutMs?: number;
+  },
+): Promise<string> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs ?? 30_000);
+  try {
+    const provider = createOpenAICompatible({
+      name: "configured-openai-compatible",
+      apiKey: config.apiKey,
+      baseURL: baseUrlFromAiApiUrl(config.apiUrl),
+    });
+    const system = options.messages
+      .filter((message) => message.role === "system")
+      .map((message) => message.content)
+      .join("\n\n") || undefined;
+    const messages = options.messages.filter((message) => message.role !== "system");
+    const result = await generateText({
+      model: provider.chatModel(config.model),
+      ...(system ? { system } : {}),
+      messages,
+      maxOutputTokens: options.maxTokens,
+      temperature: options.temperature,
+      abortSignal: controller.signal,
+      maxRetries: 1,
+    });
+    const text = result.text.trim();
+    if (!text) {
+      throw Object.assign(new Error("Empty AI response"), { code: "AI_CHAT_EMPTY" });
+    }
+    return text;
+  } catch (e) {
+    if ((e as Error).name === "AbortError") {
+      throw Object.assign(new Error("AI API request timed out"), { code: "AI_CHAT_TIMEOUT" });
+    }
+    throw Object.assign(new Error(redactAiError(safeErrorMessage(e), config.apiKey)), { code: "AI_CHAT_FAILED" });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function decryptDevicePayload(input: unknown, deviceToken: string): Promise<StoredAiConfig> {
@@ -216,6 +352,72 @@ function validateStoredConfig(input: Record<string, unknown>): StoredAiConfig {
     model,
     updatedAt: new Date().toISOString(),
   };
+}
+
+export function modelsUrlFromAiApiUrl(apiUrl: string): string {
+  const url = new URL(baseUrlFromAiApiUrl(apiUrl));
+  const trimmedPath = url.pathname.replace(/\/+$/, "");
+  url.pathname = `${trimmedPath}/models`.replace(/\/{2,}/g, "/") || "/models";
+  url.search = "";
+  url.hash = "";
+  return url.href;
+}
+
+export function baseUrlFromAiApiUrl(apiUrl: string): string {
+  const url = new URL(normalizeAiApiUrl(apiUrl));
+  const trimmedPath = url.pathname.replace(/\/+$/, "");
+  const lower = trimmedPath.toLowerCase();
+  const replacements = [
+    "/chat/completions",
+    "/responses",
+    "/completions",
+    "/models",
+  ];
+  let nextPath = trimmedPath || "";
+  for (const suffix of replacements) {
+    if (lower.endsWith(suffix)) {
+      nextPath = trimmedPath.slice(0, trimmedPath.length - suffix.length) || "/";
+      break;
+    }
+  }
+  url.pathname = nextPath || "/";
+  url.search = "";
+  url.hash = "";
+  return url.href;
+}
+
+async function fetchAiModels(config: Pick<AiRuntimeConfig, "apiKey">, modelsUrl: string): Promise<string[]> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const res = await fetch(modelsUrl, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw Object.assign(new Error(`Models API returned ${res.status}: ${redactAiError(text, config.apiKey)}`), {
+        status: res.status,
+        code: "AI_MODELS_FAILED",
+      });
+    }
+    const data = await res.json() as { data?: Array<{ id?: unknown }> };
+    const models = (Array.isArray(data.data) ? data.data : [])
+      .map((item) => typeof item?.id === "string" ? item.id.trim() : "")
+      .filter(Boolean);
+    if (models.length === 0) {
+      throw Object.assign(new Error("Models API returned no model ids"), { code: "AI_MODELS_EMPTY" });
+    }
+    return Array.from(new Set(models)).sort((a, b) => a.localeCompare(b));
+  } catch (e) {
+    if ((e as Error).name === "AbortError") {
+      throw Object.assign(new Error("Models API request timed out"), { code: "AI_MODELS_TIMEOUT" });
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function readStoredAiConfig(): Promise<StoredAiConfig | null> {
@@ -387,6 +589,17 @@ function maskUrl(value: string): string {
   } catch {
     return value ? "已配置" : "";
   }
+}
+
+function safeErrorMessage(value: unknown): string {
+  const message = value instanceof Error ? value.message : String(value || "");
+  return message.replace(/\s+/g, " ").trim().slice(0, 300) || "request failed";
+}
+
+function redactAiError(value: string, apiKey: string): string {
+  let text = value.replace(/\s+/g, " ").trim().slice(0, 500);
+  if (apiKey) text = text.replaceAll(apiKey, "[redacted]");
+  return text || "request failed";
 }
 
 function base64UrlEncode(bytes: Uint8Array): string {

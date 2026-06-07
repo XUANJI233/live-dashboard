@@ -1,5 +1,5 @@
 import { cleanupExpiredMessages, cleanupOldActivities, cleanupOldLocations, cleanupOldSummaries, cleanupOldWeeklySummaries, markOfflineDevices, optimizeDatabase } from "../db";
-import { generateDailySummary } from "./daily-summary-gen";
+import { generateDailySummary, generateWeeklySummary, getSummarySettings, isoWeekday } from "./daily-summary-gen";
 
 // Cleanup old activities + old summaries every hour
 const hourlyCleanupTimer = setInterval(() => {
@@ -66,18 +66,29 @@ const offlineTimer = setInterval(() => {
 }, 60_000);
 offlineTimer.unref();
 
-// AI daily summary — check every minute, trigger at 21:00
-let lastSummaryDate = "";
+// AI summaries — check every minute, trigger according to server-synced settings.
+let lastDailySummaryDate = "";
+let lastWeeklySummaryKey = "";
 const summaryTimer = setInterval(() => {
   const now = new Date();
-  if (now.getHours() === 21 && now.getMinutes() === 0) {
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-    if (today !== lastSummaryDate) {
-      lastSummaryDate = today;
-      generateDailySummary().catch((e) => console.error("[cleanup] AI summary failed:", e));
-    }
+  const settings = getSummarySettings();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const clock = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  if (settings.daily_summary_time && clock === settings.daily_summary_time && today !== lastDailySummaryDate) {
+    lastDailySummaryDate = today;
+    generateDailySummary({ date: today }).catch((e) => console.error("[cleanup] AI daily summary failed:", e));
+  }
+  const weeklyKey = `${today}:${settings.weekly_summary_weekday}:${settings.weekly_summary_time}`;
+  if (
+    settings.weekly_summary_time &&
+    clock === settings.weekly_summary_time &&
+    isoWeekday(today) === settings.weekly_summary_weekday &&
+    weeklyKey !== lastWeeklySummaryKey
+  ) {
+    lastWeeklySummaryKey = weeklyKey;
+    generateWeeklySummary({ date: today }).catch((e) => console.error("[cleanup] AI weekly summary failed:", e));
   }
 }, 60_000);
 summaryTimer.unref();
 
-console.log("[cleanup] Scheduled: hourly cleanup, 60s offline check, 21:00 AI summary");
+console.log("[cleanup] Scheduled: hourly cleanup, 60s offline check, configurable AI summaries");

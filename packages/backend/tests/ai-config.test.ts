@@ -25,9 +25,11 @@ describe("ai-config", () => {
 
   test("accepts only encrypted AI config payloads", async () => {
     const {
+      modelsUrlFromAiApiUrl,
       describeAiConfig,
       getAiRuntimeConfig,
       saveEncryptedAiConfigFromDevice,
+      testAiConfigConnection,
     } = await import("../src/services/ai-config");
     const token = `test-token-${randomHex(16)}`;
     const testAiKey = `test-ai-key-${randomHex(16)}`;
@@ -74,6 +76,57 @@ describe("ai-config", () => {
     });
     await expect(saveEncryptedAiConfigFromDevice(unsafeUrlPayload, token))
       .rejects.toMatchObject({ code: "AI_URL_UNSAFE" });
+
+    expect(modelsUrlFromAiApiUrl("https://ai.example.invalid/v1/chat/completions"))
+      .toBe("https://ai.example.invalid/v1/models");
+
+    const originalFetch = globalThis.fetch;
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+      requested.push(url);
+      const auth = init?.headers instanceof Headers
+        ? init.headers.get("authorization")
+        : (init?.headers as Record<string, string> | undefined)?.Authorization ??
+          (init?.headers as Record<string, string> | undefined)?.authorization;
+      expect(auth).toBe(`Bearer ${testAiKey}`);
+      if (url === "https://ai.example.invalid/v1/models") {
+        return Response.json({ data: [{ id: "other-model" }, { id: "gpt-4o-mini" }] });
+      }
+      if (url === "https://ai.example.invalid/v1/chat/completions") {
+        const body = JSON.parse(String(init?.body || "{}"));
+        expect(body.model).toBe("gpt-4o-mini");
+        expect(Array.isArray(body.messages)).toBe(true);
+        return Response.json({
+          id: "chatcmpl-test",
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: "gpt-4o-mini",
+          choices: [{
+            index: 0,
+            message: { role: "assistant", content: "OK" },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        });
+      }
+      return new Response("unexpected", { status: 404 });
+    }) as typeof fetch;
+    try {
+      const tested = await testAiConfigConnection({
+        apiUrl: "https://ai.example.invalid/v1/chat/completions",
+        apiKey: testAiKey,
+        model: "gpt-4o-mini",
+      });
+      expect(tested.ok).toBe(true);
+      expect(tested.models).toEqual(["gpt-4o-mini", "other-model"]);
+      expect(tested.model_available).toBe(true);
+      expect(tested.models_url).toBe("https://ai.example.invalid/v1/models");
+      expect(requested).toContain("https://ai.example.invalid/v1/models");
+      expect(requested).toContain("https://ai.example.invalid/v1/chat/completions");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

@@ -612,6 +612,7 @@ function getCacheMeta(p, request) {
   if (p === "/api/daily-summary") return { ttl: 60, tags: ["daily-summary", `daily-summary-${url.searchParams.get("date") || "current"}`] };
   if (p === "/api/weekly-summary") return { ttl: 60, tags: ["weekly-summary", `weekly-summary-${url.searchParams.get("week_start") || url.searchParams.get("date") || "current"}`] };
   if (p === "/api/summary-settings") return { ttl: 0, tags: ["summary-settings"] };
+  if (p === "/api/ai-config/test") return { ttl: 0, tags: ["ai-config"] };
   if (p === "/api/ai-config") return { ttl: 0, tags: ["ai-config"] };
   return { ttl: 0, tags: [] };
 }
@@ -721,6 +722,7 @@ function parseDeviceTokenList(raw) {
 function isDeviceEndpoint(p, method) {
   if (method === "GET" && (p === "/api/messages/public" || p === "/api/health-data" || p === "/api/location")) return true;
   if (p === "/api/summary-settings") return true;
+  if (p === "/api/ai-config/test") return true;
   if (p === "/api/ai-config") return true;
   if ((p === "/api/daily-summary" || p === "/api/weekly-summary") && method === "POST") return true;
   return p === "/api/report" ||

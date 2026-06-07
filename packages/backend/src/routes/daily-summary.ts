@@ -1,7 +1,7 @@
 import { authenticateToken } from "../middleware/auth";
 import { getDailySummary, getWeeklySummary } from "../db";
 import { noStore, safeTimezoneOffset, withCdnHeaders } from "../services/cdn";
-import { describeAiConfig, saveEncryptedAiConfigFromDevice } from "../services/ai-config";
+import { describeAiConfig, saveEncryptedAiConfigFromDevice, testEncryptedAiConfigFromDevice } from "../services/ai-config";
 import {
   addDays,
   generateDailySummary,
@@ -144,6 +144,27 @@ export async function handleAiConfigUpdate(req: Request): Promise<Response> {
       Response.json({
         error: err.message || "AI config update failed",
         code: err.code || "AI_CONFIG_UPDATE_FAILED",
+      }, { status: err.status || 400 }),
+      ["ai-config"],
+    );
+  }
+}
+
+export async function handleAiConfigTest(req: Request): Promise<Response> {
+  const unauthorized = requireAdmin(req);
+  if (unauthorized) return unauthorized;
+  const token = extractBearerToken(req);
+  const body = await readJsonObject(req);
+  try {
+    const result = await testEncryptedAiConfigFromDevice(body, token);
+    return noStore(Response.json(result), ["ai-config"]);
+  } catch (e) {
+    const err = e as Error & { status?: number; code?: string };
+    return noStore(
+      Response.json({
+        ok: false,
+        error: err.message || "AI config test failed",
+        code: err.code || "AI_CONFIG_TEST_FAILED",
       }, { status: err.status || 400 }),
       ["ai-config"],
     );
