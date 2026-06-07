@@ -10,6 +10,9 @@ const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
 const MAX_CLOCK_SKEW_SECONDS = 300;
 const AI_CONFIG_ENCRYPTION_ALG = "X25519-A256GCM-HS256";
+const AI_CONFIG_PAYLOAD_VERSION = 2;
+const SEALED_JSON_VERSION = 2;
+const STORE_SEALING_SALT = "live-dashboard-ai-config-store-v2";
 
 export interface AiRuntimeConfig {
   apiUrl: string;
@@ -30,6 +33,7 @@ export interface AiConfigDescription {
   encryption?: {
     alg: typeof AI_CONFIG_ENCRYPTION_ALG;
     public_key: string;
+    public_key_sha256: string;
   };
 }
 
@@ -125,14 +129,16 @@ async function decryptDevicePayload(input: unknown, deviceToken: string): Promis
   const v = Number(body.v);
   const alg = String(body.alg || "");
   const ts = Number(body.ts);
+  const serverPublicKey = typeof body.server_public_key === "string" ? body.server_public_key : "";
   const ephemeralPublicKey = typeof body.ephemeral_public_key === "string" ? body.ephemeral_public_key : "";
   const nonce = typeof body.nonce === "string" ? body.nonce : "";
   const ciphertext = typeof body.ciphertext === "string" ? body.ciphertext : "";
   const signature = typeof body.signature === "string" ? body.signature : "";
   if (
-    v !== 1 ||
+    v !== AI_CONFIG_PAYLOAD_VERSION ||
     alg !== AI_CONFIG_ENCRYPTION_ALG ||
     !Number.isFinite(ts) ||
+    !serverPublicKey ||
     !ephemeralPublicKey ||
     !nonce ||
     !ciphertext ||
@@ -145,22 +151,37 @@ async function decryptDevicePayload(input: unknown, deviceToken: string): Promis
     throw Object.assign(new Error("Encrypted AI config payload expired"), { code: "AI_CONFIG_PAYLOAD_EXPIRED", status: 400 });
   }
 
-  const signed = `${v}.${ts}.${ephemeralPublicKey}.${nonce}.${ciphertext}`;
+  const signedMetadata = signedMetadataForPayload(v, ts, serverPublicKey, ephemeralPublicKey, nonce);
+  const signed = `${signedMetadata}.${ciphertext}`;
   const expected = await hmacBase64Url(deviceToken, signed);
   if (!constantTimeEqual(signature, expected)) {
     throw Object.assign(new Error("Invalid AI config signature"), { code: "AI_CONFIG_SIGNATURE_INVALID", status: 403 });
   }
 
   let plaintext = "";
+  const keypair = await getServerCurveKeypair();
+  if (serverPublicKey !== keypair.publicKey) {
+    throw Object.assign(new Error("AI config server key mismatch"), { code: "AI_CONFIG_SERVER_KEY_MISMATCH", status: 409 });
+  }
   try {
-    const keypair = await getServerCurveKeypair();
+    const nonceBytes = base64UrlDecode(nonce);
     const shared = x25519.getSharedSecret(
       base64UrlDecode(keypair.privateKey),
       base64UrlDecode(ephemeralPublicKey),
     );
-    const key = await aesKeyFromShared(shared, base64UrlDecode(nonce), ["decrypt"]);
+    const key = await aesKeyFromShared(
+      shared,
+      nonceBytes,
+      ["decrypt"],
+      kdfInfoForPayload(v, keypair.publicKey, ephemeralPublicKey),
+    );
+    const algorithm = {
+      name: "AES-GCM",
+      iv: bufferSource(nonceBytes),
+      additionalData: bufferSource(TEXT_ENCODER.encode(signedMetadata)),
+    };
     const decrypted = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: bufferSource(base64UrlDecode(nonce)) },
+      algorithm,
       key,
       bufferSource(base64UrlDecode(ciphertext)),
     );
@@ -180,12 +201,9 @@ async function decryptDevicePayload(input: unknown, deviceToken: string): Promis
 }
 
 function validateStoredConfig(input: Record<string, unknown>): StoredAiConfig {
-  const apiUrl = String(input.api_url || input.apiUrl || "").trim();
+  const apiUrl = normalizeAiApiUrl(String(input.api_url || input.apiUrl || ""));
   const apiKey = String(input.api_key || input.apiKey || "").trim();
   const model = String(input.model || ENV_AI_MODEL || "gpt-4o-mini").trim();
-  if (!isHttpsUrl(apiUrl)) {
-    throw Object.assign(new Error("AI API URL must be HTTPS"), { code: "AI_URL_INVALID", status: 400 });
-  }
   if (apiKey.length < 8 || apiKey.length > 4096) {
     throw Object.assign(new Error("AI API key invalid"), { code: "AI_KEY_INVALID", status: 400 });
   }
@@ -204,8 +222,9 @@ async function readStoredAiConfig(): Promise<StoredAiConfig | null> {
   try {
     const parsed = await readSealedJson<StoredAiConfig>(AI_RUNTIME_CONFIG_KEY);
     if (!parsed) return null;
+    const apiUrl = normalizeAiApiUrl(parsed.apiUrl);
     return {
-      apiUrl: parsed.apiUrl,
+      apiUrl,
       apiKey: parsed.apiKey,
       model: parsed.model || ENV_AI_MODEL,
       updatedAt: parsed.updatedAt || "",
@@ -219,9 +238,13 @@ async function writeStoredAiConfig(config: StoredAiConfig): Promise<void> {
   await writeSealedJson(AI_RUNTIME_CONFIG_KEY, config);
 }
 
-async function getAiConfigEncryptionInfo(): Promise<{ alg: typeof AI_CONFIG_ENCRYPTION_ALG; public_key: string }> {
+async function getAiConfigEncryptionInfo(): Promise<{ alg: typeof AI_CONFIG_ENCRYPTION_ALG; public_key: string; public_key_sha256: string }> {
   const keypair = await getServerCurveKeypair();
-  return { alg: AI_CONFIG_ENCRYPTION_ALG, public_key: keypair.publicKey };
+  return {
+    alg: AI_CONFIG_ENCRYPTION_ALG,
+    public_key: keypair.publicKey,
+    public_key_sha256: await sha256Base64Url(base64UrlDecode(keypair.publicKey)),
+  };
 }
 
 async function getServerCurveKeypair(): Promise<CurveKeypair> {
@@ -242,9 +265,16 @@ async function getServerCurveKeypair(): Promise<CurveKeypair> {
 async function readSealedJson<T>(key: string): Promise<T | null> {
   const raw = metaGet(key);
   if (!raw) return null;
-  const sealed = JSON.parse(raw) as { v?: number; nonce?: string; ciphertext?: string };
-  if (sealed.v !== 1 || !sealed.nonce || !sealed.ciphertext) return null;
-  const aes = await aesKey(`live-dashboard-ai-config-store:${HASH_SECRET}`, ["decrypt"]);
+  const sealed = JSON.parse(raw) as { v?: number; nonce?: string; ciphertext?: string; kid?: string };
+  if (
+    sealed.v !== SEALED_JSON_VERSION ||
+    sealed.kid !== `${STORE_SEALING_SALT}:${key}` ||
+    !sealed.nonce ||
+    !sealed.ciphertext
+  ) {
+    return null;
+  }
+  const aes = await sealedJsonKey(key, ["decrypt"]);
   const decrypted = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: bufferSource(base64UrlDecode(sealed.nonce)) },
     aes,
@@ -256,32 +286,49 @@ async function readSealedJson<T>(key: string): Promise<T | null> {
 async function writeSealedJson(key: string, value: unknown): Promise<void> {
   const nonce = new Uint8Array(12);
   crypto.getRandomValues(nonce);
-  const aes = await aesKey(`live-dashboard-ai-config-store:${HASH_SECRET}`, ["encrypt"]);
+  const aes = await sealedJsonKey(key, ["encrypt"]);
   const ciphertext = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: bufferSource(nonce) },
     aes,
     bufferSource(TEXT_ENCODER.encode(JSON.stringify(value))),
   );
   metaSet(key, JSON.stringify({
-    v: 1,
+    v: SEALED_JSON_VERSION,
+    kid: `${STORE_SEALING_SALT}:${key}`,
     nonce: base64UrlEncode(nonce),
     ciphertext: base64UrlEncode(new Uint8Array(ciphertext)),
   }));
 }
 
-async function aesKey(secret: string, usages: string[]): Promise<CryptoKey> {
-  const hash = await crypto.subtle.digest("SHA-256", bufferSource(TEXT_ENCODER.encode(secret)));
-  return crypto.subtle.importKey("raw", hash, { name: "AES-GCM" }, false, usages as never);
+async function sealedJsonKey(metaKey: string, usages: string[]): Promise<CryptoKey> {
+  const keyMaterial = await crypto.subtle.importKey("raw", bufferSource(hexToBytes(HASH_SECRET)), "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: bufferSource(TEXT_ENCODER.encode(STORE_SEALING_SALT)),
+      info: TEXT_ENCODER.encode(metaKey),
+    },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    usages as never,
+  );
 }
 
-async function aesKeyFromShared(shared: Uint8Array, salt: Uint8Array, usages: string[]): Promise<CryptoKey> {
+async function aesKeyFromShared(
+  shared: Uint8Array,
+  salt: Uint8Array,
+  usages: string[],
+  info: Uint8Array,
+): Promise<CryptoKey> {
   const keyMaterial = await crypto.subtle.importKey("raw", bufferSource(shared), "HKDF", false, ["deriveKey"]);
   return crypto.subtle.deriveKey(
     {
       name: "HKDF",
       hash: "SHA-256",
       salt: bufferSource(salt),
-      info: TEXT_ENCODER.encode("live-dashboard-ai-config-x25519-v1"),
+      info: bufferSource(info),
     },
     keyMaterial,
     { name: "AES-GCM", length: 256 },
@@ -302,12 +349,34 @@ async function hmacBase64Url(secret: string, data: string): Promise<string> {
   return base64UrlEncode(new Uint8Array(signature));
 }
 
-function isHttpsUrl(value: string): boolean {
+function signedMetadataForPayload(
+  v: number,
+  ts: number,
+  serverPublicKey: string,
+  ephemeralPublicKey: string,
+  nonce: string,
+): string {
+  return `${v}.${ts}.${serverPublicKey}.${ephemeralPublicKey}.${nonce}`;
+}
+
+function kdfInfoForPayload(v: number, serverPublicKey: string, ephemeralPublicKey: string): Uint8Array {
+  return TEXT_ENCODER.encode(`live-dashboard-ai-config-x25519-v${v}.${serverPublicKey}.${ephemeralPublicKey}`);
+}
+
+function normalizeAiApiUrl(value: string): string {
+  const trimmed = value.trim();
   try {
-    const url = new URL(value);
-    return url.protocol === "https:";
-  } catch {
-    return false;
+    const url = new URL(trimmed);
+    if (url.protocol !== "https:" || !url.hostname) {
+      throw Object.assign(new Error("AI API URL must be HTTPS"), { code: "AI_URL_INVALID", status: 400 });
+    }
+    if (url.username || url.password || url.search || url.hash) {
+      throw Object.assign(new Error("AI API URL must not contain credentials, query, or fragment"), { code: "AI_URL_UNSAFE", status: 400 });
+    }
+    return url.href;
+  } catch (e) {
+    if (e && typeof e === "object" && "code" in e) throw e;
+    throw Object.assign(new Error("AI API URL must be HTTPS"), { code: "AI_URL_INVALID", status: 400 });
   }
 }
 
@@ -326,6 +395,15 @@ function base64UrlEncode(bytes: Uint8Array): string {
 
 function base64UrlDecode(value: string): Uint8Array {
   return new Uint8Array(Buffer.from(value, "base64url"));
+}
+
+function hexToBytes(value: string): Uint8Array {
+  return new Uint8Array(value.match(/.{1,2}/g)!.map((byte) => Number.parseInt(byte, 16)));
+}
+
+async function sha256Base64Url(value: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bufferSource(value));
+  return base64UrlEncode(new Uint8Array(digest));
 }
 
 function bufferSource(bytes: Uint8Array): ArrayBuffer {

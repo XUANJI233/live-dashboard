@@ -6,7 +6,7 @@ import { x25519 } from "@noble/curves/ed25519.js";
 
 const tempDir = mkdtempSync(join(tmpdir(), "live-ai-config-"));
 process.env.DB_PATH = join(tempDir, "test.db");
-process.env.HASH_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+process.env.HASH_SECRET = randomHex(32);
 delete process.env.AI_API_URL;
 delete process.env.AI_API_KEY;
 
@@ -29,13 +29,15 @@ describe("ai-config", () => {
       getAiRuntimeConfig,
       saveEncryptedAiConfigFromDevice,
     } = await import("../src/services/ai-config");
-    const token = "device-token-for-ai-config";
+    const token = `test-token-${randomHex(16)}`;
+    const testAiKey = `test-ai-key-${randomHex(16)}`;
 
     const initial = await describeAiConfig();
     expect(initial.configured).toBe(false);
     expect(initial.locked).toBe(false);
     expect(initial.encryption?.alg).toBe("X25519-A256GCM-HS256");
     expect(typeof initial.encryption?.public_key).toBe("string");
+    expect(initial.encryption?.public_key_sha256).toBe(await sha256Base64Url(base64UrlDecode(initial.encryption!.public_key)));
 
     await expect(saveEncryptedAiConfigFromDevice({
       api_url: "https://ai.example.invalid/v1/chat/completions",
@@ -45,18 +47,33 @@ describe("ai-config", () => {
 
     const payload = await encryptAiConfigForServer(initial.encryption!.public_key, token, {
       api_url: "https://ai.example.invalid/v1/chat/completions",
-      api_key: "sk-test-encrypted-only",
+      api_key: testAiKey,
       model: "gpt-4o-mini",
     });
     const saved = await saveEncryptedAiConfigFromDevice(payload, token);
     expect(saved.configured).toBe(true);
     expect(saved.locked).toBe(false);
-    expect(JSON.stringify(saved)).not.toContain("sk-test-encrypted-only");
+    expect(JSON.stringify(saved)).not.toContain(testAiKey);
 
     const runtime = await getAiRuntimeConfig();
     expect(runtime?.apiUrl).toBe("https://ai.example.invalid/v1/chat/completions");
-    expect(runtime?.apiKey).toBe("sk-test-encrypted-only");
+    expect(runtime?.apiKey).toBe(testAiKey);
     expect(runtime?.source).toBe("server");
+
+    const tamperedKeyPayload = await resignPayload({
+      ...payload,
+      server_public_key: base64UrlEncode(x25519.getPublicKey(x25519.utils.randomSecretKey())),
+    }, token);
+    await expect(saveEncryptedAiConfigFromDevice(tamperedKeyPayload, token))
+      .rejects.toMatchObject({ code: "AI_CONFIG_SERVER_KEY_MISMATCH" });
+
+    const unsafeUrlPayload = await encryptAiConfigForServer(initial.encryption!.public_key, token, {
+      api_url: "https://ai.example.invalid/v1/chat/completions?key=hidden",
+      api_key: testAiKey,
+      model: "gpt-4o-mini",
+    });
+    await expect(saveEncryptedAiConfigFromDevice(unsafeUrlPayload, token))
+      .rejects.toMatchObject({ code: "AI_URL_UNSAFE" });
   });
 });
 
@@ -69,22 +86,33 @@ async function encryptAiConfigForServer(
   const publicKey = x25519.getPublicKey(privateKey);
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const shared = x25519.getSharedSecret(privateKey, base64UrlDecode(serverPublicKey));
-  const aesKey = await aesKeyFromShared(shared, nonce, ["encrypt"]);
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: bufferSource(nonce) },
-    aesKey,
-    bufferSource(encoder.encode(JSON.stringify(config))),
-  );
   const ts = Math.floor(Date.now() / 1000);
   const ephemeralPublicKey = base64UrlEncode(publicKey);
   const nonceText = base64UrlEncode(nonce);
+  const signedMetadata = `2.${ts}.${serverPublicKey}.${ephemeralPublicKey}.${nonceText}`;
+  const aesKey = await aesKeyFromShared(
+    shared,
+    nonce,
+    ["encrypt"],
+    encoder.encode(`live-dashboard-ai-config-x25519-v2.${serverPublicKey}.${ephemeralPublicKey}`),
+  );
+  const ciphertext = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv: bufferSource(nonce),
+      additionalData: bufferSource(encoder.encode(signedMetadata)),
+    },
+    aesKey,
+    bufferSource(encoder.encode(JSON.stringify(config))),
+  );
   const ciphertextText = base64UrlEncode(new Uint8Array(ciphertext));
-  const signed = `1.${ts}.${ephemeralPublicKey}.${nonceText}.${ciphertextText}`;
+  const signed = `${signedMetadata}.${ciphertextText}`;
   const signature = await hmacBase64Url(token, signed);
   return {
-    v: 1,
+    v: 2,
     alg: "X25519-A256GCM-HS256",
     ts,
+    server_public_key: serverPublicKey,
     ephemeral_public_key: ephemeralPublicKey,
     nonce: nonceText,
     ciphertext: ciphertextText,
@@ -96,6 +124,7 @@ async function aesKeyFromShared(
   shared: Uint8Array,
   salt: Uint8Array,
   usages: string[],
+  info: Uint8Array,
 ): Promise<CryptoKey> {
   const keyMaterial = await crypto.subtle.importKey("raw", bufferSource(shared), "HKDF", false, ["deriveKey"]);
   return crypto.subtle.deriveKey(
@@ -103,13 +132,28 @@ async function aesKeyFromShared(
       name: "HKDF",
       hash: "SHA-256",
       salt: bufferSource(salt),
-      info: encoder.encode("live-dashboard-ai-config-x25519-v1"),
+      info: bufferSource(info),
     },
     keyMaterial,
     { name: "AES-GCM", length: 256 },
     false,
     usages as never,
   );
+}
+
+async function resignPayload(payload: Record<string, unknown>, token: string): Promise<Record<string, unknown>> {
+  const signedMetadata = [
+    payload.v,
+    payload.ts,
+    payload.server_public_key,
+    payload.ephemeral_public_key,
+    payload.nonce,
+  ].join(".");
+  const signed = `${signedMetadata}.${payload.ciphertext}`;
+  return {
+    ...payload,
+    signature: await hmacBase64Url(token, signed),
+  };
 }
 
 async function hmacBase64Url(secret: string, data: string): Promise<string> {
@@ -130,6 +174,15 @@ function base64UrlEncode(bytes: Uint8Array): string {
 
 function base64UrlDecode(value: string): Uint8Array {
   return new Uint8Array(Buffer.from(value, "base64url"));
+}
+
+function randomHex(bytes: number): string {
+  return Buffer.from(crypto.getRandomValues(new Uint8Array(bytes))).toString("hex");
+}
+
+async function sha256Base64Url(value: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bufferSource(value));
+  return base64UrlEncode(new Uint8Array(digest));
 }
 
 function bufferSource(bytes: Uint8Array): ArrayBuffer {

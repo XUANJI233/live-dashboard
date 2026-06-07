@@ -37,7 +37,7 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 | `device_token_hashes` | 可选。`HMAC-SHA256(secret, "device:" + token)` 的 hex 列表，适合不想在 EdgeKV 存明文密钥 |
 | `cors_allowed_origins` | 可选。敏感接口跨域允许来源，逗号/空白分隔；需要和源站 `CORS_ALLOWED_ORIGINS` 保持一致。公开读取、PoW 和 token 签发接口仍使用 `Access-Control-Allow-Origin: *` |
 
-配置 `device_tokens` 或 `device_token_hashes` 后，带有效 `Authorization: Bearer <token>` 的设备/API 管理请求会在边缘直接签名回源，不走访客 token 校验，也不吃边缘全局 IP 限流。`/api/report`、`/api/health-data`、设备消息接口、AI 总结设置、AI 端点/Key 配置与手动刷新接口都按这个路径处理，手表端 Zepp 令牌同样可通过；源站仍会继续校验设备密钥。
+配置 `device_tokens` 或 `device_token_hashes` 后，带有效 `Authorization: Bearer <token>` 的设备/API 管理请求会在边缘直接签名回源，不走访客 token 校验，也不吃边缘全局 IP 限流。`/api/report`、`/api/health-data`、设备消息接口、AI 总结设置、AI 端点/Key 配置与手动刷新接口都按这个路径处理，手表端 Zepp 令牌同样可通过；源站仍会继续校验设备密钥。`/api/ai-config` 的 AI Key payload 在 App 和源站之间端到端密封，边缘函数只鉴权、签名穿透和补 no-store/Cache-Tag，不解密也不缓存密文内容。
 
 公开留言读取 `GET /api/messages/public` 是公开读取接口，不需要访客 token；发布公开留言、私聊、订阅推送等写入接口仍需要访客 token，并会在边缘先验证再回源。
 
