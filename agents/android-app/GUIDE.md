@@ -37,11 +37,11 @@
 ### AI 总结流程
 1. 概览页通过 `GET /api/daily-summary` 或 `GET /api/weekly-summary` 读取服务端缓存总结
 2. 用户点击刷新时，App 使用设备 Bearer token 调用 `POST /api/daily-summary` 或 `POST /api/weekly-summary` 让服务端重新生成
-3. 设置页“总结”分段通过 `GET/POST /api/summary-settings` 读取和保存总结模式（温和/一般/锐评）、通用目标、计划休息、每周 7 天目标计划、日总结时间和周总结星期/时间；这些设置存放在服务端，多个管理员设备会读取同一份配置
+3. 设置页“总结”分段通过 `GET/POST /api/summary-settings` 读取和保存总结模式（温和/一般/锐评）、默认目标、日总结休息评价、每周 7 天目标计划、日总结时间和周总结星期/时间；每周计划空白日期复用默认目标，不包含休息开关；这些设置存放在服务端，多个管理员设备双向同步同一份配置，保存时携带本地编辑时间，服务器保留较新的配置并回传同步状态
 4. 设置页“AI 连接”通过 `GET /api/ai-config` 获取服务端 X25519 公钥和 SHA-256 指纹；测试或保存 AI 端点/Key/模型时发送 v2 密封 payload，使用临时 X25519 密钥协商、HKDF-SHA256、AES-256-GCM 加密，并把服务端公钥绑定进 HKDF transcript 和 GCM AAD
 5. “测试并获取模型”调用 `POST /api/ai-config/test`，服务器不落库，只测试聊天端点并尝试从 `/models` 获取模型列表
 6. 如果服务器已有 `AI_API_URL` / `AI_API_KEY` 环境变量，`POST /api/ai-config` 和测试接口会返回锁定错误，App 弹窗提示且不覆盖服务器配置
-7. AI 总结允许安全 Markdown 子集，App 概览页渲染标题、短列表和加粗；链接只显示文本，不做可点击执行
+7. AI 总结使用 Markwon 原生 Android 渲染（无 WebView），App 概览页支持标题、列表、加粗和简单表格；未启用图片/HTML 插件
 8. 自动总结由服务端按设置时间生成缓存；Android 端当前没有 AI 总结主动推送订阅通道
 
 ### 健康数据同步流程

@@ -48,6 +48,7 @@ import com.monika.dashboard.ui.components.SectionTitle
 import com.monika.dashboard.ui.components.StatusPill
 import com.monika.dashboard.ui.theme.Border
 import com.monika.dashboard.ui.theme.TextMuted
+import java.time.Instant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -104,6 +105,7 @@ fun SettingsHubScreen(settings: SettingsStore) {
 
 @Composable
 private fun SummarySettingsPane(settings: SettingsStore) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var mode by rememberSaveable { mutableStateOf("normal") }
     var target by rememberSaveable { mutableStateOf("") }
@@ -117,6 +119,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
     var status by remember { mutableStateOf<String?>(null) }
     var aiStatus by remember { mutableStateOf<String?>(null) }
     var updatedAt by remember { mutableStateOf<String?>(null) }
+    var localEditedAt by remember { mutableStateOf<String?>(null) }
     var aiApiUrl by rememberSaveable { mutableStateOf("") }
     var aiApiKey by remember { mutableStateOf("") }
     var aiModel by rememberSaveable { mutableStateOf("gpt-4o-mini") }
@@ -124,6 +127,11 @@ private fun SummarySettingsPane(settings: SettingsStore) {
     var aiModelOptions by remember { mutableStateOf<List<String>>(emptyList()) }
     var aiModelMenuExpanded by remember { mutableStateOf(false) }
     var showAiLockedDialog by remember { mutableStateOf(false) }
+
+    fun markSummaryEdited() {
+        localEditedAt = Instant.now().toString()
+        status = "本地已修改，尚未上传"
+    }
 
     fun loadRemote() {
         scope.launch {
@@ -148,6 +156,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     weeklySummaryWeekday = it.weeklySummaryWeekday
                     weeklySummaryTime = it.weeklySummaryTime
                     updatedAt = it.updatedAt
+                    localEditedAt = null
                     status = "已同步服务器设置"
                 }
                 .onFailure { status = it.message ?: "同步失败" }
@@ -166,13 +175,16 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     Result.failure(IllegalStateException("请先配置服务器和 Token"))
                 } else {
                     ReportClient(url, token).updateSummarySettings(
-                        mode = mode,
-                        target = target,
-                        plannedRest = plannedRest,
-                        weeklyPlan = weeklyPlan,
-                        dailySummaryTime = dailySummaryTime,
-                        weeklySummaryWeekday = weeklySummaryWeekday,
-                        weeklySummaryTime = weeklySummaryTime,
+                        ReportClient.SummarySettingsUpdate(
+                            mode = mode,
+                            target = target,
+                            plannedRest = plannedRest,
+                            weeklyPlan = weeklyPlan,
+                            dailySummaryTime = dailySummaryTime,
+                            weeklySummaryWeekday = weeklySummaryWeekday,
+                            weeklySummaryTime = weeklySummaryTime,
+                            clientUpdatedAt = localEditedAt ?: updatedAt ?: Instant.now().toString(),
+                        ),
                     )
                 }
             }
@@ -186,7 +198,14 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     weeklySummaryWeekday = it.weeklySummaryWeekday
                     weeklySummaryTime = it.weeklySummaryTime
                     updatedAt = it.updatedAt
-                    status = "总结设置已保存"
+                    localEditedAt = null
+                    if (it.syncStatus == "ignored_stale") {
+                        status = "服务器已有较新的计划，已同步最新配置"
+                        Toast.makeText(context, "服务器已有较新的计划，已同步最新配置", Toast.LENGTH_LONG).show()
+                    } else {
+                        status = "计划已保存并同步到服务器"
+                        Toast.makeText(context, "计划已同步到服务器", Toast.LENGTH_SHORT).show()
+                    }
                 }
                 .onFailure { status = it.message ?: "保存失败" }
             loading = false
@@ -325,6 +344,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     else -> 1
                 },
                 onSelect = {
+                    markSummaryEdited()
                     mode = when (it) {
                         0 -> "gentle"
                         2 -> "sharp"
@@ -334,9 +354,12 @@ private fun SummarySettingsPane(settings: SettingsStore) {
             )
             OutlinedTextField(
                 value = target,
-                onValueChange = { target = it.take(240) },
+                onValueChange = {
+                    markSummaryEdited()
+                    target = it.take(240)
+                },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text(if (plannedRest) "休息计划 / 近期目标" else "近期目标") },
+                label = { Text(if (plannedRest) "默认休息安排 / 近期重点" else "默认目标") },
                 minLines = 3,
                 maxLines = 5,
                 supportingText = { Text("${target.length}/240") },
@@ -347,34 +370,38 @@ private fun SummarySettingsPane(settings: SettingsStore) {
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "计划休息",
+                        text = "默认按休息日评价",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Text(
-                        text = "总结会按恢复和边界评价，不强行套用工作日目标。",
+                        text = "开启后，日总结会按恢复、睡眠和娱乐边界评价；周总结仍按每天目标判断节奏。",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextMuted,
                     )
                 }
                 Switch(
                     checked = plannedRest,
-                    onCheckedChange = { plannedRest = it },
+                    onCheckedChange = {
+                        markSummaryEdited()
+                        plannedRest = it
+                    },
                     enabled = !loading,
                 )
             }
             SectionTitle("每周计划")
+            Text(
+                text = "只填写需要覆盖默认目标的日期；空白会复用上面的默认目标。",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextMuted,
+            )
             weeklyPlan.forEach { item ->
                 WeeklyPlanRow(
                     item = item,
                     enabled = !loading,
                     onTargetChange = { value ->
+                        markSummaryEdited()
                         weeklyPlan = weeklyPlan.map { day ->
                             if (day.weekday == item.weekday) day.copy(target = value.take(240)) else day
-                        }
-                    },
-                    onRestChange = { value ->
-                        weeklyPlan = weeklyPlan.map { day ->
-                            if (day.weekday == item.weekday) day.copy(plannedRest = value) else day
                         }
                     },
                 )
@@ -386,7 +413,10 @@ private fun SummarySettingsPane(settings: SettingsStore) {
             ) {
                 OutlinedTextField(
                     value = dailySummaryTime,
-                    onValueChange = { dailySummaryTime = normalizeClockInput(it) },
+                    onValueChange = {
+                        markSummaryEdited()
+                        dailySummaryTime = normalizeClockInput(it)
+                    },
                     modifier = Modifier.weight(1f),
                     enabled = !loading,
                     label = { Text("日总结时间") },
@@ -394,7 +424,10 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 )
                 OutlinedTextField(
                     value = weeklySummaryTime,
-                    onValueChange = { weeklySummaryTime = normalizeClockInput(it) },
+                    onValueChange = {
+                        markSummaryEdited()
+                        weeklySummaryTime = normalizeClockInput(it)
+                    },
                     modifier = Modifier.weight(1f),
                     enabled = !loading,
                     label = { Text("周总结时间") },
@@ -404,7 +437,10 @@ private fun SummarySettingsPane(settings: SettingsStore) {
             SegmentedControl(
                 options = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日"),
                 selectedIndex = (weeklySummaryWeekday - 1).coerceIn(0, 6),
-                onSelect = { weeklySummaryWeekday = it + 1 },
+                onSelect = {
+                    markSummaryEdited()
+                    weeklySummaryWeekday = it + 1
+                },
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -445,7 +481,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
         DashboardCard {
             SectionTitle("提示词行为")
             Text(
-                text = "模式和目标保存在服务器。日总结和周总结手动刷新时会读取这份设置，并把目标加入提示词；公开读取只返回总结文本，不返回目标。",
+                text = "模式、默认目标、休息评价和每周目标计划保存在服务器，并在管理员设备间双向同步。保存时会带上本地编辑时间，服务器保留较新的配置；公开读取只返回总结文本，不返回目标。",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextMuted,
             )
@@ -576,7 +612,6 @@ private fun WeeklyPlanRow(
     item: ReportClient.SummaryPlanDay,
     enabled: Boolean,
     onTargetChange: (String) -> Unit,
-    onRestChange: (Boolean) -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -593,14 +628,8 @@ private fun WeeklyPlanRow(
             onValueChange = onTargetChange,
             modifier = Modifier.weight(1f),
             enabled = enabled,
-            label = { Text(if (item.plannedRest) "休息计划" else "当天目标") },
+            label = { Text("当天目标") },
             singleLine = true,
-        )
-        Switch(
-            checked = item.plannedRest,
-            onCheckedChange = onRestChange,
-            enabled = enabled,
-            modifier = Modifier.padding(top = 12.dp),
         )
     }
 }

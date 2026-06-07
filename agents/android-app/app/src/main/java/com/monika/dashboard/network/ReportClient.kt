@@ -379,6 +379,18 @@ class ReportClient(
         val weeklySummaryWeekday: Int,
         val weeklySummaryTime: String,
         val updatedAt: String?,
+        val syncStatus: String?,
+    )
+
+    data class SummarySettingsUpdate(
+        val mode: String,
+        val target: String,
+        val plannedRest: Boolean,
+        val weeklyPlan: List<SummaryPlanDay>,
+        val dailySummaryTime: String,
+        val weeklySummaryWeekday: Int,
+        val weeklySummaryTime: String,
+        val clientUpdatedAt: String?,
     )
 
     data class SummaryPlanDay(
@@ -528,31 +540,26 @@ class ReportClient(
         return executeSettingsRequest(request)
     }
 
-    fun updateSummarySettings(
-        mode: String,
-        target: String,
-        plannedRest: Boolean,
-        weeklyPlan: List<SummaryPlanDay>,
-        dailySummaryTime: String,
-        weeklySummaryWeekday: Int,
-        weeklySummaryTime: String,
-    ): Result<SummarySettings> {
+    fun updateSummarySettings(update: SummarySettingsUpdate): Result<SummarySettings> {
         val body = JSONObject().apply {
-            put("mode", mode)
-            put("target", target.take(240))
-            put("planned_rest", plannedRest)
+            put("mode", update.mode)
+            put("target", update.target.take(240))
+            put("planned_rest", update.plannedRest)
             put("weekly_plan", JSONArray().apply {
-                weeklyPlan.forEach { item ->
+                update.weeklyPlan.forEach { item ->
                     put(JSONObject().apply {
                         put("weekday", item.weekday.coerceIn(1, 7))
                         put("target", item.target.take(240))
-                        put("planned_rest", item.plannedRest)
+                        put("planned_rest", false)
                     })
                 }
             })
-            put("daily_summary_time", dailySummaryTime)
-            put("weekly_summary_weekday", weeklySummaryWeekday.coerceIn(1, 7))
-            put("weekly_summary_time", weeklySummaryTime)
+            put("daily_summary_time", update.dailySummaryTime)
+            put("weekly_summary_weekday", update.weeklySummaryWeekday.coerceIn(1, 7))
+            put("weekly_summary_time", update.weeklySummaryTime)
+            if (!update.clientUpdatedAt.isNullOrBlank()) {
+                put("client_updated_at", update.clientUpdatedAt)
+            }
         }
         val request = Request.Builder()
             .url("${serverUrl.trimEnd('/')}/api/summary-settings")
@@ -732,6 +739,7 @@ class ReportClient(
                         weeklySummaryWeekday = json.optInt("weekly_summary_weekday", 7).coerceIn(1, 7),
                         weeklySummaryTime = json.optString("weekly_summary_time", "21:30"),
                         updatedAt = json.optString("updated_at").takeIf { value -> value.isNotBlank() && value != "null" },
+                        syncStatus = json.optString("sync_status").takeIf { value -> value.isNotBlank() && value != "null" },
                     ),
                 )
             }
@@ -763,7 +771,7 @@ class ReportClient(
                 byWeekday[weekday] = SummaryPlanDay(
                     weekday = weekday,
                     target = item.optString("target", ""),
-                    plannedRest = item.optBoolean("planned_rest", false),
+                    plannedRest = false,
                 )
             }
         }

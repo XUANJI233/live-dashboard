@@ -150,6 +150,11 @@ dependencies {
     // Core
     implementation("androidx.core:core-ktx:1.15.0")
 
+    // Markdown rendering for AI summaries. Markwon is native Android TextView
+    // rendering (no WebView); only table support is enabled.
+    implementation("io.noties.markwon:core:4.6.2")
+    implementation("io.noties.markwon:ext-tables:4.6.2")
+
         // ── Testing ──
         testImplementation("junit:junit:4.13.2")
         testImplementation("org.robolectric:robolectric:4.14.1")
