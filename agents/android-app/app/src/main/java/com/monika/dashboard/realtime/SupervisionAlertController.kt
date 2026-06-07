@@ -89,12 +89,18 @@ object SupervisionAlertController {
 
     private fun isSafePattern(pattern: String): Boolean {
         if (pattern.isBlank() || pattern.length > 120) return false
+        val compact = pattern.replace(Regex("""\s+"""), "")
+        if (isCatchAllPattern(compact)) return false
         if (Regex("""\\[1-9]""").containsMatchIn(pattern)) return false
         if (Regex("""\(\?<[!=]""").containsMatchIn(pattern)) return false
         if (Regex("""\([^)]*[+*][^)]*\)[+*{]""").containsMatchIn(pattern)) return false
         if (Regex("""(?:\.\*){3,}""").containsMatchIn(pattern)) return false
+        if (Regex("""\{\d{3,}(?:,|\})""").containsMatchIn(pattern)) return false
         return true
     }
+
+    private fun isCatchAllPattern(compact: String): Boolean =
+        setOf(".*", ".+", """[\s\S]*""", """[\S\s]*""").contains(compact)
 
     private fun parseTime(value: String): Long? =
         runCatching { java.time.Instant.parse(value).toEpochMilli() }.getOrNull()

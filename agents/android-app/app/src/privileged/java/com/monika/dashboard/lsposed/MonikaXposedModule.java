@@ -3081,10 +3081,13 @@ public final class MonikaXposedModule extends XposedModule {
 
     private boolean isSafeSupervisionPattern(String pattern) {
         if (pattern == null || pattern.length() == 0 || pattern.length() > 120) return false;
+        String compact = pattern.replaceAll("\\s+", "");
+        if (".*".equals(compact) || ".+".equals(compact) || "[\\s\\S]*".equals(compact) || "[\\S\\s]*".equals(compact)) return false;
         if (pattern.matches(".*\\\\[1-9].*")) return false;
         if (pattern.contains("(?<=") || pattern.contains("(?<!")) return false;
         if (pattern.matches(".*\\([^)]*[+*][^)]*\\)[+*{].*")) return false;
         if (pattern.matches(".*(?:\\.\\*){3,}.*")) return false;
+        if (pattern.matches(".*\\{\\d{3,}(?:,|\\}).*")) return false;
         return true;
     }
 

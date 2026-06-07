@@ -505,7 +505,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Text(
-                        text = "保存计划时会让 AI 生成应用匹配规则；每小时触发阈值后再由 AI 复核一次。",
+                        text = "保存计划时生成应用匹配规则；之后按间隔定时复核，或在阈值触发时由 AI 复核。",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextMuted,
                     )
