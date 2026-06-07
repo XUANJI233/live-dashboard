@@ -28,3 +28,13 @@ This is an Android-native administrator utility for monitoring device reports, h
 - Lazy lists for long streams: messages, public board, health types, upload statuses.
 - Cards only for real grouping; no card-inside-card layout.
 - Keep existing behavior and API calls unchanged unless the UI flow exposes a bug.
+
+## 2026-06-07 IA consolidation
+
+- Remove the global `Monika Now` app header and subtitle. The Android app should open directly into the active utility screen under the system status bar; page headers carry the context.
+- Keep the bottom navigation to three destinations only: Overview, Messages, Settings.
+- Merge private chat and public board into `MessagesHubScreen` with an in-page segmented control. Public board remains an independent public stream, not a visitor-specific private conversation.
+- Merge setup, health, and diagnostics into `SettingsHubScreen` with an in-page segmented control. Local logs are exposed from the settings header action.
+- Upload status belongs beside the relevant upload switch in setup; diagnostics should not repeat the same upload list when embedded in settings.
+- When no health data types are enabled, health options stay collapsed behind a single compact card. Expanded health data type rows should appear only after explicit user intent or when some type is already enabled.
+- Use native Material 3 / Compose primitives. Apply Apple-like restraint through spacing, color, and hierarchy, not through large decorative headers or web-style hero composition.

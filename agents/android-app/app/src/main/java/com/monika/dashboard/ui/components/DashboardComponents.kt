@@ -4,6 +4,7 @@ package com.monika.dashboard.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,10 +20,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.SwitchColors
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -33,6 +37,7 @@ import com.monika.dashboard.ui.theme.AccentGreen
 import com.monika.dashboard.ui.theme.AccentRed
 import com.monika.dashboard.ui.theme.AccentYellow
 import com.monika.dashboard.ui.theme.Border
+import com.monika.dashboard.ui.theme.Card
 import com.monika.dashboard.ui.theme.SurfaceMuted
 import com.monika.dashboard.ui.theme.TextMuted
 
@@ -84,7 +89,7 @@ fun ScreenHeader(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.headlineLarge,
+                    style = MaterialTheme.typography.headlineMedium,
                     color = MaterialTheme.colorScheme.onBackground,
                 )
                 Text(
@@ -96,6 +101,87 @@ fun ScreenHeader(
             if (!meta.isNullOrBlank()) {
                 Spacer(modifier = Modifier.width(12.dp))
                 StatusPill(text = meta, tone = DashboardTone.Info)
+            }
+        }
+    }
+}
+
+@Composable
+fun CompactPageHeader(
+    title: String,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    action: (@Composable () -> Unit)? = null,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (action != null) {
+            Spacer(modifier = Modifier.width(12.dp))
+            action()
+        }
+    }
+}
+
+@Composable
+fun SegmentedControl(
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = SurfaceMuted,
+        border = BorderStroke(1.dp, Border),
+    ) {
+        Row(
+            modifier = Modifier.padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            options.forEachIndexed { index, label ->
+                val selected = selectedIndex == index
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(34.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(if (selected) Card else Color.Transparent)
+                        .clickable { onSelect(index) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (selected) MaterialTheme.colorScheme.tertiary else TextMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }
@@ -204,6 +290,21 @@ fun PrimaryActionColors() = ButtonDefaults.buttonColors(
 )
 
 @Composable
+fun DashboardSwitchColors(): SwitchColors = SwitchDefaults.colors(
+    checkedThumbColor = Color.White,
+    checkedTrackColor = Color(0xFF34C759),
+    checkedBorderColor = Color(0xFF34C759),
+    uncheckedThumbColor = Color.White,
+    uncheckedTrackColor = SurfaceMuted,
+    uncheckedBorderColor = Border,
+    disabledCheckedThumbColor = Color.White.copy(alpha = 0.72f),
+    disabledCheckedTrackColor = Color(0xFF34C759).copy(alpha = 0.36f),
+    disabledUncheckedThumbColor = Color.White.copy(alpha = 0.72f),
+    disabledUncheckedTrackColor = SurfaceMuted.copy(alpha = 0.72f),
+    disabledUncheckedBorderColor = Border.copy(alpha = 0.72f),
+)
+
+@Composable
 fun DashboardTone.surfaceColor(): Color = when (this) {
     DashboardTone.Neutral -> MaterialTheme.colorScheme.surface
     DashboardTone.Good -> AccentGreen
@@ -218,7 +319,7 @@ fun DashboardTone.contentColor(): Color = when (this) {
     DashboardTone.Good -> Color(0xFF346538)
     DashboardTone.Warn -> Color(0xFF7A5600)
     DashboardTone.Bad -> Color(0xFF9F2F2D)
-    DashboardTone.Info -> Color(0xFF1F5F89)
+    DashboardTone.Info -> Color(0xFF0066CC)
 }
 
 @Composable

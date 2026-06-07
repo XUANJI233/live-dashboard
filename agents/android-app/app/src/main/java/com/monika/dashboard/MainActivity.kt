@@ -21,15 +21,11 @@ import com.monika.dashboard.health.HealthSyncWorker
 import com.monika.dashboard.realtime.MessageSocketManager
 import com.monika.dashboard.ui.components.DashboardTone
 import com.monika.dashboard.ui.components.InitialBadge
-import com.monika.dashboard.ui.components.StatusPill
-import com.monika.dashboard.ui.screens.BoardScreen
-import com.monika.dashboard.ui.screens.HealthScreen
-import com.monika.dashboard.ui.screens.MessagesScreen
-import com.monika.dashboard.ui.screens.SetupScreen
-import com.monika.dashboard.ui.screens.StatusScreen
+import com.monika.dashboard.ui.screens.MessagesHubScreen
+import com.monika.dashboard.ui.screens.OverviewScreen
+import com.monika.dashboard.ui.screens.SettingsHubScreen
 import com.monika.dashboard.ui.theme.DashboardTheme
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
@@ -46,15 +42,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             DashboardTheme {
-                Scaffold(
-                    modifier = Modifier.fillMaxSize(),
-                    topBar = { DashboardTopBar(settings) }
-                ) { innerPadding ->
-                    MainContent(
-                        settings = settings,
-                        modifier = Modifier.padding(innerPadding)
-                    )
-                }
+                MainContent(settings = settings)
             }
         }
     }
@@ -72,52 +60,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun DashboardTopBar(settings: SettingsStore) {
-    var connected by remember { mutableStateOf(false) }
-    val serverUrl by settings.serverUrl.collectAsState(initial = "")
-
-    LaunchedEffect(serverUrl) {
-        while (true) {
-            connected = MessageSocketManager.isConnected()
-            delay(3000L)
-        }
-    }
-
-    TopAppBar(
-        title = {
-            Column {
-                Text("Monika Now", style = MaterialTheme.typography.titleLarge)
-                Text(
-                    text = "Android 采集与访客消息",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        },
-        actions = {
-            StatusPill(
-                text = if (connected) "实时已连接" else "实时等待连接",
-                tone = if (connected) DashboardTone.Good else DashboardTone.Neutral,
-                modifier = Modifier.padding(end = 16.dp),
-            )
-        },
-        colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = MaterialTheme.colorScheme.background,
-        ),
-    )
-}
-
 @Composable
 private fun MainContent(settings: SettingsStore, modifier: Modifier = Modifier) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf(
-        NavItem("私聊", "聊"),
-        NavItem("公开", "板"),
-        NavItem("健康", "健"),
+        NavItem("概览", "今"),
+        NavItem("消息", "信"),
         NavItem("设置", "设"),
-        NavItem("诊断", "查"),
     )
     val context = LocalContext.current
 
@@ -133,7 +82,9 @@ private fun MainContent(settings: SettingsStore, modifier: Modifier = Modifier) 
     }
 
     Scaffold(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier
+            .fillMaxSize()
+            .statusBarsPadding(),
         bottomBar = {
             NavigationBar(
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -143,6 +94,13 @@ private fun MainContent(settings: SettingsStore, modifier: Modifier = Modifier) 
                     NavigationBarItem(
                         selected = selectedTab == index,
                         onClick = { selectedTab = index },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                        ),
                         icon = {
                             InitialBadge(
                                 text = item.glyph,
@@ -157,11 +115,9 @@ private fun MainContent(settings: SettingsStore, modifier: Modifier = Modifier) 
     ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             when (selectedTab) {
-                0 -> MessagesScreen(settings)
-                1 -> BoardScreen(settings)
-                2 -> HealthScreen(settings)
-                3 -> SetupScreen(settings)
-                4 -> StatusScreen()
+                0 -> OverviewScreen(settings)
+                1 -> MessagesHubScreen(settings)
+                2 -> SettingsHubScreen(settings)
             }
         }
     }

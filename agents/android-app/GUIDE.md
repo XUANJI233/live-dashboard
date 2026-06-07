@@ -29,10 +29,10 @@
 4. Worker 自调度下一个 OneTimeWorkRequest
 5. 通过 AlarmManager 存活于小米进程冻结
 
-### 连接状态流程
-1. `MainActivity.DashboardTopBar()` 运行 `LaunchedEffect` 循环
-2. 每 5 秒创建临时 `ReportClient`，调用 `testConnection()`（GET `/api/health`）
-3. 更新状态 → TopAppBar 显示「已连接」(绿) 或「未连接」(灰)
+### 实时消息连接流程
+1. `MainActivity` 启动时调用 `MessageSocketManager.ensureStarted(applicationContext)`
+2. `MessageSocketManager` 使用 `GET /api/ws?role=device` 的 WebSocket 通道接收私聊和公开留言变更
+3. 连接断开时消息页面会通过 HTTP 历史记录补齐，不再使用全局 TopAppBar 显示连接状态，避免顶部信息重复和误导
 
 ### 健康数据同步流程
 1. 用户在 HealthScreen 授权 Health Connect 权限

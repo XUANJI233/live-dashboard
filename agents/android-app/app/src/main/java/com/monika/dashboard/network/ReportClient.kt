@@ -13,6 +13,7 @@ import com.monika.dashboard.data.VisitorMessage
 import java.net.URLEncoder
 import java.net.URI
 import java.time.Instant
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 import com.monika.dashboard.system.LocationSnapshot
 import com.monika.dashboard.system.SystemSnapshot
@@ -344,6 +345,101 @@ class ReportClient(
         } catch (e: Exception) { Result.failure(e) }
     }
 
+    data class DailySummary(
+        val date: String,
+        val summary: String?,
+        val generatedAt: String?,
+    )
+
+    data class TimelineSegment(
+        val appName: String,
+        val appId: String,
+        val displayTitle: String,
+        val startedAt: String,
+        val endedAt: String?,
+        val durationSeconds: Int,
+        val durationMinutes: Int,
+        val deviceId: String,
+        val deviceName: String,
+    )
+
+    data class TimelineResponse(
+        val date: String,
+        val segments: List<TimelineSegment>,
+        val summary: Map<String, Map<String, Double>>,
+    )
+
+    fun fetchDailySummary(date: String): Result<DailySummary> {
+        return try {
+            val request = Request.Builder()
+                .url("${serverUrl.trimEnd('/')}/api/daily-summary?date=${URLEncoder.encode(date, "UTF-8")}")
+                .addHeader("Authorization", "Bearer $token")
+                .get()
+                .build()
+            val response = client.newCall(request).execute()
+            response.use {
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}"))
+                val body = it.body?.string().orEmpty()
+                val json = JSONObject(body)
+                Result.success(
+                    DailySummary(
+                        date = json.optString("date", date),
+                        summary = json.optString("summary").takeIf { value -> value.isNotBlank() && value != "null" },
+                        generatedAt = json.optString("generated_at").takeIf { value -> value.isNotBlank() && value != "null" },
+                    ),
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun fetchTimeline(date: String): Result<TimelineResponse> {
+        return try {
+            val tz = clientTimezoneOffsetMinutes()
+            val url = "${serverUrl.trimEnd('/')}/api/timeline?date=${URLEncoder.encode(date, "UTF-8")}&tz=$tz"
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer $token")
+                .get()
+                .build()
+            val response = client.newCall(request).execute()
+            response.use {
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}"))
+                val body = it.body?.string().orEmpty()
+                val json = JSONObject(body)
+                val arr = json.optJSONArray("segments") ?: JSONArray()
+                val segments = buildList {
+                    for (i in 0 until arr.length()) {
+                        val item = arr.optJSONObject(i) ?: continue
+                        add(
+                            TimelineSegment(
+                                appName = item.optString("app_name"),
+                                appId = item.optString("app_id"),
+                                displayTitle = item.optString("display_title"),
+                                startedAt = item.optString("started_at"),
+                                endedAt = item.optString("ended_at").takeIf { value -> value.isNotBlank() && value != "null" },
+                                durationSeconds = item.optInt("duration_seconds", 0).coerceAtLeast(0),
+                                durationMinutes = item.optInt("duration_minutes", 0).coerceAtLeast(0),
+                                deviceId = item.optString("device_id"),
+                                deviceName = item.optString("device_name"),
+                            ),
+                        )
+                    }
+                }
+                Result.success(
+                    TimelineResponse(
+                        date = json.optString("date", date),
+                        segments = segments,
+                        summary = parseTimelineSummary(json.optJSONObject("summary")),
+                    ),
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     private fun post(url: String, body: JSONObject): Result<Unit> {
         val request = Request.Builder()
             .url(url)
@@ -402,4 +498,25 @@ class ReportClient(
         val kind: String = "private",
         val text: String,
     )
+}
+
+private fun clientTimezoneOffsetMinutes(): Int =
+    -(TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000)
+
+private fun parseTimelineSummary(summary: JSONObject?): Map<String, Map<String, Double>> {
+    if (summary == null) return emptyMap()
+    val out = linkedMapOf<String, Map<String, Double>>()
+    val deviceKeys = summary.keys()
+    while (deviceKeys.hasNext()) {
+        val deviceId = deviceKeys.next()
+        val apps = summary.optJSONObject(deviceId) ?: continue
+        val appOut = linkedMapOf<String, Double>()
+        val appKeys = apps.keys()
+        while (appKeys.hasNext()) {
+            val appName = appKeys.next()
+            appOut[appName] = apps.optDouble(appName, 0.0).coerceAtLeast(0.0)
+        }
+        out[deviceId] = appOut
+    }
+    return out
 }

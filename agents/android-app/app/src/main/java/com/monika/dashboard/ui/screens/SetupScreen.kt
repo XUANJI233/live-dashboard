@@ -33,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -55,18 +56,20 @@ import com.monika.dashboard.service.HeartbeatWorker
 import com.monika.dashboard.system.LsposedConfigBridge
 import com.monika.dashboard.ui.components.CompactDivider
 import com.monika.dashboard.ui.components.DashboardCard
+import com.monika.dashboard.ui.components.DashboardSwitchColors
 import com.monika.dashboard.ui.components.DashboardTone
 import com.monika.dashboard.ui.components.ScreenHeader
 import com.monika.dashboard.ui.components.SectionTitle
 import com.monika.dashboard.ui.components.StatusPill
 import com.monika.dashboard.ui.theme.TextMuted
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 
 @Composable
-fun SetupScreen(settings: SettingsStore) {
+fun SetupScreen(settings: SettingsStore, showHeader: Boolean = true) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
@@ -98,6 +101,7 @@ fun SetupScreen(settings: SettingsStore) {
     var showToken by remember { mutableStateOf(false) }
     var statusMsg by remember { mutableStateOf<String?>(null) }
     var urlError by remember { mutableStateOf<String?>(null) }
+    var uploadStatusTick by remember { mutableIntStateOf(0) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
@@ -107,6 +111,13 @@ fun SetupScreen(settings: SettingsStore) {
             throw e
         } catch (_: Exception) {
             tokenInput = ""
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(3000)
+            uploadStatusTick++
         }
     }
 
@@ -144,15 +155,22 @@ fun SetupScreen(settings: SettingsStore) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(scaffoldPadding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = if (showHeader) 16.dp else 8.dp,
+                end = 16.dp,
+                bottom = 16.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item {
-                ScreenHeader(
-                    title = "设置",
-                    subtitle = "连接、采集范围和本地上报行为集中在这里配置。",
-                    meta = if (monitoringEnabled) "监听中" else "未监听",
-                )
+            if (showHeader) {
+                item {
+                    ScreenHeader(
+                        title = "设置",
+                        subtitle = "连接、采集范围和本地上报行为集中在这里配置。",
+                        meta = if (monitoringEnabled) "监听中" else "未监听",
+                    )
+                }
             }
 
             item {
@@ -265,6 +283,7 @@ fun SetupScreen(settings: SettingsStore) {
                         item = UploadItem.FOREGROUND,
                         checked = foregroundInput,
                         title = "前台应用和页面",
+                        statusTick = uploadStatusTick,
                         body = if (BuildConfig.PRIVILEGED_FEATURES) {
                             "LSPosed 模式由模块直接采集应用、Activity 和浏览器页面标题。"
                         } else {
@@ -278,6 +297,7 @@ fun SetupScreen(settings: SettingsStore) {
                         item = UploadItem.MEDIA,
                         checked = mediaInput,
                         title = "媒体状态",
+                        statusTick = uploadStatusTick,
                         body = if (BuildConfig.PRIVILEGED_FEATURES) {
                             "LSPosed 模式读取系统媒体会话的标题、艺术家和播放状态。"
                         } else {
@@ -291,6 +311,7 @@ fun SetupScreen(settings: SettingsStore) {
                         item = UploadItem.NETWORK,
                         checked = networkInput,
                         title = "设备网络",
+                        statusTick = uploadStatusTick,
                         body = "只上传联网、网络类型、蜂窝代际和 VPN 状态，不上传域名或流量内容。",
                     ) {
                         networkInput = it
@@ -478,11 +499,12 @@ private fun UploadSwitch(
     item: UploadItem,
     checked: Boolean,
     title: String,
+    statusTick: Int,
     body: String,
     onChange: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
-    val status = remember(checked) { UploadStatusStore.read(context, item) }
+    val status = remember(checked, statusTick) { UploadStatusStore.read(context, item) }
     val statusText = status?.let {
         "${if (it.ok) "上传成功" else "上传失败"} ${formatStatusTime(it.at)}"
     }
@@ -552,7 +574,11 @@ private fun SettingSwitchRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Switch(checked = checked, onCheckedChange = onChange)
+            Switch(
+                checked = checked,
+                onCheckedChange = onChange,
+                colors = DashboardSwitchColors(),
+            )
             Column(modifier = Modifier.weight(1f)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),

@@ -21,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -28,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,6 +46,7 @@ import com.monika.dashboard.health.HealthConnectManager
 import com.monika.dashboard.health.HealthDataType
 import com.monika.dashboard.health.HealthSyncWorker
 import com.monika.dashboard.ui.components.DashboardCard
+import com.monika.dashboard.ui.components.DashboardSwitchColors
 import com.monika.dashboard.ui.components.DashboardTone
 import com.monika.dashboard.ui.components.EmptyState
 import com.monika.dashboard.ui.components.InitialBadge
@@ -55,7 +58,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.launch
 
 @Composable
-fun HealthScreen(settings: SettingsStore) {
+fun HealthScreen(settings: SettingsStore, showHeader: Boolean = true) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val enabledTypes by settings.enabledHealthTypes.collectAsState(initial = emptySet())
@@ -72,6 +75,7 @@ fun HealthScreen(settings: SettingsStore) {
     var permissionsGranted by remember { mutableStateOf(false) }
     var backgroundPermissionGranted by remember { mutableStateOf(false) }
     var backgroundAvailability by remember { mutableStateOf<BackgroundReadAvailability?>(null) }
+    var showTypePicker by rememberSaveable { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
     val hcManager = remember(context) { HealthConnectManager(context) }
 
@@ -135,15 +139,22 @@ fun HealthScreen(settings: SettingsStore) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = if (showHeader) 16.dp else 8.dp,
+            end = 16.dp,
+            bottom = 16.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item {
-            ScreenHeader(
-                title = "健康",
-                subtitle = "健康记录由 Health Connect 授权读取，和设备状态分开展示。",
-                meta = "${enabledTypes.size}/${HealthDataType.entries.size} 已选",
-            )
+        if (showHeader) {
+            item {
+                ScreenHeader(
+                    title = "健康",
+                    subtitle = "健康记录由 Health Connect 授权读取，和设备状态分开展示。",
+                    meta = "${enabledTypes.size}/${HealthDataType.entries.size} 已选",
+                )
+            }
         }
 
         item {
@@ -292,15 +303,42 @@ fun HealthScreen(settings: SettingsStore) {
             }
         }
 
-        item {
-            SectionTitle("数据类型", meta = "按需授权")
-        }
-
-        if (HealthDataType.entries.isEmpty()) {
+        if (enabledTypes.isEmpty() && !showTypePicker) {
+            item {
+                DashboardCard(contentPadding = 12.dp) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "健康选项已收起",
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            Text(
+                                text = "需要心率、血氧、睡眠等记录时再展开。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextMuted,
+                            )
+                        }
+                        TextButton(onClick = { showTypePicker = true }) {
+                            Text("展开")
+                        }
+                    }
+                }
+            }
+        } else if (HealthDataType.entries.isEmpty()) {
             item {
                 EmptyState("没有可同步类型", "当前构建未包含 Health Connect 数据类型。")
             }
         } else {
+            item {
+                SectionTitle(
+                    title = "数据类型",
+                    meta = "按需授权",
+                )
+            }
             items(HealthDataType.entries.toList(), key = { it.key }) { type ->
                 val checked = type.key in enabledTypes
                 DashboardCard(
@@ -338,6 +376,7 @@ fun HealthScreen(settings: SettingsStore) {
                                 }
                             },
                             enabled = isAvailable,
+                            colors = DashboardSwitchColors(),
                         )
                     }
                 }

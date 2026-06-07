@@ -56,7 +56,7 @@ import java.util.LinkedHashMap
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun BoardScreen(settings: SettingsStore) {
+fun BoardScreen(settings: SettingsStore, showHeader: Boolean = true) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var detailMessage by remember { mutableStateOf<VisitorMessage?>(null) }
@@ -108,15 +108,22 @@ fun BoardScreen(settings: SettingsStore) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = if (showHeader) 16.dp else 8.dp,
+            end = 16.dp,
+            bottom = 16.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item {
-            ScreenHeader(
-                title = "公开",
-                subtitle = "公开留言板是独立公共流，不绑定到某一个访客私聊。",
-                meta = "${publicMessages.size} 条",
-            )
+        if (showHeader) {
+            item {
+                ScreenHeader(
+                    title = "公开",
+                    subtitle = "公开留言板是独立公共流，不绑定到某一个访客私聊。",
+                    meta = "${publicMessages.size} 条",
+                )
+            }
         }
 
         item {

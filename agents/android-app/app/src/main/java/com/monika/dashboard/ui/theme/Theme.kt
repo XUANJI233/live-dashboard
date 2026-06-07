@@ -10,19 +10,19 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-val Canvas = Color(0xFFFBFAF7)
+val Canvas = Color(0xFFF5F5F7)
 val Card = Color(0xFFFFFFFF)
-val SurfaceMuted = Color(0xFFF4F1EC)
-val Border = Color(0xFFE7E1D8)
-val Primary = Color(0xFF2B2926)
-val Secondary = Color(0xFF5D766F)
-val Accent = Color(0xFFA65F3D)
-val AccentBlue = Color(0xFFE5F1F7)
-val AccentGreen = Color(0xFFEAF1E7)
-val AccentYellow = Color(0xFFF7EED8)
-val AccentRed = Color(0xFFF8E7E5)
-val TextMain = Color(0xFF2B2926)
-val TextMuted = Color(0xFF77716A)
+val SurfaceMuted = Color(0xFFF2F2F7)
+val Border = Color(0xFFE5E5EA)
+val Primary = Color(0xFF1D1D1F)
+val Secondary = Color(0xFF6E6E73)
+val Accent = Color(0xFF007AFF)
+val AccentBlue = Color(0xFFEAF4FF)
+val AccentGreen = Color(0xFFEAF7EE)
+val AccentYellow = Color(0xFFFFF4E5)
+val AccentRed = Color(0xFFFDECEC)
+val TextMain = Color(0xFF1D1D1F)
+val TextMuted = Color(0xFF6E6E73)
 
 private val DashboardColorScheme = lightColorScheme(
     primary = Primary,
@@ -38,7 +38,7 @@ private val DashboardColorScheme = lightColorScheme(
     outline = Border,
     surfaceVariant = SurfaceMuted,
     onSurfaceVariant = TextMuted,
-    primaryContainer = Color(0xFFECE6DD),
+    primaryContainer = AccentBlue,
     onPrimaryContainer = TextMain,
     secondaryContainer = AccentGreen,
     onSecondaryContainer = Color(0xFF346538),
@@ -52,52 +52,42 @@ private val DashboardColorScheme = lightColorScheme(
 private val DashboardTypography = Typography(
     headlineLarge = TextStyle(
         fontWeight = FontWeight.SemiBold,
-        fontSize = 28.sp,
-        color = TextMain
+        fontSize = 28.sp
     ),
     headlineMedium = TextStyle(
         fontWeight = FontWeight.SemiBold,
-        fontSize = 22.sp,
-        color = TextMain
+        fontSize = 22.sp
     ),
     titleLarge = TextStyle(
         fontWeight = FontWeight.SemiBold,
-        fontSize = 20.sp,
-        color = TextMain
+        fontSize = 20.sp
     ),
     titleMedium = TextStyle(
         fontWeight = FontWeight.SemiBold,
-        fontSize = 16.sp,
-        color = TextMain
+        fontSize = 16.sp
     ),
     titleSmall = TextStyle(
         fontWeight = FontWeight.SemiBold,
-        fontSize = 14.sp,
-        color = TextMain
+        fontSize = 14.sp
     ),
     bodyLarge = TextStyle(
-        fontSize = 16.sp,
-        color = TextMain
+        fontSize = 16.sp
     ),
     bodyMedium = TextStyle(
-        fontSize = 14.sp,
-        color = TextMain
+        fontSize = 14.sp
     ),
     bodySmall = TextStyle(
-        fontSize = 12.sp,
-        color = TextMuted
+        fontSize = 12.sp
     ),
     labelLarge = TextStyle(
         fontWeight = FontWeight.SemiBold,
         fontSize = 14.sp,
-        fontFamily = FontFamily.Monospace,
-        color = TextMain
+        fontFamily = FontFamily.Monospace
     ),
     labelSmall = TextStyle(
         fontWeight = FontWeight.Medium,
         fontSize = 11.sp,
-        fontFamily = FontFamily.Monospace,
-        color = TextMuted
+        fontFamily = FontFamily.Monospace
     )
 )
 

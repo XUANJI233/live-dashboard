@@ -68,7 +68,7 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
-fun StatusScreen() {
+fun StatusScreen(showHeader: Boolean = true, showUploadStatus: Boolean = true) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var healthAvailable by remember { mutableStateOf(false) }
@@ -219,15 +219,22 @@ fun StatusScreen() {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = if (showHeader) 16.dp else 8.dp,
+            end = 16.dp,
+            bottom = 16.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item {
-            ScreenHeader(
-                title = "诊断",
-                subtitle = "检查权限、后台能力、上传结果和本地调试输出。",
-                meta = "每 3 秒刷新",
-            )
+        if (showHeader) {
+            item {
+                ScreenHeader(
+                    title = "诊断",
+                    subtitle = "检查权限、后台能力、上传结果和本地调试输出。",
+                    meta = "每 3 秒刷新",
+                )
+            }
         }
 
         item {
@@ -307,10 +314,12 @@ fun StatusScreen() {
             }
         }
 
-        item { SectionTitle("上传状态") }
-        items(UploadItem.entries, key = { it.key }) { item ->
-            val status = remember(tick) { UploadStatusStore.read(context, item) }
-            UploadStatusRow(item.label, status)
+        if (showUploadStatus) {
+            item { SectionTitle("上传状态") }
+            items(UploadItem.entries, key = { it.key }) { item ->
+                val status = remember(tick) { UploadStatusStore.read(context, item) }
+                UploadStatusRow(item.label, status)
+            }
         }
 
         item { SectionTitle("调试") }

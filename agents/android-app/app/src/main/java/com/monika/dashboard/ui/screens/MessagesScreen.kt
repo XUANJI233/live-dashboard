@@ -56,7 +56,7 @@ import java.util.Locale
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun MessagesScreen(settings: SettingsStore) {
+fun MessagesScreen(settings: SettingsStore, showHeader: Boolean = true) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var allMessages by remember { mutableStateOf(MessageInboxStore.recent(context)) }
@@ -113,15 +113,22 @@ fun MessagesScreen(settings: SettingsStore) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = if (showHeader) 16.dp else 8.dp,
+            end = 16.dp,
+            bottom = 16.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item {
-            ScreenHeader(
-                title = "私聊",
-                subtitle = "网页访客的一对一消息，公开留言板在独立页面处理。",
-                meta = "${groups.size} 会话",
-            )
+        if (showHeader) {
+            item {
+                ScreenHeader(
+                    title = "私聊",
+                    subtitle = "网页访客的一对一消息，公开留言板在独立页面处理。",
+                    meta = "${groups.size} 会话",
+                )
+            }
         }
 
         if (groups.isEmpty()) {
