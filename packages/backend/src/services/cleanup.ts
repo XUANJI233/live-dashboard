@@ -1,4 +1,4 @@
-import { cleanupExpiredMessages, cleanupOldActivities, cleanupOldLocations, cleanupOldSummaries, markOfflineDevices, optimizeDatabase } from "../db";
+import { cleanupExpiredMessages, cleanupOldActivities, cleanupOldLocations, cleanupOldSummaries, cleanupOldWeeklySummaries, markOfflineDevices, optimizeDatabase } from "../db";
 import { generateDailySummary } from "./daily-summary-gen";
 
 // Cleanup old activities + old summaries every hour
@@ -37,6 +37,15 @@ const hourlyCleanupTimer = setInterval(() => {
     }
   } catch (e) {
     console.error("[cleanup] Summaries cleanup failed:", e);
+  }
+
+  try {
+    const weeklySummaryResult = cleanupOldWeeklySummaries.run();
+    if (weeklySummaryResult.changes > 0) {
+      console.log(`[cleanup] Deleted ${weeklySummaryResult.changes} old weekly summaries`);
+    }
+  } catch (e) {
+    console.error("[cleanup] Weekly summaries cleanup failed:", e);
   }
 
   try {

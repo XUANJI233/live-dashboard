@@ -86,7 +86,7 @@ echo "Token: $TOKEN  ← Agent 配置用"
 
 ### CDN 缓存标签
 
-阿里云 ESA 默认读取的缓存标签头是 `Cache-Tag`；源站和边缘函数会同时输出 `Cache-Tag` 与 `ESA-Cache-Tag`，因此默认标签刷新和自定义标签头两种配置都能命中。首页 HTML 使用 `page/page-index` 标签且不缓存，静态资源使用 `static/static-<path>` 标签；当前状态、当前/上一小时的时间线、当天健康数据、当前/上一小时的位置轨迹、当前公开留言窗口和 WebSocket 不缓存；更早的同日时间线/位置和历史健康数据按小时窗口缓存并带 `timeline-window-YYYYMMDDHH`、`health-data-summary`/`health-data-full`、`health-data-window-YYYYMMDDHH`、`location-window-YYYYMMDDHH` 等标签，历史时间线、历史健康数据、历史位置轨迹、历史公开留言、配置、健康检查和每日总结也会带标签，便于在 CDN 控制台按标签刷新。当天健康数据可能由手表延迟补发到过去的小时窗口，因此当天健康窗口也保持不缓存。
+阿里云 ESA 默认读取的缓存标签头是 `Cache-Tag`；源站和边缘函数会同时输出 `Cache-Tag` 与 `ESA-Cache-Tag`，因此默认标签刷新和自定义标签头两种配置都能命中。首页 HTML 使用 `page/page-index` 标签且不缓存，静态资源使用 `static/static-<path>` 标签；当前状态、当前/上一小时的时间线、当天健康数据、当前/上一小时的位置轨迹、当前公开留言窗口和 WebSocket 不缓存；更早的同日时间线/位置和历史健康数据按小时窗口缓存并带 `timeline-window-YYYYMMDDHH`、`health-data-summary`/`health-data-full`、`health-data-window-YYYYMMDDHH`、`location-window-YYYYMMDDHH` 等标签，历史时间线、历史健康数据、历史位置轨迹、历史公开留言、配置、健康检查、每日总结、周总结也会带标签，便于在 CDN 控制台按标签刷新。AI 总结设置与手动刷新接口不缓存。当天健康数据可能由手表延迟补发到过去的小时窗口，因此当天健康窗口也保持不缓存。
 
 ## 环境变量
 
@@ -119,6 +119,8 @@ echo "Token: $TOKEN  ← Agent 配置用"
 | `AI_API_URL` | 空 | AI 每日总结 API 地址 |
 | `AI_API_KEY` | 空 | AI API 密钥 |
 | `AI_MODEL` | `gpt-4o-mini` | AI 模型名称 |
+
+AI 总结支持日总结和周总结。`GET /api/daily-summary`、`GET /api/weekly-summary` 可公开读取缓存结果；`POST /api/daily-summary`、`POST /api/weekly-summary` 会强制重新生成，`GET/POST /api/summary-settings` 用于读取和保存总结模式（温和/一般/锐评）与近期目标，这些管理接口都需要 `DEVICE_TOKEN_*` Bearer token。
 
 ### 边缘函数配置
 

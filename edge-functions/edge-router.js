@@ -610,6 +610,8 @@ function getCacheMeta(p, request) {
   if (p === "/api/health") return { ttl: CACHE_TTL.health, tags: ["health"] };
   if (p === "/api/messages/public") return getPublicMessageCacheMeta(url);
   if (p === "/api/daily-summary") return { ttl: 60, tags: ["daily-summary", `daily-summary-${url.searchParams.get("date") || "current"}`] };
+  if (p === "/api/weekly-summary") return { ttl: 60, tags: ["weekly-summary", `weekly-summary-${url.searchParams.get("week_start") || url.searchParams.get("date") || "current"}`] };
+  if (p === "/api/summary-settings") return { ttl: 0, tags: ["summary-settings"] };
   return { ttl: 0, tags: [] };
 }
 
@@ -717,6 +719,8 @@ function parseDeviceTokenList(raw) {
 
 function isDeviceEndpoint(p, method) {
   if (method === "GET" && (p === "/api/messages/public" || p === "/api/health-data" || p === "/api/location")) return true;
+  if (p === "/api/summary-settings") return true;
+  if ((p === "/api/daily-summary" || p === "/api/weekly-summary") && method === "POST") return true;
   return p === "/api/report" ||
     p === "/api/health-data" ||
     p === "/api/location" ||
@@ -965,7 +969,8 @@ function isPublicCorsEndpoint(pathname, method) {
   return pathname === "/api/current" ||
     pathname === "/api/timeline" ||
     pathname === "/api/health" ||
-    pathname === "/api/daily-summary" ||
+    (pathname === "/api/daily-summary" && method === "GET") ||
+    (pathname === "/api/weekly-summary" && method === "GET") ||
     pathname === "/api/config" ||
     pathname === "/api/push/vapid-public-key" ||
     pathname === "/api/pow/challenge" ||
@@ -986,4 +991,3 @@ function isAllowedCorsOrigin(origin, allowedOrigins) {
   if (!items.length) return false;
   return items.includes(origin);
 }
-

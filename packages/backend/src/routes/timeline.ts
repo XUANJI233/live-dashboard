@@ -112,7 +112,7 @@ function segmentHourWindow(segment: TimelineSegment, tzOffsetMinutes: number): s
   return hourWindowForOffset(start, tzOffsetMinutes);
 }
 
-function buildTimelineSegments(activities: ActivityRecord[], options: { openLast: boolean } = { openLast: true }): TimelineSegment[] {
+export function buildTimelineSegments(activities: ActivityRecord[], options: { openLast: boolean } = { openLast: true }): TimelineSegment[] {
   const byDevice = new Map<string, ActivityRecord[]>();
   for (const activity of activities) {
     const rows = byDevice.get(activity.device_id) || [];

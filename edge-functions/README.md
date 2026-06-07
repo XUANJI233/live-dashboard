@@ -37,7 +37,7 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 | `device_token_hashes` | 可选。`HMAC-SHA256(secret, "device:" + token)` 的 hex 列表，适合不想在 EdgeKV 存明文密钥 |
 | `cors_allowed_origins` | 可选。敏感接口跨域允许来源，逗号/空白分隔；需要和源站 `CORS_ALLOWED_ORIGINS` 保持一致。公开读取、PoW 和 token 签发接口仍使用 `Access-Control-Allow-Origin: *` |
 
-配置 `device_tokens` 或 `device_token_hashes` 后，带有效 `Authorization: Bearer <token>` 的设备/API 管理请求会在边缘直接签名回源，不走访客 token 校验，也不吃边缘全局 IP 限流。`/api/report`、`/api/health-data` 和设备消息接口都按这个路径处理，手表端 Zepp 令牌同样可通过；源站仍会继续校验设备密钥。
+配置 `device_tokens` 或 `device_token_hashes` 后，带有效 `Authorization: Bearer <token>` 的设备/API 管理请求会在边缘直接签名回源，不走访客 token 校验，也不吃边缘全局 IP 限流。`/api/report`、`/api/health-data`、设备消息接口、AI 总结设置与手动刷新接口都按这个路径处理，手表端 Zepp 令牌同样可通过；源站仍会继续校验设备密钥。
 
 公开留言读取 `GET /api/messages/public` 是公开读取接口，不需要访客 token；发布公开留言、私聊、订阅推送等写入接口仍需要访客 token，并会在边缘先验证再回源。
 
@@ -107,10 +107,12 @@ ESA Fetch/Cache 子请求预算按次计数，缓存读取路径会优先保留 
 | `/api/config` | `config` |
 | `/api/health` | `health` |
 | `/api/daily-summary` | `daily-summary`, `daily-summary-<date 或 current>` |
+| `/api/weekly-summary` | `weekly-summary`, `weekly-summary-<week_start/date 或 current>` |
+| `/api/summary-settings` | `summary-settings`，不缓存 |
 
 当前状态、当前/上一小时的时间线、当天健康数据、当前/上一小时的位置轨迹、当前公开留言窗口和 WebSocket 不缓存，避免在线状态/时间线/健康/留言/位置显示滞后。更早的同日时间线/位置和历史健康数据按小时窗口缓存，例如 `window=2026060201`；当天健康数据可能由手表延迟补发到过去的小时窗口，因此当天健康窗口也保持不缓存。源站对实时响应也会带 `Cache-Control: no-store`、`CDN-Cache-Control: no-store`、`Expires: 0`，并继续输出对应的 `Cache-Tag`，便于 ESA 规则误缓存后按标签清理。
 
-按标签刷新可使用这些标签：`page`、`static`、`current`、`realtime`、`status`、`timeline`、`timeline-YYYY-MM-DD`、`timeline-window-YYYYMMDDHH`、`health-data`、`health-data-summary`、`health-data-full`、`health-data-YYYY-MM-DD`、`health-data-window-YYYYMMDDHH`、`location`、`location-YYYY-MM-DD`、`location-window-YYYYMMDDHH`、`public-messages`、`public-messages-recent`、`public-messages-slot-YYYYMMDDHHmm`、`public-messages-YYYYMMDDHH`。ESA 默认标签头仍是 `Cache-Tag`。
+按标签刷新可使用这些标签：`page`、`static`、`current`、`realtime`、`status`、`timeline`、`timeline-YYYY-MM-DD`、`timeline-window-YYYYMMDDHH`、`health-data`、`health-data-summary`、`health-data-full`、`health-data-YYYY-MM-DD`、`health-data-window-YYYYMMDDHH`、`location`、`location-YYYY-MM-DD`、`location-window-YYYYMMDDHH`、`public-messages`、`public-messages-recent`、`public-messages-slot-YYYYMMDDHHmm`、`public-messages-YYYYMMDDHH`、`daily-summary`、`daily-summary-YYYY-MM-DD`、`weekly-summary`、`weekly-summary-YYYY-MM-DD`、`summary-settings`。ESA 默认标签头仍是 `Cache-Tag`。
 
 ## HASH_SECRET 要求
 

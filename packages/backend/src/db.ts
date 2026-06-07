@@ -87,7 +87,7 @@ db.run(`
 
 // ── Schema migration: add display_title + extra columns ──
 
-const KNOWN_TABLES = new Set(["activities", "device_states"]);
+const KNOWN_TABLES = new Set(["activities", "device_states", "daily_summaries", "weekly_summaries"]);
 
 function columnExists(table: string, column: string): boolean {
   if (!KNOWN_TABLES.has(table)) {
@@ -287,11 +287,33 @@ db.run(`
   ON visitor_messages(kind, created_at)
 `);
 
-// Daily summaries table (AI-generated, kept 7 days)
+// Daily summaries table (AI-generated)
 db.run(`
   CREATE TABLE IF NOT EXISTS daily_summaries (
     date TEXT PRIMARY KEY,
     summary TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'normal',
+    target TEXT NOT NULL DEFAULT '',
+    generated_at TEXT DEFAULT (datetime('now'))
+  )
+`);
+
+if (!columnExists("daily_summaries", "mode")) {
+  db.run("ALTER TABLE daily_summaries ADD COLUMN mode TEXT NOT NULL DEFAULT 'normal'");
+}
+
+if (!columnExists("daily_summaries", "target")) {
+  db.run("ALTER TABLE daily_summaries ADD COLUMN target TEXT NOT NULL DEFAULT ''");
+}
+
+// Weekly summaries table (AI-generated)
+db.run(`
+  CREATE TABLE IF NOT EXISTS weekly_summaries (
+    week_start TEXT PRIMARY KEY,
+    week_end TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'normal',
+    target TEXT NOT NULL DEFAULT '',
     generated_at TEXT DEFAULT (datetime('now'))
   )
 `);
@@ -383,10 +405,12 @@ export const cleanupOldLocations = db.prepare(`
 `);
 
 export const upsertDailySummary = db.prepare(`
-  INSERT INTO daily_summaries (date, summary, generated_at)
-  VALUES (?, ?, datetime('now'))
+  INSERT INTO daily_summaries (date, summary, mode, target, generated_at)
+  VALUES (?, ?, ?, ?, datetime('now'))
   ON CONFLICT(date) DO UPDATE SET
     summary = excluded.summary,
+    mode = excluded.mode,
+    target = excluded.target,
     generated_at = datetime('now')
 `);
 
@@ -395,7 +419,26 @@ export const getDailySummary = db.prepare(`
 `);
 
 export const cleanupOldSummaries = db.prepare(`
-  DELETE FROM daily_summaries WHERE date < date('now', '-7 days')
+  DELETE FROM daily_summaries WHERE date < date('now', '-30 days')
+`);
+
+export const upsertWeeklySummary = db.prepare(`
+  INSERT INTO weekly_summaries (week_start, week_end, summary, mode, target, generated_at)
+  VALUES (?, ?, ?, ?, ?, datetime('now'))
+  ON CONFLICT(week_start) DO UPDATE SET
+    week_end = excluded.week_end,
+    summary = excluded.summary,
+    mode = excluded.mode,
+    target = excluded.target,
+    generated_at = datetime('now')
+`);
+
+export const getWeeklySummary = db.prepare(`
+  SELECT * FROM weekly_summaries WHERE week_start = ?
+`);
+
+export const cleanupOldWeeklySummaries = db.prepare(`
+  DELETE FROM weekly_summaries WHERE week_start < date('now', '-120 days')
 `);
 
 // ── Push notification subscriptions (Web Push API) ──

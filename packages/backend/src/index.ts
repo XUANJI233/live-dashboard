@@ -9,7 +9,14 @@ import { handleHealthData, handleHealthDataQuery } from "./routes/health-data";
 import { handleHealthWebhook } from "./routes/health-webhook";
 import { handleConfig } from "./routes/config";
 import { authenticateToken } from "./middleware/auth";
-import { handleDailySummary } from "./routes/daily-summary";
+import {
+  handleDailySummary,
+  handleDailySummaryRefresh,
+  handleSummarySettings,
+  handleSummarySettingsUpdate,
+  handleWeeklySummary,
+  handleWeeklySummaryRefresh,
+} from "./routes/daily-summary";
 import { handleLocationQuery } from "./routes/location";
 import { handleViewerTokenIssue, handlePowChallenge } from "./routes/viewer-token";
 import { powChallengeRateLimit } from "./services/viewer-auth";
@@ -114,7 +121,8 @@ const server = Bun.serve<WsData>({
     const isPublicEndpoint = pathname === "/api/current" ||
       pathname === "/api/timeline" ||
       pathname === "/api/health" ||
-      pathname === "/api/daily-summary" ||
+      (pathname === "/api/daily-summary" && req.method === "GET") ||
+      (pathname === "/api/weekly-summary" && req.method === "GET") ||
       pathname === "/api/config" ||
       pathname === "/api/push/vapid-public-key" ||
       (pathname === "/api/messages/public" && req.method === "GET") ||
@@ -230,6 +238,16 @@ const server = Bun.serve<WsData>({
         response = handleConfig();
       } else if (pathname === "/api/daily-summary" && req.method === "GET") {
         response = handleDailySummary(url);
+      } else if (pathname === "/api/daily-summary" && req.method === "POST") {
+        response = await handleDailySummaryRefresh(req, url);
+      } else if (pathname === "/api/weekly-summary" && req.method === "GET") {
+        response = handleWeeklySummary(url);
+      } else if (pathname === "/api/weekly-summary" && req.method === "POST") {
+        response = await handleWeeklySummaryRefresh(req, url);
+      } else if (pathname === "/api/summary-settings" && req.method === "GET") {
+        response = handleSummarySettings(req);
+      } else if (pathname === "/api/summary-settings" && req.method === "POST") {
+        response = await handleSummarySettingsUpdate(req);
       } else if (pathname === "/api/location" && req.method === "GET") {
         response = handleLocationQuery(url, req);
       } else if (pathname === "/api/messages" && req.method === "GET") {
