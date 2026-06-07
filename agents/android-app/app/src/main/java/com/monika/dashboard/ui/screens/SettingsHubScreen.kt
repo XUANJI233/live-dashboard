@@ -64,7 +64,7 @@ fun SettingsHubScreen(settings: SettingsStore) {
         ) {
             CompactPageHeader(
                 title = "设置",
-                subtitle = "配置、健康和诊断集中管理。",
+                subtitle = "配置、健康、总结和诊断集中管理。",
                 action = {
                     TextButton(onClick = { showLogs = true }) {
                         Text("日志")
@@ -218,7 +218,11 @@ private fun SummarySettingsPane(settings: SettingsStore) {
             if (!status.isNullOrBlank()) {
                 StatusPill(
                     text = status.orEmpty(),
-                    tone = if (status?.contains("失败") == true || status?.startsWith("HTTP") == true) {
+                    tone = if (
+                        status?.contains("失败") == true ||
+                        status?.startsWith("HTTP") == true ||
+                        status?.startsWith("请先") == true
+                    ) {
                         DashboardTone.Bad
                     } else {
                         DashboardTone.Good
