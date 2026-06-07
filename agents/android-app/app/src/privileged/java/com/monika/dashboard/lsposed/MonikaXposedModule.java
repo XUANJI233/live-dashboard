@@ -716,10 +716,6 @@ public final class MonikaXposedModule extends XposedModule {
                     }
                     String expectedNonce = getBrowserTitleNonce(true);
                     String actualNonce = safeString(intent.getStringExtra(KEY_BROWSER_TITLE_NONCE));
-                    if (!senderVerified && expectedNonce.length() > 0 && !expectedNonce.equals(actualNonce)) {
-                        log(Log.WARN, TAG, "browser title rejected: nonce mismatch");
-                        return;
-                    }
 
                     // Verify the claimed package is (or recently was) the foreground browser.
                     // Use time-window cache (2s) to tolerate broadcast delay — avoids
@@ -731,6 +727,12 @@ public final class MonikaXposedModule extends XposedModule {
                     if (!isCurrentForeground && !wasRecentForeground) {
                         log(Log.DEBUG, TAG, "browser title ignored: " + pkg + " is not foreground");
                         return;
+                    }
+                    if (!senderVerified && expectedNonce.length() > 0 && !expectedNonce.equals(actualNonce)) {
+                        // Some ROM/browser processes cannot read the app-created nonce even
+                        // though the broadcast comes from the active browser process. Keep the
+                        // foreground-browser gate as the fallback trust boundary.
+                        log(Log.DEBUG, TAG, "browser title accepted without nonce for foreground browser: " + pkg);
                     }
 
                     foregroundPackage = pkg;

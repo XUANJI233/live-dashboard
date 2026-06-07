@@ -13,15 +13,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.health.HealthConnectManager
 import com.monika.dashboard.health.HealthSyncWorker
 import com.monika.dashboard.realtime.MessageSocketManager
+import com.monika.dashboard.ui.components.DashboardTone
+import com.monika.dashboard.ui.components.InitialBadge
+import com.monika.dashboard.ui.components.StatusPill
 import com.monika.dashboard.ui.screens.BoardScreen
 import com.monika.dashboard.ui.screens.HealthScreen
 import com.monika.dashboard.ui.screens.MessagesScreen
@@ -78,7 +78,6 @@ private fun DashboardTopBar(settings: SettingsStore) {
     var connected by remember { mutableStateOf(false) }
     val serverUrl by settings.serverUrl.collectAsState(initial = "")
 
-    // Poll MessageSocketManager WebSocket status instead of creating new HTTP clients
     LaunchedEffect(serverUrl) {
         while (true) {
             connected = MessageSocketManager.isConnected()
@@ -87,23 +86,39 @@ private fun DashboardTopBar(settings: SettingsStore) {
     }
 
     TopAppBar(
-        title = { Text("Monika Now") },
+        title = {
+            Column {
+                Text("Monika Now", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    text = "Android 采集与访客消息",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
         actions = {
-            Text(
-                text = if (connected) "已连接" else "未连接",
-                color = if (connected) Color(0xFF4CAF50) else Color(0xFFBDBDBD),
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(end = 16.dp)
+            StatusPill(
+                text = if (connected) "实时已连接" else "实时等待连接",
+                tone = if (connected) DashboardTone.Good else DashboardTone.Neutral,
+                modifier = Modifier.padding(end = 16.dp),
             )
-        }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.background,
+        ),
     )
 }
 
 @Composable
 private fun MainContent(settings: SettingsStore, modifier: Modifier = Modifier) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
-    val tabs = listOf("消息", "留言", "健康", "设置", "诊断")
+    val tabs = listOf(
+        NavItem("私聊", "聊"),
+        NavItem("公开", "板"),
+        NavItem("健康", "健"),
+        NavItem("设置", "设"),
+        NavItem("诊断", "查"),
+    )
     val context = LocalContext.current
 
     // Trigger foreground health sync once on app open
@@ -120,13 +135,21 @@ private fun MainContent(settings: SettingsStore, modifier: Modifier = Modifier) 
     Scaffold(
         modifier = modifier.fillMaxSize(),
         bottomBar = {
-            NavigationBar {
-                tabs.forEachIndexed { index, title ->
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp,
+            ) {
+                tabs.forEachIndexed { index, item ->
                     NavigationBarItem(
                         selected = selectedTab == index,
                         onClick = { selectedTab = index },
-                        icon = { Text(title.take(1), fontWeight = FontWeight.Bold) },
-                        label = { Text(title) },
+                        icon = {
+                            InitialBadge(
+                                text = item.glyph,
+                                tone = if (selectedTab == index) DashboardTone.Info else DashboardTone.Neutral,
+                            )
+                        },
+                        label = { Text(item.title) },
                     )
                 }
             }
@@ -143,3 +166,8 @@ private fun MainContent(settings: SettingsStore, modifier: Modifier = Modifier) 
         }
     }
 }
+
+private data class NavItem(
+    val title: String,
+    val glyph: String,
+)
