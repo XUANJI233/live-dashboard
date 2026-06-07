@@ -8,6 +8,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes
 from datetime import datetime, timezone
+import hashlib
 import ipaddress
 import json
 import logging
@@ -73,6 +74,12 @@ def set_file_logging(enabled: bool) -> None:
 user32 = ctypes.windll.user32  # type: ignore[attr-defined]
 kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
 
+ERROR_ALREADY_EXISTS = 183
+EVENT_MODIFY_STATE = 0x0002
+WAIT_OBJECT_0 = 0x00000000
+WAIT_TIMEOUT = 0x00000102
+WAIT_FAILED = 0xFFFFFFFF
+
 GetForegroundWindow = user32.GetForegroundWindow
 GetForegroundWindow.restype = ctypes.wintypes.HWND
 
@@ -102,6 +109,33 @@ GetLastInputInfo.restype = ctypes.wintypes.BOOL
 
 GetTickCount = kernel32.GetTickCount
 GetTickCount.restype = ctypes.wintypes.DWORD
+
+GetLastError = kernel32.GetLastError
+GetLastError.restype = ctypes.wintypes.DWORD
+
+CreateMutexW = kernel32.CreateMutexW
+CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.wintypes.BOOL, ctypes.wintypes.LPCWSTR]
+CreateMutexW.restype = ctypes.wintypes.HANDLE
+
+CreateEventW = kernel32.CreateEventW
+CreateEventW.argtypes = [ctypes.c_void_p, ctypes.wintypes.BOOL, ctypes.wintypes.BOOL, ctypes.wintypes.LPCWSTR]
+CreateEventW.restype = ctypes.wintypes.HANDLE
+
+OpenEventW = kernel32.OpenEventW
+OpenEventW.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.LPCWSTR]
+OpenEventW.restype = ctypes.wintypes.HANDLE
+
+SetEvent = kernel32.SetEvent
+SetEvent.argtypes = [ctypes.wintypes.HANDLE]
+SetEvent.restype = ctypes.wintypes.BOOL
+
+WaitForSingleObject = kernel32.WaitForSingleObject
+WaitForSingleObject.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD]
+WaitForSingleObject.restype = ctypes.wintypes.DWORD
+
+CloseHandle = kernel32.CloseHandle
+CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+CloseHandle.restype = ctypes.wintypes.BOOL
 
 
 def get_idle_seconds() -> float:
@@ -593,11 +627,115 @@ def show_settings_dialog(current_config: dict | None = None) -> dict | None:
     x = (root.winfo_screenwidth() - w) // 2
     y = (root.winfo_screenheight() - h) // 2
     root.geometry(f"+{x}+{y}")
+    root.deiconify()
+    try:
+        root.attributes("-topmost", True)
+        root.after(300, lambda: root.attributes("-topmost", False))
+    except Exception:
+        pass
     root.lift()
     root.focus_force()
 
     root.mainloop()
     return result[0]
+
+
+def open_settings_in_subprocess() -> bool:
+    """Open settings dialog in a separate process and return True when saved."""
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "--settings-dialog"]
+    else:
+        cmd = [sys.executable, str(Path(__file__).resolve()), "--settings-dialog"]
+    try:
+        result = subprocess.run(
+            cmd,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return result.returncode == 0
+    except Exception as e:
+        log.error("Failed to open settings subprocess: %s", e)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Single-instance control — second launch opens settings in the running agent
+# ---------------------------------------------------------------------------
+def _control_suffix() -> str:
+    raw = str(base_dir.resolve()).lower().encode("utf-8", "ignore")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+CONTROL_SUFFIX = _control_suffix()
+MUTEX_NAME = f"Local\\LiveDashboardAgent-{CONTROL_SUFFIX}"
+SHOW_SETTINGS_EVENT_NAME = f"Local\\LiveDashboardAgentShowSettings-{CONTROL_SUFFIX}"
+
+
+def signal_existing_instance() -> bool:
+    """Ask an already-running agent from the same install dir to open settings."""
+    handle = OpenEventW(EVENT_MODIFY_STATE, False, SHOW_SETTINGS_EVENT_NAME)
+    if not handle:
+        return False
+    try:
+        return bool(SetEvent(handle))
+    finally:
+        CloseHandle(handle)
+
+
+class SingleInstanceControl:
+    """Own the process mutex and listen for second-launch settings requests."""
+
+    def __init__(self, on_show_settings):
+        self._on_show_settings = on_show_settings
+        self._mutex = CreateMutexW(None, False, MUTEX_NAME)
+        self.already_running = GetLastError() == ERROR_ALREADY_EXISTS
+        self._event = None
+        self._thread: threading.Thread | None = None
+        self._closed = threading.Event()
+        if not self.already_running:
+            self._event = CreateEventW(None, False, False, SHOW_SETTINGS_EVENT_NAME)
+            if not self._event:
+                log.warning("Control event create failed: %s", GetLastError())
+
+    def start(self) -> None:
+        if self.already_running or not self._event:
+            return
+        self._thread = threading.Thread(
+            target=self._listen,
+            daemon=True,
+            name="single-instance-control",
+        )
+        self._thread.start()
+
+    def _listen(self) -> None:
+        assert self._event is not None
+        while not self._closed.is_set():
+            rc = WaitForSingleObject(self._event, 1000)
+            if rc == WAIT_OBJECT_0:
+                if self._closed.is_set():
+                    break
+                try:
+                    self._on_show_settings()
+                except Exception as exc:
+                    log.warning("Open-settings signal failed: %s", exc)
+            elif rc == WAIT_TIMEOUT:
+                continue
+            elif rc == WAIT_FAILED:
+                log.warning("Control event wait failed: %s", GetLastError())
+                break
+
+    def close(self) -> None:
+        self._closed.set()
+        if self._event:
+            SetEvent(self._event)
+        if self._thread:
+            self._thread.join(timeout=1)
+        if self._event:
+            CloseHandle(self._event)
+            self._event = None
+        if self._mutex:
+            CloseHandle(self._mutex)
+            self._mutex = None
 
 
 # ---------------------------------------------------------------------------
@@ -1018,6 +1156,7 @@ class TrayAgent:
         self._current_target = ""
         self._icon: pystray.Icon | None = None
         self._settings_requested = False
+        self._settings_open = False
         self._msg_client: MessageClient | None = None
         self._unread_count = 0
         self._icons = {
@@ -1124,7 +1263,29 @@ class TrayAgent:
             self._icon.update_menu()
 
     def _open_settings(self, _icon=None, _item=None):
+        self.open_settings_async()
+
+    def open_settings_async(self) -> None:
+        with self._lock:
+            if self._settings_open:
+                return
+            self._settings_open = True
+        threading.Thread(
+            target=self._settings_worker,
+            daemon=True,
+            name="settings-dialog",
+        ).start()
+
+    def _settings_worker(self) -> None:
+        saved = open_settings_in_subprocess()
+        with self._lock:
+            self._settings_open = False
+        if not saved:
+            if self._icon:
+                self._icon.update_menu()
+            return
         self._settings_requested = True
+        shutdown_event.set()
         if self._icon:
             self._icon.stop()
 
@@ -1306,87 +1467,117 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
 def main() -> None:
     log.info("Live Dashboard Windows Agent")
 
-    while True:
+    if "--settings-dialog" in sys.argv:
         cfg = load_config()
+        new_cfg = show_settings_dialog(cfg)
+        raise SystemExit(0 if new_cfg is not None else 1)
 
-        # No valid config → show settings dialog
-        if not cfg.get("server_url") or not cfg.get("token") or cfg.get("token") == "YOUR_TOKEN_HERE":
-            cfg = show_settings_dialog(cfg)
-            if cfg is None:
-                return
-            cfg = load_config()
+    pending_settings_request = threading.Event()
+    tray_ref: dict[str, TrayAgent | None] = {"tray": None}
 
-        err = validate_config(cfg)
-        if err:
-            log.warning("Invalid config: %s", err)
-            cfg = show_settings_dialog(cfg)
-            if cfg is None:
-                return
-            cfg = load_config()
-            continue
-
-        # Apply log preference
-        set_file_logging(cfg.get("enable_log", False))
-        if cfg.get("enable_log"):
-            log.info("HTTP: %s", "HTTPS" if cfg["server_url"].startswith("https") else "HTTP (内网)")
-
-        reporter = Reporter(cfg["server_url"], cfg["token"])
-
-        # Initialize WebSocket client
-        ws_client: WsClient | None = None
-        msg_client: MessageClient | None = None
-        if HAS_WEBSOCKET:
-            ws_client = WsClient(cfg["server_url"], cfg["token"])
-            msg_client = MessageClient(cfg["server_url"], cfg["token"], ws_client)
-            ws_client.start()
-            log.info("WebSocket 客户端已启动")
-        else:
-            log.info("websocket-client 未安装, 仅使用 HTTP 上报")
-            msg_client = MessageClient(cfg["server_url"], cfg["token"])
-
-        tray: TrayAgent | None = None
-        try:
-            tray = TrayAgent()
-            if msg_client:
-                tray.set_message_client(msg_client)
-        except ImportError:
-            log.warning("pystray/Pillow not installed, running without tray")
-        except Exception as e:
-            log.warning("Tray init failed: %s", e)
-
-        # Wire WS viewer_message → MessageClient
-        if ws_client and msg_client:
-            ws_client._on_viewer_message = msg_client.on_ws_message
-
+    def request_settings_from_existing_instance() -> None:
+        tray = tray_ref["tray"]
         if tray:
-            monitor = threading.Thread(
-                target=_monitor_loop,
-                args=(cfg, reporter, tray, ws_client, msg_client),
-                daemon=True,
-            )
-            monitor.start()
-            tray.run()  # Blocks until quit or settings
-            shutdown_event.set()
-            monitor.join(timeout=5)
-            if ws_client:
-                ws_client.stop()
-
-            if tray.settings_requested:
-                shutdown_event.clear()
-                new_cfg = show_settings_dialog(cfg)
-                if new_cfg is None:
-                    continue  # Cancelled, restart with old config
-                continue  # Restart with new config
-            else:
-                break  # Quit
+            tray.open_settings_async()
         else:
+            pending_settings_request.set()
+
+    control = SingleInstanceControl(request_settings_from_existing_instance)
+    if control.already_running:
+        if signal_existing_instance():
+            log.info("Agent already running; requested settings window")
+        else:
+            show_message("Live Dashboard", "后台已经在运行，但无法唤起设置窗口。", error=True)
+        control.close()
+        return
+
+    control.start()
+
+    try:
+        while True:
+            cfg = load_config()
+
+            # No valid config → show settings dialog
+            if not cfg.get("server_url") or not cfg.get("token") or cfg.get("token") == "YOUR_TOKEN_HERE":
+                if not open_settings_in_subprocess():
+                    return
+                cfg = load_config()
+
+            err = validate_config(cfg)
+            if err:
+                log.warning("Invalid config: %s", err)
+                if not open_settings_in_subprocess():
+                    return
+                cfg = load_config()
+                continue
+
+            # Apply log preference
+            set_file_logging(cfg.get("enable_log", False))
+            if cfg.get("enable_log"):
+                log.info("HTTP: %s", "HTTPS" if cfg["server_url"].startswith("https") else "HTTP (内网)")
+
+            reporter = Reporter(cfg["server_url"], cfg["token"])
+
+            # Initialize WebSocket client
+            ws_client: WsClient | None = None
+            msg_client: MessageClient | None = None
+            if HAS_WEBSOCKET:
+                ws_client = WsClient(cfg["server_url"], cfg["token"])
+                msg_client = MessageClient(cfg["server_url"], cfg["token"], ws_client)
+                ws_client.start()
+                log.info("WebSocket 客户端已启动")
+            else:
+                log.info("websocket-client 未安装, 仅使用 HTTP 上报")
+                msg_client = MessageClient(cfg["server_url"], cfg["token"])
+
+            tray: TrayAgent | None = None
             try:
-                _monitor_loop(cfg, reporter, None, ws_client, msg_client)
-            except KeyboardInterrupt:
-                pass
-            if ws_client:
-                ws_client.stop()
-            break
+                tray = TrayAgent()
+                tray_ref["tray"] = tray
+                if msg_client:
+                    tray.set_message_client(msg_client)
+            except ImportError:
+                log.warning("pystray/Pillow not installed, running without tray")
+            except Exception as e:
+                log.warning("Tray init failed: %s", e)
+                tray_ref["tray"] = None
+
+            # Wire WS viewer_message → MessageClient
+            if ws_client and msg_client:
+                ws_client._on_viewer_message = msg_client.on_ws_message
+
+            if tray:
+                if pending_settings_request.is_set():
+                    pending_settings_request.clear()
+                    tray.open_settings_async()
+                monitor = threading.Thread(
+                    target=_monitor_loop,
+                    args=(cfg, reporter, tray, ws_client, msg_client),
+                    daemon=True,
+                )
+                monitor.start()
+                tray.run()  # Blocks until quit or settings
+                tray_ref["tray"] = None
+                shutdown_event.set()
+                monitor.join(timeout=5)
+                if ws_client:
+                    ws_client.stop()
+
+                if tray.settings_requested:
+                    shutdown_event.clear()
+                    continue  # Restart with new config
+                else:
+                    break  # Quit
+            else:
+                try:
+                    _monitor_loop(cfg, reporter, None, ws_client, msg_client)
+                except KeyboardInterrupt:
+                    pass
+                if ws_client:
+                    ws_client.stop()
+                break
+    finally:
+        control.close()
 
     log.info("Agent stopped")
 

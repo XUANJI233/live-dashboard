@@ -21,9 +21,9 @@ Windows Agent 是一个 Python 桌面程序，监控前台窗口并向 Live Dash
 | **电量上报** | 笔记本自动上报电池电量和充电状态 |
 | **AFK 检测** | 键鼠空闲超过阈值（默认 5 分钟）后进入 AFK 模式 |
 | **视频/音频免 AFK** | 有音频播放（pycaw）或前台全屏时，即使键鼠空闲也不进入 AFK |
-| **系统托盘** | pystray 托盘图标，右键查看状态、重载配置、打开设置、安全退出 |
+| **系统托盘** | pystray 托盘图标，右键查看状态、重载配置、打开设置、安全退出；后台运行时再次双击 exe 会唤起设置 |
 | **设置对话框** | tkinter GUI，编辑服务器地址、Token、上报间隔等 |
-| **日志** | 自动写入 `live-dashboard-agent.log`，按天轮转保留 2 天 |
+| **日志** | 自动写入 `agent.log`，按天轮转保留 2 天 |
 
 ### 技术栈
 
@@ -38,7 +38,7 @@ Windows Agent 是一个 Python 桌面程序，监控前台窗口并向 Live Dash
 
 ```
 agents/windows/
-├── agent.py              # 主程序（792 行）
+├── agent.py              # 主程序
 ├── config.example.json   # 配置模板
 ├── requirements.txt      # Python 依赖
 ├── build.bat             # PyInstaller 打包脚本
