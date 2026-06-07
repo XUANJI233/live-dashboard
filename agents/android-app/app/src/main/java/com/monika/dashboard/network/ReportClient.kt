@@ -373,7 +373,18 @@ class ReportClient(
     data class SummarySettings(
         val mode: String,
         val target: String,
+        val plannedRest: Boolean,
+        val weeklyPlan: List<SummaryPlanDay>,
+        val dailySummaryTime: String,
+        val weeklySummaryWeekday: Int,
+        val weeklySummaryTime: String,
         val updatedAt: String?,
+    )
+
+    data class SummaryPlanDay(
+        val weekday: Int,
+        val target: String,
+        val plannedRest: Boolean,
     )
 
     data class AiConfig(
@@ -388,6 +399,17 @@ class ReportClient(
         val encryptionAlg: String?,
         val encryptionPublicKey: String?,
         val encryptionPublicKeySha256: String?,
+    )
+
+    data class AiConfigTestResult(
+        val ok: Boolean,
+        val message: String,
+        val models: List<String>,
+        val selectedModel: String,
+        val modelAvailable: Boolean?,
+        val modelsUrl: String,
+        val chatChecked: Boolean,
+        val modelsError: String?,
     )
 
     data class TimelineSegment(
@@ -506,10 +528,31 @@ class ReportClient(
         return executeSettingsRequest(request)
     }
 
-    fun updateSummarySettings(mode: String, target: String): Result<SummarySettings> {
+    fun updateSummarySettings(
+        mode: String,
+        target: String,
+        plannedRest: Boolean,
+        weeklyPlan: List<SummaryPlanDay>,
+        dailySummaryTime: String,
+        weeklySummaryWeekday: Int,
+        weeklySummaryTime: String,
+    ): Result<SummarySettings> {
         val body = JSONObject().apply {
             put("mode", mode)
             put("target", target.take(240))
+            put("planned_rest", plannedRest)
+            put("weekly_plan", JSONArray().apply {
+                weeklyPlan.forEach { item ->
+                    put(JSONObject().apply {
+                        put("weekday", item.weekday.coerceIn(1, 7))
+                        put("target", item.target.take(240))
+                        put("planned_rest", item.plannedRest)
+                    })
+                }
+            })
+            put("daily_summary_time", dailySummaryTime)
+            put("weekly_summary_weekday", weeklySummaryWeekday.coerceIn(1, 7))
+            put("weekly_summary_time", weeklySummaryTime)
         }
         val request = Request.Builder()
             .url("${serverUrl.trimEnd('/')}/api/summary-settings")
@@ -531,20 +574,9 @@ class ReportClient(
 
     fun updateAiConfig(apiUrl: String, apiKey: String, model: String): Result<AiConfig> {
         return try {
-            val current = fetchAiConfig().getOrThrow()
-            if (current.locked) {
-                return Result.failure(IOException("AI_CONFIG_LOCKED: ${current.message ?: "服务器环境变量已配置"}"))
+            val body = encryptedAiConfigBodyFromServer(apiUrl, apiKey, model).getOrElse {
+                return Result.failure(it)
             }
-            val serverPublicKey = current.encryptionPublicKey
-                ?: return Result.failure(IOException("AI_CONFIG_PUBLIC_KEY_MISSING"))
-            if (current.encryptionAlg != AI_CONFIG_ENCRYPTION_ALG) {
-                return Result.failure(IOException("AI_CONFIG_ALG_UNSUPPORTED"))
-            }
-            current.encryptionPublicKeySha256?.let { expected ->
-                val actual = sha256Base64Url(base64UrlDecode(serverPublicKey))
-                if (actual != expected) return Result.failure(IOException("AI_CONFIG_PUBLIC_KEY_HASH_MISMATCH"))
-            }
-            val body = encryptedAiConfigBody(apiUrl, apiKey, model, serverPublicKey)
             val request = Request.Builder()
                 .url("${serverUrl.trimEnd('/')}/api/ai-config")
                 .addHeader("Authorization", "Bearer $token")
@@ -552,6 +584,23 @@ class ReportClient(
                 .post(body.toString().toRequestBody(jsonMediaType))
                 .build()
             executeAiConfigRequest(request)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun testAiConfig(apiUrl: String, apiKey: String, model: String): Result<AiConfigTestResult> {
+        return try {
+            val body = encryptedAiConfigBodyFromServer(apiUrl, apiKey, model).getOrElse {
+                return Result.failure(it)
+            }
+            val request = Request.Builder()
+                .url("${serverUrl.trimEnd('/')}/api/ai-config/test")
+                .addHeader("Authorization", "Bearer $token")
+                .addHeader("Content-Type", "application/json")
+                .post(body.toString().toRequestBody(jsonMediaType))
+                .build()
+            executeAiConfigTestRequest(request)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -677,6 +726,11 @@ class ReportClient(
                     SummarySettings(
                         mode = json.optString("mode", "normal"),
                         target = json.optString("target", ""),
+                        plannedRest = json.optBoolean("planned_rest", false),
+                        weeklyPlan = parseSummaryPlan(json.optJSONArray("weekly_plan")),
+                        dailySummaryTime = json.optString("daily_summary_time", "21:00"),
+                        weeklySummaryWeekday = json.optInt("weekly_summary_weekday", 7).coerceIn(1, 7),
+                        weeklySummaryTime = json.optString("weekly_summary_time", "21:30"),
                         updatedAt = json.optString("updated_at").takeIf { value -> value.isNotBlank() && value != "null" },
                     ),
                 )
@@ -699,6 +753,25 @@ class ReportClient(
         }
     }
 
+    private fun parseSummaryPlan(arr: JSONArray?): List<SummaryPlanDay> {
+        val byWeekday = mutableMapOf<Int, SummaryPlanDay>()
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                val weekday = item.optInt("weekday", 0).coerceIn(0, 7)
+                if (weekday == 0) continue
+                byWeekday[weekday] = SummaryPlanDay(
+                    weekday = weekday,
+                    target = item.optString("target", ""),
+                    plannedRest = item.optBoolean("planned_rest", false),
+                )
+            }
+        }
+        return (1..7).map { weekday ->
+            byWeekday[weekday] ?: SummaryPlanDay(weekday, "", false)
+        }
+    }
+
     private fun parseAiConfig(json: JSONObject): AiConfig {
         val encryption = json.optJSONObject("encryption")
         return AiConfig(
@@ -713,6 +786,59 @@ class ReportClient(
             encryptionAlg = encryption?.optString("alg")?.takeIf { value -> value.isNotBlank() },
             encryptionPublicKey = encryption?.optString("public_key")?.takeIf { value -> value.isNotBlank() },
             encryptionPublicKeySha256 = encryption?.optString("public_key_sha256")?.takeIf { value -> value.isNotBlank() },
+        )
+    }
+
+    private fun encryptedAiConfigBodyFromServer(apiUrl: String, apiKey: String, model: String): Result<JSONObject> {
+        return try {
+            val current = fetchAiConfig().getOrThrow()
+            if (current.locked) {
+                return Result.failure(IOException("AI_CONFIG_LOCKED: ${current.message ?: "服务器环境变量已配置"}"))
+            }
+            val serverPublicKey = current.encryptionPublicKey
+                ?: return Result.failure(IOException("AI_CONFIG_PUBLIC_KEY_MISSING"))
+            if (current.encryptionAlg != AI_CONFIG_ENCRYPTION_ALG) {
+                return Result.failure(IOException("AI_CONFIG_ALG_UNSUPPORTED"))
+            }
+            current.encryptionPublicKeySha256?.let { expected ->
+                val actual = sha256Base64Url(base64UrlDecode(serverPublicKey))
+                if (actual != expected) return Result.failure(IOException("AI_CONFIG_PUBLIC_KEY_HASH_MISMATCH"))
+            }
+            Result.success(encryptedAiConfigBody(apiUrl, apiKey, model, serverPublicKey))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun executeAiConfigTestRequest(request: Request): Result<AiConfigTestResult> {
+        return try {
+            val response = client.newCall(request).execute()
+            response.use {
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(it.body?.string())}"))
+                val json = JSONObject(it.body?.string().orEmpty())
+                Result.success(parseAiConfigTest(json))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun parseAiConfigTest(json: JSONObject): AiConfigTestResult {
+        val arr = json.optJSONArray("models") ?: JSONArray()
+        val models = buildList {
+            for (i in 0 until arr.length()) {
+                arr.optString(i).takeIf { value -> value.isNotBlank() }?.let(::add)
+            }
+        }
+        return AiConfigTestResult(
+            ok = json.optBoolean("ok", false),
+            message = json.optString("message").ifBlank { if (json.optBoolean("ok", false)) "AI 连接测试通过" else "AI 连接测试失败" },
+            models = models,
+            selectedModel = json.optString("selected_model", ""),
+            modelAvailable = if (json.has("model_available") && !json.isNull("model_available")) json.optBoolean("model_available") else null,
+            modelsUrl = json.optString("models_url", ""),
+            chatChecked = json.optBoolean("chat_checked", false),
+            modelsError = json.optString("models_error").takeIf { value -> value.isNotBlank() && value != "null" },
         )
     }
 

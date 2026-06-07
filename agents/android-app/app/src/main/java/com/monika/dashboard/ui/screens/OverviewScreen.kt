@@ -34,6 +34,7 @@ import com.monika.dashboard.ui.components.DashboardCard
 import com.monika.dashboard.ui.components.DashboardTone
 import com.monika.dashboard.ui.components.EmptyState
 import com.monika.dashboard.ui.components.InitialBadge
+import com.monika.dashboard.ui.components.MarkdownText
 import com.monika.dashboard.ui.components.ScreenHeader
 import com.monika.dashboard.ui.components.SegmentedControl
 import com.monika.dashboard.ui.components.SectionTitle
@@ -218,14 +219,12 @@ fun OverviewScreen(settings: SettingsStore) {
                     text = summaryModeLabel(if (isWeekly) weeklySummary?.mode else dailySummary?.mode),
                     tone = DashboardTone.Neutral,
                 )
-                Text(
+                MarkdownText(
                     text = if (isWeekly) {
                         weeklySummary?.summary ?: "服务端还没有生成这一周的 AI 总结；点击刷新可让服务器立即生成。"
                     } else {
                         dailySummary?.summary ?: "服务端还没有生成这天的 AI 总结；点击刷新可让服务器立即生成。"
                     },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
                 )
             }
         }

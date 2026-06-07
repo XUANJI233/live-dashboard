@@ -15,9 +15,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -104,6 +107,11 @@ private fun SummarySettingsPane(settings: SettingsStore) {
     val scope = rememberCoroutineScope()
     var mode by rememberSaveable { mutableStateOf("normal") }
     var target by rememberSaveable { mutableStateOf("") }
+    var plannedRest by rememberSaveable { mutableStateOf(false) }
+    var weeklyPlan by remember { mutableStateOf(defaultSummaryPlan()) }
+    var dailySummaryTime by rememberSaveable { mutableStateOf("21:00") }
+    var weeklySummaryWeekday by rememberSaveable { mutableIntStateOf(7) }
+    var weeklySummaryTime by rememberSaveable { mutableStateOf("21:30") }
     var loading by remember { mutableStateOf(false) }
     var aiLoading by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
@@ -113,6 +121,8 @@ private fun SummarySettingsPane(settings: SettingsStore) {
     var aiApiKey by remember { mutableStateOf("") }
     var aiModel by rememberSaveable { mutableStateOf("gpt-4o-mini") }
     var aiLocked by remember { mutableStateOf(false) }
+    var aiModelOptions by remember { mutableStateOf<List<String>>(emptyList()) }
+    var aiModelMenuExpanded by remember { mutableStateOf(false) }
     var showAiLockedDialog by remember { mutableStateOf(false) }
 
     fun loadRemote() {
@@ -132,6 +142,11 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 .onSuccess {
                     mode = it.mode
                     target = it.target
+                    plannedRest = it.plannedRest
+                    weeklyPlan = it.weeklyPlan
+                    dailySummaryTime = it.dailySummaryTime
+                    weeklySummaryWeekday = it.weeklySummaryWeekday
+                    weeklySummaryTime = it.weeklySummaryTime
                     updatedAt = it.updatedAt
                     status = "已同步服务器设置"
                 }
@@ -150,13 +165,26 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 if (url.isBlank() || token.isNullOrBlank()) {
                     Result.failure(IllegalStateException("请先配置服务器和 Token"))
                 } else {
-                    ReportClient(url, token).updateSummarySettings(mode, target)
+                    ReportClient(url, token).updateSummarySettings(
+                        mode = mode,
+                        target = target,
+                        plannedRest = plannedRest,
+                        weeklyPlan = weeklyPlan,
+                        dailySummaryTime = dailySummaryTime,
+                        weeklySummaryWeekday = weeklySummaryWeekday,
+                        weeklySummaryTime = weeklySummaryTime,
+                    )
                 }
             }
             result
                 .onSuccess {
                     mode = it.mode
                     target = it.target
+                    plannedRest = it.plannedRest
+                    weeklyPlan = it.weeklyPlan
+                    dailySummaryTime = it.dailySummaryTime
+                    weeklySummaryWeekday = it.weeklySummaryWeekday
+                    weeklySummaryTime = it.weeklySummaryTime
                     updatedAt = it.updatedAt
                     status = "总结设置已保存"
                 }
@@ -183,6 +211,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     aiLocked = it.locked
                     aiApiUrl = it.apiUrl ?: it.apiUrlHint.orEmpty()
                     aiModel = it.model.ifBlank { "gpt-4o-mini" }
+                    aiModelOptions = emptyList()
                     aiStatus = when {
                         it.locked -> it.message ?: "服务器已通过环境变量配置 AI"
                         it.configured -> "AI 配置已保存在服务器"
@@ -190,6 +219,48 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     }
                 }
                 .onFailure { aiStatus = it.message ?: "AI 配置读取失败" }
+            aiLoading = false
+        }
+    }
+
+    fun testAiConnection() {
+        scope.launch {
+            aiLoading = true
+            aiStatus = null
+            val result = withContext(Dispatchers.IO) {
+                val url = settings.serverUrl.first()
+                val token = settings.getToken()
+                if (url.isBlank() || token.isNullOrBlank()) {
+                    Result.failure(IllegalStateException("请先配置服务器和 Token"))
+                } else if (aiApiUrl.isBlank() || aiApiKey.isBlank()) {
+                    Result.failure(IllegalStateException("请填写 AI 端点和 Key"))
+                } else {
+                    ReportClient(url, token).testAiConfig(aiApiUrl, aiApiKey, aiModel)
+                }
+            }
+            result
+                .onSuccess {
+                    aiModelOptions = it.models
+                    val preferred = when {
+                        it.selectedModel.isNotBlank() && it.models.contains(it.selectedModel) -> it.selectedModel
+                        aiModel.isNotBlank() && it.models.contains(aiModel) -> aiModel
+                        it.models.isNotEmpty() -> it.models.first()
+                        else -> aiModel
+                    }
+                    aiModel = preferred.ifBlank { "gpt-4o-mini" }
+                    aiStatus = if (it.ok) {
+                        it.message
+                    } else {
+                        "测试失败：${it.message}"
+                    }
+                }
+                .onFailure {
+                    val message = it.message ?: "AI 连接测试失败"
+                    aiStatus = message
+                    if (message.contains("AI_CONFIG_LOCKED") || message.contains("环境变量")) {
+                        showAiLockedDialog = true
+                    }
+                }
             aiLoading = false
         }
     }
@@ -214,6 +285,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     aiLocked = it.locked
                     aiApiUrl = it.apiUrl ?: it.apiUrlHint.orEmpty()
                     aiModel = it.model.ifBlank { "gpt-4o-mini" }
+                    aiModelOptions = emptyList()
                     aiApiKey = ""
                     aiStatus = "AI 配置已加密保存"
                 }
@@ -264,10 +336,75 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 value = target,
                 onValueChange = { target = it.take(240) },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("近期目标") },
+                label = { Text(if (plannedRest) "休息计划 / 近期目标" else "近期目标") },
                 minLines = 3,
                 maxLines = 5,
                 supportingText = { Text("${target.length}/240") },
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "计划休息",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        text = "总结会按恢复和边界评价，不强行套用工作日目标。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextMuted,
+                    )
+                }
+                Switch(
+                    checked = plannedRest,
+                    onCheckedChange = { plannedRest = it },
+                    enabled = !loading,
+                )
+            }
+            SectionTitle("每周计划")
+            weeklyPlan.forEach { item ->
+                WeeklyPlanRow(
+                    item = item,
+                    enabled = !loading,
+                    onTargetChange = { value ->
+                        weeklyPlan = weeklyPlan.map { day ->
+                            if (day.weekday == item.weekday) day.copy(target = value.take(240)) else day
+                        }
+                    },
+                    onRestChange = { value ->
+                        weeklyPlan = weeklyPlan.map { day ->
+                            if (day.weekday == item.weekday) day.copy(plannedRest = value) else day
+                        }
+                    },
+                )
+            }
+            SectionTitle("自动总结")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedTextField(
+                    value = dailySummaryTime,
+                    onValueChange = { dailySummaryTime = normalizeClockInput(it) },
+                    modifier = Modifier.weight(1f),
+                    enabled = !loading,
+                    label = { Text("日总结时间") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = weeklySummaryTime,
+                    onValueChange = { weeklySummaryTime = normalizeClockInput(it) },
+                    modifier = Modifier.weight(1f),
+                    enabled = !loading,
+                    label = { Text("周总结时间") },
+                    singleLine = true,
+                )
+            }
+            SegmentedControl(
+                options = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日"),
+                selectedIndex = (weeklySummaryWeekday - 1).coerceIn(0, 6),
+                onSelect = { weeklySummaryWeekday = it + 1 },
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -340,6 +477,30 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 label = { Text("模型") },
                 singleLine = true,
             )
+            if (aiModelOptions.isNotEmpty()) {
+                Box {
+                    TextButton(
+                        onClick = { aiModelMenuExpanded = true },
+                        enabled = !aiLocked && !aiLoading,
+                    ) {
+                        Text("选择已获取模型（${aiModelOptions.size}）")
+                    }
+                    DropdownMenu(
+                        expanded = aiModelMenuExpanded,
+                        onDismissRequest = { aiModelMenuExpanded = false },
+                    ) {
+                        aiModelOptions.take(120).forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(option) },
+                                onClick = {
+                                    aiModel = option
+                                    aiModelMenuExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
             OutlinedTextField(
                 value = aiApiKey,
                 onValueChange = { aiApiKey = it.take(4096) },
@@ -354,17 +515,29 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Button(
+                    onClick = { testAiConnection() },
+                    enabled = !aiLocked && !aiLoading,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (aiLoading) "处理中" else "测试并获取模型")
+                }
+                Button(
                     onClick = { saveAiConfig() },
                     enabled = !aiLocked && !aiLoading,
                     colors = PrimaryActionColors(),
                     modifier = Modifier.weight(1f),
                 ) {
-                    Text(if (aiLoading) "处理中" else "保存 AI 配置")
+                    Text("保存 AI 配置")
                 }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 TextButton(
                     onClick = { loadAiConfig() },
                     enabled = !aiLoading,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("读取")
                 }
@@ -397,6 +570,49 @@ private fun SummarySettingsPane(settings: SettingsStore) {
         )
     }
 }
+
+@Composable
+private fun WeeklyPlanRow(
+    item: ReportClient.SummaryPlanDay,
+    enabled: Boolean,
+    onTargetChange: (String) -> Unit,
+    onRestChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            text = weekdayLabel(item.weekday),
+            modifier = Modifier.padding(top = 18.dp),
+            style = MaterialTheme.typography.labelLarge,
+            color = TextMuted,
+        )
+        OutlinedTextField(
+            value = item.target,
+            onValueChange = onTargetChange,
+            modifier = Modifier.weight(1f),
+            enabled = enabled,
+            label = { Text(if (item.plannedRest) "休息计划" else "当天目标") },
+            singleLine = true,
+        )
+        Switch(
+            checked = item.plannedRest,
+            onCheckedChange = onRestChange,
+            enabled = enabled,
+            modifier = Modifier.padding(top = 12.dp),
+        )
+    }
+}
+
+private fun defaultSummaryPlan(): List<ReportClient.SummaryPlanDay> =
+    (1..7).map { weekday -> ReportClient.SummaryPlanDay(weekday, "", false) }
+
+private fun weekdayLabel(weekday: Int): String =
+    listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")[(weekday - 1).coerceIn(0, 6)]
+
+private fun normalizeClockInput(value: String): String =
+    value.filter { it.isDigit() || it == ':' }.take(5)
 
 private fun isAiStatusError(status: String?): Boolean {
     val value = status ?: return false

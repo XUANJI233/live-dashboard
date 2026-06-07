@@ -37,10 +37,12 @@
 ### AI 总结流程
 1. 概览页通过 `GET /api/daily-summary` 或 `GET /api/weekly-summary` 读取服务端缓存总结
 2. 用户点击刷新时，App 使用设备 Bearer token 调用 `POST /api/daily-summary` 或 `POST /api/weekly-summary` 让服务端重新生成
-3. 设置页“总结”分段通过 `GET/POST /api/summary-settings` 读取和保存总结模式（温和/一般/锐评）与近期目标
-4. 设置页“AI 连接”通过 `GET /api/ai-config` 获取服务端 X25519 公钥和 SHA-256 指纹；保存 AI 端点/Key/模型时发送 v2 密封 payload，使用临时 X25519 密钥协商、HKDF-SHA256、AES-256-GCM 加密，并把服务端公钥绑定进 HKDF transcript 和 GCM AAD
-5. 如果服务器已有 `AI_API_URL` / `AI_API_KEY` 环境变量，`POST /api/ai-config` 会返回锁定错误，App 弹窗提示且不覆盖服务器配置
-6. 模式和目标只存在服务器；公开读取总结时不会返回目标文本
+3. 设置页“总结”分段通过 `GET/POST /api/summary-settings` 读取和保存总结模式（温和/一般/锐评）、通用目标、计划休息、每周 7 天目标计划、日总结时间和周总结星期/时间；这些设置存放在服务端，多个管理员设备会读取同一份配置
+4. 设置页“AI 连接”通过 `GET /api/ai-config` 获取服务端 X25519 公钥和 SHA-256 指纹；测试或保存 AI 端点/Key/模型时发送 v2 密封 payload，使用临时 X25519 密钥协商、HKDF-SHA256、AES-256-GCM 加密，并把服务端公钥绑定进 HKDF transcript 和 GCM AAD
+5. “测试并获取模型”调用 `POST /api/ai-config/test`，服务器不落库，只测试聊天端点并尝试从 `/models` 获取模型列表
+6. 如果服务器已有 `AI_API_URL` / `AI_API_KEY` 环境变量，`POST /api/ai-config` 和测试接口会返回锁定错误，App 弹窗提示且不覆盖服务器配置
+7. AI 总结允许安全 Markdown 子集，App 概览页渲染标题、短列表和加粗；链接只显示文本，不做可点击执行
+8. 自动总结由服务端按设置时间生成缓存；Android 端当前没有 AI 总结主动推送订阅通道
 
 ### 健康数据同步流程
 1. 用户在 HealthScreen 授权 Health Connect 权限
@@ -75,8 +77,9 @@
 | POST | `/api/daily-summary` | 管理员刷新日总结 | OverviewScreen |
 | GET | `/api/weekly-summary` | 读取周总结 | OverviewScreen |
 | POST | `/api/weekly-summary` | 管理员刷新周总结 | OverviewScreen |
-| GET/POST | `/api/summary-settings` | 读取/保存总结模式和目标 | SettingsHubScreen |
+| GET/POST | `/api/summary-settings` | 读取/保存总结模式、目标、每周计划和自动总结时间 | SettingsHubScreen |
 | GET/POST | `/api/ai-config` | 读取/加密保存 AI 端点、Key 和模型 | SettingsHubScreen |
+| POST | `/api/ai-config/test` | 加密测试 AI 连接并获取模型列表，不保存 | SettingsHubScreen |
 | GET | `/api/health` | 连接测试 | MainActivity |
 
 ## DataStore 配置键
