@@ -109,7 +109,8 @@ echo "Token: $TOKEN  ← Agent 配置用"
 | `SITE_DESC` | 空 | HTML meta 描述 |
 | `SITE_FAVICON` | 空 | 自定义 favicon 路径 |
 | `CDN_MODE` | `true` | CDN 加速模式 |
-| `EDGE_MODE` | `false` | 边缘函数/CDN 模式（跳过源站 PoW/JA4） |
+| `EDGE_MODE` | `false` | 边缘函数/CDN 模式；只有带有效边缘 HMAC 的请求才会跳过源站 PoW/JA4 |
+| `REQUIRE_EDGE` | `false` | API 源站只接受边缘函数签名请求（公网源站建议开启；WS 仍由自身 token 校验） |
 | `NSFW_FILTER_DISABLED` | `false` | 禁用 NSFW 过滤 |
 | `POW_DISABLED` | `false` | 禁用 PoW 验证（不推荐） |
 | `TLS_CHECK_DISABLED` | `false` | 禁用 TLS 检查（不推荐） |

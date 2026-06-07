@@ -210,6 +210,10 @@ export default {
       // 其他 — 穿透
       return passthroughSigned(request, origin, clientIp, secret, cors);
     } catch {
+      ignoreRequestBody(request);
+      if (isProtectedEdgeEndpoint(pathname, method)) {
+        return jsonResponse({ error: "边缘验证暂时不可用" }, 503, cors);
+      }
       return passthroughSigned(request, origin, clientIp, secret, cors);
     }
   },
@@ -681,6 +685,13 @@ function hasEndpointRateLimit(p, method) {
     (method === "POST" && isViewerWriteEndpoint(p)) ||
     (method === "GET" && isAuthEndpoint(p)) ||
     p === "/api/ws";
+}
+
+function isProtectedEdgeEndpoint(p, method) {
+  return isEdgeAuthFlow(p, method) ||
+    p === "/api/ws" ||
+    (method === "POST" && isViewerWriteEndpoint(p)) ||
+    (method === "GET" && isAuthEndpoint(p));
 }
 
 function usesEdgeReadBudget(pathname, method, request) {

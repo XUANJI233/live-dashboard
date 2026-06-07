@@ -4,11 +4,13 @@ const EDGE_MODE = /^(true|yes)$/i.test(process.env.EDGE_MODE || "");
 
 import { issueViewerToken, issuePowChallenge, verifyPowSolution, getTlsFingerprint, isLocalIp, edgeViewerIdentity } from "../services/viewer-auth";
 import { noStore } from "../services/cdn";
+import { hmacTitle } from "../db";
 
 // GET /api/pow/challenge — issue a PoW challenge
 export function handlePowChallenge(req: Request, ipHint: string): Response {
-  // In edge mode, PoW is handled by the edge function
-  if (EDGE_MODE) {
+  // In edge mode, skip origin PoW only for HMAC-signed edge requests.
+  // Direct-to-origin traffic must still pass the origin PoW path.
+  if (EDGE_MODE && isEdgeInternalRequest(req)) {
     return noStore(Response.json({ skip: true, message: "Edge mode - PoW handled at edge" }));
   }
   // Skip PoW for local IPs and unknown IPs (PoW is IP-bound, can't work without valid IP)
@@ -33,9 +35,12 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
 
   const ipKnown = ipHint && ipHint !== "unknown";
 
-  // JA4 check: reject non-browser TLS fingerprints (non-local, non-edge only)
-  // In CDN/edge mode TLS is terminated at the edge, so JA4 isn't available — skip.
-  if (!TLS_CHECK_DISABLED && !EDGE_MODE && ipKnown && !isLocalIp(ipHint)) {
+  const edgeTrusted = isEdgeInternalRequest(req) || edgeViewerIdentity(req) !== null;
+
+  // JA4 check: reject non-browser TLS fingerprints (non-local, non-edge only).
+  // In CDN/edge mode TLS is terminated at the edge, but only HMAC-signed edge
+  // requests may skip this origin-side check.
+  if (!TLS_CHECK_DISABLED && !(EDGE_MODE && edgeTrusted) && ipKnown && !isLocalIp(ipHint)) {
     const tlsFp = getTlsFingerprint(req);
     if (tlsFp) {
       const knownBotFps = ["", "no-tls"];
@@ -45,10 +50,9 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
     }
   }
 
-  // PoW verification: required for non-local IPs with known IP
-  // Skip PoW in edge mode or if edge already verified (HMAC-signed)
-  const edgeVerified = edgeViewerIdentity(req) !== null;
-  if (!POW_DISABLED && !EDGE_MODE && !edgeVerified && ipKnown && !isLocalIp(ipHint)) {
+  // PoW verification: required for non-local IPs with known IP.
+  // Skip PoW only when the request is actually signed by the edge.
+  if (!POW_DISABLED && !(EDGE_MODE && edgeTrusted) && ipKnown && !isLocalIp(ipHint)) {
     let pow_challenge = body.pow_challenge;
     let pow_nonce = body.pow_nonce;
     let pow_last_hash = "";
@@ -78,4 +82,9 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
     viewer_id: issued.viewerId,
     expires_in: 3600,
   }));
+}
+
+function isEdgeInternalRequest(req: Request): boolean {
+  const sig = req.headers.get("x-edge-internal");
+  return !!sig && sig === hmacTitle("edge-internal");
 }

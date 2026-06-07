@@ -61,13 +61,23 @@ ESA 不支持环境变量，配置存在 EdgeKV 里。
 
 ## 源站要改什么
 
-不用改。源站自动识别边缘请求，`HASH_SECRET` 保持一致就行。
+`HASH_SECRET` 必须和 EdgeKV 里的 `secret` 保持一致。源站会自动识别带有效 HMAC 的边缘请求；即使开启 `EDGE_MODE=true`，未签名的直连源站请求仍会走源站 PoW/JA4 校验。
+
+如果源站公网可达，建议同时开启：
+
+```
+EDGE_MODE=true
+REQUIRE_EDGE=true
+```
+
+`REQUIRE_EDGE` 会拒绝没有 `X-Edge-Internal` HMAC 的普通 API 直连请求；`/api/ws` 仍由设备/访客 token、连接数和重连限流保护。
 
 ## 安全
 
 - 边缘函数和服务器之间用 HMAC 签名验证，伪造的请求会被拒绝
 - `HASH_SECRET` 存在 EdgeKV 里，不在代码中
 - 内部请求用 HMAC 签名防循环，外部无法伪造
+- PoW、访客 token、访客写入和 WS 等保护路径在边缘异常时 fail-closed，不会签名回源绕过源站保护
 
 ## 限流
 
