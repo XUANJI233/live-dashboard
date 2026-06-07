@@ -38,7 +38,7 @@
 1. 概览页通过 `GET /api/daily-summary` 或 `GET /api/weekly-summary` 读取服务端缓存总结
 2. 用户点击刷新时，App 使用设备 Bearer token 调用 `POST /api/daily-summary` 或 `POST /api/weekly-summary` 让服务端重新生成
 3. 设置页“总结”分段通过 `GET/POST /api/summary-settings` 读取和保存总结模式（温和/一般/锐评）与近期目标
-4. 设置页“AI 连接”通过 `GET /api/ai-config` 获取服务端 X25519 公钥；保存 AI 端点/Key/模型时使用临时 X25519 密钥协商、HKDF-SHA256、AES-256-GCM 加密，并用设备 token 做 HMAC-SHA256 签名
+4. 设置页“AI 连接”通过 `GET /api/ai-config` 获取服务端 X25519 公钥和 SHA-256 指纹；保存 AI 端点/Key/模型时发送 v2 密封 payload，使用临时 X25519 密钥协商、HKDF-SHA256、AES-256-GCM 加密，并把服务端公钥绑定进 HKDF transcript 和 GCM AAD
 5. 如果服务器已有 `AI_API_URL` / `AI_API_KEY` 环境变量，`POST /api/ai-config` 会返回锁定错误，App 弹窗提示且不覆盖服务器配置
 6. 模式和目标只存在服务器；公开读取总结时不会返回目标文本
 

@@ -14,6 +14,7 @@ import com.monika.dashboard.data.VisitorMessage
 import java.net.URLEncoder
 import java.net.URI
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.Instant
 import java.util.TimeZone
@@ -386,6 +387,7 @@ class ReportClient(
         val message: String?,
         val encryptionAlg: String?,
         val encryptionPublicKey: String?,
+        val encryptionPublicKeySha256: String?,
     )
 
     data class TimelineSegment(
@@ -535,6 +537,13 @@ class ReportClient(
             }
             val serverPublicKey = current.encryptionPublicKey
                 ?: return Result.failure(IOException("AI_CONFIG_PUBLIC_KEY_MISSING"))
+            if (current.encryptionAlg != AI_CONFIG_ENCRYPTION_ALG) {
+                return Result.failure(IOException("AI_CONFIG_ALG_UNSUPPORTED"))
+            }
+            current.encryptionPublicKeySha256?.let { expected ->
+                val actual = sha256Base64Url(base64UrlDecode(serverPublicKey))
+                if (actual != expected) return Result.failure(IOException("AI_CONFIG_PUBLIC_KEY_HASH_MISMATCH"))
+            }
             val body = encryptedAiConfigBody(apiUrl, apiKey, model, serverPublicKey)
             val request = Request.Builder()
                 .url("${serverUrl.trimEnd('/')}/api/ai-config")
@@ -703,6 +712,7 @@ class ReportClient(
             message = json.optString("message").takeIf { value -> value.isNotBlank() && value != "null" },
             encryptionAlg = encryption?.optString("alg")?.takeIf { value -> value.isNotBlank() },
             encryptionPublicKey = encryption?.optString("public_key")?.takeIf { value -> value.isNotBlank() },
+            encryptionPublicKeySha256 = encryption?.optString("public_key_sha256")?.takeIf { value -> value.isNotBlank() },
         )
     }
 
@@ -720,10 +730,14 @@ class ReportClient(
 
         val nonce = ByteArray(AES_GCM_NONCE_SIZE)
         random.nextBytes(nonce)
+        val ts = System.currentTimeMillis() / 1000L
+        val ephemeralPublicKey = base64UrlEncode(publicKeyBytes)
+        val nonceText = base64UrlEncode(nonce)
+        val signedMetadata = "2.$ts.$serverPublicKey.$ephemeralPublicKey.$nonceText"
         val aesKey = hkdfSha256(
             ikm = shared,
             salt = nonce,
-            info = "live-dashboard-ai-config-x25519-v1".toByteArray(StandardCharsets.UTF_8),
+            info = "live-dashboard-ai-config-x25519-v2.$serverPublicKey.$ephemeralPublicKey".toByteArray(StandardCharsets.UTF_8),
             length = AES_256_KEY_SIZE,
         )
         val plaintext = JSONObject().apply {
@@ -732,21 +746,25 @@ class ReportClient(
             put("model", model.trim().ifBlank { "gpt-4o-mini" })
         }.toString().toByteArray(StandardCharsets.UTF_8)
 
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(128, nonce))
-        val ciphertext = cipher.doFinal(plaintext)
-
-        val ts = System.currentTimeMillis() / 1000L
-        val ephemeralPublicKey = base64UrlEncode(publicKeyBytes)
-        val nonceText = base64UrlEncode(nonce)
+        val ciphertext = try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(128, nonce))
+            cipher.updateAAD(signedMetadata.toByteArray(StandardCharsets.UTF_8))
+            cipher.doFinal(plaintext)
+        } finally {
+            plaintext.fill(0)
+            shared.fill(0)
+            aesKey.fill(0)
+        }
         val ciphertextText = base64UrlEncode(ciphertext)
-        val signed = "1.$ts.$ephemeralPublicKey.$nonceText.$ciphertextText"
+        val signed = "$signedMetadata.$ciphertextText"
         val signature = hmacBase64Url(token.toByteArray(StandardCharsets.UTF_8), signed.toByteArray(StandardCharsets.UTF_8))
 
         return JSONObject().apply {
-            put("v", 1)
+            put("v", 2)
             put("alg", AI_CONFIG_ENCRYPTION_ALG)
             put("ts", ts)
+            put("server_public_key", serverPublicKey)
             put("ephemeral_public_key", ephemeralPublicKey)
             put("nonce", nonceText)
             put("ciphertext", ciphertextText)
@@ -793,6 +811,9 @@ private fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
 
 private fun hmacBase64Url(key: ByteArray, data: ByteArray): String =
     base64UrlEncode(hmacSha256(key, data))
+
+private fun sha256Base64Url(bytes: ByteArray): String =
+    base64UrlEncode(MessageDigest.getInstance("SHA-256").digest(bytes))
 
 private fun hkdfSha256(ikm: ByteArray, salt: ByteArray, info: ByteArray, length: Int): ByteArray {
     val prk = hmacSha256(salt, ikm)
