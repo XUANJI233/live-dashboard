@@ -9,6 +9,7 @@ import {
   upsertWeeklySummary,
 } from "../db";
 import { buildTimelineSegments } from "../routes/timeline";
+import { getAiRuntimeConfig } from "./ai-config";
 import { safeTimezoneOffset, utcRangeForLocalDate } from "./cdn";
 
 /**
@@ -20,9 +21,6 @@ import { safeTimezoneOffset, utcRangeForLocalDate } from "./cdn";
  *   AI_MODEL     — Model name (default: gpt-4o-mini)
  */
 
-const AI_API_URL = process.env.AI_API_URL || "";
-const AI_API_KEY = process.env.AI_API_KEY || "";
-const AI_MODEL = process.env.AI_MODEL || "gpt-4o-mini";
 const SUMMARY_SETTINGS_KEY = "ai_summary_settings";
 
 export type SummaryMode = "gentle" | "normal" | "sharp";
@@ -232,7 +230,8 @@ async function generateSummaryText(input: {
   segments: TimelineSegment[];
   settings: SummarySettings;
 }): Promise<Pick<SummaryGenerationResult, "ok" | "skipped" | "reason" | "summary">> {
-  if (!AI_API_URL || !AI_API_KEY) {
+  const aiConfig = await getAiRuntimeConfig();
+  if (!aiConfig) {
     return { ok: false, skipped: true, reason: "AI not configured" };
   }
   const usefulSegments = input.segments.filter((segment) => segment.duration_seconds > 0);
@@ -243,14 +242,14 @@ async function generateSummaryText(input: {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 30_000);
   try {
-    const res = await fetch(AI_API_URL, {
+    const res = await fetch(aiConfig.apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${AI_API_KEY}`,
+        Authorization: `Bearer ${aiConfig.apiKey}`,
       },
       body: JSON.stringify({
-        model: AI_MODEL,
+        model: aiConfig.model,
         messages: [
           { role: "system", content: buildSystemPrompt(input.kind, input.settings) },
           { role: "user", content: buildUserPrompt(input.kind, input.periodLabel, usefulSegments) },

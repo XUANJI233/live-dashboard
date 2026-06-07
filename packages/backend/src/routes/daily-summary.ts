@@ -1,6 +1,7 @@
 import { authenticateToken } from "../middleware/auth";
 import { getDailySummary, getWeeklySummary } from "../db";
 import { noStore, safeTimezoneOffset, withCdnHeaders } from "../services/cdn";
+import { describeAiConfig, saveEncryptedAiConfigFromDevice } from "../services/ai-config";
 import {
   addDays,
   generateDailySummary,
@@ -123,10 +124,41 @@ export async function handleSummarySettingsUpdate(req: Request): Promise<Respons
   return noStore(Response.json(settings), ["summary-settings"]);
 }
 
+export async function handleAiConfig(req: Request): Promise<Response> {
+  const unauthorized = requireAdmin(req);
+  if (unauthorized) return unauthorized;
+  return noStore(Response.json(await describeAiConfig()), ["ai-config"]);
+}
+
+export async function handleAiConfigUpdate(req: Request): Promise<Response> {
+  const unauthorized = requireAdmin(req);
+  if (unauthorized) return unauthorized;
+  const token = extractBearerToken(req);
+  const body = await readJsonObject(req);
+  try {
+    const config = await saveEncryptedAiConfigFromDevice(body, token);
+    return noStore(Response.json(config), ["ai-config"]);
+  } catch (e) {
+    const err = e as Error & { status?: number; code?: string };
+    return noStore(
+      Response.json({
+        error: err.message || "AI config update failed",
+        code: err.code || "AI_CONFIG_UPDATE_FAILED",
+      }, { status: err.status || 400 }),
+      ["ai-config"],
+    );
+  }
+}
+
 function requireAdmin(req: Request): Response | null {
   const device = authenticateToken(req.headers.get("authorization"));
   if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
   return null;
+}
+
+function extractBearerToken(req: Request): string {
+  const match = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || "";
 }
 
 async function readJsonObject(req: Request): Promise<Record<string, unknown>> {

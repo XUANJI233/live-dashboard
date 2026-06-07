@@ -12,6 +12,8 @@ import { authenticateToken } from "./middleware/auth";
 import {
   handleDailySummary,
   handleDailySummaryRefresh,
+  handleAiConfig,
+  handleAiConfigUpdate,
   handleSummarySettings,
   handleSummarySettingsUpdate,
   handleWeeklySummary,
@@ -248,6 +250,10 @@ const server = Bun.serve<WsData>({
         response = handleSummarySettings(req);
       } else if (pathname === "/api/summary-settings" && req.method === "POST") {
         response = await handleSummarySettingsUpdate(req);
+      } else if (pathname === "/api/ai-config" && req.method === "GET") {
+        response = await handleAiConfig(req);
+      } else if (pathname === "/api/ai-config" && req.method === "POST") {
+        response = await handleAiConfigUpdate(req);
       } else if (pathname === "/api/location" && req.method === "GET") {
         response = handleLocationQuery(url, req);
       } else if (pathname === "/api/messages" && req.method === "GET") {

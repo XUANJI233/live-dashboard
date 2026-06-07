@@ -322,7 +322,7 @@ optimizeDatabase(true);
 
 // ── HMAC hash secret validation ──
 
-const HASH_SECRET = process.env.HASH_SECRET || "";
+export const HASH_SECRET = process.env.HASH_SECRET || "";
 if (!HASH_SECRET) {
   console.error("[启动失败] HASH_SECRET 未设置");
   console.error("[启动失败] 这是必要的安全密钥，请在 .env 中配置");

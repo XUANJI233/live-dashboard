@@ -120,7 +120,7 @@ echo "Token: $TOKEN  ← Agent 配置用"
 | `AI_API_KEY` | 空 | AI API 密钥 |
 | `AI_MODEL` | `gpt-4o-mini` | AI 模型名称 |
 
-AI 总结支持日总结和周总结。`GET /api/daily-summary`、`GET /api/weekly-summary` 可公开读取缓存结果；`POST /api/daily-summary`、`POST /api/weekly-summary` 会强制重新生成，`GET/POST /api/summary-settings` 用于读取和保存总结模式（温和/一般/锐评）与近期目标，这些管理接口都需要 `DEVICE_TOKEN_*` Bearer token。
+AI 总结支持日总结和周总结。`GET /api/daily-summary`、`GET /api/weekly-summary` 可公开读取缓存结果；`POST /api/daily-summary`、`POST /api/weekly-summary` 会强制重新生成，`GET/POST /api/summary-settings` 用于读取和保存总结模式（温和/一般/锐评）与近期目标，这些管理接口都需要 `DEVICE_TOKEN_*` Bearer token。`AI_API_URL` / `AI_API_KEY` 环境变量优先级最高；如果服务器没有设置环境变量，Android App 可通过 `GET/POST /api/ai-config` 配置 AI 端点、Key 和模型。AI Key 上传使用服务端 X25519 公钥协商、HKDF-SHA256、AES-256-GCM 加密，并用设备 token 做 HMAC-SHA256 签名；如果服务器已有环境变量，接口会返回锁定提示并拒绝覆盖。
 
 ### 边缘函数配置
 
