@@ -169,6 +169,122 @@ describe("ai-config", () => {
     expect(fresher.sync_status).toBe("applied");
     expect(fresher.target).toBe("ship the draft");
     expect(fresher.weekly_plan[0]?.target).toBe("ship");
+
+    const supervised = updateSummarySettings({
+      target: "ship the draft",
+      supervision_enabled: true,
+      supervision_check_mode: "triggered",
+      supervision_check_interval_minutes: 5,
+      supervision_blacklist_minutes: 99,
+      supervision_target_min_minutes: 0,
+      supervision_vibrate: false,
+      supervision_skip_watch_sleep: false,
+      supervision_lsp_freeze: true,
+      client_updated_at: "2026-06-07T12:00:00.000Z",
+    });
+    expect(supervised.sync_status).toBe("applied");
+    expect(supervised.supervision_enabled).toBe(true);
+    expect(supervised.supervision_check_mode).toBe("triggered");
+    expect(supervised.supervision_check_interval_minutes).toBe(30);
+    expect(supervised.supervision_blacklist_minutes).toBe(55);
+    expect(supervised.supervision_target_min_minutes).toBe(1);
+    expect(supervised.supervision_vibrate).toBe(false);
+    expect(supervised.supervision_skip_watch_sleep).toBe(false);
+    expect(supervised.supervision_lsp_freeze).toBe(true);
+  });
+
+  test("preserves bounded LSPosed frozen package records in device extras", async () => {
+    const { processReportPayload } = await import("../src/services/device-status-handler");
+    const { getAllDeviceStates } = await import("../src/db");
+    const device = {
+      device_id: "android-admin",
+      device_name: "Android Admin",
+      platform: "android" as const,
+    };
+
+    const result = processReportPayload({
+      app_id: "com.example.reader",
+      window_title: "reading",
+      extra: {
+        device: {
+          capability_mode: "lsposed",
+          frozen_packages: [
+            {
+              package_name: "com.example.shortvideo",
+              app_name: "Short Video",
+              frozen_at: "2026-06-07T12:00:00.000Z",
+              until: "2026-06-07T12:10:00.000Z",
+              reason: "偏离写作目标",
+              ignored_payload: { nested: true },
+            },
+          ],
+        },
+      },
+    }, device);
+
+    expect(result?.extra.device).toEqual({
+      capability_mode: "lsposed",
+      frozen_packages: [{
+        package_name: "com.example.shortvideo",
+        app_name: "Short Video",
+        frozen_at: "2026-06-07T12:00:00.000Z",
+        until: "2026-06-07T12:10:00.000Z",
+        reason: "偏离写作目标",
+      }],
+    });
+    const row = (getAllDeviceStates.all() as { device_id: string; extra: string }[])
+      .find((item) => item.device_id === "android-admin");
+    expect(row?.extra).toContain("frozen_packages");
+    expect(row?.extra).not.toContain("ignored_payload");
+  });
+
+  test("uses Vercel DeepSeek provider for DeepSeek endpoints", async () => {
+    const { requestAiChatCompletion } = await import("../src/services/ai-config");
+    const originalFetch = globalThis.fetch;
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+      requested.push(url);
+      expect(url).toBe("https://api.deepseek.com/v1/chat/completions");
+      const body = JSON.parse(String(init?.body || "{}"));
+      expect(body.model).toBe("deepseek-chat");
+      return Response.json({
+        id: "deepseek-test",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "deepseek-chat",
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: "OK" },
+          finish_reason: "stop",
+        }],
+        usage: {
+          prompt_tokens: 16,
+          completion_tokens: 1,
+          total_tokens: 17,
+          prompt_cache_hit_tokens: 12,
+          prompt_cache_miss_tokens: 4,
+        },
+      });
+    }) as typeof fetch;
+    try {
+      const text = await requestAiChatCompletion({
+        apiUrl: "https://api.deepseek.com/v1/chat/completions",
+        apiKey: `deepseek-key-${randomHex(8)}`,
+        model: "deepseek-chat",
+      }, {
+        messages: [
+          { role: "system", content: "只返回 OK" },
+          { role: "user", content: "ping" },
+        ],
+        maxTokens: 8,
+        temperature: 0,
+      });
+      expect(text).toBe("OK");
+      expect(requested).toEqual(["https://api.deepseek.com/v1/chat/completions"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

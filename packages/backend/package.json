@@ -19,6 +19,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@ai-sdk/deepseek": "^2.0.35",
     "@ai-sdk/openai-compatible": "^2.0.48",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",

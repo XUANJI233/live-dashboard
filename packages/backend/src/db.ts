@@ -87,7 +87,7 @@ db.run(`
 
 // ── Schema migration: add display_title + extra columns ──
 
-const KNOWN_TABLES = new Set(["activities", "device_states", "daily_summaries", "weekly_summaries"]);
+const KNOWN_TABLES = new Set(["activities", "device_states", "device_messages", "daily_summaries", "weekly_summaries"]);
 
 function columnExists(table: string, column: string): boolean {
   if (!KNOWN_TABLES.has(table)) {
@@ -215,6 +215,10 @@ if (oldDeviceMessagePk) {
     `);
     db.run("DROP TABLE device_messages_old");
   })();
+}
+
+if (!columnExists("device_messages", "payload")) {
+  db.run("ALTER TABLE device_messages ADD COLUMN payload TEXT NOT NULL DEFAULT ''");
 }
 
 db.run(`

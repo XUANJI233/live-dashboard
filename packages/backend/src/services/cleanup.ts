@@ -1,5 +1,6 @@
 import { cleanupExpiredMessages, cleanupOldActivities, cleanupOldLocations, cleanupOldSummaries, cleanupOldWeeklySummaries, markOfflineDevices, optimizeDatabase } from "../db";
 import { generateDailySummary, generateWeeklySummary, getSummarySettings, isoWeekday } from "./daily-summary-gen";
+import { runSupervisionTick } from "./supervision";
 
 // Cleanup old activities + old summaries every hour
 const hourlyCleanupTimer = setInterval(() => {
@@ -91,4 +92,9 @@ const summaryTimer = setInterval(() => {
 }, 60_000);
 summaryTimer.unref();
 
-console.log("[cleanup] Scheduled: hourly cleanup, 60s offline check, configurable AI summaries");
+const supervisionTimer = setInterval(() => {
+  runSupervisionTick().catch((e) => console.error("[cleanup] AI supervision failed:", e));
+}, 300_000);
+supervisionTimer.unref();
+
+console.log("[cleanup] Scheduled: hourly cleanup, 60s offline check, configurable AI summaries, AI supervision");

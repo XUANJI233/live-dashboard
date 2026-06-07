@@ -1,5 +1,6 @@
 import { HASH_SECRET, metaGet, metaSet } from "../db";
 import { x25519 } from "@noble/curves/ed25519.js";
+import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateText } from "ai";
 
@@ -226,18 +227,13 @@ export async function requestAiChatCompletion(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs ?? 30_000);
   try {
-    const provider = createOpenAICompatible({
-      name: "configured-openai-compatible",
-      apiKey: config.apiKey,
-      baseURL: baseUrlFromAiApiUrl(config.apiUrl),
-    });
     const system = options.messages
       .filter((message) => message.role === "system")
       .map((message) => message.content)
       .join("\n\n") || undefined;
     const messages = options.messages.filter((message) => message.role !== "system");
     const result = await generateText({
-      model: provider.chatModel(config.model),
+      model: languageModelForConfig(config),
       ...(system ? { system } : {}),
       messages,
       maxOutputTokens: options.maxTokens,
@@ -245,6 +241,7 @@ export async function requestAiChatCompletion(
       abortSignal: controller.signal,
       maxRetries: 1,
     });
+    logAiCacheUsage(config.model, result.usage, result.providerMetadata);
     const text = result.text.trim();
     if (!text) {
       throw Object.assign(new Error("Empty AI response"), { code: "AI_CHAT_EMPTY" });
@@ -258,6 +255,78 @@ export async function requestAiChatCompletion(
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+function languageModelForConfig(config: Pick<AiRuntimeConfig, "apiUrl" | "apiKey" | "model">) {
+  const baseURL = baseUrlFromAiApiUrl(config.apiUrl);
+  if (isDeepSeekEndpoint(config.apiUrl)) {
+    const provider = createDeepSeek({
+      apiKey: config.apiKey,
+      baseURL,
+    });
+    return provider.chat(config.model as never);
+  }
+  const provider = createOpenAICompatible({
+    name: "configured-openai-compatible",
+    apiKey: config.apiKey,
+    baseURL,
+  });
+  return provider.chatModel(config.model);
+}
+
+function isDeepSeekEndpoint(apiUrl: string): boolean {
+  try {
+    const host = new URL(apiUrl).hostname.toLowerCase();
+    return host === "api.deepseek.com" || host.endsWith(".deepseek.com");
+  } catch {
+    return false;
+  }
+}
+
+function logAiCacheUsage(model: string, usage: unknown, providerMetadata: unknown): void {
+  const source = usage && typeof usage === "object" ? usage as Record<string, unknown> : {};
+  const details = source.inputTokenDetails && typeof source.inputTokenDetails === "object"
+    ? source.inputTokenDetails as Record<string, unknown>
+    : {};
+  const raw = source.raw && typeof source.raw === "object" ? source.raw as Record<string, unknown> : {};
+  const metadata = providerMetadata && typeof providerMetadata === "object"
+    ? providerMetadata as Record<string, unknown>
+    : {};
+  const deepseek = metadata.deepseek && typeof metadata.deepseek === "object"
+    ? metadata.deepseek as Record<string, unknown>
+    : {};
+  const cacheReadTokens =
+    numberValue(details.cacheReadTokens) ??
+    numberValue(source.cachedInputTokens) ??
+    numberValue(deepseek.promptCacheHitTokens) ??
+    numberValue(raw.prompt_cache_hit_tokens) ??
+    nestedNumber(raw, ["prompt_tokens_details", "cached_tokens"]);
+  const cacheWriteTokens = numberValue(details.cacheWriteTokens);
+  const cacheMissTokens =
+    numberValue(details.noCacheTokens) ??
+    numberValue(deepseek.promptCacheMissTokens) ??
+    numberValue(raw.prompt_cache_miss_tokens);
+  if (cacheReadTokens == null && cacheWriteTokens == null && cacheMissTokens == null) return;
+  const parts = [
+    `model=${model}`,
+    cacheReadTokens != null ? `cache_read=${cacheReadTokens}` : "",
+    cacheWriteTokens != null ? `cache_write=${cacheWriteTokens}` : "",
+    cacheMissTokens != null ? `cache_miss=${cacheMissTokens}` : "",
+  ].filter(Boolean);
+  console.log(`[ai-cache] ${parts.join(" ")}`);
+}
+
+function nestedNumber(source: Record<string, unknown>, path: string[]): number | undefined {
+  let current: unknown = source;
+  for (const key of path) {
+    if (!current || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return numberValue(current);
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 async function decryptDevicePayload(input: unknown, deviceToken: string): Promise<StoredAiConfig> {

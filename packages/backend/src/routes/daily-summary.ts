@@ -2,6 +2,7 @@ import { authenticateToken } from "../middleware/auth";
 import { getDailySummary, getWeeklySummary } from "../db";
 import { noStore, safeTimezoneOffset, withCdnHeaders } from "../services/cdn";
 import { describeAiConfig, saveEncryptedAiConfigFromDevice, testEncryptedAiConfigFromDevice } from "../services/ai-config";
+import { refreshSupervisionRules } from "../services/supervision";
 import {
   addDays,
   generateDailySummary,
@@ -120,7 +121,11 @@ export async function handleSummarySettingsUpdate(req: Request): Promise<Respons
   const unauthorized = requireAdmin(req);
   if (unauthorized) return unauthorized;
   const body = await readJsonObject(req);
-  const settings = updateSummarySettings(body);
+  let settings = updateSummarySettings(body);
+  if (settings.sync_status === "applied" && settings.supervision_enabled) {
+    settings = await refreshSupervisionRules(settings);
+    settings.sync_status = "applied";
+  }
   return noStore(Response.json(settings), ["summary-settings"]);
 }
 

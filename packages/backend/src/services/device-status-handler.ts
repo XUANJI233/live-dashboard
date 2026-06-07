@@ -138,6 +138,8 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (deviceKind) deviceExtra.device_kind = deviceKind;
       const windowMode = cleanString(deviceBody.window_mode, MAX_SHORT_LENGTH);
       if (windowMode) deviceExtra.window_mode = windowMode;
+      const frozenPackages = cleanFrozenPackages(deviceBody.frozen_packages);
+      if (frozenPackages.length > 0) deviceExtra.frozen_packages = frozenPackages;
       if (Object.keys(deviceExtra).length > 0) extra.device = deviceExtra;
     }
 
@@ -313,4 +315,29 @@ function mergeStableDeviceExtra(deviceId: string, extra: Record<string, unknown>
     ? extra.device as Record<string, unknown>
     : {};
   extra.device = { ...previousDevice, ...currentDevice };
+}
+
+function cleanFrozenPackages(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  const out: Record<string, unknown>[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const body = item as Record<string, unknown>;
+    const packageName = cleanString(body.package_name ?? body.packageName, MAX_SHORT_LENGTH);
+    if (!packageName) continue;
+    const row: Record<string, unknown> = { package_name: packageName };
+    const appName = cleanString(body.app_name ?? body.appName, MAX_SHORT_LENGTH);
+    if (appName) row.app_name = appName;
+    const frozenAt = cleanTimestamp(body.frozen_at ?? body.frozenAt);
+    if (frozenAt) row.frozen_at = frozenAt;
+    const until = cleanTimestamp(body.until);
+    if (until) row.until = until;
+    const mode = cleanString(body.mode, MAX_SHORT_LENGTH);
+    if (mode) row.mode = mode;
+    const reason = cleanString(body.reason, MAX_MEDIUM_LENGTH);
+    if (reason) row.reason = reason;
+    out.push(row);
+    if (out.length >= 8) break;
+  }
+  return out;
 }

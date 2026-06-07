@@ -16,6 +16,7 @@ export interface WsData {
 
 const MAX_TEXT_LENGTH = 500;
 const MAX_MESSAGE_JSON_BYTES = 4096;
+const MAX_MESSAGE_PAYLOAD_BYTES = 2048;
 const MESSAGE_TTL_MINUTES = 30;
 const VIEWER_RATE_LIMIT = 10;
 const VIEWER_API_RATE_LIMIT = 60;
@@ -95,12 +96,12 @@ const rateCleanupTimer = setInterval(() => {
 rateCleanupTimer.unref();
 
 const insertQueuedMessage = db.prepare(`
-  INSERT INTO device_messages (id, device_id, viewer_id, text, expires_at)
-  VALUES (?, ?, ?, ?, datetime('now', ?))
+  INSERT INTO device_messages (id, device_id, viewer_id, text, payload, expires_at)
+  VALUES (?, ?, ?, ?, ?, datetime('now', ?))
 `);
 
 const getPendingMessages = db.prepare(`
-  SELECT dm.id, dm.viewer_id, dm.text, dm.created_at,
+  SELECT dm.id, dm.viewer_id, dm.text, dm.payload, dm.created_at,
     COALESCE(vm.viewer_name, '') AS viewer_name,
     COALESCE(vm.kind, 'private') AS kind
   FROM device_messages dm
@@ -350,6 +351,30 @@ function cleanMessageId(value: unknown): string {
   return /^[a-zA-Z0-9_.:-]{1,80}$/.test(cleaned) ? cleaned : "";
 }
 
+function serializedMessagePayload(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  try {
+    const text = JSON.stringify(value);
+    if (new TextEncoder().encode(text).byteLength > MAX_MESSAGE_PAYLOAD_BYTES) return "";
+    return text;
+  } catch {
+    return "";
+  }
+}
+
+function parseMessagePayload(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  if (new TextEncoder().encode(value).byteLength > MAX_MESSAGE_PAYLOAD_BYTES) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 async function readMessageJson(req: Request): Promise<{ ok: true; body: any } | { ok: false; response: Response }> {
   const length = Number(req.headers.get("content-length") || 0);
   if (Number.isFinite(length) && length > MAX_MESSAGE_JSON_BYTES) {
@@ -465,13 +490,14 @@ function recordMessage(
   insertVisitorMessage.run(id, deviceId, viewerId, viewerName, kind, direction, text, createdAt);
 }
 
-function queueMessage(deviceId: string, viewerId: string, text: string, messageId: string) {
+function queueMessage(deviceId: string, viewerId: string, text: string, messageId: string, payloadText = "") {
   try {
     insertQueuedMessage.run(
       messageId,
       deviceId,
       viewerId,
       text,
+      payloadText,
       `+${MESSAGE_TTL_MINUTES} minutes`
     );
   } catch {
@@ -509,10 +535,12 @@ function deliverViewerMessage(
   text: string,
   messageId: string,
   createdAt: string,
+  payload: Record<string, unknown> | null = null,
 ) {
+  const payloadText = serializedMessagePayload(payload);
   const deviceWs = deviceSockets.get(targetDeviceId);
   if (deviceWs) {
-    send(deviceWs, {
+    const message: Record<string, unknown> = {
       type: "viewer_message",
       message_id: messageId,
       viewer_id: viewerId,
@@ -520,11 +548,36 @@ function deliverViewerMessage(
       kind,
       text,
       created_at: createdAt,
-    });
+    };
+    const parsedPayload = parseMessagePayload(payloadText);
+    if (parsedPayload) message.payload = parsedPayload;
+    send(deviceWs, message);
     return "sent";
   }
-  queueMessage(targetDeviceId, viewerId, text, messageId);
+  queueMessage(targetDeviceId, viewerId, text, messageId, payloadText);
   return "queued";
+}
+
+export function sendSupervisorMessageToDevices(
+  text: string,
+  payload: Record<string, unknown> | null = null,
+): { sent: number; queued: number; targets: number } {
+  const clean = cleanText(text);
+  if (!clean) return { sent: 0, queued: 0, targets: 0 };
+
+  const messageId = `supervision_${crypto.randomUUID()}`;
+  const createdAt = new Date().toISOString();
+  const targets = messageTargets();
+  recordMessage(messageId, "__broadcast__", "__supervisor__", "监督模式", "private", "viewer", clean, createdAt);
+
+  let sent = 0;
+  let queued = 0;
+  for (const deviceId of targets) {
+    const status = deliverViewerMessage(deviceId, "__supervisor__", "监督模式", "private", clean, messageId, createdAt, payload);
+    if (status === "sent") sent += 1;
+    else queued += 1;
+  }
+  return { sent, queued, targets: targets.length };
 }
 
 function deliverQueuedMessages(deviceId: string, ws: ServerWebSocket<WsData>) {
@@ -534,6 +587,7 @@ function deliverQueuedMessages(deviceId: string, ws: ServerWebSocket<WsData>) {
     viewer_name: string;
     kind: string;
     text: string;
+    payload: string;
     created_at: string;
   }[];
   if (rows.length === 0) return;
@@ -544,7 +598,7 @@ function deliverQueuedMessages(deviceId: string, ws: ServerWebSocket<WsData>) {
   markMessagesDelivered(deviceId, rows.map((r) => r.id));
 
   for (const row of rows) {
-    send(ws, {
+    const message: Record<string, unknown> = {
       type: "viewer_message",
       message_id: row.id,
       viewer_id: row.viewer_id,
@@ -553,7 +607,10 @@ function deliverQueuedMessages(deviceId: string, ws: ServerWebSocket<WsData>) {
       text: row.text,
       created_at: row.created_at,
       queued: true,
-    });
+    };
+    const payload = parseMessagePayload(row.payload);
+    if (payload) message.payload = payload;
+    send(ws, message);
   }
 }
 
@@ -809,12 +866,27 @@ export function handleDeviceMessages(req: Request): Response {
     viewer_name: string;
     kind: string;
     text: string;
+    payload: string;
     created_at: string;
   }[];
   if (rows.length > 0) {
     markMessagesDelivered(device.device_id, rows.map((r) => r.id));
   }
-  return Response.json({ messages: rows });
+  return Response.json({
+    messages: rows.map((row) => {
+      const message: Record<string, unknown> = {
+        id: row.id,
+        viewer_id: row.viewer_id,
+        viewer_name: row.viewer_name,
+        kind: row.kind,
+        text: row.text,
+        created_at: row.created_at,
+      };
+      const payload = parseMessagePayload(row.payload);
+      if (payload) message.payload = payload;
+      return message;
+    }),
+  });
 }
 
 export function handleDeviceMessageHistory(req: Request): Response {

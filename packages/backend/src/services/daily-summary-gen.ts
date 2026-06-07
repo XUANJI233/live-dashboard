@@ -11,6 +11,7 @@ import {
 import { buildTimelineSegments } from "../routes/timeline";
 import { getAiRuntimeConfig, requestAiChatCompletion } from "./ai-config";
 import { safeTimezoneOffset, utcRangeForLocalDate } from "./cdn";
+import { sleepContextLinesForRange } from "./health-context";
 
 /**
  * AI Summary Generator
@@ -34,6 +35,17 @@ export interface SummarySettings {
   daily_summary_time: string;
   weekly_summary_weekday: number;
   weekly_summary_time: string;
+  supervision_enabled: boolean;
+  supervision_check_mode: SupervisionCheckMode;
+  supervision_check_interval_minutes: number;
+  supervision_blacklist_minutes: number;
+  supervision_target_min_minutes: number;
+  supervision_vibrate: boolean;
+  supervision_skip_watch_sleep: boolean;
+  supervision_lsp_freeze: boolean;
+  supervision_rules: SupervisionRules;
+  supervision_rules_updated_at: string | null;
+  supervision_rules_error: string | null;
   updated_at: string | null;
   sync_status?: "applied" | "ignored_stale";
 }
@@ -42,6 +54,15 @@ export interface SummaryPlanDay {
   weekday: number;
   target: string;
   planned_rest: boolean;
+}
+
+export type SupervisionCheckMode = "hourly" | "triggered";
+
+export interface SupervisionRules {
+  whitelist_app_regex: string[];
+  blacklist_app_regex: string[];
+  target_app_regex: string[];
+  reason: string;
 }
 
 export interface SummaryGenerationResult {
@@ -71,6 +92,7 @@ interface SummaryContextDay {
   segments: TimelineSegment[];
   target: string;
   planned_rest: boolean;
+  sleep_lines: string[];
 }
 
 const MODE_LABELS: Record<SummaryMode, string> = {
@@ -105,6 +127,21 @@ export function getSummarySettings(): SummarySettings {
       daily_summary_time: normalizeClockTime(parsed.daily_summary_time ?? (parsed as Record<string, unknown>).dailySummaryTime, "21:00"),
       weekly_summary_weekday: normalizeWeekday(parsed.weekly_summary_weekday ?? (parsed as Record<string, unknown>).weeklySummaryWeekday, 7),
       weekly_summary_time: normalizeClockTime(parsed.weekly_summary_time ?? (parsed as Record<string, unknown>).weeklySummaryTime, "21:30"),
+      supervision_enabled: normalizeBoolean(parsed.supervision_enabled ?? (parsed as Record<string, unknown>).supervisionEnabled),
+      supervision_check_mode: normalizeSupervisionCheckMode(parsed.supervision_check_mode ?? (parsed as Record<string, unknown>).supervisionCheckMode),
+      supervision_check_interval_minutes: normalizeSupervisionInterval(parsed.supervision_check_interval_minutes ?? (parsed as Record<string, unknown>).supervisionCheckIntervalMinutes, 60),
+      supervision_blacklist_minutes: normalizeMinuteThreshold(parsed.supervision_blacklist_minutes ?? (parsed as Record<string, unknown>).supervisionBlacklistMinutes, 20),
+      supervision_target_min_minutes: normalizeMinuteThreshold(parsed.supervision_target_min_minutes ?? (parsed as Record<string, unknown>).supervisionTargetMinMinutes, 25),
+      supervision_vibrate: parsed.supervision_vibrate === undefined && (parsed as Record<string, unknown>).supervisionVibrate === undefined
+        ? true
+        : normalizeBoolean(parsed.supervision_vibrate ?? (parsed as Record<string, unknown>).supervisionVibrate),
+      supervision_skip_watch_sleep: parsed.supervision_skip_watch_sleep === undefined && (parsed as Record<string, unknown>).supervisionSkipWatchSleep === undefined
+        ? true
+        : normalizeBoolean(parsed.supervision_skip_watch_sleep ?? (parsed as Record<string, unknown>).supervisionSkipWatchSleep),
+      supervision_lsp_freeze: normalizeBoolean(parsed.supervision_lsp_freeze ?? (parsed as Record<string, unknown>).supervisionLspFreeze),
+      supervision_rules: normalizeSupervisionRules(parsed.supervision_rules ?? (parsed as Record<string, unknown>).supervisionRules),
+      supervision_rules_updated_at: typeof parsed.supervision_rules_updated_at === "string" ? parsed.supervision_rules_updated_at : null,
+      supervision_rules_error: typeof parsed.supervision_rules_error === "string" ? parsed.supervision_rules_error : null,
       updated_at: typeof parsed.updated_at === "string" ? parsed.updated_at : null,
     };
   } catch {
@@ -143,11 +180,43 @@ export function updateSummarySettings(input: unknown): SummarySettings {
     weekly_summary_time: source.weekly_summary_time === undefined && source.weeklySummaryTime === undefined
       ? current.weekly_summary_time
       : normalizeClockTime(source.weekly_summary_time ?? source.weeklySummaryTime, current.weekly_summary_time),
+    supervision_enabled: source.supervision_enabled === undefined && source.supervisionEnabled === undefined
+      ? current.supervision_enabled
+      : normalizeBoolean(source.supervision_enabled ?? source.supervisionEnabled),
+    supervision_check_mode: source.supervision_check_mode === undefined && source.supervisionCheckMode === undefined
+      ? current.supervision_check_mode
+      : normalizeSupervisionCheckMode(source.supervision_check_mode ?? source.supervisionCheckMode),
+    supervision_check_interval_minutes: source.supervision_check_interval_minutes === undefined && source.supervisionCheckIntervalMinutes === undefined
+      ? current.supervision_check_interval_minutes
+      : normalizeSupervisionInterval(source.supervision_check_interval_minutes ?? source.supervisionCheckIntervalMinutes, current.supervision_check_interval_minutes),
+    supervision_blacklist_minutes: source.supervision_blacklist_minutes === undefined && source.supervisionBlacklistMinutes === undefined
+      ? current.supervision_blacklist_minutes
+      : normalizeMinuteThreshold(source.supervision_blacklist_minutes ?? source.supervisionBlacklistMinutes, current.supervision_blacklist_minutes),
+    supervision_target_min_minutes: source.supervision_target_min_minutes === undefined && source.supervisionTargetMinMinutes === undefined
+      ? current.supervision_target_min_minutes
+      : normalizeMinuteThreshold(source.supervision_target_min_minutes ?? source.supervisionTargetMinMinutes, current.supervision_target_min_minutes),
+    supervision_vibrate: source.supervision_vibrate === undefined && source.supervisionVibrate === undefined
+      ? current.supervision_vibrate
+      : normalizeBoolean(source.supervision_vibrate ?? source.supervisionVibrate),
+    supervision_skip_watch_sleep: source.supervision_skip_watch_sleep === undefined && source.supervisionSkipWatchSleep === undefined
+      ? current.supervision_skip_watch_sleep
+      : normalizeBoolean(source.supervision_skip_watch_sleep ?? source.supervisionSkipWatchSleep),
+    supervision_lsp_freeze: source.supervision_lsp_freeze === undefined && source.supervisionLspFreeze === undefined
+      ? current.supervision_lsp_freeze
+      : normalizeBoolean(source.supervision_lsp_freeze ?? source.supervisionLspFreeze),
+    supervision_rules: current.supervision_rules,
+    supervision_rules_updated_at: current.supervision_rules_updated_at,
+    supervision_rules_error: current.supervision_rules_error,
     updated_at: incomingUpdatedAt,
     sync_status: "applied",
   };
   metaSet(SUMMARY_SETTINGS_KEY, JSON.stringify(settingsForStorage(next)));
   return next;
+}
+
+export function saveSummarySettings(settings: SummarySettings): SummarySettings {
+  metaSet(SUMMARY_SETTINGS_KEY, JSON.stringify(settingsForStorage(settings)));
+  return getSummarySettings();
 }
 
 export function normalizeSummaryMode(value: unknown): SummaryMode {
@@ -178,6 +247,7 @@ export async function generateDailySummary(options: {
     segments,
     settings,
     contextDays,
+    sleepLines: sleepContextLinesForRange(range.start, range.end, 12),
   });
 
   if (!generated.ok || !generated.summary) {
@@ -224,6 +294,7 @@ export async function generateWeeklySummary(options: {
     segments,
     settings,
     contextDays,
+    sleepLines: sleepContextLinesForRange(startRange.start, endRange.start, 20),
   });
 
   if (!generated.ok || !generated.summary) {
@@ -272,6 +343,17 @@ function defaultSummarySettings(): SummarySettings {
     daily_summary_time: "21:00",
     weekly_summary_weekday: 7,
     weekly_summary_time: "21:30",
+    supervision_enabled: false,
+    supervision_check_mode: "hourly",
+    supervision_check_interval_minutes: 60,
+    supervision_blacklist_minutes: 20,
+    supervision_target_min_minutes: 25,
+    supervision_vibrate: true,
+    supervision_skip_watch_sleep: true,
+    supervision_lsp_freeze: false,
+    supervision_rules: defaultSupervisionRules(),
+    supervision_rules_updated_at: null,
+    supervision_rules_error: null,
     updated_at: null,
   };
 }
@@ -290,6 +372,60 @@ function normalizeBoolean(value: unknown): boolean {
   if (typeof value === "number") return value === 1;
   const raw = String(value || "").trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on" || raw === "计划休息";
+}
+
+function normalizeMinuteThreshold(value: unknown, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(55, Math.max(1, parsed));
+}
+
+export function normalizeSupervisionRules(value: unknown): SupervisionRules {
+  const source = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return {
+    whitelist_app_regex: normalizeRegexList(source.whitelist_app_regex ?? source.whitelistAppRegex),
+    blacklist_app_regex: normalizeRegexList(source.blacklist_app_regex ?? source.blacklistAppRegex),
+    target_app_regex: normalizeRegexList(source.target_app_regex ?? source.targetAppRegex),
+    reason: sanitizeTarget(source.reason).slice(0, 180),
+  };
+}
+
+function normalizeSupervisionCheckMode(value: unknown): SupervisionCheckMode {
+  const raw = String(value || "").trim().toLowerCase();
+  return raw === "triggered" || raw === "threshold" || raw === "阈值触发" ? "triggered" : "hourly";
+}
+
+function normalizeSupervisionInterval(value: unknown, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(240, Math.max(30, parsed));
+}
+
+function normalizeRegexList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const cleaned = item
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
+    if (cleaned && !out.includes(cleaned)) out.push(cleaned);
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+
+function defaultSupervisionRules(): SupervisionRules {
+  return {
+    whitelist_app_regex: [],
+    blacklist_app_regex: [],
+    target_app_regex: [],
+    reason: "",
+  };
 }
 
 function normalizeWeeklyPlan(value: unknown): SummaryPlanDay[] {
@@ -345,6 +481,17 @@ function settingsForStorage(settings: SummarySettings): Omit<SummarySettings, "s
     daily_summary_time: settings.daily_summary_time,
     weekly_summary_weekday: settings.weekly_summary_weekday,
     weekly_summary_time: settings.weekly_summary_time,
+    supervision_enabled: settings.supervision_enabled,
+    supervision_check_mode: settings.supervision_check_mode,
+    supervision_check_interval_minutes: settings.supervision_check_interval_minutes,
+    supervision_blacklist_minutes: settings.supervision_blacklist_minutes,
+    supervision_target_min_minutes: settings.supervision_target_min_minutes,
+    supervision_vibrate: settings.supervision_vibrate,
+    supervision_skip_watch_sleep: settings.supervision_skip_watch_sleep,
+    supervision_lsp_freeze: settings.supervision_lsp_freeze,
+    supervision_rules: settings.supervision_rules,
+    supervision_rules_updated_at: settings.supervision_rules_updated_at,
+    supervision_rules_error: settings.supervision_rules_error,
     updated_at: settings.updated_at,
   };
 }
@@ -398,18 +545,20 @@ function getDailyContextDays(date: string, tzOffsetMinutes: number, days: number
       segments: getTimelineSegmentsForRange(range.start, range.end),
       target: effective.target,
       planned_rest: effective.planned_rest,
+      sleep_lines: sleepContextLinesForRange(range.start, range.end, 8),
     });
   }
   return out;
 }
 
-function getWeekContextDays(weekStart: string, _tzOffsetMinutes: number, settings: SummarySettings): SummaryContextDay[] {
+function getWeekContextDays(weekStart: string, tzOffsetMinutes: number, settings: SummarySettings): SummaryContextDay[] {
   const out: SummaryContextDay[] = [];
   for (let offset = 0; offset < 7; offset += 1) {
     const date = addDays(weekStart, offset);
     const row = getDailySummary.get(date) as SummaryRow | null;
     const weekday = isoWeekday(date);
     const plan = settings.weekly_plan.find((item) => item.weekday === weekday);
+    const range = utcRangeForLocalDate(date, tzOffsetMinutes);
     out.push({
       date,
       weekday,
@@ -418,6 +567,7 @@ function getWeekContextDays(weekStart: string, _tzOffsetMinutes: number, setting
       segments: [],
       target: plan?.target || settings.target,
       planned_rest: false,
+      sleep_lines: range ? sleepContextLinesForRange(range.start, range.end, 8) : [],
     });
   }
   return out;
@@ -434,6 +584,7 @@ async function generateSummaryText(input: {
   segments: TimelineSegment[];
   settings: SummarySettings;
   contextDays?: SummaryContextDay[];
+  sleepLines?: string[];
 }): Promise<Pick<SummaryGenerationResult, "ok" | "skipped" | "reason" | "summary">> {
   const aiConfig = await getAiRuntimeConfig();
   if (!aiConfig) {
@@ -448,7 +599,7 @@ async function generateSummaryText(input: {
     const rawSummary = await requestAiChatCompletion(aiConfig, {
       messages: [
         { role: "system", content: buildSystemPrompt(input.kind, input.settings) },
-        { role: "user", content: buildUserPrompt(input.kind, input.periodLabel, usefulSegments, input.settings, input.contextDays ?? []) },
+        { role: "user", content: buildUserPrompt(input.kind, input.periodLabel, usefulSegments, input.settings, input.contextDays ?? [], input.sleepLines ?? []) },
       ],
       maxTokens: input.kind === "weekly" ? 420 : 240,
       temperature: input.settings.mode === "sharp" ? 0.85 : 0.72,
@@ -509,6 +660,7 @@ function buildUserPrompt(
   segments: TimelineSegment[],
   settings: SummarySettings,
   contextDays: SummaryContextDay[],
+  sleepLines: string[],
 ): string {
   const topApps = aggregateByApp(segments).slice(0, kind === "weekly" ? 12 : 8);
   const byDay = aggregateByDay(segments);
@@ -518,17 +670,23 @@ function buildUserPrompt(
   const weekday = validDateString(firstDate) ? isoWeekday(firstDate) : null;
 
   const lines: string[] = [
-    `范围: ${periodLabel}`,
-    ...(weekday && kind === "daily" ? [`星期: ${weekdayLabel(weekday)}`] : []),
     `类型: ${kind === "weekly" ? "周总结" : "日总结"}`,
     kind === "weekly"
       ? `默认目标: ${sanitizePromptText(settings.target, 240) || "未设置；每周计划空白日期不要虚构目标"}`
       : `当天目标/计划: ${formatPlanForPrompt(settings.target, settings.planned_rest)}`,
+    `请求时间: ${new Date().toISOString()}`,
+    `范围: ${periodLabel}`,
+    ...(weekday && kind === "daily" ? [`星期: ${weekdayLabel(weekday)}`] : []),
     `总记录时长: ${formatMinutes(totalMinutes)}`,
     "",
     "主要应用:",
     ...topApps.map((item) => `- ${sanitizePromptText(item.appName, 80) || "未知应用"}: ${formatMinutes(item.minutes)}，${item.count}段，设备 ${item.devices.map((device) => sanitizePromptText(device, 80) || "未知设备").join("/")}`),
   ];
+
+  if (sleepLines.length > 0) {
+    lines.push("", kind === "weekly" ? "本周睡眠数据（如有，作为节奏判断参考）:" : "当天睡眠数据（如有，作为节奏判断参考）:");
+    lines.push(...sleepLines);
+  }
 
   if (kind === "weekly") {
     lines.push("", "本周每日计划:");
@@ -543,6 +701,12 @@ function buildUserPrompt(
     lines.push("", "7天AI评价:");
     for (const item of contextDays) {
       lines.push(`- ${item.date} ${item.weekday_label}: ${sanitizeContextText(item.summary) || "未生成"}`);
+    }
+    lines.push("", "每日睡眠数据:");
+    for (const item of contextDays) {
+      lines.push(`## ${item.date} ${item.weekday_label}`);
+      if (item.sleep_lines.length > 0) lines.push(...item.sleep_lines);
+      else lines.push("- 无记录");
     }
   }
 
@@ -568,6 +732,9 @@ function buildUserPrompt(
       lines.push(`## ${relation} ${item.date} ${item.weekday_label}`);
       lines.push(`目标/计划: ${plan}`);
       lines.push(`AI评价: ${sanitizeContextText(item.summary) || "未生成"}`);
+      lines.push(`${relation}睡眠数据:`);
+      if (item.sleep_lines.length > 0) lines.push(...item.sleep_lines);
+      else lines.push("- 无记录");
       lines.push(`${relation}时间线:`);
       for (const segment of item.segments) {
         const titleText = sanitizePromptText(segment.display_title, 80);
