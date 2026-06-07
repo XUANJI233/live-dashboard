@@ -31,6 +31,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.monika.dashboard.data.DebugLog
 import com.monika.dashboard.data.SettingsStore
@@ -104,8 +105,15 @@ private fun SummarySettingsPane(settings: SettingsStore) {
     var mode by rememberSaveable { mutableStateOf("normal") }
     var target by rememberSaveable { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
+    var aiLoading by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
+    var aiStatus by remember { mutableStateOf<String?>(null) }
     var updatedAt by remember { mutableStateOf<String?>(null) }
+    var aiApiUrl by rememberSaveable { mutableStateOf("") }
+    var aiApiKey by remember { mutableStateOf("") }
+    var aiModel by rememberSaveable { mutableStateOf("gpt-4o-mini") }
+    var aiLocked by remember { mutableStateOf(false) }
+    var showAiLockedDialog by remember { mutableStateOf(false) }
 
     fun loadRemote() {
         scope.launch {
@@ -157,7 +165,73 @@ private fun SummarySettingsPane(settings: SettingsStore) {
         }
     }
 
-    LaunchedEffect(Unit) { loadRemote() }
+    fun loadAiConfig() {
+        scope.launch {
+            aiLoading = true
+            aiStatus = null
+            val result = withContext(Dispatchers.IO) {
+                val url = settings.serverUrl.first()
+                val token = settings.getToken()
+                if (url.isBlank() || token.isNullOrBlank()) {
+                    Result.failure(IllegalStateException("请先配置服务器和 Token"))
+                } else {
+                    ReportClient(url, token).fetchAiConfig()
+                }
+            }
+            result
+                .onSuccess {
+                    aiLocked = it.locked
+                    aiApiUrl = it.apiUrl ?: it.apiUrlHint.orEmpty()
+                    aiModel = it.model.ifBlank { "gpt-4o-mini" }
+                    aiStatus = when {
+                        it.locked -> it.message ?: "服务器已通过环境变量配置 AI"
+                        it.configured -> "AI 配置已保存在服务器"
+                        else -> "服务器还没有 AI 配置"
+                    }
+                }
+                .onFailure { aiStatus = it.message ?: "AI 配置读取失败" }
+            aiLoading = false
+        }
+    }
+
+    fun saveAiConfig() {
+        scope.launch {
+            aiLoading = true
+            aiStatus = null
+            val result = withContext(Dispatchers.IO) {
+                val url = settings.serverUrl.first()
+                val token = settings.getToken()
+                if (url.isBlank() || token.isNullOrBlank()) {
+                    Result.failure(IllegalStateException("请先配置服务器和 Token"))
+                } else if (aiApiUrl.isBlank() || aiApiKey.isBlank()) {
+                    Result.failure(IllegalStateException("请填写 AI 端点和 Key"))
+                } else {
+                    ReportClient(url, token).updateAiConfig(aiApiUrl, aiApiKey, aiModel)
+                }
+            }
+            result
+                .onSuccess {
+                    aiLocked = it.locked
+                    aiApiUrl = it.apiUrl ?: it.apiUrlHint.orEmpty()
+                    aiModel = it.model.ifBlank { "gpt-4o-mini" }
+                    aiApiKey = ""
+                    aiStatus = "AI 配置已加密保存"
+                }
+                .onFailure {
+                    val message = it.message ?: "AI 配置保存失败"
+                    aiStatus = message
+                    if (message.contains("AI_CONFIG_LOCKED") || message.contains("环境变量")) {
+                        showAiLockedDialog = true
+                    }
+                }
+            aiLoading = false
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        loadRemote()
+        loadAiConfig()
+    }
 
     Column(
         modifier = Modifier
@@ -239,7 +313,95 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 color = TextMuted,
             )
         }
+
+        DashboardCard {
+            SectionTitle(
+                title = "AI 连接",
+                meta = if (aiLoading) "同步中" else if (aiLocked) "环境变量锁定" else null,
+            )
+            Text(
+                text = "AI Key 上传时使用 X25519 临时密钥协商和 AES-256-GCM 加密，设备 Token 只用于管理员鉴权和附加签名。",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextMuted,
+            )
+            OutlinedTextField(
+                value = aiApiUrl,
+                onValueChange = { aiApiUrl = it.take(300) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !aiLocked && !aiLoading,
+                label = { Text("AI API 端点") },
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = aiModel,
+                onValueChange = { aiModel = it.take(120) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !aiLocked && !aiLoading,
+                label = { Text("模型") },
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = aiApiKey,
+                onValueChange = { aiApiKey = it.take(4096) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !aiLocked && !aiLoading,
+                label = { Text("AI API Key") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Button(
+                    onClick = { saveAiConfig() },
+                    enabled = !aiLocked && !aiLoading,
+                    colors = PrimaryActionColors(),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (aiLoading) "处理中" else "保存 AI 配置")
+                }
+                TextButton(
+                    onClick = { loadAiConfig() },
+                    enabled = !aiLoading,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("读取")
+                }
+            }
+            if (!aiStatus.isNullOrBlank()) {
+                StatusPill(
+                    text = aiStatus.orEmpty(),
+                    tone = if (isAiStatusError(aiStatus)) {
+                        DashboardTone.Bad
+                    } else if (aiLocked) {
+                        DashboardTone.Warn
+                    } else {
+                        DashboardTone.Good
+                    },
+                )
+            }
+        }
     }
+
+    if (showAiLockedDialog) {
+        AlertDialog(
+            onDismissRequest = { showAiLockedDialog = false },
+            title = { Text("服务器已锁定 AI 配置") },
+            text = {
+                Text("服务端已通过 AI_API_URL / AI_API_KEY 环境变量配置 AI。为避免覆盖线上密钥，服务器拒绝 App 上传配置。")
+            },
+            confirmButton = {
+                TextButton(onClick = { showAiLockedDialog = false }) { Text("知道了") }
+            },
+        )
+    }
+}
+
+private fun isAiStatusError(status: String?): Boolean {
+    val value = status ?: return false
+    return listOf("失败", "LOCKED").any(value::contains) ||
+        listOf("HTTP", "请").any(value::startsWith)
 }
 
 @Composable

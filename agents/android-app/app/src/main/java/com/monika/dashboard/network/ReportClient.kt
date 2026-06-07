@@ -8,13 +8,22 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import android.content.Context
+import android.util.Base64
 import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.data.VisitorMessage
 import java.net.URLEncoder
 import java.net.URI
+import java.nio.charset.StandardCharsets
+import java.security.SecureRandom
 import java.time.Instant
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
+import javax.crypto.Cipher
+import javax.crypto.Mac
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import org.bouncycastle.crypto.params.X25519PrivateKeyParameters
+import org.bouncycastle.crypto.params.X25519PublicKeyParameters
 import com.monika.dashboard.system.LocationSnapshot
 import com.monika.dashboard.system.SystemSnapshot
 import com.monika.dashboard.system.isSleeping
@@ -366,6 +375,19 @@ class ReportClient(
         val updatedAt: String?,
     )
 
+    data class AiConfig(
+        val configured: Boolean,
+        val locked: Boolean,
+        val source: String,
+        val apiUrl: String?,
+        val apiUrlHint: String?,
+        val model: String,
+        val updatedAt: String?,
+        val message: String?,
+        val encryptionAlg: String?,
+        val encryptionPublicKey: String?,
+    )
+
     data class TimelineSegment(
         val appName: String,
         val appId: String,
@@ -496,6 +518,36 @@ class ReportClient(
         return executeSettingsRequest(request)
     }
 
+    fun fetchAiConfig(): Result<AiConfig> {
+        val request = Request.Builder()
+            .url("${serverUrl.trimEnd('/')}/api/ai-config")
+            .addHeader("Authorization", "Bearer $token")
+            .get()
+            .build()
+        return executeAiConfigRequest(request)
+    }
+
+    fun updateAiConfig(apiUrl: String, apiKey: String, model: String): Result<AiConfig> {
+        return try {
+            val current = fetchAiConfig().getOrThrow()
+            if (current.locked) {
+                return Result.failure(IOException("AI_CONFIG_LOCKED: ${current.message ?: "服务器环境变量已配置"}"))
+            }
+            val serverPublicKey = current.encryptionPublicKey
+                ?: return Result.failure(IOException("AI_CONFIG_PUBLIC_KEY_MISSING"))
+            val body = encryptedAiConfigBody(apiUrl, apiKey, model, serverPublicKey)
+            val request = Request.Builder()
+                .url("${serverUrl.trimEnd('/')}/api/ai-config")
+                .addHeader("Authorization", "Bearer $token")
+                .addHeader("Content-Type", "application/json")
+                .post(body.toString().toRequestBody(jsonMediaType))
+                .build()
+            executeAiConfigRequest(request)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun fetchTimeline(date: String): Result<TimelineResponse> {
         return try {
             val tz = clientTimezoneOffsetMinutes()
@@ -583,6 +635,10 @@ class ReportClient(
             }
 
         const val PUBLIC_RECENT_HOURS = 168
+        private const val CURVE25519_KEY_SIZE = 32
+        private const val AES_256_KEY_SIZE = 32
+        private const val AES_GCM_NONCE_SIZE = 12
+        private const val AI_CONFIG_ENCRYPTION_ALG = "X25519-A256GCM-HS256"
     }
 
     private fun executeSummaryRequest(request: Request, fallbackDate: String): Result<WeeklySummary> {
@@ -621,8 +677,90 @@ class ReportClient(
         }
     }
 
+    private fun executeAiConfigRequest(request: Request): Result<AiConfig> {
+        return try {
+            val response = client.newCall(request).execute()
+            response.use {
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(it.body?.string())}"))
+                val json = JSONObject(it.body?.string().orEmpty())
+                Result.success(parseAiConfig(json))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun parseAiConfig(json: JSONObject): AiConfig {
+        val encryption = json.optJSONObject("encryption")
+        return AiConfig(
+            configured = json.optBoolean("configured", false),
+            locked = json.optBoolean("locked", false),
+            source = json.optString("source", "none"),
+            apiUrl = json.optString("api_url").takeIf { value -> value.isNotBlank() && value != "null" },
+            apiUrlHint = json.optString("api_url_hint").takeIf { value -> value.isNotBlank() && value != "null" },
+            model = json.optString("model", "gpt-4o-mini"),
+            updatedAt = json.optString("updated_at").takeIf { value -> value.isNotBlank() && value != "null" },
+            message = json.optString("message").takeIf { value -> value.isNotBlank() && value != "null" },
+            encryptionAlg = encryption?.optString("alg")?.takeIf { value -> value.isNotBlank() },
+            encryptionPublicKey = encryption?.optString("public_key")?.takeIf { value -> value.isNotBlank() },
+        )
+    }
+
+    private fun encryptedAiConfigBody(apiUrl: String, apiKey: String, model: String, serverPublicKey: String): JSONObject {
+        val random = SecureRandom()
+        val serverPublicKeyBytes = base64UrlDecode(serverPublicKey)
+        require(serverPublicKeyBytes.size == CURVE25519_KEY_SIZE) { "Invalid server public key" }
+
+        val privateKey = X25519PrivateKeyParameters(random)
+        val publicKeyBytes = ByteArray(CURVE25519_KEY_SIZE)
+        privateKey.generatePublicKey().encode(publicKeyBytes, 0)
+
+        val shared = ByteArray(CURVE25519_KEY_SIZE)
+        privateKey.generateSecret(X25519PublicKeyParameters(serverPublicKeyBytes, 0), shared, 0)
+
+        val nonce = ByteArray(AES_GCM_NONCE_SIZE)
+        random.nextBytes(nonce)
+        val aesKey = hkdfSha256(
+            ikm = shared,
+            salt = nonce,
+            info = "live-dashboard-ai-config-x25519-v1".toByteArray(StandardCharsets.UTF_8),
+            length = AES_256_KEY_SIZE,
+        )
+        val plaintext = JSONObject().apply {
+            put("api_url", apiUrl.trim())
+            put("api_key", apiKey.trim())
+            put("model", model.trim().ifBlank { "gpt-4o-mini" })
+        }.toString().toByteArray(StandardCharsets.UTF_8)
+
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(128, nonce))
+        val ciphertext = cipher.doFinal(plaintext)
+
+        val ts = System.currentTimeMillis() / 1000L
+        val ephemeralPublicKey = base64UrlEncode(publicKeyBytes)
+        val nonceText = base64UrlEncode(nonce)
+        val ciphertextText = base64UrlEncode(ciphertext)
+        val signed = "1.$ts.$ephemeralPublicKey.$nonceText.$ciphertextText"
+        val signature = hmacBase64Url(token.toByteArray(StandardCharsets.UTF_8), signed.toByteArray(StandardCharsets.UTF_8))
+
+        return JSONObject().apply {
+            put("v", 1)
+            put("alg", AI_CONFIG_ENCRYPTION_ALG)
+            put("ts", ts)
+            put("ephemeral_public_key", ephemeralPublicKey)
+            put("nonce", nonceText)
+            put("ciphertext", ciphertextText)
+            put("signature", signature)
+        }
+    }
+
     private fun errorText(raw: String?): String =
-        raw.orEmpty().take(160).ifBlank { "request failed" }
+        runCatching {
+            val json = JSONObject(raw.orEmpty())
+            val code = json.optString("code")
+            val error = json.optString("error")
+            listOf(code, error).filter { it.isNotBlank() }.joinToString(": ")
+        }.getOrDefault(raw.orEmpty()).take(180).ifBlank { "request failed" }
 
     data class HealthRecord(
         val type: String,
@@ -639,6 +777,41 @@ class ReportClient(
         val kind: String = "private",
         val text: String,
     )
+}
+
+private fun base64UrlEncode(bytes: ByteArray): String =
+    Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+
+private fun base64UrlDecode(value: String): ByteArray =
+    Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+
+private fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
+    val mac = Mac.getInstance("HmacSHA256")
+    mac.init(SecretKeySpec(key, "HmacSHA256"))
+    return mac.doFinal(data)
+}
+
+private fun hmacBase64Url(key: ByteArray, data: ByteArray): String =
+    base64UrlEncode(hmacSha256(key, data))
+
+private fun hkdfSha256(ikm: ByteArray, salt: ByteArray, info: ByteArray, length: Int): ByteArray {
+    val prk = hmacSha256(salt, ikm)
+    val out = ByteArray(length)
+    var previous = ByteArray(0)
+    var generated = 0
+    var counter = 1
+    while (generated < length) {
+        val blockInput = ByteArray(previous.size + info.size + 1)
+        previous.copyInto(blockInput)
+        info.copyInto(blockInput, destinationOffset = previous.size)
+        blockInput[blockInput.lastIndex] = counter.toByte()
+        previous = hmacSha256(prk, blockInput)
+        val toCopy = minOf(previous.size, length - generated)
+        previous.copyInto(out, destinationOffset = generated, endIndex = toCopy)
+        generated += toCopy
+        counter += 1
+    }
+    return out
 }
 
 private fun clientTimezoneOffsetMinutes(): Int =

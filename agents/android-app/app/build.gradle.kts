@@ -133,6 +133,9 @@ dependencies {
     // OkHttp
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // X25519 sealed payloads for AI credential upload on API 26+
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+
     // Optional LSPosed module entry. Only the privileged flavor compiles the
     // module classes; normal APKs do not contain LSPosed metadata or hooks.
     add("privilegedCompileOnly", "io.github.libxposed:api:101.0.1")
