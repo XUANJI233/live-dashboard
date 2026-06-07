@@ -128,6 +128,48 @@ describe("ai-config", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("keeps the newest cross-device summary plan by client timestamp", async () => {
+    const { getSummarySettings, updateSummarySettings } = await import("../src/services/daily-summary-gen");
+
+    const newer = updateSummarySettings({
+      mode: "normal",
+      target: "finish the draft",
+      planned_rest: false,
+      weekly_plan: [{ weekday: 1, target: "write", planned_rest: true }],
+      daily_summary_time: "21:00",
+      weekly_summary_weekday: 7,
+      weekly_summary_time: "21:30",
+      client_updated_at: "2026-06-07T10:00:00.000Z",
+    });
+    expect(newer.sync_status).toBe("applied");
+    expect(newer.target).toBe("finish the draft");
+    expect(newer.weekly_plan[0]?.planned_rest).toBe(false);
+
+    const stale = updateSummarySettings({
+      target: "older stale draft",
+      weekly_plan: [{ weekday: 1, target: "stale", planned_rest: true }],
+      client_updated_at: "2026-06-07T09:00:00.000Z",
+    });
+    expect(stale.sync_status).toBe("ignored_stale");
+    expect(stale.target).toBe("finish the draft");
+    expect(stale.weekly_plan[0]?.target).toBe("write");
+
+    const current = getSummarySettings();
+    expect(current.sync_status).toBeUndefined();
+    expect(current.target).toBe("finish the draft");
+    expect(current.weekly_plan[0]?.target).toBe("write");
+    expect(current.weekly_plan[0]?.planned_rest).toBe(false);
+
+    const fresher = updateSummarySettings({
+      target: "ship the draft",
+      weekly_plan: [{ weekday: 1, target: "ship", planned_rest: false }],
+      client_updated_at: "2026-06-07T11:00:00.000Z",
+    });
+    expect(fresher.sync_status).toBe("applied");
+    expect(fresher.target).toBe("ship the draft");
+    expect(fresher.weekly_plan[0]?.target).toBe("ship");
+  });
 });
 
 async function encryptAiConfigForServer(

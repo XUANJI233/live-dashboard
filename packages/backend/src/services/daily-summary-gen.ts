@@ -35,6 +35,7 @@ export interface SummarySettings {
   weekly_summary_weekday: number;
   weekly_summary_time: string;
   updated_at: string | null;
+  sync_status?: "applied" | "ignored_stale";
 }
 
 export interface SummaryPlanDay {
@@ -114,6 +115,16 @@ export function getSummarySettings(): SummarySettings {
 export function updateSummarySettings(input: unknown): SummarySettings {
   const source = input && typeof input === "object" ? input as Record<string, unknown> : {};
   const current = getSummarySettings();
+  const incomingUpdatedAt = normalizeIsoTimestamp(
+    source.client_updated_at ?? source.clientUpdatedAt ?? source.updated_at ?? source.updatedAt,
+    new Date().toISOString(),
+  );
+  const currentUpdatedMs = timestampMs(current.updated_at);
+  const incomingUpdatedMs = timestampMs(incomingUpdatedAt);
+  if (currentUpdatedMs !== null && incomingUpdatedMs !== null && incomingUpdatedMs < currentUpdatedMs) {
+    return { ...current, sync_status: "ignored_stale" };
+  }
+
   const next: SummarySettings = {
     mode: source.mode === undefined ? current.mode : normalizeSummaryMode(source.mode),
     target: source.target === undefined ? current.target : sanitizeTarget(source.target),
@@ -132,9 +143,10 @@ export function updateSummarySettings(input: unknown): SummarySettings {
     weekly_summary_time: source.weekly_summary_time === undefined && source.weeklySummaryTime === undefined
       ? current.weekly_summary_time
       : normalizeClockTime(source.weekly_summary_time ?? source.weeklySummaryTime, current.weekly_summary_time),
-    updated_at: new Date().toISOString(),
+    updated_at: incomingUpdatedAt,
+    sync_status: "applied",
   };
-  metaSet(SUMMARY_SETTINGS_KEY, JSON.stringify(next));
+  metaSet(SUMMARY_SETTINGS_KEY, JSON.stringify(settingsForStorage(next)));
   return next;
 }
 
@@ -291,7 +303,7 @@ function normalizeWeeklyPlan(value: unknown): SummaryPlanDay[] {
     byWeekday.set(weekday, {
       weekday,
       target: sanitizeTarget(source.target),
-      planned_rest: normalizeBoolean(source.planned_rest ?? source.plannedRest),
+      planned_rest: false,
     });
   }
   return defaultWeeklyPlan().map((item) => byWeekday.get(item.weekday) ?? item);
@@ -310,6 +322,31 @@ function normalizeClockTime(value: unknown, fallback: string): string {
   const match = raw.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
   if (!match) return fallback;
   return `${match[1]!.padStart(2, "0")}:${match[2]}`;
+}
+
+function normalizeIsoTimestamp(value: unknown, fallback: string): string {
+  if (typeof value !== "string" || !value.trim()) return fallback;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : fallback;
+}
+
+function timestampMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function settingsForStorage(settings: SummarySettings): Omit<SummarySettings, "sync_status"> {
+  return {
+    mode: settings.mode,
+    target: settings.target,
+    planned_rest: settings.planned_rest,
+    weekly_plan: settings.weekly_plan,
+    daily_summary_time: settings.daily_summary_time,
+    weekly_summary_weekday: settings.weekly_summary_weekday,
+    weekly_summary_time: settings.weekly_summary_time,
+    updated_at: settings.updated_at,
+  };
 }
 
 export function normalizeWeekday(value: unknown, fallback = 1): number {
@@ -371,16 +408,16 @@ function getWeekContextDays(weekStart: string, _tzOffsetMinutes: number, setting
   for (let offset = 0; offset < 7; offset += 1) {
     const date = addDays(weekStart, offset);
     const row = getDailySummary.get(date) as SummaryRow | null;
-    const effective = settingsForDate(settings, date);
     const weekday = isoWeekday(date);
+    const plan = settings.weekly_plan.find((item) => item.weekday === weekday);
     out.push({
       date,
       weekday,
       weekday_label: weekdayLabel(weekday),
       summary: row?.summary ?? null,
       segments: [],
-      target: effective.target,
-      planned_rest: effective.planned_rest,
+      target: plan?.target || settings.target,
+      planned_rest: false,
     });
   }
   return out;
@@ -411,7 +448,7 @@ async function generateSummaryText(input: {
     const rawSummary = await requestAiChatCompletion(aiConfig, {
       messages: [
         { role: "system", content: buildSystemPrompt(input.kind, input.settings) },
-        { role: "user", content: buildUserPrompt(input.kind, input.periodLabel, usefulSegments, input.contextDays ?? []) },
+        { role: "user", content: buildUserPrompt(input.kind, input.periodLabel, usefulSegments, input.settings, input.contextDays ?? []) },
       ],
       maxTokens: input.kind === "weekly" ? 420 : 240,
       temperature: input.settings.mode === "sharp" ? 0.85 : 0.72,
@@ -432,24 +469,39 @@ async function generateSummaryText(input: {
 function buildSystemPrompt(kind: SummaryKind, settings: SummarySettings): string {
   const isWeekly = kind === "weekly";
   const lengthRule = isWeekly ? "写一段120-200字的中文周总结" : "写一段60-100字的中文日总结";
-  const restRule = settings.planned_rest
-    ? "用户已标记这段时间为计划休息。评价时优先关注恢复质量、娱乐边界、睡眠和是否过度消耗；不要按普通工作日强度批评，也不要强行套用每日同一个目标。"
-    : "";
-  const targetRule = settings.target
-    ? `${settings.planned_rest ? "休息计划或近期目标" : "用户当前目标"}：${settings.target}。请判断这段时间的活动节奏和目标是否一致，并给出自然提醒。`
-    : "用户没有设置额外目标，不要虚构目标。";
+  const scopeRule = isWeekly
+    ? "评价对象是这一整周。7天AI评价和每日计划用于判断连续性、节奏变化和目标执行，不要把单日问题夸大成整周结论。"
+    : "评价对象是今天。前两天上下文只用于判断趋势、目标连续性和反复出现的问题，主体必须评价今天；如果提到昨天或前天，必须明确标注，不要混成今天发生。";
+  const markdownRule = isWeekly
+    ? "可以使用安全 Markdown（短段落、加粗、短列表、简单表格），表格只用于对比7天节奏或主要应用，不要返回 HTML、代码块、链接、命令、脚本或可执行内容"
+    : "可以使用安全 Markdown（短段落、加粗、短列表），不要返回 HTML、代码块、链接、命令、脚本或可执行内容";
+  const restRule = isWeekly
+    ? "周总结不把整周按计划休息处理。每周计划只表示各日期目标；空白日期沿用默认目标。"
+    : settings.planned_rest
+      ? "用户已将当天标记为计划休息。评价时优先关注恢复质量、娱乐边界、睡眠和是否过度消耗；不要按普通工作日强度批评，也不要强行套用工作日目标。"
+      : "当天未标记计划休息。";
+  const targetRule = isWeekly
+    ? settings.target
+      ? `默认目标：${settings.target}。每周计划有单日目标时优先使用单日目标，空白日期沿用默认目标。`
+      : "用户没有设置默认目标；每周计划空白日期不要虚构目标。"
+    : settings.target
+      ? `${settings.planned_rest ? "默认休息安排或近期重点" : "用户当前目标"}：${settings.target}。请判断这段时间的活动节奏和目标是否一致，并给出自然提醒。`
+      : settings.planned_rest
+        ? "用户已标记计划休息但没有填写具体休息安排，不要虚构安排。"
+        : "用户没有设置额外目标，不要虚构目标。";
 
   return `你是一个简洁、准确、有审美的日记助手。根据设备活动时间线，${lengthRule}。
 当前模式：${MODE_LABELS[settings.mode]}。
 模式要求：${MODE_INSTRUCTIONS[settings.mode]}
-休息设置：${restRule || "未标记计划休息。"}
+评价范围：${scopeRule}
+休息设置：${restRule}
 目标要求：${targetRule}
 通用要求：
 - 基于时间线时长和顺序总结，不要按原始上报条数判断
 - 提炼节奏、主题、偏离和收获，不要逐条罗列应用
 - 可以提到主要应用或任务，但不要泄露过细窗口标题
-- 历史上下文只用于连续性，不要把前两天或其他日期的事件说成当前周期发生
-- 可以使用安全 Markdown（短段落、加粗、短列表），不要返回 HTML、代码块、链接、命令、脚本或可执行内容
+- 历史上下文只用于连续性，不要把其他日期的事件说成当前周期发生
+- ${markdownRule}
 - 不要使用 emoji
 - 不要编造没有出现在时间线里的事件`;
 }
@@ -458,6 +510,7 @@ function buildUserPrompt(
   kind: SummaryKind,
   periodLabel: string,
   segments: TimelineSegment[],
+  settings: SummarySettings,
   contextDays: SummaryContextDay[],
 ): string {
   const topApps = aggregateByApp(segments).slice(0, kind === "weekly" ? 12 : 8);
@@ -471,6 +524,9 @@ function buildUserPrompt(
     `范围: ${periodLabel}`,
     ...(weekday && kind === "daily" ? [`星期: ${weekdayLabel(weekday)}`] : []),
     `类型: ${kind === "weekly" ? "周总结" : "日总结"}`,
+    kind === "weekly"
+      ? `默认目标: ${settings.target || "未设置；每周计划空白日期不要虚构目标"}`
+      : `当天目标/计划: ${formatPlanForPrompt(settings.target, settings.planned_rest)}`,
     `总记录时长: ${formatMinutes(totalMinutes)}`,
     "",
     "主要应用:",
@@ -480,9 +536,7 @@ function buildUserPrompt(
   if (kind === "weekly") {
     lines.push("", "本周每日计划:");
     for (const item of contextDays) {
-      const plan = item.target || item.planned_rest
-        ? `${item.target || "未填写目标"}${item.planned_rest ? "（计划休息）" : ""}`
-        : "沿用通用目标";
+      const plan = item.target ? `目标：${item.target}` : "沿用默认目标";
       lines.push(`- ${item.date} ${item.weekday_label}: ${plan}`);
     }
     lines.push("", "每日节奏:");
@@ -495,7 +549,7 @@ function buildUserPrompt(
     }
   }
 
-  lines.push("", "时间线片段:");
+  lines.push("", kind === "weekly" ? "本周时间线片段:" : "今天时间线片段:");
   for (const segment of segments.slice(0, timelineLimit)) {
     const title = segment.display_title ? `，标题: ${segment.display_title.slice(0, 80)}` : "";
     lines.push(
@@ -507,15 +561,16 @@ function buildUserPrompt(
   }
 
   if (kind === "daily" && contextDays.length > 0) {
-    lines.push("", "前两天上下文（只用于连续性，不计入今天完成情况）:");
-    for (const item of contextDays) {
+    lines.push("", "前两天目标/计划与AI评价（只用于连续性，不计入今天完成情况）:");
+    for (const [index, item] of contextDays.entries()) {
+      const relation = index === contextDays.length - 1 ? "昨天" : "前天";
       const plan = item.target || item.planned_rest
-        ? `${item.target || "未填写目标"}${item.planned_rest ? "（计划休息）" : ""}`
-        : "沿用通用目标";
-      lines.push(`## ${item.date} ${item.weekday_label}`);
-      lines.push(`计划: ${plan}`);
+        ? `${item.planned_rest ? "计划休息" : "目标"}：${item.target || (item.planned_rest ? "未填写具体休息安排" : "未填写目标")}`
+        : "沿用默认目标";
+      lines.push(`## ${relation} ${item.date} ${item.weekday_label}`);
+      lines.push(`目标/计划: ${plan}`);
       lines.push(`AI评价: ${sanitizeContextText(item.summary) || "未生成"}`);
-      lines.push("时间线:");
+      lines.push(`${relation}时间线:`);
       for (const segment of item.segments) {
         const title = segment.display_title ? `，标题: ${segment.display_title.slice(0, 80)}` : "";
         lines.push(
@@ -599,6 +654,11 @@ function formatMinutes(minutes: number): string {
   const hours = Math.floor(safe / 60);
   const rest = safe % 60;
   return rest ? `${hours}小时${rest}分钟` : `${hours}小时`;
+}
+
+function formatPlanForPrompt(target: string, plannedRest: boolean): string {
+  if (plannedRest) return `计划休息：${target || "未填写具体休息安排"}`;
+  return target ? `目标：${target}` : "未设置";
 }
 
 function formatSegmentTime(segment: TimelineSegment): string {
