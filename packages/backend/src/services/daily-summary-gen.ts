@@ -11,7 +11,7 @@ import {
 import { buildTimelineSegments } from "../routes/timeline";
 import { getAiRuntimeConfig, requestAiChatCompletion } from "./ai-config";
 import { safeTimezoneOffset, utcRangeForLocalDate } from "./cdn";
-import { sleepContextLinesForRange } from "./health-context";
+import { healthContextLinesForRange } from "./health-context";
 
 /**
  * AI Summary Generator
@@ -104,7 +104,7 @@ const MODE_LABELS: Record<SummaryMode, string> = {
 const MODE_INSTRUCTIONS: Record<SummaryMode, string> = {
   gentle: "语气要温柔、体谅，指出节奏时使用轻量提醒，不要责备，可以进行安慰和鼓励。",
   normal: "语气要清醒、自然，既总结亮点，也指出明显的分心或拖延，提供中肯的反馈和建议，不要过于严厉或过于宽容。",
-  sharp: "锐利一点，允许短促吐槽低效和跑偏，但必须言之有物，不能无脑批评、编造事实、羞辱或人身攻击。评判节奏时以目标为核心，完全不达标的节奏需要明确指出问题和代价；最后给出明日目标，并用命令式语气要求执行，不能委婉或者建议式表达。",
+  sharp: "明确执行「锐评模式」：像严厉教练一样直接指出低效、拖延、跑偏和自欺欺人的地方，允许短促吐槽，但必须言之有物，不能无脑批评、编造事实、羞辱或人身攻击。评判节奏时以目标为核心，完全不达标的节奏需要明确指出问题和代价，不要用温和安慰稀释判断；最后给出明日目标，并用命令式语气要求执行，不能委婉或者建议式表达。",
 };
 
 const getActivityRows = db.prepare(`
@@ -247,7 +247,7 @@ export async function generateDailySummary(options: {
     segments,
     settings,
     contextDays,
-    sleepLines: sleepContextLinesForRange(range.start, range.end, 12),
+    sleepLines: healthContextLinesForRange(range.start, range.end, 16),
   });
 
   if (!generated.ok || !generated.summary) {
@@ -294,7 +294,7 @@ export async function generateWeeklySummary(options: {
     segments,
     settings,
     contextDays,
-    sleepLines: sleepContextLinesForRange(startRange.start, endRange.start, 20),
+    sleepLines: healthContextLinesForRange(startRange.start, endRange.start, 24),
   });
 
   if (!generated.ok || !generated.summary) {
@@ -545,7 +545,7 @@ function getDailyContextDays(date: string, tzOffsetMinutes: number, days: number
       segments: getTimelineSegmentsForRange(range.start, range.end),
       target: effective.target,
       planned_rest: effective.planned_rest,
-      sleep_lines: sleepContextLinesForRange(range.start, range.end, 8),
+      sleep_lines: healthContextLinesForRange(range.start, range.end, 10),
     });
   }
   return out;
@@ -567,7 +567,7 @@ function getWeekContextDays(weekStart: string, tzOffsetMinutes: number, settings
       segments: [],
       target: plan?.target || settings.target,
       planned_rest: false,
-      sleep_lines: range ? sleepContextLinesForRange(range.start, range.end, 8) : [],
+      sleep_lines: range ? healthContextLinesForRange(range.start, range.end, 10) : [],
     });
   }
   return out;
@@ -596,16 +596,34 @@ async function generateSummaryText(input: {
   }
 
   try {
-    const rawSummary = await requestAiChatCompletion(aiConfig, {
-      messages: [
-        { role: "system", content: buildSystemPrompt(input.kind, input.settings) },
-        { role: "user", content: buildUserPrompt(input.kind, input.periodLabel, usefulSegments, input.settings, input.contextDays ?? [], input.sleepLines ?? []) },
-      ],
-      maxTokens: input.kind === "weekly" ? 420 : 240,
-      temperature: input.settings.mode === "sharp" ? 0.85 : 0.72,
+    const messages = [
+      { role: "system" as const, content: buildSystemPrompt(input.kind, input.settings) },
+      { role: "user" as const, content: buildUserPrompt(input.kind, input.periodLabel, usefulSegments, input.settings, input.contextDays ?? [], input.sleepLines ?? []) },
+    ];
+    const maxTokens = input.kind === "weekly" ? 420 : 240;
+    const temperature = input.settings.mode === "sharp" ? 0.85 : 0.72;
+    let rawSummary = await requestAiChatCompletion(aiConfig, {
+      messages,
+      maxTokens,
+      temperature,
       timeoutMs: 30_000,
     });
-    const summary = sanitizeAiSummary(rawSummary, input.kind);
+    let summary = sanitizeAiSummary(rawSummary, input.kind);
+    if (!summary) {
+      rawSummary = await requestAiChatCompletion(aiConfig, {
+        messages: [
+          ...messages,
+          {
+            role: "user",
+            content: `上一条回复清洗后为空，说明包含了不允许的 HTML、代码、链接、命令或脚本。请重新返回一段安全 Markdown 中文${input.kind === "weekly" ? "周总结" : "日总结"}，只写总结正文。`,
+          },
+        ],
+        maxTokens,
+        temperature: Math.min(temperature, 0.55),
+        timeoutMs: 30_000,
+      });
+      summary = sanitizeAiSummary(rawSummary, input.kind);
+    }
     if (!summary) {
       return { ok: false, reason: "AI response was empty after sanitization" };
     }
@@ -684,7 +702,7 @@ function buildUserPrompt(
   ];
 
   if (sleepLines.length > 0) {
-    lines.push("", kind === "weekly" ? "本周睡眠数据（如有，作为节奏判断参考）:" : "当天睡眠数据（如有，作为节奏判断参考）:");
+    lines.push("", kind === "weekly" ? "本周健康/睡眠数据（如有，作为节奏判断参考）:" : "当天健康/睡眠数据（如有，作为节奏判断参考）:");
     lines.push(...sleepLines);
   }
 
@@ -702,7 +720,7 @@ function buildUserPrompt(
     for (const item of contextDays) {
       lines.push(`- ${item.date} ${item.weekday_label}: ${sanitizeContextText(item.summary) || "未生成"}`);
     }
-    lines.push("", "每日睡眠数据:");
+    lines.push("", "每日健康/睡眠数据:");
     for (const item of contextDays) {
       lines.push(`## ${item.date} ${item.weekday_label}`);
       if (item.sleep_lines.length > 0) lines.push(...item.sleep_lines);
@@ -732,7 +750,7 @@ function buildUserPrompt(
       lines.push(`## ${relation} ${item.date} ${item.weekday_label}`);
       lines.push(`目标/计划: ${plan}`);
       lines.push(`AI评价: ${sanitizeContextText(item.summary) || "未生成"}`);
-      lines.push(`${relation}睡眠数据:`);
+      lines.push(`${relation}健康/睡眠数据:`);
       if (item.sleep_lines.length > 0) lines.push(...item.sleep_lines);
       else lines.push("- 无记录");
       lines.push(`${relation}时间线:`);

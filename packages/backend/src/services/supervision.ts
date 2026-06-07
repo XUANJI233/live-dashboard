@@ -10,9 +10,9 @@ import {
   type SupervisionRules,
   weekdayLabel,
 } from "./daily-summary-gen";
-import { getAiRuntimeConfig, requestAiChatCompletion } from "./ai-config";
+import { getAiRuntimeConfig, requestAiChatCompletion, type AiChatMessage, type AiRuntimeConfig } from "./ai-config";
 import { sendSupervisorMessageToDevices } from "./realtime";
-import { sleepContextLinesForRange, trustedWatchSleepingAt } from "./health-context";
+import { healthContextLinesForRange, trustedWatchSleepingAt } from "./health-context";
 
 const LAST_AI_CHECK_AT_KEY = "supervision_last_ai_check_at";
 const LAST_ALERT_AT_KEY = "supervision_last_alert_at";
@@ -52,7 +52,7 @@ export async function refreshSupervisionRules(settings = getSummarySettings()): 
   }
 
   try {
-    const raw = await requestAiChatCompletion(aiConfig, {
+    const rules = await requestParsedSupervisionJson(aiConfig, {
       messages: [
         { role: "system", content: supervisionRulesSystemPrompt() },
         { role: "user", content: buildRulesUserPrompt(settings) },
@@ -60,8 +60,9 @@ export async function refreshSupervisionRules(settings = getSummarySettings()): 
       maxTokens: 380,
       temperature: 0.25,
       timeoutMs: 30_000,
+      parse: parseRulesResponse,
+      retryInstruction: "上一次响应不是合法的监督规则 JSON。请只按指定字段重新返回严格 JSON，不要 Markdown，不要解释。",
     });
-    const rules = parseRulesResponse(raw);
     appendSupervisionHistory({
       at: new Date().toISOString(),
       kind: "rules",
@@ -207,9 +208,9 @@ function buildRulesUserPrompt(settings: SummarySettings): string {
 
   const start = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
   const segments = getSegmentsForRange(start, new Date().toISOString()).slice(-MAX_TIMELINE_ROWS);
-  const sleepLines = sleepContextLinesForRange(start, new Date().toISOString(), 16);
-  if (sleepLines.length > 0) {
-    lines.push("", "最近睡眠数据（如有，作为规则判断参考）:", ...sleepLines);
+  const healthLines = healthContextLinesForRange(start, new Date().toISOString(), 18);
+  if (healthLines.length > 0) {
+    lines.push("", "最近健康/睡眠数据（如有，作为规则判断参考）:", ...healthLines);
   }
   const frozenLines = frozenPackageLines();
   if (frozenLines.length > 0) {
@@ -252,7 +253,7 @@ async function verifyDeviationWithAi(
     };
   }
 
-  const raw = await requestAiChatCompletion(aiConfig, {
+  return requestParsedSupervisionJson(aiConfig, {
     messages: [
       { role: "system", content: supervisionVerifySystemPrompt(settings.mode) },
       { role: "user", content: buildVerifyUserPrompt(settings, segments, stats, meta) },
@@ -260,13 +261,14 @@ async function verifyDeviationWithAi(
     maxTokens: 340,
     temperature: settings.mode === "sharp" ? 0.65 : 0.35,
     timeoutMs: 30_000,
+    parse: parseDecisionResponse,
+    retryInstruction: "上一次响应不是合法的监督复核 JSON。请只按指定字段重新返回严格 JSON，不要 Markdown，不要解释。",
   });
-  return parseDecisionResponse(raw);
 }
 
 function supervisionVerifySystemPrompt(mode: string): string {
   const tone = mode === "sharp"
-    ? "可以直接、短促、带一点锐评，但必须基于事实。"
+    ? "明确执行「锐评监督」：提醒要短促、尖锐、当场把人拉回目标；可以吐槽这段行为，但必须基于事实，不要温柔糊过去。"
     : mode === "gentle"
       ? "语气温和，但要明确指出是否偏离。"
       : "语气清醒自然，直接说明偏离和下一步。";
@@ -340,9 +342,9 @@ function buildVerifyUserPrompt(
   for (const segment of segments.slice(-MAX_TIMELINE_ROWS)) {
     lines.push(`- ${formatSegmentTime(segment)} ${promptText(segment.device_name, 80) || "未知设备"}: ${promptText(segment.app_name, 80) || "未知应用"} ${formatMinutes(segment.duration_seconds)}${segment.display_title ? `，标题: ${promptText(segment.display_title, 120)}` : ""}`);
   }
-  const sleepLines = sleepContextLinesForRange(meta.windowStart, meta.now, 12);
-  if (sleepLines.length > 0) {
-    lines.push("", "检查窗口睡眠数据（手表来源更可信，可用于判断是否应跳过或放宽）:", ...sleepLines);
+  const healthLines = healthContextLinesForRange(meta.windowStart, meta.now, 16);
+  if (healthLines.length > 0) {
+    lines.push("", "检查窗口健康/睡眠数据（手表来源更可信，可用于判断是否应跳过或放宽）:", ...healthLines);
   }
   const frozenLines = frozenPackageLines();
   if (frozenLines.length > 0) {
@@ -488,6 +490,46 @@ function parseDecisionResponse(raw: string): SupervisionDecision {
     freeze: parsed.freeze === true,
     freeze_minutes: normalizeFreezeMinutes(parsed.freeze_minutes ?? parsed.freezeMinutes),
   };
+}
+
+async function requestParsedSupervisionJson<T>(
+  config: Pick<AiRuntimeConfig, "apiUrl" | "apiKey" | "model">,
+  options: {
+    messages: AiChatMessage[];
+    maxTokens: number;
+    temperature: number;
+    timeoutMs: number;
+    parse: (raw: string) => T;
+    retryInstruction: string;
+  },
+): Promise<T> {
+  const raw = await requestAiChatCompletion(config, {
+    messages: options.messages,
+    maxTokens: options.maxTokens,
+    temperature: options.temperature,
+    timeoutMs: options.timeoutMs,
+  });
+  try {
+    return options.parse(raw);
+  } catch (firstError) {
+    const retryRaw = await requestAiChatCompletion(config, {
+      messages: [
+        ...options.messages,
+        {
+          role: "user",
+          content: `${options.retryInstruction}\n解析错误: ${safeErrorMessage(firstError, "invalid JSON")}\n上一次响应摘要: ${promptText(raw, 1000)}`,
+        },
+      ],
+      maxTokens: options.maxTokens,
+      temperature: Math.min(options.temperature, 0.2),
+      timeoutMs: options.timeoutMs,
+    });
+    try {
+      return options.parse(retryRaw);
+    } catch (retryError) {
+      throw new Error(`${safeErrorMessage(firstError, "invalid JSON")}; retry failed: ${safeErrorMessage(retryError, "invalid JSON")}`);
+    }
+  }
 }
 
 function pickJsonField(source: Record<string, unknown>, snake: string, camel: string): unknown {
