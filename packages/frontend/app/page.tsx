@@ -360,7 +360,8 @@ function deviceInlineMeta(device: DeviceState) {
   if (extra?.sleeping) parts.push("睡眠");
   if (extra?.device?.network_type) parts.push(extra.device.network_type);
   if (extra?.device?.vpn_active) parts.push("VPN");
-  if (extra?.input?.input_active || extra?.input?.is_typing) parts.push(extra.input.is_typing ? "输入中" : "输入活跃");
+  if (extra?.device?.audio_output_connected) parts.push(formatAudioOutputType(extra.device.audio_output_type));
+  if (typeof extra?.device?.ambient_lux === "number") parts.push(`${Math.round(extra.device.ambient_lux)} lx`);
   return parts.length > 0 ? ` · ${parts.join("/")}` : "";
 }
 
@@ -794,9 +795,26 @@ function deviceInfoItems(device: DeviceState): DeviceInfoItem[] {
   if (extra?.device?.energy_policy) info.push({ label: "节能", value: extra.device.energy_policy });
   if (typeof extra?.device?.min_interval_ms === "number") info.push({ label: "间隔", value: formatDurationMinutes(extra.device.min_interval_ms / 60_000) });
   if (extra?.device?.window_mode && extra.device.window_mode !== "fullscreen") info.push({ label: "窗口", value: extra.device.window_mode });
-  if (extra?.input?.input_active || extra?.input?.is_typing) info.push({ label: "输入", value: extra.input.is_typing ? "输入中" : "输入框活跃" });
+  if (typeof extra?.device?.audio_output_connected === "boolean") {
+    info.push({
+      label: "音频",
+      value: extra.device.audio_output_connected ? formatAudioOutputType(extra.device.audio_output_type) : "扬声器",
+      unit: extra.device.audio_output_name || "",
+    });
+  }
+  if (typeof extra?.device?.ambient_lux === "number") {
+    info.push({ label: "环境光", value: String(Math.round(extra.device.ambient_lux)), unit: "lx" });
+  }
   if (extra?.sleeping) info.push({ label: "状态", value: "息屏/睡眠" });
   return info;
+}
+
+function formatAudioOutputType(type?: string) {
+  if (type === "bluetooth_headset") return "蓝牙耳机";
+  if (type === "wired_headset") return "有线耳机";
+  if (type === "usb_audio") return "USB 音频";
+  if (type === "external_audio") return "外接音频";
+  return "耳机/外放";
 }
 
 function deviceSummaryItems(device: DeviceState): DeviceInfoItem[] {

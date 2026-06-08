@@ -180,7 +180,7 @@ export async function testAiConfigConnection(config: Pick<AiRuntimeConfig, "apiU
         { role: "system", content: "你是连接测试助手。只返回 OK。" },
         { role: "user", content: "ping" },
       ],
-      maxTokens: 8,
+      maxTokens: 64,
       temperature: 0,
       timeoutMs: 20_000,
     });

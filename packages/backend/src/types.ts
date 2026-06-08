@@ -26,6 +26,11 @@ export interface ReportPayload {
       min_interval_ms?: number;
       device_kind?: string;
       window_mode?: string;
+      heartbeat_only?: boolean;
+      audio_output_connected?: boolean;
+      audio_output_type?: string;
+      audio_output_name?: string;
+      ambient_lux?: number;
     };
     location?: {
       latitude?: number;
@@ -42,11 +47,6 @@ export interface ReportPayload {
       source?: "normal" | "root" | "lsposed" | "accessibility" | "notification";
       confidence?: number;
     };
-    input?: {
-      input_active?: boolean;
-      is_typing?: boolean;
-      source?: "normal" | "root" | "lsposed" | "accessibility" | "notification";
-    };
     media?: {
       playing?: boolean;
       title?: string;
@@ -55,6 +55,11 @@ export interface ReportPayload {
       package_name?: string;
       state?: string;
       source?: "normal" | "root" | "lsposed" | "accessibility" | "notification";
+    };
+    music?: {
+      title?: string;
+      artist?: string;
+      app?: string;
     };
   };
 }
@@ -68,6 +73,7 @@ export interface ActivityRecord {
   app_name: string;
   window_title: string;
   display_title: string;
+  extra?: string;
   started_at: string;
   created_at: string;
 }
@@ -95,6 +101,41 @@ export interface TimelineSegment {
   duration_minutes: number;
   device_id: string;
   device_name: string;
+  extra?: TimelineSegmentExtra;
+}
+
+export interface TimelineSegmentExtra {
+  foreground?: {
+    package_name?: string;
+    app_name?: string;
+    activity?: string;
+    source?: string;
+    confidence?: number;
+  };
+  media?: {
+    playing?: boolean;
+    title?: string;
+    artist?: string;
+    app?: string;
+    package_name?: string;
+    state?: string;
+    source?: string;
+  };
+  music?: {
+    title?: string;
+    artist?: string;
+    app?: string;
+  };
+  device?: {
+    capability_mode?: string;
+    uploader?: string;
+    window_mode?: string;
+    heartbeat_only?: boolean;
+    audio_output_connected?: boolean;
+    audio_output_type?: string;
+    audio_output_name?: string;
+    ambient_lux?: number;
+  };
 }
 
 export interface HealthRecord {

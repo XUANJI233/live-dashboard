@@ -4,7 +4,7 @@ import { isNSFW } from "./nsfw-filter";
 const NSFW_FILTER_ENABLED = process.env.NSFW_FILTER_DISABLED !== "true";
 import { processDisplayTitle } from "./privacy-tiers";
 import { db, insertActivity, insertLocationRecord, upsertDeviceState, hmacTitle } from "../db";
-import type { DeviceInfo } from "../types";
+import type { DeviceInfo, TimelineSegmentExtra } from "../types";
 
 const MAX_TITLE_LENGTH = 256;
 const MAX_SHORT_LENGTH = 64;
@@ -138,6 +138,14 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (deviceKind) deviceExtra.device_kind = deviceKind;
       const windowMode = cleanString(deviceBody.window_mode, MAX_SHORT_LENGTH);
       if (windowMode) deviceExtra.window_mode = windowMode;
+      if (typeof deviceBody.heartbeat_only === "boolean") deviceExtra.heartbeat_only = deviceBody.heartbeat_only;
+      if (typeof deviceBody.audio_output_connected === "boolean") deviceExtra.audio_output_connected = deviceBody.audio_output_connected;
+      const audioOutputType = cleanString(deviceBody.audio_output_type, MAX_SHORT_LENGTH);
+      if (audioOutputType) deviceExtra.audio_output_type = audioOutputType;
+      const audioOutputName = cleanString(deviceBody.audio_output_name, MAX_SHORT_LENGTH);
+      if (audioOutputName) deviceExtra.audio_output_name = audioOutputName;
+      const ambientLux = cleanFiniteNumber(deviceBody.ambient_lux, 0, 200_000);
+      if (ambientLux != null) deviceExtra.ambient_lux = Math.round(ambientLux * 10) / 10;
       const frozenPackages = cleanFrozenPackages(deviceBody.frozen_packages);
       if (frozenPackages.length > 0) deviceExtra.frozen_packages = frozenPackages;
       if (Object.keys(deviceExtra).length > 0) extra.device = deviceExtra;
@@ -196,17 +204,6 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (Object.keys(foreground).length > 0) extra.foreground = foreground;
     }
 
-    const rawInput = rawExtra.input;
-    if (rawInput != null && typeof rawInput === "object" && !Array.isArray(rawInput)) {
-      const inputBody = rawInput as Record<string, unknown>;
-      const input: Record<string, unknown> = {};
-      if (typeof inputBody.input_active === "boolean") input.input_active = inputBody.input_active;
-      if (typeof inputBody.is_typing === "boolean") input.is_typing = inputBody.is_typing;
-      const source = cleanSource(inputBody.source);
-      if (source) input.source = source;
-      if (Object.keys(input).length > 0) extra.input = input;
-    }
-
     const rawMusic = rawExtra.music;
     if (rawMusic != null && typeof rawMusic === "object" && !Array.isArray(rawMusic)) {
       const music: Record<string, string> = {};
@@ -240,11 +237,13 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
   }
   mergeStableDeviceExtra(device.device_id, extra);
   const extraJson = JSON.stringify(extra);
+  const activityExtraJson = JSON.stringify(activityExtraSnapshot(extra));
+  const heartbeatOnly = plainObject(extra.device)?.heartbeat_only === true;
 
   try {
     // Watch / IoT devices should not create activity timeline entries.
     // They only update device state (battery, online status).
-    if (device.platform !== "zepp") {
+    if (device.platform !== "zepp" && !heartbeatOnly) {
       insertActivity.run(
         device.device_id,
         device.device_name,
@@ -253,6 +252,7 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
         appName,
         windowTitle,
         displayTitle,
+        activityExtraJson,
         titleHash,
         timeBucket,
         startedAt
@@ -288,6 +288,73 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
   };
 }
 
+function activityExtraSnapshot(extra: Record<string, unknown>): TimelineSegmentExtra {
+  const snapshot: TimelineSegmentExtra = {};
+
+  const foreground = plainObject(extra.foreground);
+  if (foreground) {
+    const out: NonNullable<TimelineSegmentExtra["foreground"]> = {};
+    copyString(foreground, out, "package_name");
+    copyString(foreground, out, "app_name");
+    copyString(foreground, out, "activity");
+    copyString(foreground, out, "source");
+    if (typeof foreground.confidence === "number" && Number.isFinite(foreground.confidence)) {
+      out.confidence = foreground.confidence;
+    }
+    if (Object.keys(out).length > 0) snapshot.foreground = out;
+  }
+
+  const media = plainObject(extra.media);
+  if (media) {
+    const out: NonNullable<TimelineSegmentExtra["media"]> = {};
+    if (typeof media.playing === "boolean") out.playing = media.playing;
+    copyString(media, out, "title");
+    copyString(media, out, "artist");
+    copyString(media, out, "app");
+    copyString(media, out, "package_name");
+    copyString(media, out, "state");
+    copyString(media, out, "source");
+    if (Object.keys(out).length > 0) snapshot.media = out;
+  }
+
+  const music = plainObject(extra.music);
+  if (music) {
+    const out: NonNullable<TimelineSegmentExtra["music"]> = {};
+    copyString(music, out, "title");
+    copyString(music, out, "artist");
+    copyString(music, out, "app");
+    if (Object.keys(out).length > 0) snapshot.music = out;
+  }
+
+  const device = plainObject(extra.device);
+  if (device) {
+    const out: NonNullable<TimelineSegmentExtra["device"]> = {};
+    copyString(device, out, "capability_mode");
+    copyString(device, out, "uploader");
+    copyString(device, out, "window_mode");
+    if (typeof device.heartbeat_only === "boolean") out.heartbeat_only = device.heartbeat_only;
+    if (typeof device.audio_output_connected === "boolean") out.audio_output_connected = device.audio_output_connected;
+    copyString(device, out, "audio_output_type");
+    copyString(device, out, "audio_output_name");
+    if (typeof device.ambient_lux === "number" && Number.isFinite(device.ambient_lux)) out.ambient_lux = device.ambient_lux;
+    if (Object.keys(out).length > 0) snapshot.device = out;
+  }
+
+  return snapshot;
+}
+
+function plainObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function copyString<T extends Record<string, unknown>>(source: Record<string, unknown>, target: T, key: keyof T & string): void {
+  if (typeof source[key] === "string" && source[key]) {
+    target[key] = source[key].slice(0, MAX_MEDIUM_LENGTH) as T[keyof T & string];
+  }
+}
+
 function mergeStableDeviceExtra(deviceId: string, extra: Record<string, unknown>) {
   const row = getPreviousDeviceExtra.get(deviceId) as { extra?: string } | undefined;
   if (!row?.extra) return;
@@ -315,6 +382,9 @@ function mergeStableDeviceExtra(deviceId: string, extra: Record<string, unknown>
     ? extra.device as Record<string, unknown>
     : {};
   extra.device = { ...previousDevice, ...currentDevice };
+  if (typeof currentDevice.heartbeat_only !== "boolean") {
+    delete (extra.device as Record<string, unknown>).heartbeat_only;
+  }
 }
 
 function cleanFrozenPackages(value: unknown): Record<string, unknown>[] {

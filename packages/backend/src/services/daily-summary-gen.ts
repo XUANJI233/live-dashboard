@@ -10,8 +10,10 @@ import {
 } from "../db";
 import { buildTimelineSegments } from "../routes/timeline";
 import { getAiRuntimeConfig, requestAiChatCompletion } from "./ai-config";
+import { logAiDebug } from "./ai-debug";
 import { safeTimezoneOffset, utcRangeForLocalDate } from "./cdn";
 import { healthContextLinesForRange } from "./health-context";
+import { timelineJsonBlockForPrompt } from "./timeline-prompt";
 
 /**
  * AI Summary Generator
@@ -256,6 +258,7 @@ export async function generateDailySummary(options: {
     segments,
     settings,
     contextDays,
+    tzOffsetMinutes,
     sleepLines: healthContextLinesForRange(range.start, range.end, 16),
     supervisionLines: baseSettings.supervision_enabled
       ? supervisionHistoryLinesForRange(range.start, range.end, 6)
@@ -306,6 +309,7 @@ export async function generateWeeklySummary(options: {
     segments,
     settings,
     contextDays,
+    tzOffsetMinutes,
     sleepLines: healthContextLinesForRange(startRange.start, endRange.start, 24),
     supervisionLines: baseSettings.supervision_enabled
       ? supervisionHistoryLinesForRange(startRange.start, endRange.start, 10)
@@ -599,6 +603,7 @@ async function generateSummaryText(input: {
   segments: TimelineSegment[];
   settings: SummarySettings;
   contextDays?: SummaryContextDay[];
+  tzOffsetMinutes?: number;
   sleepLines?: string[];
   supervisionLines?: string[];
 }): Promise<Pick<SummaryGenerationResult, "ok" | "skipped" | "reason" | "summary">> {
@@ -622,6 +627,7 @@ async function generateSummaryText(input: {
           usefulSegments,
           input.settings,
           input.contextDays ?? [],
+          input.tzOffsetMinutes ?? new Date().getTimezoneOffset(),
           input.sleepLines ?? [],
           input.supervisionLines ?? [],
         ),
@@ -629,6 +635,14 @@ async function generateSummaryText(input: {
     ];
     const maxTokens = input.kind === "weekly" ? 420 : 240;
     const temperature = input.settings.mode === "sharp" ? 0.85 : 0.72;
+    logAiDebug("summary.request", {
+      kind: input.kind,
+      periodLabel: input.periodLabel,
+      model: aiConfig.model,
+      maxTokens,
+      temperature,
+      messages,
+    });
     let rawSummary = await requestAiChatCompletion(aiConfig, {
       messages,
       maxTokens,
@@ -636,26 +650,54 @@ async function generateSummaryText(input: {
       timeoutMs: 30_000,
     });
     let summary = sanitizeAiSummary(rawSummary, input.kind);
+    logAiDebug("summary.response", {
+      kind: input.kind,
+      periodLabel: input.periodLabel,
+      raw: rawSummary,
+      sanitized: summary,
+      sanitizedEmpty: !summary,
+    });
     if (!summary) {
+      const retryMessages = [
+        ...messages,
+        {
+          role: "user" as const,
+          content: `上一条回复清洗后为空，说明包含了不允许的 HTML、代码、链接、命令或脚本。请重新返回一段安全 Markdown 中文${input.kind === "weekly" ? "周总结" : "日总结"}，只写总结正文。`,
+        },
+      ];
+      logAiDebug("summary.retry.request", {
+        kind: input.kind,
+        periodLabel: input.periodLabel,
+        model: aiConfig.model,
+        maxTokens,
+        temperature: Math.min(temperature, 0.55),
+        messages: retryMessages,
+      });
       rawSummary = await requestAiChatCompletion(aiConfig, {
-        messages: [
-          ...messages,
-          {
-            role: "user",
-            content: `上一条回复清洗后为空，说明包含了不允许的 HTML、代码、链接、命令或脚本。请重新返回一段安全 Markdown 中文${input.kind === "weekly" ? "周总结" : "日总结"}，只写总结正文。`,
-          },
-        ],
+        messages: retryMessages,
         maxTokens,
         temperature: Math.min(temperature, 0.55),
         timeoutMs: 30_000,
       });
       summary = sanitizeAiSummary(rawSummary, input.kind);
+      logAiDebug("summary.retry.response", {
+        kind: input.kind,
+        periodLabel: input.periodLabel,
+        raw: rawSummary,
+        sanitized: summary,
+        sanitizedEmpty: !summary,
+      });
     }
     if (!summary) {
       return { ok: false, reason: "AI response was empty after sanitization" };
     }
     return { ok: true, summary };
   } catch (e) {
+    logAiDebug("summary.error", {
+      kind: input.kind,
+      periodLabel: input.periodLabel,
+      error: e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : e,
+    });
     console.error("[ai-summary] Failed to generate:", e);
     const reason = e instanceof Error ? e.message : "AI generation failed";
     return { ok: false, reason: reason.slice(0, 160) };
@@ -707,6 +749,7 @@ function buildUserPrompt(
   segments: TimelineSegment[],
   settings: SummarySettings,
   contextDays: SummaryContextDay[],
+  tzOffsetMinutes: number,
   sleepLines: string[],
   supervisionLines: string[],
 ): string {
@@ -768,14 +811,11 @@ function buildUserPrompt(
     }
   }
 
-  lines.push("", kind === "weekly" ? "本周时间线片段:" : "今天时间线片段:");
-  for (const segment of segments.slice(0, timelineLimit)) {
-    const titleText = sanitizePromptText(segment.display_title, 80);
-    const title = titleText ? `，标题: ${titleText}` : "";
-    lines.push(
-      `- ${formatSegmentTime(segment)} ${sanitizePromptText(segment.device_name, 80) || "未知设备"}: ${sanitizePromptText(segment.app_name, 80) || "未知应用"} ${formatMinutes(segmentMinutes(segment))}${title}`,
-    );
-  }
+  lines.push("", kind === "weekly" ? "本周时间线 JSON（按设备和应用会话聚合，按时间升序）:" : "今天时间线 JSON（按设备和应用会话聚合，按时间升序）:");
+  lines.push(timelineJsonBlockForPrompt(segments.slice(0, timelineLimit), {
+    label: kind === "weekly" ? "weekly_activity_timeline" : "today_activity_timeline",
+    tzOffsetMinutes,
+  }));
   if (segments.length > timelineLimit) {
     lines.push(`- 其余 ${segments.length - timelineLimit} 段已省略，请以主要应用和每日节奏为准。`);
   }
@@ -793,15 +833,11 @@ function buildUserPrompt(
       lines.push(`${relation}健康/睡眠数据:`);
       if (item.sleep_lines.length > 0) lines.push(...item.sleep_lines);
       else lines.push("- 无记录");
-      lines.push(`${relation}时间线:`);
-      for (const segment of item.segments) {
-        const titleText = sanitizePromptText(segment.display_title, 80);
-        const title = titleText ? `，标题: ${titleText}` : "";
-        lines.push(
-          `- ${formatSegmentTime(segment)} ${sanitizePromptText(segment.device_name, 80) || "未知设备"}: ${sanitizePromptText(segment.app_name, 80) || "未知应用"} ${formatMinutes(segmentMinutes(segment))}${title}`,
-        );
-      }
-      if (item.segments.length === 0) lines.push("- 无记录");
+      lines.push(`${relation}时间线 JSON（按设备和应用会话聚合）:`);
+      lines.push(timelineJsonBlockForPrompt(item.segments, {
+        label: `${relation}_activity_timeline`,
+        tzOffsetMinutes,
+      }));
     }
   }
 
@@ -941,12 +977,6 @@ function sanitizePromptText(value: string | null | undefined, maxLength: number)
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, maxLength);
-}
-
-function formatSegmentTime(segment: TimelineSegment): string {
-  const start = segment.started_at.replace("T", " ").slice(0, 16);
-  const end = segment.ended_at ? segment.ended_at.replace("T", " ").slice(11, 16) : "结束未知";
-  return `${start}-${end}`;
 }
 
 function dateFromString(value: string): Date | null {

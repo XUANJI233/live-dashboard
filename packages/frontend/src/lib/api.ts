@@ -30,6 +30,11 @@ export interface DeviceState {
       relay_mode?: string;
       energy_policy?: string;
       min_interval_ms?: number;
+      heartbeat_only?: boolean;
+      audio_output_connected?: boolean;
+      audio_output_type?: string;
+      audio_output_name?: string;
+      ambient_lux?: number;
     };
     foreground?: {
       package_name?: string;
@@ -60,11 +65,6 @@ export interface DeviceState {
       provider?: string;
       recorded_at?: string;
     };
-    input?: {
-      input_active?: boolean;
-      is_typing?: boolean;
-      source?: string;
-    };
   };
 }
 
@@ -90,6 +90,7 @@ export interface TimelineSegment {
   duration_minutes: number;
   device_id: string;
   device_name: string;
+  extra?: DeviceState["extra"];
 }
 
 export interface CurrentResponse {

@@ -77,8 +77,18 @@ function deviceMeta(device: DeviceState): string {
   if (extra?.device?.capability_mode === "lsposed" || extra?.device?.uploader === "lsposed") parts.push("LSP");
   if (extra?.device?.network_type) parts.push(extra.device.network_type);
   if (extra?.device?.vpn_active) parts.push("VPN");
-  if (extra?.input?.input_active || extra?.input?.is_typing) {
-    parts.push(extra.input.is_typing ? "输入中" : "输入活跃");
-  }
+  const audio = audioOutputLabel(device);
+  if (audio) parts.push(audio);
+  if (typeof extra?.device?.ambient_lux === "number") parts.push(`${Math.round(extra.device.ambient_lux)}lx`);
   return parts.length > 0 ? ` · ${parts.join("/")}` : "";
+}
+
+function audioOutputLabel(device: DeviceState): string | null {
+  const extra = device.extra?.device;
+  if (!extra?.audio_output_connected) return null;
+  if (extra.audio_output_type === "bluetooth_headset") return "蓝牙耳机";
+  if (extra.audio_output_type === "wired_headset") return "有线耳机";
+  if (extra.audio_output_type === "usb_audio") return "USB音频";
+  if (extra.audio_output_type === "hdmi_audio") return "外接音频";
+  return "音频输出";
 }

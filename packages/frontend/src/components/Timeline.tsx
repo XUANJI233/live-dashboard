@@ -16,6 +16,7 @@ const SWITCH_GAP_SECONDS = 90;
 const SWITCH_MAX_SEGMENT_SECONDS = 90;
 const MIN_CLUSTER_SIZE = 3;
 const SAME_VISIBLE_GAP_SECONDS = 10 * 60;
+const SPARSE_REPORT_GAP_SECONDS = 30 * 60;
 
 interface Props {
   segments: TimelineSegment[];
@@ -27,7 +28,7 @@ interface Props {
 
 type TimelineEvent = {
   key: string;
-  kind: "single" | "switching";
+  kind: "single" | "switching" | "app-session";
   appName: string;
   appId: string;
   title: string;
@@ -92,8 +93,10 @@ export default function Timeline({ segments, currentAppByDevice, onlineDevices, 
                       </div>
                       <div className="min-w-0 flex-1 px-3 py-2.5">
                         <span className="block truncate text-sm text-[var(--color-text)]">{event.title}</span>
-                        {event.kind === "switching" && (
-                          <span className="block truncate text-[10px] text-[var(--color-text-muted)]">{event.children.length} 次小切换收在这里了</span>
+                        {(event.kind === "switching" || event.kind === "app-session") && (
+                          <span className="block truncate text-[10px] text-[var(--color-text-muted)]">
+                            {event.kind === "switching" ? `${event.children.length} 次小切换收在这里了` : `${event.children.length} 段内容收在这里了`}
+                          </span>
                         )}
                       </div>
                       <div className="w-28 flex-shrink-0 px-2 py-2.5 text-right flex items-center justify-end gap-1">
@@ -166,6 +169,25 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
         i += cluster.length;
         continue;
       }
+      const appSession = collectAppSession(sorted, i, nsfwFilterEnabled);
+      if (appSession.length > 1) {
+        const first = appSession[0]!;
+        const last = appSession[appSession.length - 1]!;
+        events.push({
+          key: `${deviceId}:app:${first.started_at}:${appKey(first)}`,
+          kind: "app-session",
+          appName: first.app_name,
+          appId: first.app_id,
+          title: describeAppSession(first),
+          startedAt: first.started_at,
+          endedAt: last.ended_at,
+          durationSeconds: spanSeconds(appSession),
+          isCurrent: isCurrentEvent(deviceId, last.ended_at, onlineDevices) && appSession.some((seg) => currentAppByDevice[deviceId] === seg.app_name),
+          children: compactChildren(appSession),
+        });
+        i += appSession.length;
+        continue;
+      }
       const merged = collectSameState(sorted, i, nsfwFilterEnabled);
       const first = merged[0]!;
       const last = merged[merged.length - 1]!;
@@ -179,7 +201,7 @@ function buildDeviceEvents(segments: TimelineSegment[], currentAppByDevice: Reco
         endedAt: last.ended_at,
         durationSeconds: spanSeconds(merged),
         isCurrent: isCurrentEvent(deviceId, last.ended_at, onlineDevices) && currentAppByDevice[deviceId] === first.app_name,
-        children: merged.length > 1 ? compactChildren(merged) : (meaningfulDetailTitle(first, nsfwFilterEnabled) ? [first] : []),
+        children: merged.length > 1 ? compactChildren(merged) : (hasUsefulChildDetail([first], nsfwFilterEnabled) ? [first] : []),
       });
       i += merged.length;
     }
@@ -221,8 +243,7 @@ function collectSameVisibleState(segments: TimelineSegment[], startIndex: number
     if (!isSameVisibleMergeCandidate(next, nsfwFilterEnabled)) break;
     if (segmentVisibleSignature(next, nsfwFilterEnabled) !== signature) break;
     const nextStart = new Date(next.started_at).getTime();
-    const gap = nextStart - previousEndMs;
-    if (Number.isNaN(nextStart) || Number.isNaN(previousEndMs) || gap < 0 || gap > SAME_VISIBLE_GAP_SECONDS * 1000) break;
+    if (!canMergeSparseTimelineGap(first, next, previousEndMs, nextStart)) break;
     merged.push(next);
     previousEndMs = new Date(next.ended_at || next.started_at).getTime();
   }
@@ -239,6 +260,30 @@ function collectSameState(segments: TimelineSegment[], startIndex: number, nsfwF
     merged.push(next);
   }
   return merged;
+}
+
+function collectAppSession(segments: TimelineSegment[], startIndex: number, nsfwFilterEnabled = true) {
+  const first = segments[startIndex]!;
+  if (!isAppSessionCandidate(first, nsfwFilterEnabled)) return [first];
+  const key = appKey(first);
+  const merged = [first];
+  let previousEndMs = new Date(first.ended_at || first.started_at).getTime();
+  for (let j = startIndex + 1; j < segments.length; j += 1) {
+    const next = segments[j]!;
+    if (!isAppSessionCandidate(next, nsfwFilterEnabled)) break;
+    if (appKey(next) !== key) break;
+    const nextStart = new Date(next.started_at).getTime();
+    if (!canMergeSparseTimelineGap(first, next, previousEndMs, nextStart)) break;
+    merged.push(next);
+    previousEndMs = new Date(next.ended_at || next.started_at).getTime();
+  }
+  return merged.length > 1 ? merged : [first];
+}
+
+function isAppSessionCandidate(seg: TimelineSegment, nsfwFilterEnabled = true) {
+  if (isIdleSegment(seg) || isLauncherSegment(seg)) return false;
+  if (nsfwFilterEnabled && shouldMaskAppDescription(seg.app_name, seg.app_id, seg.display_title)) return false;
+  return !!meaningfulDetailTitle(seg, nsfwFilterEnabled) || !!backgroundMediaTitle(seg);
 }
 
 function segmentSignature(seg: TimelineSegment, nsfwFilterEnabled = true) {
@@ -274,6 +319,15 @@ function isUsefulSegment(seg: TimelineSegment) {
   return seconds >= MIN_VISIBLE_SECONDS || seconds === 0;
 }
 
+function canMergeSparseTimelineGap(first: TimelineSegment, next: TimelineSegment, previousEndMs: number, nextStartMs: number) {
+  if (Number.isNaN(nextStartMs) || Number.isNaN(previousEndMs)) return false;
+  const gap = nextStartMs - previousEndMs;
+  if (gap >= 0 && gap <= SAME_VISIBLE_GAP_SECONDS * 1000) return true;
+  const firstStartMs = new Date(first.started_at).getTime();
+  const sparseGap = nextStartMs - firstStartMs;
+  return !Number.isNaN(firstStartMs) && sparseGap > 0 && sparseGap <= SPARSE_REPORT_GAP_SECONDS * 1000;
+}
+
 function durationSeconds(seg: TimelineSegment) {
   if (typeof seg.duration_seconds === "number") return Math.max(0, seg.duration_seconds);
   return Math.max(0, Math.round((seg.duration_minutes || 0) * 60));
@@ -297,8 +351,15 @@ function describeSegment(seg: TimelineSegment, nsfwFilterEnabled = true) {
   });
 }
 
+function describeAppSession(seg: TimelineSegment) {
+  const appName = (seg.app_name || "").trim();
+  return appName ? `正在用${appName}喵~` : "正在使用应用喵~";
+}
+
 function describeChild(seg: TimelineSegment, nsfwFilterEnabled = true) {
-  return meaningfulDetailTitle(seg, nsfwFilterEnabled) || describeSegment(seg, nsfwFilterEnabled);
+  const title = meaningfulDetailTitle(seg, nsfwFilterEnabled) || describeSegment(seg, nsfwFilterEnabled);
+  const media = backgroundMediaTitle(seg);
+  return media ? `${title} · 后台播放「${media}」` : title;
 }
 
 function meaningfulDetailTitle(seg: TimelineSegment, nsfwFilterEnabled = true) {
@@ -343,7 +404,12 @@ function compactChildren(children: TimelineSegment[]) {
   const compacted: TimelineSegment[] = [];
   for (const child of children) {
     const previous = compacted[compacted.length - 1];
-    if (previous && previous.app_name === child.app_name && (previous.display_title || "") === (child.display_title || "")) {
+    if (
+      previous &&
+      previous.app_name === child.app_name &&
+      (previous.display_title || "") === (child.display_title || "") &&
+      backgroundMediaSignature(previous) === backgroundMediaSignature(child)
+    ) {
       previous.ended_at = child.ended_at || previous.ended_at;
       previous.duration_seconds = durationSeconds(previous) + durationSeconds(child);
       previous.duration_minutes = Math.round(previous.duration_seconds / 60);
@@ -355,7 +421,7 @@ function compactChildren(children: TimelineSegment[]) {
 }
 
 function hasUsefulChildDetail(children: TimelineSegment[], nsfwFilterEnabled = true) {
-  return children.some((child) => !!meaningfulDetailTitle(child, nsfwFilterEnabled));
+  return children.some((child) => !!meaningfulDetailTitle(child, nsfwFilterEnabled) || !!backgroundMediaTitle(child));
 }
 
 function isIdleSegment(seg: TimelineSegment) {
@@ -376,6 +442,29 @@ function isBrowserLikeSegment(seg: TimelineSegment) {
     value.includes("edge") ||
     value.includes("safari") ||
     value.includes("浏览器");
+}
+
+function appKey(seg: TimelineSegment) {
+  return `${seg.app_id || ""}|${seg.app_name || ""}`;
+}
+
+function backgroundMediaTitle(seg: TimelineSegment) {
+  const media = seg.extra?.media;
+  if (media?.playing === false) return "";
+  return (media?.title || seg.extra?.music?.title || "").trim();
+}
+
+function backgroundMediaSignature(seg: TimelineSegment) {
+  const media = seg.extra?.media;
+  const music = seg.extra?.music;
+  return [
+    media?.playing === false ? "paused" : "playing",
+    media?.package_name || "",
+    media?.app || music?.app || "",
+    media?.title || music?.title || "",
+    media?.artist || music?.artist || "",
+    media?.state || "",
+  ].join("|");
 }
 
 function getAppColor(appName: string, colorMap: Map<string, string>): string {

@@ -13,13 +13,11 @@ delete process.env.AI_API_KEY;
 const encoder = new TextEncoder();
 
 describe("ai-config", () => {
-  afterAll(async () => {
-    const { db } = await import("../src/db");
-    db.close();
+  afterAll(() => {
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch {
-      // SQLite can release WAL/SHM handles slightly after close on Windows.
+      // The shared Bun test process keeps src/db open for other test files.
     }
   });
 

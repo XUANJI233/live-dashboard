@@ -102,6 +102,11 @@ if (!columnExists("activities", "display_title")) {
   db.run("ALTER TABLE activities ADD COLUMN display_title TEXT DEFAULT ''");
 }
 
+// activities.extra (small JSON snapshot for timeline-only metadata)
+if (!columnExists("activities", "extra")) {
+  db.run("ALTER TABLE activities ADD COLUMN extra TEXT DEFAULT '{}'");
+}
+
 // device_states.display_title
 if (!columnExists("device_states", "display_title")) {
   db.run("ALTER TABLE device_states ADD COLUMN display_title TEXT DEFAULT ''");
@@ -348,8 +353,8 @@ export function hmacTitle(title: string): string {
 
 // Prepared statements
 export const insertActivity = db.prepare(`
-  INSERT INTO activities (device_id, device_name, platform, app_id, app_name, window_title, display_title, title_hash, time_bucket, started_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO activities (device_id, device_name, platform, app_id, app_name, window_title, display_title, extra, title_hash, time_bucket, started_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(device_id, app_id, title_hash, time_bucket) DO NOTHING
 `);
 

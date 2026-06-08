@@ -152,11 +152,24 @@ export function buildTimelineSegments(activities: ActivityRecord[], options: { o
         duration_minutes: Math.max(0, Math.round(durationSeconds / 60)),
         device_id: activity.device_id,
         device_name: activity.device_name,
+        extra: parseActivityExtra(activity.extra),
       });
     }
   }
 
   return segments.sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime());
+}
+
+function parseActivityExtra(raw: string | undefined): TimelineSegment["extra"] {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as TimelineSegment["extra"]
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function isTodayForOffset(date: string, tzOffsetMinutes: number): boolean {

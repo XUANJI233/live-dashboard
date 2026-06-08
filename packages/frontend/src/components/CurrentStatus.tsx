@@ -114,8 +114,10 @@ function DeviceMetaLine({ device }: { device: DeviceState }) {
   if (extra?.device?.vpn_active) {
     parts.push(extra.device.vpn_name ? `VPN ${extra.device.vpn_name}` : "VPN");
   }
-  if (extra?.input?.input_active || extra?.input?.is_typing) {
-    parts.push(extra.input.is_typing ? "正在输入" : "输入框活跃");
+  const audio = audioOutputLabel(device);
+  if (audio) parts.push(audio);
+  if (typeof extra?.device?.ambient_lux === "number") {
+    parts.push(`环境光 ${Math.round(extra.device.ambient_lux)} lx`);
   }
   if (extra?.device?.window_mode && extra.device.window_mode !== "fullscreen") {
     parts.push(extra.device.window_mode);
@@ -141,4 +143,20 @@ function isActivePrimaryDevice(device: DeviceState) {
 
 function isWatchDevice(device: DeviceState) {
   return device.platform === "zepp" || device.extra?.device?.device_kind === "watch";
+}
+
+function audioOutputLabel(device: DeviceState): string | null {
+  const extra = device.extra?.device;
+  if (!extra?.audio_output_connected) return null;
+  const type = extra.audio_output_type;
+  const label = type === "bluetooth_headset"
+    ? "蓝牙耳机"
+    : type === "wired_headset"
+    ? "有线耳机"
+    : type === "usb_audio"
+    ? "USB 音频"
+    : type === "hdmi_audio"
+    ? "外接音频"
+    : "音频输出";
+  return extra.audio_output_name ? `${label} ${extra.audio_output_name}` : label;
 }
