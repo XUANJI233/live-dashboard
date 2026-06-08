@@ -628,13 +628,8 @@ def show_settings_dialog(current_config: dict | None = None) -> dict | None:
     y = (root.winfo_screenheight() - h) // 2
     root.geometry(f"+{x}+{y}")
     root.deiconify()
-    try:
-        root.attributes("-topmost", True)
-        root.after(300, lambda: root.attributes("-topmost", False))
-    except Exception:
-        pass
     root.lift()
-    root.focus_force()
+    root.focus_set()
 
     root.mainloop()
     return result[0]
@@ -1156,7 +1151,6 @@ class TrayAgent:
         self._current_target = ""
         self._icon: pystray.Icon | None = None
         self._settings_requested = False
-        self._settings_open = False
         self._msg_client: MessageClient | None = None
         self._unread_count = 0
         self._icons = {
@@ -1263,27 +1257,9 @@ class TrayAgent:
             self._icon.update_menu()
 
     def _open_settings(self, _icon=None, _item=None):
-        self.open_settings_async()
+        self.request_settings()
 
-    def open_settings_async(self) -> None:
-        with self._lock:
-            if self._settings_open:
-                return
-            self._settings_open = True
-        threading.Thread(
-            target=self._settings_worker,
-            daemon=True,
-            name="settings-dialog",
-        ).start()
-
-    def _settings_worker(self) -> None:
-        saved = open_settings_in_subprocess()
-        with self._lock:
-            self._settings_open = False
-        if not saved:
-            if self._icon:
-                self._icon.update_menu()
-            return
+    def request_settings(self) -> None:
         self._settings_requested = True
         shutdown_event.set()
         if self._icon:
@@ -1324,6 +1300,8 @@ class TrayAgent:
 
     def run(self):
         """Run the tray icon (blocking — call from main thread)."""
+        if self._settings_requested:
+            return
         icon_path = base_dir / "icon.ico"
         if icon_path.exists():
             from PIL import Image
@@ -1478,7 +1456,7 @@ def main() -> None:
     def request_settings_from_existing_instance() -> None:
         tray = tray_ref["tray"]
         if tray:
-            tray.open_settings_async()
+            tray.request_settings()
         else:
             pending_settings_request.set()
 
@@ -1549,7 +1527,7 @@ def main() -> None:
             if tray:
                 if pending_settings_request.is_set():
                     pending_settings_request.clear()
-                    tray.open_settings_async()
+                    tray.request_settings()
                 monitor = threading.Thread(
                     target=_monitor_loop,
                     args=(cfg, reporter, tray, ws_client, msg_client),
@@ -1565,6 +1543,7 @@ def main() -> None:
 
                 if tray.settings_requested:
                     shutdown_event.clear()
+                    open_settings_in_subprocess()
                     continue  # Restart with new config
                 else:
                     break  # Quit
