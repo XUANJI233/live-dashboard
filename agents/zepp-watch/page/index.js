@@ -64,6 +64,13 @@ Page(
         text: '', text_size: px(14), color: 0x888888, align_h: hmUI.align.CENTER_H,
       })
 
+        gWRefresh = hmUI.createWidget(hmUI.widget.BUTTON, {
+          x: px(42), y: px(258), w: px(396), h: px(50),
+          text: '刷新配置', text_size: px(20), radius: px(10),
+          normal_color: 0x445566, press_color: 0x334455,
+          click_func: onRefreshConfig,
+        })
+
       // Debug line on screen
       gWDebug = hmUI.createWidget(hmUI.widget.TEXT, {
           x: px(10), y: px(340), w: px(460), h: px(130),
@@ -169,7 +176,6 @@ function updateUI() {
   // 重建按钮实现切换
   if (gWBtn) { hmUI.deleteWidget(gWBtn) }
   if (gWUpload) { hmUI.deleteWidget(gWUpload) }
-  if (gWRefresh) { hmUI.deleteWidget(gWRefresh) }
   gWBtn = hmUI.createWidget(hmUI.widget.BUTTON, {
     x: px(42), y: px(150), w: px(396), h: px(55),
     text: gRunning ? '停止同步' : '启动同步', text_size: px(24), radius: px(12),
@@ -183,12 +189,6 @@ function updateUI() {
     normal_color: 0x3388cc, press_color: 0x226699,
     click_func: onManualUpload,
   })
-  gWRefresh = hmUI.createWidget(hmUI.widget.BUTTON, {
-    x: px(42), y: px(280), w: px(396), h: px(48),
-    text: '刷新配置', text_size: px(20), radius: px(10),
-    normal_color: 0x555555, press_color: 0x333333,
-    click_func: onRefreshConfig,
-    })
   gWStatus.setProperty(hmUI.prop.MORE, {
     text: gRunning ? '正在后台同步' : (has ? '已配置，点击启动' : '请在手机端设置'),
     color: gRunning ? 0x00aa55 : (has ? 0xaaaaaa : 0x888888)
