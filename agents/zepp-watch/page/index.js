@@ -7,6 +7,7 @@ import { BasePage } from '@zeppos/zml/base-page'
 var gUrl = '', gToken = '', gRunning = false, gInterval = 300, gPage = null
 var gConfig = {}
 var gWUrl = null, gWBtn = null, gWUpload = null, gWStatus = null, gWDebug = null
+var gWRefresh = null
 const CONFIG_KEY = 'lw_cfg'
 const MANUAL_FULL_SYNC_KEY = 'lw_manual_full'
 const localStorage = new LocalStorage()
@@ -142,6 +143,22 @@ function onManualUpload() {
     .catch(function (e) { dbg('manual side failed: ' + e) })
 }
 
+function onRefreshConfig() {
+  hmUI.showToast({ text: '刷新配置...' })
+  gPage.request({ method: 'GET_CONFIG' }).then(function (r) {
+    gUrl = r.serverUrl || ''
+    gToken = r.token || ''
+    gRunning = r.enabled || false
+    gInterval = Number(r.syncInterval || 300)
+    gConfig = r || {}
+    persistDeviceConfig(gRunning)
+    updateUI()
+    hmUI.showToast({ text: '配置已更新' })
+  }).catch(function (e) {
+    hmUI.showToast({ text: '刷新失败' })
+  })
+}
+
 function updateUI() {
   var has = gUrl && gToken
   if (gWUrl) {
@@ -152,6 +169,7 @@ function updateUI() {
   // 重建按钮实现切换
   if (gWBtn) { hmUI.deleteWidget(gWBtn) }
   if (gWUpload) { hmUI.deleteWidget(gWUpload) }
+  if (gWRefresh) { hmUI.deleteWidget(gWRefresh) }
   gWBtn = hmUI.createWidget(hmUI.widget.BUTTON, {
     x: px(42), y: px(150), w: px(396), h: px(55),
     text: gRunning ? '停止同步' : '启动同步', text_size: px(24), radius: px(12),
@@ -165,6 +183,12 @@ function updateUI() {
     normal_color: 0x3388cc, press_color: 0x226699,
     click_func: onManualUpload,
   })
+  gWRefresh = hmUI.createWidget(hmUI.widget.BUTTON, {
+    x: px(42), y: px(280), w: px(396), h: px(48),
+    text: '刷新配置', text_size: px(20), radius: px(10),
+    normal_color: 0x555555, press_color: 0x333333,
+    click_func: onRefreshConfig,
+    })
   gWStatus.setProperty(hmUI.prop.MORE, {
     text: gRunning ? '正在后台同步' : (has ? '已配置，点击启动' : '请在手机端设置'),
     color: gRunning ? 0x00aa55 : (has ? 0xaaaaaa : 0x888888)

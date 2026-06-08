@@ -167,12 +167,21 @@ AppService(
 
     // Read config
     restoreConfig()
+    requestConfigFromCompanion(this)
 
     const manualFullSync = readManualFullSyncRequest()
 
-      // Refresh config from companion first, then proceed.
-      // Local config from restoreConfig() may be stale — companion has the latest.
-      requestConfigThenProceed(this, manualFullSync)
+    // Collect and upload data. Manual upload is one-shot and does not enable
+    // recurring background sync.
+    if ((enabled || manualFullSync) && serverUrl && token) {
+      collectAndUpload({ forceFull: manualFullSync, messenger: this })
+    }
+
+    // Alarm will be set after async config arrives (requestConfigFromCompanion callback).
+    // Fallback: if restoreConfig already had config, set alarm now.
+    if (enabled && serverUrl && token) {
+      setupNextAlarm()
+    }
   },
 
   onDestroy() {
@@ -251,52 +260,6 @@ function requestConfigFromCompanion(messenger) {
   } catch (e) {
     console.log('[LiveWatch:device] Config sync unavailable: ' + ((e && e.message) || e))
   }
-}
-
-function requestConfigThenProceed(messenger, manualFullSync) {
-  var companionResolved = false
-  var proceed = function () {
-    if (companionResolved) return // guard against double-call
-    companionResolved = true
-    if ((enabled || manualFullSync) && serverUrl && token) {
-      collectAndUpload({ forceFull: manualFullSync, messenger: messenger })
-    }
-    if (enabled && serverUrl && token) {
-      setupNextAlarm()
-    }
-  }
-
-  // Try companion first
-  if (messenger && typeof messenger.request === 'function') {
-    try {
-      var pending = messenger.request({ method: 'GET_CONFIG' })
-      if (pending && typeof pending.then === 'function') {
-        pending.then(function (cfg) {
-          if (cfg && cfg.serverUrl && cfg.token) {
-            applyConfig(cfg)
-            writeLocalConfig(currentConfigSnapshot())
-            console.log('[LiveWatch:device] Config synced from companion')
-          }
-          proceed()
-        }, function (e) {
-          console.log('[LiveWatch:device] Config sync failed: ' + ((e && e.message) || e))
-          proceed()
-        })
-        // Timeout: if companion doesn't respond in 3s, use local config
-        setTimeout(function () {
-          if (!companionResolved) {
-            console.log('[LiveWatch:device] Config sync timeout, using local config')
-            proceed()
-          }
-        }, 3000)
-        return
-      }
-    } catch (e) {
-      console.log('[LiveWatch:device] Config sync unavailable: ' + ((e && e.message) || e))
-    }
-  }
-  // No companion available or request failed — use local config
-  proceed()
 }
 
 function normalizePayloadQueue(value) {
