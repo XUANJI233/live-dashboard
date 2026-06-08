@@ -17,6 +17,8 @@ export interface WsData {
 const MAX_TEXT_LENGTH = 500;
 const MAX_MESSAGE_JSON_BYTES = 4096;
 const MAX_MESSAGE_PAYLOAD_BYTES = 4096;
+const PUBLIC_MESSAGE_RECENT_HOURS = 24 * 365;
+const PUBLIC_MESSAGE_RECENT_MAX_HOURS = 24 * 365;
 const MESSAGE_TTL_MINUTES = 30;
 const VIEWER_RATE_LIMIT = 10;
 const VIEWER_API_RATE_LIMIT = 60;
@@ -472,9 +474,9 @@ function cleanKind(value: unknown): "public" | "private" {
 }
 
 function publicRecentHours(value: string | null): number {
-  const parsed = value ? Number.parseInt(value, 10) : 48;
-  if (!Number.isFinite(parsed)) return 48;
-  return Math.min(168, Math.max(1, parsed));
+  const parsed = value ? Number.parseInt(value, 10) : PUBLIC_MESSAGE_RECENT_HOURS;
+  if (!Number.isFinite(parsed)) return PUBLIC_MESSAGE_RECENT_HOURS;
+  return Math.min(PUBLIC_MESSAGE_RECENT_MAX_HOURS, Math.max(1, parsed));
 }
 
 function recordMessage(

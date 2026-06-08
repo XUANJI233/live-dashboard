@@ -6,7 +6,7 @@ import { ensureViewerToken, getCachedViewerToken, type TokenStatus } from "@/lib
 import { sendRealtime, subscribeRealtime, subscribeRealtimeState } from "@/lib/realtime-client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
-const PUBLIC_RECENT_HOURS = 48;
+const PUBLIC_RECENT_HOURS = 24 * 365;
 
 interface Props {
   device?: DeviceState;

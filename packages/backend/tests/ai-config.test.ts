@@ -440,6 +440,21 @@ describe("ai-config", () => {
     }
   });
 
+  test("keeps older public messages visible in the default recent window", async () => {
+    const { db } = await import("../src/db");
+    const { handlePublicMessages } = await import("../src/services/realtime");
+    const id = `public-old-${randomHex(8)}`;
+    const createdAt = new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString();
+    db.prepare(`
+      INSERT INTO visitor_messages (id, device_id, viewer_id, viewer_name, kind, direction, text, created_at)
+      VALUES (?, '__public__', 'viewer-test', 'tester', 'public', 'viewer', 'old public message', ?)
+    `).run(id, createdAt);
+
+    const response = handlePublicMessages(new Request("https://example.test/api/messages/public?recent=1"));
+    const body = await response.json() as { messages?: Array<{ id?: string }> };
+    expect(body.messages?.some((message) => message.id === id)).toBe(true);
+  });
+
   test("reuses the stored AI key when the app leaves the key field blank", async () => {
     const {
       describeAiConfig,
