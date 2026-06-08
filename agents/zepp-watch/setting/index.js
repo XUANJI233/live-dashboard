@@ -17,9 +17,6 @@ function cleanToken(value) {
 function cleanServerUrl(value) {
   return String(value || '')
     .trim()
-    .replace(/\/+$/, '')
-    .replace(/\/api\/(?:report|health-data)$/i, '')
-    .replace(/\/api$/i, '')
 }
 
 function clampSyncInterval(value) {
