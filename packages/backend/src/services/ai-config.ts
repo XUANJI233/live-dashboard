@@ -16,6 +16,7 @@ const AI_CONFIG_ENCRYPTION_ALG = "X25519-A256GCM-HS256";
 const AI_CONFIG_PAYLOAD_VERSION = 2;
 const SEALED_JSON_VERSION = 2;
 const STORE_SEALING_SALT = "live-dashboard-ai-config-store-v2";
+const AI_CONFIG_TEST_MAX_TOKENS = 8192;
 
 export interface AiRuntimeConfig {
   apiUrl: string;
@@ -180,7 +181,7 @@ export async function testAiConfigConnection(config: Pick<AiRuntimeConfig, "apiU
         { role: "system", content: "你是连接测试助手。只返回 OK。" },
         { role: "user", content: "ping" },
       ],
-      maxTokens: 64,
+      maxTokens: AI_CONFIG_TEST_MAX_TOKENS,
       temperature: 0,
       timeoutMs: 20_000,
     });
@@ -238,12 +239,14 @@ export async function requestAiChatCompletion(
       .map((message) => message.content)
       .join("\n\n") || undefined;
     const messages = options.messages.filter((message) => message.role !== "system");
+    const providerOptions = deepSeekProviderOptions(config);
     const result = await generateText({
       model: languageModelForConfig(config),
       ...(system ? { system } : {}),
       messages,
       maxOutputTokens: options.maxTokens,
       temperature: options.temperature,
+      ...(providerOptions ? { providerOptions } : {}),
       abortSignal: controller.signal,
       maxRetries: 1,
     });
@@ -305,6 +308,15 @@ function isDeepSeekEndpoint(apiUrl: string): boolean {
   } catch {
     return false;
   }
+}
+
+function deepSeekProviderOptions(config: Pick<AiRuntimeConfig, "apiUrl">) {
+  if (!isDeepSeekEndpoint(config.apiUrl)) return undefined;
+  return {
+    deepseek: {
+      thinking: { type: "enabled" },
+    },
+  };
 }
 
 function logAiCacheUsage(model: string, usage: unknown, providerMetadata: unknown): void {

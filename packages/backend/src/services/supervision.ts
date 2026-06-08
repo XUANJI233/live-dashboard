@@ -25,6 +25,8 @@ const MAX_TIMELINE_ROWS = 48;
 const MAX_HISTORY_ROWS = 6;
 const ALERT_ACTIVE_MINUTES = 45;
 const LOCAL_RESTART_COOLDOWN_SECONDS = 120;
+const SUPERVISION_RULES_MAX_TOKENS = 8192;
+const SUPERVISION_VERIFY_MAX_TOKENS = 8192;
 
 let supervisionInFlight = false;
 
@@ -60,7 +62,7 @@ export async function refreshSupervisionRules(settings = getSummarySettings()): 
         { role: "system", content: supervisionRulesSystemPrompt() },
         { role: "user", content: buildRulesUserPrompt(settings) },
       ],
-      maxTokens: 380,
+      maxTokens: SUPERVISION_RULES_MAX_TOKENS,
       temperature: 0.25,
       timeoutMs: 30_000,
       parse: parseRulesResponse,
@@ -267,7 +269,7 @@ async function verifyDeviationWithAi(
       { role: "system", content: supervisionVerifySystemPrompt(settings) },
       { role: "user", content: buildVerifyUserPrompt(settings, segments, stats, meta) },
     ],
-    maxTokens: 340,
+    maxTokens: SUPERVISION_VERIFY_MAX_TOKENS,
     temperature: settings.mode === "sharp" ? 0.65 : 0.35,
     timeoutMs: 30_000,
     parse: parseDecisionResponse,
@@ -600,12 +602,71 @@ function normalizePatternList(value: unknown): string[] {
   const out: string[] = [];
   for (const item of value) {
     if (typeof item !== "string") continue;
-    const pattern = promptText(item, 120);
+    const pattern = normalizeRegexPattern(promptText(item, 120));
     if (!pattern || !isSafeRegexPattern(pattern)) continue;
     if (!out.includes(pattern)) out.push(pattern);
     if (out.length >= MAX_REGEX_COUNT) break;
   }
   return out;
+}
+
+function normalizeRegexPattern(pattern: string): string {
+  const unwrappedPattern = unwrapRegExpConstructorPattern(pattern) ?? pattern;
+  const withoutInlineFlag = unwrappedPattern.replace(/^\(\?i\)/i, "").trim();
+  const scopedInlineFlag = withoutInlineFlag.match(/^\(\?i:(.*)\)$/i);
+  if (scopedInlineFlag) return `(?:${scopedInlineFlag[1]})`;
+  return withoutInlineFlag;
+}
+
+function unwrapRegExpConstructorPattern(pattern: string): string | null {
+  const match = pattern.match(/^(?:new\s+)?RegExp\s*\(([\s\S]*)\)\s*;?$/);
+  if (!match) return null;
+  const args = match[1]?.trim() || "";
+  const firstArg = parseQuotedArgument(args);
+  if (!firstArg) return null;
+  const rest = args.slice(firstArg.end).trim();
+  if (rest && !/^,\s*["'`][a-z]*["'`]\s*$/i.test(rest)) return null;
+  return firstArg.value.trim();
+}
+
+function parseQuotedArgument(value: string): { value: string; end: number } | null {
+  const quote = value[0];
+  if (quote !== "\"" && quote !== "'" && quote !== "`") return null;
+  let escaped = false;
+  let raw = "";
+  for (let index = 1; index < value.length; index += 1) {
+    const char = value[index]!;
+    if (escaped) {
+      raw += `\\${char}`;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === quote) {
+      return { value: decodeQuotedArgument(raw, quote), end: index + 1 };
+    }
+    raw += char;
+  }
+  return null;
+}
+
+function decodeQuotedArgument(raw: string, quote: string): string {
+  if (quote === "\"") {
+    try {
+      return JSON.parse(`"${raw}"`) as string;
+    } catch {
+      // Fall through to conservative unescaping.
+    }
+  }
+  return raw
+    .replace(/\\\\/g, "\\")
+    .replace(/\\(["'`])/g, "$1")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\r")
+    .replace(/\\t/g, "\t");
 }
 
 function buildSupervisorPayload(

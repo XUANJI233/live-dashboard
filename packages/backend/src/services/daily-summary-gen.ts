@@ -29,6 +29,8 @@ const SUPERVISION_HISTORY_KEY = "supervision_recent_history";
 const DAILY_TIMELINE_PROMPT_SEGMENT_LIMIT = 240;
 const WEEKLY_TIMELINE_PROMPT_SEGMENT_LIMIT = 720;
 const CONTEXT_TIMELINE_PROMPT_SEGMENT_LIMIT = 160;
+const DAILY_SUMMARY_MAX_TOKENS = 8192;
+const WEEKLY_SUMMARY_MAX_TOKENS = 8192;
 
 export type SummaryMode = "gentle" | "normal" | "sharp";
 export type SummaryKind = "daily" | "weekly";
@@ -635,7 +637,7 @@ async function generateSummaryText(input: {
         ),
       },
     ];
-    const maxTokens = input.kind === "weekly" ? 420 : 240;
+    const maxTokens = input.kind === "weekly" ? WEEKLY_SUMMARY_MAX_TOKENS : DAILY_SUMMARY_MAX_TOKENS;
     const temperature = input.settings.mode === "sharp" ? 0.85 : 0.72;
     logAiDebug("summary.request", {
       kind: input.kind,

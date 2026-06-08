@@ -256,6 +256,7 @@ describe("ai-config", () => {
       expect(url).toBe("https://api.deepseek.com/v1/chat/completions");
       const body = JSON.parse(String(init?.body || "{}"));
       expect(body.model).toBe("deepseek-chat");
+      expect(body.thinking).toEqual({ type: "enabled" });
       return Response.json({
         id: "deepseek-test",
         object: "chat.completion",
@@ -295,6 +296,45 @@ describe("ai-config", () => {
     }
   });
 
+  test("enables DeepSeek thinking mode and forwards the requested output budget", async () => {
+    const { requestAiChatCompletion } = await import("../src/services/ai-config");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      expect(body.thinking).toEqual({ type: "enabled" });
+      expect(body.max_tokens).toBe(8192);
+      return Response.json({
+        id: "deepseek-thinking-budget-test",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: "{\"ok\":true}" },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 6, total_tokens: 16 },
+      });
+    }) as typeof fetch;
+    try {
+      const text = await requestAiChatCompletion({
+        apiUrl: "https://api.deepseek.com/",
+        apiKey: `deepseek-key-${randomHex(8)}`,
+        model: "deepseek-v4-flash",
+      }, {
+        messages: [
+          { role: "system", content: "只返回严格 JSON" },
+          { role: "user", content: "返回 {\"ok\":true}" },
+        ],
+        maxTokens: 8192,
+        temperature: 0,
+      });
+      expect(text).toBe("{\"ok\":true}");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("tests DeepSeek chat with an available model when the app still has the OpenAI default selected", async () => {
     const { testAiConfigConnection } = await import("../src/services/ai-config");
     const originalFetch = globalThis.fetch;
@@ -308,6 +348,8 @@ describe("ai-config", () => {
       if (url === "https://api.deepseek.com/chat/completions") {
         const body = JSON.parse(String(init?.body || "{}"));
         expect(body.model).toBe("deepseek-chat");
+        expect(body.thinking).toEqual({ type: "enabled" });
+        expect(body.max_tokens).toBe(8192);
         return Response.json({
           id: "deepseek-test",
           object: "chat.completion",
@@ -337,6 +379,62 @@ describe("ai-config", () => {
         "https://api.deepseek.com/models",
         "https://api.deepseek.com/chat/completions",
       ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("normalizes DeepSeek inline regex flags in generated supervision rules", async () => {
+    const { describeAiConfig, saveEncryptedAiConfigFromDevice } = await import("../src/services/ai-config");
+    const { getSummarySettings } = await import("../src/services/daily-summary-gen");
+    const { refreshSupervisionRules } = await import("../src/services/supervision");
+    const token = `test-token-${randomHex(16)}`;
+    const encryption = (await describeAiConfig()).encryption!;
+    await saveEncryptedAiConfigFromDevice(await encryptAiConfigForServer(encryption.public_key, token, {
+      api_url: "https://api.deepseek.com/",
+      api_key: `deepseek-key-${randomHex(8)}`,
+      model: "deepseek-v4-flash",
+    }), token);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+      expect(url).toBe("https://api.deepseek.com/chat/completions");
+      const body = JSON.parse(String(init?.body || "{}"));
+      expect(body.max_tokens).toBe(8192);
+      expect(body.thinking).toEqual({ type: "enabled" });
+      return Response.json({
+        id: "deepseek-supervision-rules-test",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: JSON.stringify({
+              whitelist_app_regex: ["(?i)^com\\.android\\.", "(?i:Live Dashboard)", "new RegExp(\"com\\\\.example\", \"i\")"],
+              blacklist_app_regex: ["RegExp(\"(?:douyin|tiktok)\", \"i\")"],
+              target_app_regex: ["new RegExp(\"Code\", \"i\")"],
+              reason: "test",
+            }),
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+      });
+    }) as typeof fetch;
+    try {
+      const settings = {
+        ...getSummarySettings(),
+        target: "专注开发 Live Dashboard",
+        supervision_enabled: true,
+      };
+      const result = await refreshSupervisionRules(settings);
+      expect(result.supervision_rules_error).toBeNull();
+      expect(result.supervision_rules.whitelist_app_regex).toEqual(["^com\\.android\\.", "(?:Live Dashboard)", "com\\.example"]);
+      expect(result.supervision_rules.blacklist_app_regex).toEqual(["(?:douyin|tiktok)"]);
+      expect(result.supervision_rules.target_app_regex).toEqual(["Code"]);
     } finally {
       globalThis.fetch = originalFetch;
     }
