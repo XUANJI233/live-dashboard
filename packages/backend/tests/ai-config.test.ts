@@ -286,6 +286,113 @@ describe("ai-config", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("tests DeepSeek chat with an available model when the app still has the OpenAI default selected", async () => {
+    const { testAiConfigConnection } = await import("../src/services/ai-config");
+    const originalFetch = globalThis.fetch;
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+      requested.push(url);
+      if (url === "https://api.deepseek.com/models") {
+        return Response.json({ data: [{ id: "deepseek-reasoner" }, { id: "deepseek-chat" }] });
+      }
+      if (url === "https://api.deepseek.com/chat/completions") {
+        const body = JSON.parse(String(init?.body || "{}"));
+        expect(body.model).toBe("deepseek-chat");
+        return Response.json({
+          id: "deepseek-test",
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: "deepseek-chat",
+          choices: [{
+            index: 0,
+            message: { role: "assistant", content: "OK" },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        });
+      }
+      return new Response("unexpected", { status: 404 });
+    }) as typeof fetch;
+    try {
+      const result = await testAiConfigConnection({
+        apiUrl: "https://api.deepseek.com",
+        apiKey: `deepseek-key-${randomHex(8)}`,
+        model: "gpt-4o-mini",
+      });
+      expect(result.ok).toBe(true);
+      expect(result.selected_model).toBe("deepseek-chat");
+      expect(result.model_available).toBe(true);
+      expect(result.message).toContain("已自动使用可用模型 deepseek-chat");
+      expect(requested).toEqual([
+        "https://api.deepseek.com/models",
+        "https://api.deepseek.com/chat/completions",
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("reuses the stored AI key when the app leaves the key field blank", async () => {
+    const {
+      describeAiConfig,
+      getAiRuntimeConfig,
+      saveEncryptedAiConfigFromDevice,
+      testEncryptedAiConfigFromDevice,
+    } = await import("../src/services/ai-config");
+    const token = `test-token-${randomHex(16)}`;
+    const storedKey = `stored-ai-key-${randomHex(16)}`;
+    const encryption = (await describeAiConfig()).encryption!;
+    await saveEncryptedAiConfigFromDevice(await encryptAiConfigForServer(encryption.public_key, token, {
+      api_url: "https://ai.example.invalid/v1/chat/completions",
+      api_key: storedKey,
+      model: "gpt-4o-mini",
+    }), token);
+
+    const reusePayload = await encryptAiConfigForServer(encryption.public_key, token, {
+      api_url: "https://ai.example.invalid/v1/chat/completions",
+      api_key: "",
+      model: "gpt-4o-mini",
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+      const auth = init?.headers instanceof Headers
+        ? init.headers.get("authorization")
+        : (init?.headers as Record<string, string> | undefined)?.Authorization ??
+          (init?.headers as Record<string, string> | undefined)?.authorization;
+      expect(auth).toBe(`Bearer ${storedKey}`);
+      if (url === "https://ai.example.invalid/v1/models") {
+        return Response.json({ data: [{ id: "gpt-4o-mini" }] });
+      }
+      if (url === "https://ai.example.invalid/v1/chat/completions") {
+        return Response.json({
+          id: "chatcmpl-test",
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: "gpt-4o-mini",
+          choices: [{
+            index: 0,
+            message: { role: "assistant", content: "OK" },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        });
+      }
+      return new Response("unexpected", { status: 404 });
+    }) as typeof fetch;
+    try {
+      const tested = await testEncryptedAiConfigFromDevice(reusePayload, token);
+      expect(tested.ok).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    await saveEncryptedAiConfigFromDevice(reusePayload, token);
+    const runtime = await getAiRuntimeConfig();
+    expect(runtime?.apiKey).toBe(storedKey);
+  });
 });
 
 async function encryptAiConfigForServer(

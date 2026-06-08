@@ -138,7 +138,7 @@ export async function saveEncryptedAiConfigFromDevice(input: unknown, deviceToke
   if (!deviceToken) {
     throw Object.assign(new Error("Missing device token"), { code: "TOKEN_REQUIRED", status: 401 });
   }
-  const config = await decryptDevicePayload(input, deviceToken);
+  const config = await configWithReusableStoredKey(await decryptDevicePayload(input, deviceToken));
   await writeStoredAiConfig(config);
   return describeAiConfig();
 }
@@ -150,7 +150,7 @@ export async function testEncryptedAiConfigFromDevice(input: unknown, deviceToke
   if (!deviceToken) {
     throw Object.assign(new Error("Missing device token"), { code: "TOKEN_REQUIRED", status: 401 });
   }
-  const config = await decryptDevicePayload(input, deviceToken);
+  const config = await configWithReusableStoredKey(await decryptDevicePayload(input, deviceToken));
   return testAiConfigConnection(config);
 }
 
@@ -170,9 +170,12 @@ export async function testAiConfigConnection(config: Pick<AiRuntimeConfig, "apiU
     modelsError = safeErrorMessage(e);
   }
 
-  const modelAvailable = models.length > 0 ? models.includes(normalized.model) : null;
+  const requestedModel = normalized.model;
+  const chatModel = modelForConnectionTest(requestedModel, models, normalized.apiUrl);
+  const modelAvailable = models.length > 0 ? models.includes(chatModel) : null;
+  const modelAdjusted = chatModel !== requestedModel;
   try {
-    await requestAiChatCompletion(normalized, {
+    await requestAiChatCompletion({ ...normalized, model: chatModel }, {
       messages: [
         { role: "system", content: "你是连接测试助手。只返回 OK。" },
         { role: "user", content: "ping" },
@@ -189,7 +192,7 @@ export async function testAiConfigConnection(config: Pick<AiRuntimeConfig, "apiU
         ? `模型列表获取成功，但聊天端点测试失败：${detail}`
         : `AI 连接测试失败：${detail}`,
       models,
-      selected_model: normalized.model,
+      selected_model: chatModel,
       model_available: modelAvailable,
       models_url: modelsUrl,
       chat_checked: true,
@@ -203,11 +206,14 @@ export async function testAiConfigConnection(config: Pick<AiRuntimeConfig, "apiU
   const modelText = models.length > 0
     ? `已获取 ${models.length} 个模型`
     : `聊天测试通过，模型列表不可用：${modelsError || "供应商未返回模型列表"}`;
+  const adjustedText = modelAdjusted
+    ? `，已自动使用可用模型 ${chatModel} 完成聊天测试`
+    : "";
   return {
     ok: true,
-    message: `${modelText}${availabilityText}`,
+    message: `${modelText}${availabilityText}${adjustedText}`,
     models,
-    selected_model: normalized.model,
+    selected_model: chatModel,
     model_available: modelAvailable,
     models_url: modelsUrl,
     chat_checked: true,
@@ -255,6 +261,24 @@ export async function requestAiChatCompletion(
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+function modelForConnectionTest(requestedModel: string, models: string[], apiUrl: string): string {
+  const requested = requestedModel.trim();
+  if (models.length === 0) {
+    if (isDeepSeekEndpoint(apiUrl) && isOpenAiDefaultModel(requested)) return "deepseek-chat";
+    return requested;
+  }
+  if (models.includes(requested)) return requested;
+  if (isDeepSeekEndpoint(apiUrl)) {
+    const preferredDeepSeek = ["deepseek-chat", "deepseek-reasoner"].find((model) => models.includes(model));
+    if (preferredDeepSeek) return preferredDeepSeek;
+  }
+  return models[0] || requested;
+}
+
+function isOpenAiDefaultModel(model: string): boolean {
+  return !model || model === "gpt-4o-mini" || model.startsWith("gpt-");
 }
 
 function languageModelForConfig(config: Pick<AiRuntimeConfig, "apiUrl" | "apiKey" | "model">) {
@@ -409,7 +433,7 @@ function validateStoredConfig(input: Record<string, unknown>): StoredAiConfig {
   const apiUrl = normalizeAiApiUrl(String(input.api_url || input.apiUrl || ""));
   const apiKey = String(input.api_key || input.apiKey || "").trim();
   const model = String(input.model || ENV_AI_MODEL || "gpt-4o-mini").trim();
-  if (apiKey.length < 8 || apiKey.length > 4096) {
+  if (apiKey.length > 0 && (apiKey.length < 8 || apiKey.length > 4096)) {
     throw Object.assign(new Error("AI API key invalid"), { code: "AI_KEY_INVALID", status: 400 });
   }
   if (!/^[\w.:\-\/]{1,120}$/.test(model)) {
@@ -420,6 +444,18 @@ function validateStoredConfig(input: Record<string, unknown>): StoredAiConfig {
     apiKey,
     model,
     updatedAt: new Date().toISOString(),
+  };
+}
+
+async function configWithReusableStoredKey(config: StoredAiConfig): Promise<StoredAiConfig> {
+  if (config.apiKey) return config;
+  const stored = await readStoredAiConfig();
+  if (!stored?.apiKey) {
+    throw Object.assign(new Error("AI API key required for the first configuration"), { code: "AI_KEY_REQUIRED", status: 400 });
+  }
+  return {
+    ...config,
+    apiKey: stored.apiKey,
   };
 }
 
