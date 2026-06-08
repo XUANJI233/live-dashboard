@@ -388,9 +388,8 @@ function sanitizeTarget(value: unknown): string {
 
 function normalizeBoolean(value: unknown): boolean {
   if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value === 1;
   const raw = String(value || "").trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on" || raw === "计划休息";
+  return raw === "true" || raw === "yes" || raw === "on" || raw === "计划休息";
 }
 
 function normalizeMinuteThreshold(value: unknown, fallback: number): number {
@@ -754,7 +753,7 @@ function buildUserPrompt(
   supervisionLines: string[],
 ): string {
   const topApps = aggregateByApp(segments).slice(0, kind === "weekly" ? 12 : 8);
-  const byDay = aggregateByDay(segments);
+  const byDay = aggregateByDay(segments, tzOffsetMinutes);
   const timelineLimit = kind === "weekly" ? segments.length : 64;
   const totalMinutes = segments.reduce((sum, segment) => sum + segmentMinutes(segment), 0);
   const firstDate = kind === "weekly" ? periodLabel.slice(0, 10) : periodLabel;
@@ -935,10 +934,10 @@ function aggregateByApp(segments: TimelineSegment[]): Array<{ appName: string; m
     .sort((a, b) => b.minutes - a.minutes || b.count - a.count);
 }
 
-function aggregateByDay(segments: TimelineSegment[]): Array<{ date: string; minutes: number; topApps: string[] }> {
+function aggregateByDay(segments: TimelineSegment[], tzOffsetMinutes: number): Array<{ date: string; minutes: number; topApps: string[] }> {
   const map = new Map<string, TimelineSegment[]>();
   for (const segment of segments) {
-    const date = segment.started_at.slice(0, 10);
+    const date = localDateFromIso(segment.started_at, tzOffsetMinutes);
     const rows = map.get(date) ?? [];
     rows.push(segment);
     map.set(date, rows);
@@ -950,6 +949,13 @@ function aggregateByDay(segments: TimelineSegment[]): Array<{ date: string; minu
       minutes: rows.reduce((sum, segment) => sum + segmentMinutes(segment), 0),
       topApps: aggregateByApp(rows).slice(0, 3).map((item) => item.appName),
     }));
+}
+
+function localDateFromIso(value: string, tzOffsetMinutes: number): string {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return sanitizePromptText(value, 10) || "unknown";
+  const local = new Date(ms - safeTimezoneOffset(tzOffsetMinutes) * 60_000);
+  return `${local.getUTCFullYear()}-${String(local.getUTCMonth() + 1).padStart(2, "0")}-${String(local.getUTCDate()).padStart(2, "0")}`;
 }
 
 function segmentMinutes(segment: TimelineSegment): number {

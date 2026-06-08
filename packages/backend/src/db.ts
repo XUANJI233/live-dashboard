@@ -386,11 +386,12 @@ export const markOfflineDevices = db.prepare(`
   WHERE is_online = 1
   AND (last_seen_at IS NULL OR last_seen_at = '' OR datetime(last_seen_at) IS NULL
        OR (
-         platform = 'zepp'
+         (platform = 'zepp' OR extra LIKE '%"sleeping":true%' OR extra LIKE '%"sleeping": true%')
          AND datetime(last_seen_at) < datetime('now', '-20 minutes')
        )
        OR (
          platform <> 'zepp'
+         AND NOT (extra LIKE '%"sleeping":true%' OR extra LIKE '%"sleeping": true%')
          AND datetime(last_seen_at) < datetime('now', '-1 minute')
        ))
 `);

@@ -99,4 +99,30 @@ describe("device-status-handler", () => {
     expect(activityCount).toBe(1);
     expect(state?.extra).not.toContain("heartbeat_only");
   });
+
+  test("sleeping Android devices use the extended offline threshold", async () => {
+    const { processReportPayload } = await import("../src/services/device-status-handler");
+    const { db, markOfflineDevices } = await import("../src/db");
+    const device = {
+      device_id: "sleeping-phone",
+      device_name: "Phone",
+      platform: "android" as const,
+    };
+
+    processReportPayload({
+      app_id: "sleeping",
+      window_title: "(-.-)zzZ",
+      extra: { sleeping: true },
+    }, device);
+
+    db.prepare("UPDATE device_states SET last_seen_at = datetime('now', '-5 minutes'), is_online = 1 WHERE device_id = ?").run(device.device_id);
+    markOfflineDevices.run();
+    let state = db.prepare("SELECT is_online FROM device_states WHERE device_id = ?").get(device.device_id) as { is_online: number };
+    expect(state.is_online).toBe(1);
+
+    db.prepare("UPDATE device_states SET last_seen_at = datetime('now', '-21 minutes'), is_online = 1 WHERE device_id = ?").run(device.device_id);
+    markOfflineDevices.run();
+    state = db.prepare("SELECT is_online FROM device_states WHERE device_id = ?").get(device.device_id) as { is_online: number };
+    expect(state.is_online).toBe(0);
+  });
 });

@@ -189,6 +189,16 @@ describe("ai-config", () => {
     expect(supervised.supervision_vibrate).toBe(false);
     expect(supervised.supervision_skip_watch_sleep).toBe(false);
     expect(supervised.supervision_lsp_freeze).toBe(true);
+
+    const numericFlags = updateSummarySettings({
+      planned_rest: 1,
+      supervision_enabled: 1,
+      supervision_vibrate: 1,
+      client_updated_at: "2026-06-07T13:00:00.000Z",
+    });
+    expect(numericFlags.planned_rest).toBe(false);
+    expect(numericFlags.supervision_enabled).toBe(false);
+    expect(numericFlags.supervision_vibrate).toBe(false);
   });
 
   test("preserves bounded LSPosed frozen package records in device extras", async () => {

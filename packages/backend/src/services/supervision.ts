@@ -14,6 +14,7 @@ import { getAiRuntimeConfig, requestAiChatCompletion, type AiChatMessage, type A
 import { logAiDebug } from "./ai-debug";
 import { sendSupervisorMessageToDevices } from "./realtime";
 import { healthContextLinesForRange, trustedWatchSleepingAt } from "./health-context";
+import { parseAiJsonObject } from "./ai-json";
 import { timelineJsonBlockForPrompt } from "./timeline-prompt";
 
 const LAST_AI_CHECK_AT_KEY = "supervision_last_ai_check_at";
@@ -500,6 +501,9 @@ function parseDecisionResponse(raw: string): SupervisionDecision {
   if (typeof parsed.deviated !== "boolean") {
     throw new Error("AI supervision response missing deviated boolean");
   }
+  if (typeof parsed.vibrate !== "boolean" || typeof parsed.freeze !== "boolean") {
+    throw new Error("AI supervision response missing vibrate/freeze booleans");
+  }
   const reason = promptText(String(parsed.reason || ""), 180);
   const message = promptText(String(parsed.message || ""), 180);
   return {
@@ -508,7 +512,7 @@ function parseDecisionResponse(raw: string): SupervisionDecision {
     reason,
     recovery_regex: normalizePatternList(parsed.recovery_regex ?? parsed.recoveryRegex),
     violation_regex: normalizePatternList(parsed.violation_regex ?? parsed.violationRegex),
-    vibrate: parsed.vibrate !== false,
+    vibrate: parsed.vibrate === true,
     freeze: parsed.freeze === true,
     freeze_minutes: normalizeFreezeMinutes(parsed.freeze_minutes ?? parsed.freezeMinutes),
   };
@@ -588,19 +592,7 @@ function pickJsonField(source: Record<string, unknown>, snake: string, camel: st
 }
 
 function parseJsonObject(raw: string): Record<string, unknown> {
-  try {
-    const direct = JSON.parse(raw);
-    return direct && typeof direct === "object" && !Array.isArray(direct) ? direct as Record<string, unknown> : {};
-  } catch {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) return {};
-    try {
-      const parsed = JSON.parse(match[0]);
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-    } catch {
-      return {};
-    }
-  }
+  return parseAiJsonObject(raw);
 }
 
 function normalizePatternList(value: unknown): string[] {
