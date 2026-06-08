@@ -66,7 +66,7 @@ Page(
 
       // Debug line on screen
       gWDebug = hmUI.createWidget(hmUI.widget.TEXT, {
-        x: px(10), y: px(260), w: px(460), h: px(180),
+          x: px(10), y: px(340), w: px(460), h: px(130),
         text: '', text_size: px(12), color: 0x666666,
         text_style: hmUI.text_style.WRAP,
       })

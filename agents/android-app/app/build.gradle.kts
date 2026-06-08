@@ -6,19 +6,6 @@ plugins {
         id("io.gitlab.arturbosch.detekt")
 }
 
-val ciVersionCode = providers.environmentVariable("ANDROID_VERSION_CODE")
-    .orElse(providers.environmentVariable("GITHUB_RUN_NUMBER"))
-    .map { it.toIntOrNull()?.coerceAtLeast(1) ?: 1 }
-    .orElse(1)
-val releaseKeystorePath = providers.environmentVariable("ANDROID_KEYSTORE_PATH")
-val releaseKeystorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD")
-val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS")
-val releaseKeyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD")
-val releaseSigningReady =
-    releaseKeystorePath.orNull?.isNotBlank() == true &&
-        releaseKeystorePassword.orNull?.isNotBlank() == true &&
-        releaseKeyAlias.orNull?.isNotBlank() == true
-
 android {
     namespace = "com.monika.dashboard"
     compileSdk = 36
@@ -27,7 +14,7 @@ android {
         applicationId = "com.monika.dashboard"
         minSdk = 26
         targetSdk = 36
-        versionCode = ciVersionCode.get()
+        versionCode = 1
         versionName = "1.0.0"
     }
 
@@ -44,28 +31,8 @@ android {
         }
     }
 
-    signingConfigs {
-        create("release") {
-            if (releaseSigningReady) {
-                storeFile = file(releaseKeystorePath.get())
-                storePassword = releaseKeystorePassword.get()
-                keyAlias = releaseKeyAlias.get()
-                keyPassword = releaseKeyPassword.orNull?.takeIf { it.isNotBlank() }
-                    ?: releaseKeystorePassword.get()
-                storeType = "pkcs12"
-                enableV1Signing = false
-                enableV2Signing = true
-                enableV3Signing = true
-                enableV4Signing = false
-            }
-        }
-    }
-
     buildTypes {
         release {
-            if (releaseSigningReady) {
-                signingConfig = signingConfigs.getByName("release")
-            }
             isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -133,9 +100,6 @@ dependencies {
     // OkHttp
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-    // X25519 sealed payloads for AI credential upload on API 26+
-    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
-
     // Optional LSPosed module entry. Only the privileged flavor compiles the
     // module classes; normal APKs do not contain LSPosed metadata or hooks.
     add("privilegedCompileOnly", "io.github.libxposed:api:101.0.1")
@@ -149,11 +113,6 @@ dependencies {
 
     // Core
     implementation("androidx.core:core-ktx:1.15.0")
-
-    // Markdown rendering for AI summaries. Markwon is native Android TextView
-    // rendering (no WebView); only table support is enabled.
-    implementation("io.noties.markwon:core:4.6.2")
-    implementation("io.noties.markwon:ext-tables:4.6.2")
 
         // ── Testing ──
         testImplementation("junit:junit:4.13.2")
