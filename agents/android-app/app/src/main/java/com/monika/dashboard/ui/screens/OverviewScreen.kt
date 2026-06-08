@@ -290,13 +290,13 @@ private suspend fun refreshOverviewSummary(
 
     val client = ReportClient(url, token)
     try {
-        if (isWeekly) {
-            client.refreshWeeklySummary(selectedDate)
-        } else {
-            client.refreshDailySummary(selectedDate)
+        return@withContext runCatching {
+            if (isWeekly) {
+                client.refreshWeeklySummary(selectedDate).getOrThrow()
+            } else {
+                client.refreshDailySummary(selectedDate).getOrThrow()
+            }
         }
-    } catch (e: Exception) {
-        Result.failure(e)
     } finally {
         client.shutdown()
     }
