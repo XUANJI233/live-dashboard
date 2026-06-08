@@ -125,4 +125,83 @@ describe("device-status-handler", () => {
     state = db.prepare("SELECT is_online FROM device_states WHERE device_id = ?").get(device.device_id) as { is_online: number };
     expect(state.is_online).toBe(0);
   });
+
+  test("reported offline timeout controls device online threshold", async () => {
+    const { processReportPayload } = await import("../src/services/device-status-handler");
+    const { db, markOfflineDevices } = await import("../src/db");
+    const device = {
+      device_id: "sleeping-watch",
+      device_name: "Watch",
+      platform: "zepp" as const,
+    };
+
+    processReportPayload({
+      app_id: "zepp_watch",
+      window_title: "手表在线",
+      extra: {
+        sleeping: true,
+        device: {
+          capability_mode: "normal",
+          energy_policy: "zepp_sleep_30m_alarm",
+          offline_timeout_minutes: 35,
+        },
+      },
+    }, device);
+
+    db.prepare("UPDATE device_states SET last_seen_at = datetime('now', '-34 minutes'), is_online = 1 WHERE device_id = ?").run(device.device_id);
+    markOfflineDevices.run();
+    let state = db.prepare("SELECT is_online FROM device_states WHERE device_id = ?").get(device.device_id) as { is_online: number };
+    expect(state.is_online).toBe(1);
+
+    db.prepare("UPDATE device_states SET last_seen_at = datetime('now', '-36 minutes'), is_online = 1 WHERE device_id = ?").run(device.device_id);
+    markOfflineDevices.run();
+    state = db.prepare("SELECT is_online FROM device_states WHERE device_id = ?").get(device.device_id) as { is_online: number };
+    expect(state.is_online).toBe(0);
+  });
+
+  test("reported offline timeout over max is ignored and returned as an error", async () => {
+    const { processReportPayload, ReportPayloadError } = await import("../src/services/device-status-handler");
+    const { db } = await import("../src/db");
+    const device = {
+      device_id: "bad-timeout-watch",
+      device_name: "Watch",
+      platform: "zepp" as const,
+    };
+
+    expect(() => processReportPayload({
+      app_id: "zepp_watch",
+      window_title: "手表在线",
+      extra: {
+        device: {
+          network_type: "Zepp Bridge",
+          offline_timeout_minutes: 61,
+        },
+      },
+    }, device)).toThrow(ReportPayloadError);
+
+    const state = db.prepare("SELECT extra FROM device_states WHERE device_id = ?").get(device.device_id) as { extra: string } | undefined;
+    expect(state?.extra).toContain("Zepp Bridge");
+    expect(state?.extra).not.toContain("offline_timeout_minutes");
+  });
+
+  test("reported offline timeout rejects fractional values outside the contract", async () => {
+    const { processReportPayload, ReportPayloadError } = await import("../src/services/device-status-handler");
+    const device = {
+      device_id: "fractional-timeout-watch",
+      device_name: "Watch",
+      platform: "zepp" as const,
+    };
+
+    expect(() => processReportPayload({
+      app_id: "zepp_watch",
+      window_title: "手表在线",
+      extra: { device: { offline_timeout_minutes: 60.4 } },
+    }, device)).toThrow(ReportPayloadError);
+
+    expect(() => processReportPayload({
+      app_id: "zepp_watch",
+      window_title: "手表在线",
+      extra: { device: { offline_timeout_minutes: 0.5 } },
+    }, device)).toThrow(ReportPayloadError);
+  });
 });

@@ -26,6 +26,9 @@ import { timelineJsonBlockForPrompt } from "./timeline-prompt";
 
 const SUMMARY_SETTINGS_KEY = "ai_summary_settings";
 const SUPERVISION_HISTORY_KEY = "supervision_recent_history";
+const DAILY_TIMELINE_PROMPT_SEGMENT_LIMIT = 240;
+const WEEKLY_TIMELINE_PROMPT_SEGMENT_LIMIT = 720;
+const CONTEXT_TIMELINE_PROMPT_SEGMENT_LIMIT = 160;
 
 export type SummaryMode = "gentle" | "normal" | "sharp";
 export type SummaryKind = "daily" | "weekly";
@@ -754,7 +757,6 @@ function buildUserPrompt(
 ): string {
   const topApps = aggregateByApp(segments).slice(0, kind === "weekly" ? 12 : 8);
   const byDay = aggregateByDay(segments, tzOffsetMinutes);
-  const timelineLimit = kind === "weekly" ? segments.length : 64;
   const totalMinutes = segments.reduce((sum, segment) => sum + segmentMinutes(segment), 0);
   const firstDate = kind === "weekly" ? periodLabel.slice(0, 10) : periodLabel;
   const weekday = validDateString(firstDate) ? isoWeekday(firstDate) : null;
@@ -810,13 +812,14 @@ function buildUserPrompt(
     }
   }
 
+  const timelineSegments = segmentsForTimelinePrompt(segments, kind);
   lines.push("", kind === "weekly" ? "本周时间线 JSON（按设备和应用会话聚合，按时间升序）:" : "今天时间线 JSON（按设备和应用会话聚合，按时间升序）:");
-  lines.push(timelineJsonBlockForPrompt(segments.slice(0, timelineLimit), {
+  lines.push(timelineJsonBlockForPrompt(timelineSegments, {
     label: kind === "weekly" ? "weekly_activity_timeline" : "today_activity_timeline",
     tzOffsetMinutes,
   }));
-  if (segments.length > timelineLimit) {
-    lines.push(`- 其余 ${segments.length - timelineLimit} 段已省略，请以主要应用和每日节奏为准。`);
+  if (segments.length > timelineSegments.length) {
+    lines.push(`- 其余 ${segments.length - timelineSegments.length} 段已省略，请以主要应用、会话顺序和每日节奏为准。`);
   }
 
   if (kind === "daily" && contextDays.length > 0) {
@@ -833,14 +836,25 @@ function buildUserPrompt(
       if (item.sleep_lines.length > 0) lines.push(...item.sleep_lines);
       else lines.push("- 无记录");
       lines.push(`${relation}时间线 JSON（按设备和应用会话聚合）:`);
-      lines.push(timelineJsonBlockForPrompt(item.segments, {
+      const contextSegments = item.segments.slice(0, CONTEXT_TIMELINE_PROMPT_SEGMENT_LIMIT);
+      lines.push(timelineJsonBlockForPrompt(contextSegments, {
         label: `${relation}_activity_timeline`,
         tzOffsetMinutes,
       }));
+      if (item.segments.length > contextSegments.length) {
+        lines.push(`- ${relation}另有 ${item.segments.length - contextSegments.length} 段已省略，只用于趋势参考。`);
+      }
     }
   }
 
   return lines.join("\n");
+}
+
+function segmentsForTimelinePrompt(segments: TimelineSegment[], kind: SummaryKind): TimelineSegment[] {
+  const limit = kind === "weekly"
+    ? WEEKLY_TIMELINE_PROMPT_SEGMENT_LIMIT
+    : DAILY_TIMELINE_PROMPT_SEGMENT_LIMIT;
+  return segments.slice(0, limit);
 }
 
 function sanitizeAiSummary(value: string, kind: SummaryKind): string {

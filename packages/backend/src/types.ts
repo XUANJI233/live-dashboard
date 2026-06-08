@@ -24,6 +24,7 @@ export interface ReportPayload {
       relay_mode?: string;
       energy_policy?: string;
       min_interval_ms?: number;
+      offline_timeout_minutes?: number;
       device_kind?: string;
       window_mode?: string;
       heartbeat_only?: boolean;

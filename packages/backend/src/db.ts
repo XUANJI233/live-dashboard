@@ -1,4 +1,11 @@
 import { Database } from "bun:sqlite";
+import {
+  ACTIVE_DEVICE_OFFLINE_TIMEOUT_MINUTES,
+  MAX_REPORTED_OFFLINE_TIMEOUT_MINUTES,
+  MIN_REPORTED_OFFLINE_TIMEOUT_MINUTES,
+  OFFLINE_TIMEOUT_FIELD,
+  SLEEPING_DEVICE_OFFLINE_TIMEOUT_MINUTES,
+} from "./offline-policy";
 
 const DB_PATH = process.env.DB_PATH || "./live-dashboard.db";
 const SQLITE_BUSY_TIMEOUT_MS = positiveIntegerEnv("SQLITE_BUSY_TIMEOUT_MS", 5000);
@@ -385,14 +392,19 @@ export const markOfflineDevices = db.prepare(`
   UPDATE device_states SET is_online = 0
   WHERE is_online = 1
   AND (last_seen_at IS NULL OR last_seen_at = '' OR datetime(last_seen_at) IS NULL
-       OR (
-         (platform = 'zepp' OR extra LIKE '%"sleeping":true%' OR extra LIKE '%"sleeping": true%')
-         AND datetime(last_seen_at) < datetime('now', '-20 minutes')
-       )
-       OR (
-         platform <> 'zepp'
-         AND NOT (extra LIKE '%"sleeping":true%' OR extra LIKE '%"sleeping": true%')
-         AND datetime(last_seen_at) < datetime('now', '-1 minute')
+       OR datetime(last_seen_at) < datetime(
+         'now',
+         '-' || (
+           CASE
+             WHEN json_type(CASE WHEN json_valid(extra) THEN extra ELSE '{}' END, '$.device.${OFFLINE_TIMEOUT_FIELD}') IN ('integer', 'real')
+              AND json_extract(CASE WHEN json_valid(extra) THEN extra ELSE '{}' END, '$.device.${OFFLINE_TIMEOUT_FIELD}') >= ${MIN_REPORTED_OFFLINE_TIMEOUT_MINUTES}
+              AND json_extract(CASE WHEN json_valid(extra) THEN extra ELSE '{}' END, '$.device.${OFFLINE_TIMEOUT_FIELD}') <= ${MAX_REPORTED_OFFLINE_TIMEOUT_MINUTES}
+             THEN CAST(json_extract(CASE WHEN json_valid(extra) THEN extra ELSE '{}' END, '$.device.${OFFLINE_TIMEOUT_FIELD}') AS INTEGER)
+             WHEN (platform = 'zepp' OR extra LIKE '%"sleeping":true%' OR extra LIKE '%"sleeping": true%')
+             THEN ${SLEEPING_DEVICE_OFFLINE_TIMEOUT_MINUTES}
+             ELSE ${ACTIVE_DEVICE_OFFLINE_TIMEOUT_MINUTES}
+           END
+         ) || ' minutes'
        ))
 `);
 

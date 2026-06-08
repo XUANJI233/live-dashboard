@@ -1,5 +1,5 @@
 import { authenticateToken } from "../middleware/auth";
-import { processReportPayload } from "../services/device-status-handler";
+import { processReportPayload, ReportPayloadError } from "../services/device-status-handler";
 
 /**
  * v1 HTTP report endpoint — legacy path still used by older clients
@@ -34,6 +34,9 @@ export async function handleReport(req: Request): Promise<Response> {
   try {
     processReportPayload(body as Record<string, unknown>, device);
   } catch (e: any) {
+    if (e instanceof ReportPayloadError) {
+      return Response.json({ error: e.message, code: e.code }, { status: e.status });
+    }
     console.error("[report] v1 handler error:", e.message);
     return Response.json({ error: "Internal error" }, { status: 500 });
   }

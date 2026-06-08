@@ -4,6 +4,7 @@ import { isNSFW } from "./nsfw-filter";
 const NSFW_FILTER_ENABLED = process.env.NSFW_FILTER_DISABLED !== "true";
 import { processDisplayTitle } from "./privacy-tiers";
 import { db, insertActivity, insertLocationRecord, upsertDeviceState, hmacTitle } from "../db";
+import { OFFLINE_TIMEOUT_FIELD, validateReportedOfflineTimeoutMinutes } from "../offline-policy";
 import type { DeviceInfo, TimelineSegmentExtra } from "../types";
 
 const MAX_TITLE_LENGTH = 256;
@@ -17,6 +18,17 @@ export interface PublicDeviceUpdate {
   app_name: string;
   display_title: string;
   extra: Record<string, unknown>;
+}
+
+export class ReportPayloadError extends Error {
+  readonly status = 400;
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "ReportPayloadError";
+    this.code = code;
+  }
 }
 
 function cleanString(value: unknown, max: number): string | undefined {
@@ -48,6 +60,7 @@ function cleanFiniteNumber(value: unknown, min: number, max: number): number | u
  * Does NOT perform auth — caller must already have a verified DeviceInfo.
  */
 export function processReportPayload(body: Record<string, unknown>, device: DeviceInfo): PublicDeviceUpdate | null {
+  let payloadError: ReportPayloadError | null = null;
   const rawExtra = body.extra && typeof body.extra === "object" && !Array.isArray(body.extra)
     ? (body.extra as Record<string, unknown>)
     : null;
@@ -134,6 +147,13 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (energyPolicy) deviceExtra.energy_policy = energyPolicy;
       const minIntervalMs = cleanFiniteNumber(deviceBody.min_interval_ms, 0, 24 * 60 * 60 * 1000);
       if (minIntervalMs != null) deviceExtra.min_interval_ms = Math.round(minIntervalMs);
+      const offlineTimeout = validateReportedOfflineTimeoutMinutes(deviceBody[OFFLINE_TIMEOUT_FIELD]);
+      if (offlineTimeout.error) {
+        payloadError = new ReportPayloadError("invalid_offline_timeout", offlineTimeout.error);
+      }
+      if (offlineTimeout.value != null) {
+        deviceExtra[OFFLINE_TIMEOUT_FIELD] = offlineTimeout.value;
+      }
       const deviceKind = cleanString(deviceBody.device_kind, MAX_SHORT_LENGTH);
       if (deviceKind) deviceExtra.device_kind = deviceKind;
       const windowMode = cleanString(deviceBody.window_mode, MAX_SHORT_LENGTH);
@@ -280,12 +300,14 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
     console.error("[report] Device state update error:", e.message);
   }
 
-  return {
+  const update = {
     app_id: appId,
     app_name: appName,
     display_title: displayTitle,
     extra,
   };
+  if (payloadError) throw payloadError;
+  return update;
 }
 
 function activityExtraSnapshot(extra: Record<string, unknown>): TimelineSegmentExtra {

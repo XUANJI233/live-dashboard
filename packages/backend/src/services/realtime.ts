@@ -2,7 +2,7 @@ import { db } from "../db";
 import { authenticateToken } from "../middleware/auth";
 import { currentHourWindow, currentMessageSlot, noStore, withCdnHeaders } from "./cdn";
 import { verifyViewerToken, viewerTokenFromRequest, viewerTokenRateLimit, edgeViewerIdentity } from "./viewer-auth";
-import { processReportPayload } from "./device-status-handler";
+import { processReportPayload, ReportPayloadError } from "./device-status-handler";
 import type { DeviceInfo } from "../types";
 import type { ServerWebSocket } from "bun";
 
@@ -819,6 +819,10 @@ export const realtimeWebSocket = {
         try {
           publicPayload = processReportPayload(data.payload, ws.data.device);
         } catch (e: any) {
+          if (e instanceof ReportPayloadError) {
+            send(ws, { type: "error", error: e.code, message: e.message });
+            return;
+          }
           console.error("[ws] device_status processing error:", e.message);
           send(ws, { type: "error", error: "status_processing_failed" });
           return;
