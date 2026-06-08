@@ -520,7 +520,6 @@ function sendToCompanionViaZml(payload, messenger) {
 function cleanServerUrl(value) {
   return String(value || '')
     .trim()
-    .replace(/\/+$/, '')
     .replace(/\/api\/(?:report|health-data)$/i, '')
     .replace(/\/api$/i, '')
 }
