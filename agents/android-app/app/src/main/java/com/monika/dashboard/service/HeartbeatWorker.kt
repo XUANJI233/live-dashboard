@@ -56,6 +56,7 @@ class HeartbeatWorker(
         const val MIN_INTERVAL_SECONDS = 5
         const val MAX_INTERVAL_SECONDS = 50
         const val DEFAULT_INTERVAL_SECONDS = 30
+        private const val SLEEPING_INTERVAL_SECONDS = 3 * 60
 
         fun schedule(context: Context, intervalSeconds: Int = DEFAULT_INTERVAL_SECONDS) {
             val safe = intervalSeconds.coerceIn(MIN_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS)
@@ -91,12 +92,15 @@ class HeartbeatWorker(
 
     override suspend fun doWork(): Result {
         val settings = SettingsStore(applicationContext)
-        val intervalSec = inputData.getInt(KEY_INTERVAL_SEC, DEFAULT_INTERVAL_SECONDS)
+        val requestedIntervalSec = inputData.getInt(KEY_INTERVAL_SEC, DEFAULT_INTERVAL_SECONDS)
+            .coerceAtLeast(MIN_INTERVAL_SECONDS)
+        val configuredIntervalSec = runCatching { settings.reportInterval.first() }
+            .getOrDefault(requestedIntervalSec)
         val highFrequency = settings.highFrequencyReport.first()
-        val nextIntervalSec = if (highFrequency) {
-            intervalSec
+        var nextIntervalSec = if (highFrequency) {
+            configuredIntervalSec
         } else {
-            intervalSec.coerceAtLeast(DEFAULT_INTERVAL_SECONDS)
+            configuredIntervalSec.coerceAtLeast(DEFAULT_INTERVAL_SECONDS)
         }
 
         try {
@@ -132,9 +136,16 @@ class HeartbeatWorker(
 
             val battery = getBatteryInfo()
             val snapshot = collectSystemSnapshot(capabilityMode, uploadForeground, uploadMedia)
-            val environment = DeviceEnvironmentCollector.collect(applicationContext)
             SupervisionAlertController.onSnapshot(applicationContext, snapshot)
             val mediaPackage = snapshot.media?.packageName?.takeIf { snapshot.media?.playing == true }
+            val sleepingWithoutMedia = snapshot.isSleeping() && mediaPackage == null
+            if (sleepingWithoutMedia) {
+                nextIntervalSec = nextIntervalSec.coerceAtLeast(SLEEPING_INTERVAL_SECONDS)
+            }
+            val environment = DeviceEnvironmentCollector.collect(
+                applicationContext,
+                includeAmbientLight = !snapshot.isSleeping(),
+            )
             val appId = when {
                 snapshot.isSleeping() && mediaPackage != null -> mediaPackage
                 snapshot.isSleeping() -> "sleeping"

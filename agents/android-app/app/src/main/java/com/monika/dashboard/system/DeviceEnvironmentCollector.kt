@@ -34,11 +34,14 @@ object DeviceEnvironmentCollector {
     @Volatile
     private var cachedLight: Pair<Long, Float>? = null
 
-    suspend fun collect(context: Context): DeviceEnvironment {
+    suspend fun collect(
+        context: Context,
+        includeAmbientLight: Boolean = true,
+    ): DeviceEnvironment {
         val appContext = context.applicationContext
         return DeviceEnvironment(
             audioOutput = collectAudioOutput(appContext),
-            ambientLux = collectAmbientLux(appContext),
+            ambientLux = if (includeAmbientLight) collectAmbientLux(appContext) else null,
             sampledAt = System.currentTimeMillis(),
         )
     }
