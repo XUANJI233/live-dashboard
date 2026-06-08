@@ -100,6 +100,11 @@ dependencies {
     // OkHttp
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // AI config encryption (X25519) and markdown rendering for summaries
+    implementation("org.bouncycastle:bcprov-jdk18on:1.82")
+    implementation("io.noties.markwon:core:4.6.2")
+    implementation("io.noties.markwon:ext-tables:4.6.2")
+
     // Optional LSPosed module entry. Only the privileged flavor compiles the
     // module classes; normal APKs do not contain LSPosed metadata or hooks.
     add("privilegedCompileOnly", "io.github.libxposed:api:101.0.1")

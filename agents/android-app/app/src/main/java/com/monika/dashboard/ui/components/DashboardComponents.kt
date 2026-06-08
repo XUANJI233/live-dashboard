@@ -237,6 +237,27 @@ fun StatusPill(
 }
 
 @Composable
+fun StatusBlock(
+    text: String,
+    modifier: Modifier = Modifier,
+    tone: DashboardTone = DashboardTone.Neutral,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = tone.surfaceColor(),
+        border = BorderStroke(1.dp, Border),
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = tone.contentColor(),
+        )
+    }
+}
+
+@Composable
 fun InitialBadge(
     text: String,
     modifier: Modifier = Modifier,

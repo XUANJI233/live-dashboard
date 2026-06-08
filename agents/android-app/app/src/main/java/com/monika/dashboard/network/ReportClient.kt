@@ -9,6 +9,7 @@ import org.json.JSONObject
 import java.io.IOException
 import android.content.Context
 import android.util.Base64
+import com.monika.dashboard.data.DebugLog
 import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.data.VisitorMessage
 import java.net.URLEncoder
@@ -598,6 +599,7 @@ class ReportClient(
     }
 
     fun fetchAiConfig(): Result<AiConfig> {
+        DebugLog.log("AI", "读取配置: ${serverUrl.trimEnd('/')}/api/ai-config")
         val request = Request.Builder()
             .url("${serverUrl.trimEnd('/')}/api/ai-config")
             .addHeader("Authorization", "Bearer $token")
@@ -607,6 +609,7 @@ class ReportClient(
     }
 
     fun updateAiConfig(apiUrl: String, apiKey: String, model: String): Result<AiConfig> {
+        DebugLog.log("AI", "保存配置: endpoint=${safeAiEndpointForLog(apiUrl)} model=${model.ifBlank { "默认" }} key=${if (apiKey.isBlank()) "复用服务器已保存密钥" else "使用新密钥"}")
         return try {
             val body = encryptedAiConfigBodyFromServer(apiUrl, apiKey, model).getOrElse {
                 return Result.failure(it)
@@ -624,6 +627,7 @@ class ReportClient(
     }
 
     fun testAiConfig(apiUrl: String, apiKey: String, model: String): Result<AiConfigTestResult> {
+        DebugLog.log("AI", "测试连接: endpoint=${safeAiEndpointForLog(apiUrl)} model=${model.ifBlank { "默认" }} key=${if (apiKey.isBlank()) "复用服务器已保存密钥" else "使用输入密钥"}")
         return try {
             val body = encryptedAiConfigBodyFromServer(apiUrl, apiKey, model).getOrElse {
                 return Result.failure(it)
@@ -789,11 +793,14 @@ class ReportClient(
         return try {
             val response = client.newCall(request).execute()
             response.use {
-                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(it.body?.string())}"))
-                val json = JSONObject(it.body?.string().orEmpty())
+                val raw = it.body?.string().orEmpty()
+                DebugLog.log("AI", "配置响应 HTTP ${it.code}: ${sanitizeLogText(raw).take(1200)}")
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(raw)}"))
+                val json = JSONObject(raw)
                 Result.success(parseAiConfig(json))
             }
         } catch (e: Exception) {
+            DebugLog.log("AI", "配置请求异常: ${sanitizeLogText(e.message.orEmpty()).take(800)}")
             Result.failure(e)
         }
     }
@@ -837,6 +844,10 @@ class ReportClient(
     private fun encryptedAiConfigBodyFromServer(apiUrl: String, apiKey: String, model: String): Result<JSONObject> {
         return try {
             val current = fetchAiConfig().getOrThrow()
+            DebugLog.log(
+                "AI",
+                "加密参数: serverKey=${current.encryptionPublicKeySha256?.take(12) ?: "missing"} locked=${current.locked} configured=${current.configured}"
+            )
             if (current.locked) {
                 return Result.failure(IOException("AI_CONFIG_LOCKED: ${current.message ?: "服务器环境变量已配置"}"))
             }
@@ -859,11 +870,19 @@ class ReportClient(
         return try {
             val response = client.newCall(request).execute()
             response.use {
-                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(it.body?.string())}"))
-                val json = JSONObject(it.body?.string().orEmpty())
-                Result.success(parseAiConfigTest(json))
+                val raw = it.body?.string().orEmpty()
+                DebugLog.log("AI", "测试响应 HTTP ${it.code}: ${sanitizeLogText(raw).take(1200)}")
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(raw)}"))
+                val json = JSONObject(raw)
+                val parsed = parseAiConfigTest(json)
+                DebugLog.log(
+                    "AI",
+                    "测试结果: ok=${parsed.ok} selected=${parsed.selectedModel.ifBlank { "none" }} models=${parsed.models.size} message=${sanitizeLogText(parsed.message).take(800)}"
+                )
+                Result.success(parsed)
             }
         } catch (e: Exception) {
+            DebugLog.log("AI", "测试异常: ${sanitizeLogText(e.message.orEmpty()).take(800)}")
             Result.failure(e)
         }
     }
@@ -949,7 +968,20 @@ class ReportClient(
             val code = json.optString("code")
             val error = json.optString("error")
             listOf(code, error).filter { it.isNotBlank() }.joinToString(": ")
-        }.getOrDefault(raw.orEmpty()).take(180).ifBlank { "request failed" }
+        }.getOrDefault(raw.orEmpty()).let(::sanitizeLogText).take(1000).ifBlank { "request failed" }
+
+    private fun safeAiEndpointForLog(value: String): String =
+        sanitizeLogText(value.trim()).take(300).ifBlank { "未填写" }
+
+    private fun sanitizeLogText(value: String): String {
+        var text = value
+        if (token.isNotBlank()) text = text.replace(token, "[device-token]")
+        text = text.replace(Regex("sk-[A-Za-z0-9_-]{8,}"), "sk-[redacted]")
+        text = Regex("(?i)(Bearer\\s+)[A-Za-z0-9._~+/-]+=*").replace(text) {
+            "${it.groupValues[1]}[redacted]"
+        }
+        return text.replace(Regex("\\s+"), " ").trim()
+    }
 
     data class HealthRecord(
         val type: String,

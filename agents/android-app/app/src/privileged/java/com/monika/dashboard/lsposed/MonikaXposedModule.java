@@ -173,6 +173,7 @@ public final class MonikaXposedModule extends XposedModule {
             java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private MediaSessionManager mediaSessionManager;
     private volatile String currentProcessName = "";
+    private volatile boolean systemServerProcess = false;
     private volatile boolean browserTitleReceiverRegistered = false;
     private volatile Handler uploadHandler;
     private HandlerThread uploadThread;
@@ -243,6 +244,7 @@ public final class MonikaXposedModule extends XposedModule {
     public void onModuleLoaded(@NonNull XposedModuleInterface.ModuleLoadedParam param) {
         instance = this;
         currentProcessName = param.getProcessName();
+        systemServerProcess = param.isSystemServer();
         log(Log.INFO, TAG, "onModuleLoaded: isSystemServer=" + param.isSystemServer() 
                 + " process=" + param.getProcessName() 
                 + " apiVersion=" + getApiVersion() 
@@ -252,7 +254,10 @@ public final class MonikaXposedModule extends XposedModule {
     @Override
     public void onSystemServerStarting(@NonNull XposedModuleInterface.SystemServerStartingParam param) {
         ClassLoader cl = param.getClassLoader();
+        systemServerProcess = true;
         initUploadThread();
+        Handler handler = new Handler(Looper.getMainLooper());
+        scheduleSystemServerReceivers(handler, 1500L);
         installInternalMediaHooks(cl);
         installForegroundSampler(cl);
         installInputMethodHooks(cl);
@@ -266,7 +271,7 @@ public final class MonikaXposedModule extends XposedModule {
         // a named process, while renderer/gpu/sandbox/service processes must be ignored.
         String processName = currentProcessName;
         if (!shouldHookBrowserProcess(packageName, processName)) {
-            log(Log.DEBUG, TAG, "skip browser non-main process: " + packageName + "/" + processName);
+            logDebug("skip browser non-main process: " + packageName + "/" + processName);
             return;
         }
         installActivityTitleHooks(param.getClassLoader(), packageName);
@@ -399,7 +404,7 @@ public final class MonikaXposedModule extends XposedModule {
             }
             return hooked;
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "foreground event hook skipped for " + className + ": " + t.getClass().getSimpleName());
+            logDebug("foreground event hook skipped for " + className + ": " + t.getClass().getSimpleName());
             return 0;
         }
     }
@@ -568,14 +573,9 @@ public final class MonikaXposedModule extends XposedModule {
         try {
             Handler handler = new Handler(Looper.getMainLooper());
             samplerStarted = true;
-            // Defer config loading and receiver registration to allow system context to fully initialize
-            handler.postDelayed(() -> {
-                try { loadDirectUploadConfig(); } catch (Throwable t) { log(Log.WARN, TAG, "deferred load config failed: " + t.getClass().getSimpleName()); }
-                try { registerConfigReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register receiver failed: " + t.getClass().getSimpleName()); }
-                try { registerBrowserTitleReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register browser title receiver failed: " + t.getClass().getSimpleName()); }
-                try { registerScreenStateReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register screen receiver failed: " + t.getClass().getSimpleName()); }
-                try { initMediaSessionListener(); } catch (Throwable t) { log(Log.WARN, TAG, "deferred init media listener failed: " + t.getClass().getSimpleName()); }
-            }, 10000L);
+            // Keep the delayed pass as a system-ready fallback for ROMs where
+            // the system context or MediaSessionService appears late.
+            scheduleSystemServerReceivers(handler, 10000L);
             handler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
@@ -624,6 +624,18 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable t) {
             log(Log.WARN, TAG, "config receiver failed: " + t.getClass().getSimpleName());
         }
+    }
+
+    private void scheduleSystemServerReceivers(Handler handler, long delayMs) {
+        if (handler == null || !isSystemServerProcess()) return;
+        handler.postDelayed(() -> {
+            try { loadDirectUploadConfig(); } catch (Throwable t) { log(Log.WARN, TAG, "deferred load config failed: " + t.getClass().getSimpleName()); }
+            try { registerConfigReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register receiver failed: " + t.getClass().getSimpleName()); }
+            try { registerBrowserTitleReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register browser title receiver failed: " + t.getClass().getSimpleName()); }
+            try { registerScreenStateReceiver(handler); } catch (Throwable t) { log(Log.WARN, TAG, "deferred register screen receiver failed: " + t.getClass().getSimpleName()); }
+            try { initMediaSessionListener(); } catch (Throwable t) { log(Log.WARN, TAG, "deferred init media listener failed: " + t.getClass().getSimpleName()); }
+            try { broadcastSnapshot(); } catch (Throwable t) { logDebug("deferred initial snapshot skipped: " + t.getClass().getSimpleName()); }
+        }, Math.max(0L, delayMs));
     }
 
     private void initUploadThread() {
@@ -735,26 +747,26 @@ public final class MonikaXposedModule extends XposedModule {
                     boolean wasRecentForeground = pkg.equals(recentForegroundBrowser)
                             && System.currentTimeMillis() - recentForegroundBrowserAt < 2000L;
                     if (!isCurrentForeground && !wasRecentForeground) {
-                        log(Log.DEBUG, TAG, "browser title ignored: " + pkg + " is not foreground");
+                        logDebug("browser title ignored: " + pkg + " is not foreground");
                         return;
                     }
                     if (!senderVerified && expectedNonce.length() > 0 && !expectedNonce.equals(actualNonce)) {
                         // Some ROM/browser processes cannot read the app-created nonce even
                         // though the broadcast comes from the active browser process. Keep the
                         // foreground-browser gate as the fallback trust boundary.
-                        log(Log.DEBUG, TAG, "browser title accepted without nonce for foreground browser: " + pkg);
+                        logDebug("browser title accepted without nonce for foreground browser: " + pkg);
                     }
 
                     foregroundPackage = pkg;
                     foregroundApp = safeString(resolveAppLabel(pkg));
                     foregroundActivity = safeString(activity);
                     if (!shouldApplyBrowserTitleCandidate(pkg, cleanTitle, source)) {
-                        log(Log.DEBUG, TAG, "browser title ignored by source priority: " + pkg + " title=" + cleanTitle + " source=" + source);
+                        logDebug("browser title ignored by source priority: " + pkg + " title=" + cleanTitle + " source=" + source);
                         return;
                     }
 
                     applyForegroundTitle(cleanTitle != null ? cleanTitle : "", source);
-                    log(Log.DEBUG, TAG, "browser title received: " + pkg + " title=" + foregroundTitle + " source=" + source);
+                    logDebug("browser title received: " + pkg + " title=" + foregroundTitle + " source=" + source);
                     maybeDirectUpload(true);
                 }
             };
@@ -822,7 +834,7 @@ public final class MonikaXposedModule extends XposedModule {
                                 }
                                 updateMediaFromSessionRecord(chain.getThisObject(), state, metadata);
                             } catch (Throwable t) {
-                                log(Log.DEBUG, TAG, "media record hook ignored: " + t.getClass().getSimpleName());
+                                logDebug("media record hook ignored: " + t.getClass().getSimpleName());
                             }
                             return result;
                         });
@@ -923,7 +935,7 @@ public final class MonikaXposedModule extends XposedModule {
                     controllers -> {
                         try {
                             if (controllers == null) return;
-                            log(Log.DEBUG, TAG, "active sessions changed: " + controllers.size());
+                            logDebug("active sessions changed: " + controllers.size());
                             String beforeMedia = mediaInfoKey();
                             // Check if the currently tracked media package is still active
                             String trackedPkg = mediaPackage;
@@ -936,7 +948,7 @@ public final class MonikaXposedModule extends XposedModule {
                                     }
                                 }
                                 if (!stillActive) {
-                                    log(Log.DEBUG, TAG, "media session removed: " + trackedPkg + ", clearing media info");
+                                    logDebug("media session removed: " + trackedPkg + ", clearing media info");
                                     clearMediaInfo();
                                 }
                             }
@@ -990,7 +1002,7 @@ public final class MonikaXposedModule extends XposedModule {
                         boolean nextPlaying = state.getState() == PlaybackState.STATE_PLAYING;
                         if (!nextPlaying) {
                             refreshActiveMediaState();
-                            log(Log.DEBUG, TAG, "media playback stopped/paused: pkg=" + pkg);
+                            logDebug("media playback stopped/paused: pkg=" + pkg);
                             maybeDirectUpload(!beforeMedia.equals(mediaInfoKey()));
                             return;
                         }
@@ -1010,7 +1022,7 @@ public final class MonikaXposedModule extends XposedModule {
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
                                     mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
                         }
-                        log(Log.DEBUG, TAG, "media playback: pkg=" + pkg + " playing=" + mediaPlaying + " title=" + mediaTitle);
+                        logDebug("media playback: pkg=" + pkg + " playing=" + mediaPlaying + " title=" + mediaTitle);
                         maybeDirectUpload(!beforeMedia.equals(mediaInfoKey()));
                     } catch (Throwable t) {
                         log(Log.WARN, TAG, "onPlaybackStateChanged failed: " + t.getClass().getSimpleName());
@@ -1041,7 +1053,7 @@ public final class MonikaXposedModule extends XposedModule {
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ARTIST),
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_AUTHOR),
                                 mediaTextFromMeta(metadata, MediaMetadata.METADATA_KEY_ALBUM_ARTIST)));
-                        log(Log.DEBUG, TAG, "media metadata: pkg=" + pkg + " playing=" + mediaPlaying + " title=" + mediaTitle);
+                        logDebug("media metadata: pkg=" + pkg + " playing=" + mediaPlaying + " title=" + mediaTitle);
                         maybeDirectUpload(!beforeMedia.equals(mediaInfoKey()));
                     } catch (Throwable t) {
                         log(Log.WARN, TAG, "onMetadataChanged failed: " + t.getClass().getSimpleName());
@@ -1153,7 +1165,7 @@ public final class MonikaXposedModule extends XposedModule {
             }
         } catch (Throwable t) {
             clearMediaInfo();
-            log(Log.DEBUG, TAG, "refresh media failed: " + t.getClass().getSimpleName());
+            logDebug("refresh media failed: " + t.getClass().getSimpleName());
         }
     }
 
@@ -1600,7 +1612,7 @@ public final class MonikaXposedModule extends XposedModule {
             if (webView == null) throw new ClassNotFoundException("android.webkit.WebView");
             hookAospBrowserPageCallback(browserActivity, packageName, "onPageFinished", webView, String.class);
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "AOSP browser title hooks skipped: " + t.getClass().getSimpleName());
+            logDebug("AOSP browser title hooks skipped: " + t.getClass().getSimpleName());
         }
     }
 
@@ -1733,7 +1745,7 @@ public final class MonikaXposedModule extends XposedModule {
             if (sendContext == null) sendContext = activity;
             publishBrowserTitleFromProcess(sendContext, packageName, clean, activity.getClass().getName(), source);
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "publishBrowserTitle failed: " + t.getMessage());
+            logDebug("publishBrowserTitle failed: " + t.getMessage());
         }
     }
 
@@ -1770,7 +1782,7 @@ public final class MonikaXposedModule extends XposedModule {
                 context.sendBroadcast(intent);
             }
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "publishBrowserTitleFromProcess failed: " + t.getMessage());
+            logDebug("publishBrowserTitleFromProcess failed: " + t.getMessage());
         }
     }
 
@@ -1856,7 +1868,7 @@ public final class MonikaXposedModule extends XposedModule {
                 String activityName = top.getClassName();
                 String key = packageName + "/" + activityName;
                 if (!key.equals(lastForegroundKey)) {
-                    log(Log.INFO, TAG, "foreground: " + key + " title=" + (taskDescription != null ? taskDescription : ""));
+                    logDebug("foreground: " + key + " title=" + (taskDescription != null ? taskDescription : ""));
                     forceDirectUpload = true;
                 }
                 if (key.equals(lastForegroundKey) && now - lastForegroundBroadcastAt < BROADCAST_DEBOUNCE_MS) return;
@@ -1988,7 +2000,7 @@ public final class MonikaXposedModule extends XposedModule {
                 if (top != null && !isIgnoredPackage(top.getPackageName())) return top;
             }
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "getTasks top fallback failed: " + t.getClass().getSimpleName());
+            logDebug("getTasks top fallback failed: " + t.getClass().getSimpleName());
         }
         return null;
     }
@@ -2086,7 +2098,7 @@ public final class MonikaXposedModule extends XposedModule {
                         if (info == null) info = topTask;
                     }
                 } catch (Throwable t) {
-                    log(Log.DEBUG, TAG, "getTasks fallback skipped: " + t.getClass().getSimpleName());
+                    logDebug("getTasks fallback skipped: " + t.getClass().getSimpleName());
                 }
             }
             
@@ -2128,7 +2140,7 @@ public final class MonikaXposedModule extends XposedModule {
             
             return null;
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "getFocusedTaskDescription skipped: " + t.getClass().getSimpleName());
+            logDebug("getFocusedTaskDescription skipped: " + t.getClass().getSimpleName());
             return null;
         }
     }
@@ -2228,6 +2240,20 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
+    private boolean isSystemServerProcess() {
+        if (systemServerProcess) return true;
+        String process = currentProcessName;
+        return "system".equals(process)
+                || "system_server".equals(process)
+                || "android".equals(process);
+    }
+
+    private void logDebug(String message) {
+        if (BuildConfig.DEBUG) {
+            log(Log.DEBUG, TAG, message);
+        }
+    }
+
     private Context getSystemContext() {
         Context cached = cachedSystemContext;
         if (cached != null) return cached;
@@ -2264,7 +2290,7 @@ public final class MonikaXposedModule extends XposedModule {
                         directUploadVpn = dps.getBoolean("upload_vpn", false);
                         directUploadInput = dps.getBoolean("upload_input", false);
                         browserTitleNonce = normalizeNonce(dps.getString(KEY_BROWSER_TITLE_NONCE, ""));
-                        log(Log.INFO, TAG, "config loaded from DPS: enabled=" + directUploadEnabled);
+                        logDebug("config loaded from DPS: enabled=" + directUploadEnabled);
                         return;
                     }
                 } catch (Throwable ignored) {}
@@ -2281,7 +2307,7 @@ public final class MonikaXposedModule extends XposedModule {
             directUploadVpn = prefs.getBoolean("upload_vpn", false);
             directUploadInput = prefs.getBoolean("upload_input", false);
             browserTitleNonce = normalizeNonce(prefs.getString(KEY_BROWSER_TITLE_NONCE, ""));
-            log(Log.INFO, TAG, "config loaded from remote prefs: enabled=" + directUploadEnabled);
+            logDebug("config loaded from remote prefs: enabled=" + directUploadEnabled);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "load config failed: " + Log.getStackTraceString(t));
         }
@@ -2357,8 +2383,7 @@ public final class MonikaXposedModule extends XposedModule {
         if (!directUploadEnabled || directServerUrl.length() == 0 || directToken.length() == 0) return;
         // Only system_server should perform network uploads.
         // Browser processes have uninitialized uploadHandler and would block the main thread (ANR).
-        // system_server process name is "system", app process name is TARGET_PACKAGE ("com.monika.dashboard")
-        if (!"system".equals(currentProcessName)) return;
+        if (!isSystemServerProcess()) return;
         long now = System.currentTimeMillis();
         long safeInterval = Math.max(MIN_DIRECT_UPLOAD_MS, directIntervalMs);
         if (!force && now - lastDirectUploadAt < safeInterval) return;
@@ -2380,7 +2405,7 @@ public final class MonikaXposedModule extends XposedModule {
             // Diagnostic log: show what we're about to upload
             try {
                 org.json.JSONObject diag = new org.json.JSONObject(body);
-                log(Log.INFO, TAG, "upload: app_id=" + diag.optString("app_id") + " title=" + diag.optString("window_title"));
+                logDebug("upload: app_id=" + diag.optString("app_id") + " title=" + diag.optString("window_title"));
             } catch (Throwable ignored) {}
 
             String pending = pendingDirectBody;
@@ -2409,7 +2434,7 @@ public final class MonikaXposedModule extends XposedModule {
                         .put("payload", new org.json.JSONObject(body))
                         .toString();
                 if (client.sendText(msg)) {
-                    log(Log.DEBUG, TAG, "ws upload OK");
+                    logDebug("ws upload OK");
                     return true;
                 }
             } catch (Throwable t) {
@@ -2417,7 +2442,11 @@ public final class MonikaXposedModule extends XposedModule {
             }
         }
         boolean ok = postDirectReportFallback(body);
-        log(Log.INFO, TAG, "http fallback upload " + (ok ? "OK" : "failed"));
+        if (ok) {
+            logDebug("http fallback upload OK");
+        } else {
+            log(Log.WARN, TAG, "http fallback upload failed");
+        }
         return ok;
     }
 
@@ -2518,7 +2547,7 @@ public final class MonikaXposedModule extends XposedModule {
                         status == BatteryManager.BATTERY_STATUS_FULL);
             }
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "battery extras skipped: " + t.getClass().getSimpleName());
+            logDebug("battery extras skipped: " + t.getClass().getSimpleName());
         }
     }
 
@@ -2564,7 +2593,7 @@ public final class MonikaXposedModule extends XposedModule {
                 if (cellularGeneration.length() > 0) device.put("cellular_generation", cellularGeneration);
             }
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "network extras skipped: " + t.getClass().getSimpleName());
+            logDebug("network extras skipped: " + t.getClass().getSimpleName());
         }
     }
 
@@ -2653,7 +2682,7 @@ public final class MonikaXposedModule extends XposedModule {
             connection.getOutputStream().write(bytes);
             int code = connection.getResponseCode();
             if (code >= 200 && code < 300) {
-                log(Log.DEBUG, TAG, "http upload OK");
+                logDebug("http upload OK");
                 fetchQueuedMessagesFallback();
                 return true;
             } else {
@@ -2679,7 +2708,7 @@ public final class MonikaXposedModule extends XposedModule {
             connection.setRequestProperty("Authorization", "Bearer " + directToken);
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) {
-                log(Log.DEBUG, TAG, "message fallback fetch HTTP " + code);
+                logDebug("message fallback fetch HTTP " + code);
                 return;
             }
             String body = readUtf8(connection.getInputStream());
@@ -2703,9 +2732,9 @@ public final class MonikaXposedModule extends XposedModule {
                 }
                 forwardViewerMessageToApp(data.toString());
             }
-            log(Log.DEBUG, TAG, "message fallback fetch delivered " + messages.length());
+            logDebug("message fallback fetch delivered " + messages.length());
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "message fallback fetch skipped: " + t.getClass().getSimpleName());
+            logDebug("message fallback fetch skipped: " + t.getClass().getSimpleName());
         } finally {
             if (connection != null) connection.disconnect();
         }
@@ -2723,7 +2752,7 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private void ensureWsConnected(String serverUrl, String token) {
-        if (!directUploadEnabled || !"system".equals(currentProcessName)) return;
+        if (!directUploadEnabled || !isSystemServerProcess()) return;
         if (wsClient != null && wsClient.isConnected()) {
             wsRetryDelayMs = WS_RETRY_BASE_MS; // reset on success
             return;
@@ -2760,7 +2789,7 @@ public final class MonikaXposedModule extends XposedModule {
      * This ensures we don't wait for the next heartbeat (up to 5 min) to reconnect.
      */
     private void scheduleWsReconnect() {
-        if (!directUploadEnabled || directServerUrl.length() == 0 || directToken.length() == 0 || !"system".equals(currentProcessName)) return;
+        if (!directUploadEnabled || directServerUrl.length() == 0 || directToken.length() == 0 || !isSystemServerProcess()) return;
         if (wsReconnectPending) return;
         wsReconnectPending = true;
         long delayMs = 0L;
@@ -2820,10 +2849,10 @@ public final class MonikaXposedModule extends XposedModule {
                 } finally {
                     Binder.restoreCallingIdentity(token);
                 }
-                log(Log.DEBUG, TAG, "forwarded viewer message to app: " + viewerId);
+                logDebug("forwarded viewer message to app: " + viewerId);
             }
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "viewer message forward ignored: " + t.getClass().getSimpleName());
+            logDebug("viewer message forward ignored: " + t.getClass().getSimpleName());
         }
     }
 
@@ -2864,7 +2893,7 @@ public final class MonikaXposedModule extends XposedModule {
             log(Log.INFO, TAG, "supervision freeze armed until " + isoTime(freezeUntil));
             maybeApplySupervisionFreeze(foregroundPackage, foregroundApp, foregroundTitle);
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "supervision payload ignored: " + t.getClass().getSimpleName());
+            logDebug("supervision payload ignored: " + t.getClass().getSimpleName());
         }
     }
 
@@ -2905,7 +2934,7 @@ public final class MonikaXposedModule extends XposedModule {
             log(Log.WARN, TAG, "supervision froze " + pkg + " mode=" + (suspended ? "suspended" : "force_stopped") + " until " + isoTime(until));
             maybeDirectUpload(true);
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "supervision freeze skipped: " + t.getClass().getSimpleName());
+            logDebug("supervision freeze skipped: " + t.getClass().getSimpleName());
         }
     }
 
@@ -2919,7 +2948,7 @@ public final class MonikaXposedModule extends XposedModule {
             log(Log.WARN, TAG, "supervision freeze cleared: " + safeString(reason));
             maybeDirectUpload(true);
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "clear supervision freeze failed: " + t.getClass().getSimpleName());
+            logDebug("clear supervision freeze failed: " + t.getClass().getSimpleName());
         }
     }
 
@@ -2942,7 +2971,7 @@ public final class MonikaXposedModule extends XposedModule {
             if (result instanceof String[]) return ((String[]) result).length == 0;
             return true;
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "setPackagesSuspended failed: " + t.getClass().getSimpleName());
+            logDebug("setPackagesSuspended failed: " + t.getClass().getSimpleName());
             return false;
         }
     }
@@ -3000,7 +3029,7 @@ public final class MonikaXposedModule extends XposedModule {
     }
 
     private boolean forceStopPackage(String packageName) {
-        if (!"system".equals(currentProcessName)) return false;
+        if (!isSystemServerProcess()) return false;
         try {
             Context ctx = getSystemContext();
             if (ctx != null) {
@@ -3014,7 +3043,7 @@ public final class MonikaXposedModule extends XposedModule {
                 }
             }
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "ActivityManager forceStopPackage failed: " + t.getClass().getSimpleName());
+            logDebug("ActivityManager forceStopPackage failed: " + t.getClass().getSimpleName());
         }
         try {
             Class<?> am = cachedClassForName("android.app.ActivityManager");
@@ -3179,7 +3208,7 @@ public final class MonikaXposedModule extends XposedModule {
                     .setVisibility(Notification.VISIBILITY_PUBLIC);
             nm.notify(MESSAGE_NOTIFICATION_ID, builder.build());
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "LSP message notification skipped: " + t.getClass().getSimpleName());
+            logDebug("LSP message notification skipped: " + t.getClass().getSimpleName());
         }
     }
 
@@ -3964,7 +3993,7 @@ public final class MonikaXposedModule extends XposedModule {
                 }
             } catch (Throwable t) {
                 // Connection lost — trigger immediate reconnect
-                log(Log.DEBUG, TAG, "WS reader error: " + t.getClass().getSimpleName());
+                logDebug("WS reader error: " + t.getClass().getSimpleName());
                 connected = false;
                 if (!manualDisconnect) {
                     recordWsDisconnectedForBackoff();
@@ -4002,7 +4031,7 @@ public final class MonikaXposedModule extends XposedModule {
                     }
                 } catch (Throwable t) {
                     // Write failed — connection is dead
-                    log(Log.DEBUG, TAG, "WS ping failed: " + t.getClass().getSimpleName());
+                    logDebug("WS ping failed: " + t.getClass().getSimpleName());
                     connected = false;
                     break;
                 }

@@ -9,7 +9,7 @@ import java.util.concurrent.ConcurrentLinkedDeque
  * Thread-safe, capped at MAX_ENTRIES.
  */
 object DebugLog {
-    private const val MAX_ENTRIES = 100
+    private const val MAX_ENTRIES = 300
     private val entries = ConcurrentLinkedDeque<String>()
     private val timeFmt = DateTimeFormatter.ofPattern("HH:mm:ss")
 

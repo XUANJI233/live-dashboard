@@ -47,6 +47,7 @@ import com.monika.dashboard.ui.components.DashboardTone
 import com.monika.dashboard.ui.components.PrimaryActionColors
 import com.monika.dashboard.ui.components.SegmentedControl
 import com.monika.dashboard.ui.components.SectionTitle
+import com.monika.dashboard.ui.components.StatusBlock
 import com.monika.dashboard.ui.components.StatusPill
 import com.monika.dashboard.ui.theme.Border
 import com.monika.dashboard.ui.theme.TextMuted
@@ -139,6 +140,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
     var aiApiKey by remember { mutableStateOf("") }
     var aiModel by rememberSaveable { mutableStateOf("gpt-4o-mini") }
     var aiLocked by remember { mutableStateOf(false) }
+    var aiConfigured by remember { mutableStateOf(false) }
     var aiModelOptions by remember { mutableStateOf<List<String>>(emptyList()) }
     var aiModelMenuExpanded by remember { mutableStateOf(false) }
     var showAiLockedDialog by remember { mutableStateOf(false) }
@@ -271,8 +273,10 @@ private fun SummarySettingsPane(settings: SettingsStore) {
             result
                 .onSuccess {
                     aiLocked = it.locked
+                    aiConfigured = it.configured
                     aiApiUrl = it.apiUrl ?: it.apiUrlHint.orEmpty()
                     aiModel = it.model.ifBlank { "gpt-4o-mini" }
+                    aiApiKey = ""
                     aiModelOptions = emptyList()
                     aiStatus = when {
                         it.locked -> it.message ?: "服务器已通过环境变量配置 AI"
@@ -294,8 +298,10 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 val token = settings.getToken()
                 if (url.isBlank() || token.isNullOrBlank()) {
                     Result.failure(IllegalStateException("请先配置服务器和 Token"))
-                } else if (aiApiUrl.isBlank() || aiApiKey.isBlank()) {
-                    Result.failure(IllegalStateException("请填写 AI 端点和 Key"))
+                } else if (aiApiUrl.isBlank()) {
+                    Result.failure(IllegalStateException("请填写 AI 端点"))
+                } else if (aiApiKey.isBlank() && !aiConfigured) {
+                    Result.failure(IllegalStateException("首次配置请填写 AI API Key；之后修改模型或端点时可以留空复用服务器已保存密钥"))
                 } else {
                     ReportClient(url, token).testAiConfig(aiApiUrl, aiApiKey, aiModel)
                 }
@@ -331,13 +337,16 @@ private fun SummarySettingsPane(settings: SettingsStore) {
         scope.launch {
             aiLoading = true
             aiStatus = null
+            val reusedKey = aiApiKey.isBlank()
             val result = withContext(Dispatchers.IO) {
                 val url = settings.serverUrl.first()
                 val token = settings.getToken()
                 if (url.isBlank() || token.isNullOrBlank()) {
                     Result.failure(IllegalStateException("请先配置服务器和 Token"))
-                } else if (aiApiUrl.isBlank() || aiApiKey.isBlank()) {
-                    Result.failure(IllegalStateException("请填写 AI 端点和 Key"))
+                } else if (aiApiUrl.isBlank()) {
+                    Result.failure(IllegalStateException("请填写 AI 端点"))
+                } else if (aiApiKey.isBlank() && !aiConfigured) {
+                    Result.failure(IllegalStateException("首次配置请填写 AI API Key；之后修改模型或端点时可以留空复用服务器已保存密钥"))
                 } else {
                     ReportClient(url, token).updateAiConfig(aiApiUrl, aiApiKey, aiModel)
                 }
@@ -345,11 +354,12 @@ private fun SummarySettingsPane(settings: SettingsStore) {
             result
                 .onSuccess {
                     aiLocked = it.locked
+                    aiConfigured = it.configured
                     aiApiUrl = it.apiUrl ?: it.apiUrlHint.orEmpty()
                     aiModel = it.model.ifBlank { "gpt-4o-mini" }
                     aiModelOptions = emptyList()
                     aiApiKey = ""
-                    aiStatus = "AI 配置已加密保存"
+                    aiStatus = if (reusedKey) "AI 配置已保存，沿用服务器已保存密钥" else "AI 配置已加密保存"
                 }
                 .onFailure {
                     val message = it.message ?: "AI 配置保存失败"
@@ -785,6 +795,11 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !aiLocked && !aiLoading,
                 label = { Text("AI API Key") },
+                placeholder = {
+                    if (aiConfigured && aiApiKey.isBlank()) {
+                        Text("••••••••")
+                    }
+                },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
             )
@@ -821,7 +836,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 }
             }
             if (!aiStatus.isNullOrBlank()) {
-                StatusPill(
+                StatusBlock(
                     text = aiStatus.orEmpty(),
                     tone = if (isAiStatusError(aiStatus)) {
                         DashboardTone.Bad
