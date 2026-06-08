@@ -15,6 +15,7 @@ import { BaseSideService } from '@zeppos/zml/base-side'
 const MIN_SYNC_INTERVAL_SECONDS = 60
 const DEFAULT_SYNC_INTERVAL_SECONDS = 300
 const MAX_SYNC_INTERVAL_SECONDS = 900
+const REPORTING_GRACE_MINUTES = 2
 const PENDING_STATUS_KEY = 'livewatch_pending_status'
 const PENDING_HEALTH_KEY = 'livewatch_pending_health'
 const MAX_PENDING_HEALTH_RECORDS = 5000
@@ -345,12 +346,16 @@ AppSideService(
 
         // Build verbose status
         const extraFields = {}
-        if (cs.b) extraFields.battery_percent = cs.b
-        if (cs.se) extraFields.steps = cs.se
-        if (cs.st) extraFields.steps_target = cs.st
+        if (cs.b !== undefined) extraFields.battery_percent = cs.b
+        if (cs.se !== undefined) extraFields.steps = cs.se
+        if (cs.st !== undefined) extraFields.steps_target = cs.st
         if (cs.sp !== undefined) extraFields.sleeping = cs.sp
         if (cs.hr) extraFields.heart_rate = cs.hr
         if (cs.hrr) extraFields.heart_rate_resting = cs.hrr
+        const nextIntervalMs = Number.isFinite(cs.ni) ? Math.max(0, Math.round(cs.ni)) : undefined
+        const offlineTimeoutMinutes = extraFields.sleeping
+          ? 35
+          : (nextIntervalMs ? Math.max(1, Math.ceil(nextIntervalMs / 60000) + REPORTING_GRACE_MINUTES) : undefined)
 
         const verboseStatus = {
           app_id: 'zepp_watch',
@@ -363,6 +368,9 @@ AppSideService(
               capability_mode: 'normal',
               device_kind: 'watch',
               last_sample_at: nowISO,
+              energy_policy: extraFields.sleeping ? 'zepp_sleep_30m_alarm' : 'zepp_alarm_single_execution',
+              min_interval_ms: nextIntervalMs,
+              offline_timeout_minutes: offlineTimeoutMinutes,
             },
           },
         }
@@ -398,7 +406,7 @@ AppSideService(
           spo2_history: verboseSpo2,
           body_temp_history: verboseTemp,
           sleep_history: verboseSleep,
-          manual: compact.m === 1,
+          manual: compact.m === true || compact.m === 1,
         }
       } catch (e) {
         console.error('[LiveWatch:companion] expandCompact failed: ' + e.message)

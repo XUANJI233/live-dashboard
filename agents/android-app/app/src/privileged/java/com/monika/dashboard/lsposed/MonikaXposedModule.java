@@ -99,6 +99,9 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
     private static final long MIN_DIRECT_UPLOAD_MS = 5000L;
     private static final long MAX_DIRECT_UPLOAD_MS = 45_000L;
+    private static final String OFFLINE_TIMEOUT_FIELD = "offline_timeout_minutes";
+    private static final int MAX_REPORTED_OFFLINE_TIMEOUT_MINUTES = 60;
+    private static final int REPORTED_OFFLINE_TIMEOUT_GRACE_MINUTES = 2;
     private static final long IDLE_DEBOUNCE_COUNT = 2; // 2 consecutive heartbeats before reporting idle
     private static final long WS_RETRY_BASE_MS = 30_000L;  // first retry delay
     private static final long WS_RETRY_MAX_MS = 300_000L;  // max retry delay (5 min)
@@ -2436,11 +2439,15 @@ public final class MonikaXposedModule extends XposedModule {
             JSONObject extra = new JSONObject();
             fillBatteryExtras(extra);
             JSONObject device = new JSONObject();
+            boolean sleeping = "sleeping".equals(foregroundPackage);
             device.put("capability_mode", "lsposed");
             device.put("uploader", "lsposed");
             device.put("last_sample_at", isoTime(now));
             device.put("energy_policy", "system_server_direct");
             device.put("min_interval_ms", Math.max(MIN_DIRECT_UPLOAD_MS, directIntervalMs));
+            if (sleeping) {
+                device.put(OFFLINE_TIMEOUT_FIELD, directOfflineTimeoutMinutes());
+            }
             // Multi-window / tablet detection
             device.put("device_kind", getDeviceFormFactor());
             String wm = getWindowingMode();
@@ -2454,7 +2461,7 @@ public final class MonikaXposedModule extends XposedModule {
             JSONArray frozen = frozenPackagesJson(now);
             if (frozen.length() > 0) device.put("frozen_packages", frozen);
             extra.put("device", device);
-            extra.put("sleeping", "sleeping".equals(foregroundPackage));
+            extra.put("sleeping", sleeping);
             if (directUploadForeground && foregroundPackage.length() > 0 && !"idle".equals(foregroundPackage)) {
                 JSONObject foreground = new JSONObject();
                 foreground.put("package_name", foregroundPackage);
@@ -2488,6 +2495,13 @@ public final class MonikaXposedModule extends XposedModule {
             log(Log.WARN, TAG, "build direct body failed: " + t.getClass().getSimpleName());
             return null;
         }
+    }
+
+    private int directOfflineTimeoutMinutes() {
+        long cadenceMs = Math.max(HEARTBEAT_MS, Math.max(MIN_DIRECT_UPLOAD_MS, directIntervalMs));
+        long cadenceMinutes = Math.max(1L, (cadenceMs + 59_999L) / 60_000L);
+        long timeoutMinutes = cadenceMinutes + REPORTED_OFFLINE_TIMEOUT_GRACE_MINUTES;
+        return (int) Math.min(MAX_REPORTED_OFFLINE_TIMEOUT_MINUTES, timeoutMinutes);
     }
 
     private void fillBatteryExtras(JSONObject extra) {
@@ -3005,7 +3019,7 @@ public final class MonikaXposedModule extends XposedModule {
     private void handleSupervisionPayload(JSONObject payload, String text) {
         try {
             if (payload == null || !"supervision_alert".equals(payload.optString("type"))) return;
-            if (!payload.optBoolean("freeze", false)) {
+            if (!strictBoolean(payload, "freeze", false)) {
                 activeFreezeAlert = null;
                 return;
             }
@@ -3264,6 +3278,12 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable ignored) {
             return fallback;
         }
+    }
+
+    private boolean strictBoolean(JSONObject object, String key, boolean defaultWhenMissing) {
+        if (object == null || !object.has(key) || object.isNull(key)) return defaultWhenMissing;
+        Object value = object.opt(key);
+        return value instanceof Boolean && ((Boolean) value).booleanValue();
     }
 
     private boolean isProtectedFreezePackage(String packageName) {

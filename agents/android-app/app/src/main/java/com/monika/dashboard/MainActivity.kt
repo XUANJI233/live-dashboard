@@ -13,6 +13,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.monika.dashboard.data.SettingsStore
@@ -63,12 +64,16 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MainContent(settings: SettingsStore, modifier: Modifier = Modifier) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var selectedMessagesTab by rememberSaveable { mutableIntStateOf(0) }
+    var selectedSettingsTab by rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf(
         NavItem("概览", "今"),
         NavItem("消息", "信"),
         NavItem("设置", "设"),
     )
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val useNavigationRail = configuration.screenWidthDp > configuration.screenHeightDp
 
     // Trigger foreground health sync once on app open
     LaunchedEffect(Unit) {
@@ -81,45 +86,152 @@ private fun MainContent(settings: SettingsStore, modifier: Modifier = Modifier) 
         }
     }
 
+    if (useNavigationRail) {
+        Row(
+            modifier = modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding(),
+        ) {
+            DashboardNavigationRail(
+                tabs = tabs,
+                selectedTab = selectedTab,
+                onSelectTab = { selectedTab = it },
+            )
+            Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                DashboardDestinationContent(
+                    selectedTab = selectedTab,
+                    settings = settings,
+                    selectedMessagesTab = selectedMessagesTab,
+                    onSelectMessagesTab = { selectedMessagesTab = it },
+                    selectedSettingsTab = selectedSettingsTab,
+                    onSelectSettingsTab = { selectedSettingsTab = it },
+                )
+            }
+        }
+        return
+    }
+
     Scaffold(
         modifier = modifier
             .fillMaxSize()
             .statusBarsPadding(),
         bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface,
-                tonalElevation = 0.dp,
-            ) {
-                tabs.forEachIndexed { index, item ->
-                    NavigationBarItem(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                        ),
-                        icon = {
-                            InitialBadge(
-                                text = item.glyph,
-                                tone = if (selectedTab == index) DashboardTone.Info else DashboardTone.Neutral,
-                            )
-                        },
-                        label = { Text(item.title) },
-                    )
-                }
-            }
-        }
+            DashboardNavigationBar(
+                tabs = tabs,
+                selectedTab = selectedTab,
+                onSelectTab = { selectedTab = it },
+            )
+        },
     ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            when (selectedTab) {
-                0 -> OverviewScreen(settings)
-                1 -> MessagesHubScreen(settings)
-                2 -> SettingsHubScreen(settings)
-            }
+            DashboardDestinationContent(
+                selectedTab = selectedTab,
+                settings = settings,
+                selectedMessagesTab = selectedMessagesTab,
+                onSelectMessagesTab = { selectedMessagesTab = it },
+                selectedSettingsTab = selectedSettingsTab,
+                onSelectSettingsTab = { selectedSettingsTab = it },
+            )
         }
+    }
+}
+
+@Composable
+private fun DashboardNavigationBar(
+    tabs: List<NavItem>,
+    selectedTab: Int,
+    onSelectTab: (Int) -> Unit,
+) {
+    NavigationBar(
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp,
+    ) {
+        tabs.forEachIndexed { index, item ->
+            NavigationBarItem(
+                selected = selectedTab == index,
+                onClick = { onSelectTab(index) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = MaterialTheme.colorScheme.primary,
+                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                ),
+                icon = {
+                    DashboardNavIcon(
+                        item = item,
+                        selected = selectedTab == index,
+                    )
+                },
+                label = { Text(item.title) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun DashboardNavigationRail(
+    tabs: List<NavItem>,
+    selectedTab: Int,
+    onSelectTab: (Int) -> Unit,
+) {
+    NavigationRail(
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        tabs.forEachIndexed { index, item ->
+            NavigationRailItem(
+                selected = selectedTab == index,
+                onClick = { onSelectTab(index) },
+                alwaysShowLabel = true,
+                colors = NavigationRailItemDefaults.colors(
+                    selectedIconColor = MaterialTheme.colorScheme.primary,
+                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                ),
+                icon = {
+                    DashboardNavIcon(
+                        item = item,
+                        selected = selectedTab == index,
+                    )
+                },
+                label = { Text(item.title) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun DashboardNavIcon(item: NavItem, selected: Boolean) {
+    InitialBadge(
+        text = item.glyph,
+        tone = if (selected) DashboardTone.Info else DashboardTone.Neutral,
+    )
+}
+
+@Composable
+private fun DashboardDestinationContent(
+    selectedTab: Int,
+    settings: SettingsStore,
+    selectedMessagesTab: Int,
+    onSelectMessagesTab: (Int) -> Unit,
+    selectedSettingsTab: Int,
+    onSelectSettingsTab: (Int) -> Unit,
+) {
+    when (selectedTab) {
+        0 -> OverviewScreen(settings)
+        1 -> MessagesHubScreen(
+            settings = settings,
+            selectedIndex = selectedMessagesTab,
+            onSelectedIndexChange = onSelectMessagesTab,
+        )
+        2 -> SettingsHubScreen(
+            settings = settings,
+            selectedIndex = selectedSettingsTab,
+            onSelectedIndexChange = onSelectSettingsTab,
+        )
     }
 }
 

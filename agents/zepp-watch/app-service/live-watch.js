@@ -2,7 +2,7 @@
 //  Live Watch — Device App Service (v2 - Optimized)
 //
 //  硬件工程师思维：最小化手表端功耗
-//  - 单次执行模式：alarm 唤醒 → 采集 → 传输 → exit
+//  - 单次执行模式：alarm 唤醒 → 采集 → 传输，按系统策略自回收
 //  - 只采集非零心率值（减少 80% 传输数据量）
 //  - 删除 O(N²) 插值算法（交给伴生应用用线性流水线处理）
 //  - 移除 createSysTimer（避免持续运行开销）
@@ -41,7 +41,8 @@ let lastSpo2SyncTime = 0 // 上次同步的血氧时间戳 (秒), 由 LocalStora
 let lastSpo2SyncDate = '' // 上次同步日期，跨日重置用
 let lastTempSyncIndex = -1 // 上次同步的体温索引 (每5分钟一个, 共288个)
 let lastTempSyncDate = '' // 上次同步日期，跨日重置用
-let sleepSkipCounter = 0 // 睡眠状态下跳过传输的计数器
+let nextAlarmDelayMs = 0
+let sleepCadenceForCurrentCycle = false
 let sensorHeartRate = true
 let sensorBattery = true
 let sensorStep = true
@@ -55,33 +56,17 @@ const MAX_SPO2_RECORDS_PER_SYNC = 12
 const MAX_TEMP_RECORDS_PER_SYNC = 24
 const MIN_SYNC_INTERVAL_SECONDS = 60
 const DEFAULT_SYNC_INTERVAL_SECONDS = 300
-const MAX_SYNC_INTERVAL_SECONDS = 900 // server marks Zepp offline after 20 minutes
-const MAX_SLEEP_UPLOAD_GAP_MS = 15 * 60_000
+const MAX_SYNC_INTERVAL_SECONDS = 900
+const SLEEP_UPLOAD_INTERVAL_MS = 30 * 60_000
 const CONFIG_KEY = 'lw_cfg'
+const ALARM_ID_KEY = 'lw_alarm_id'
 const PENDING_PAYLOADS_KEY = 'lw_pending_payloads'
 const PREVIOUS_PAYLOAD_KEY = 'lw_prev_payload'
 const MAX_PENDING_PAYLOADS = 24
 const MANUAL_FULL_SYNC_KEY = 'lw_manual_full'
 
-// ── Persist sleepSkipCounter (survives alarm wakeups) ──
 // 使用 @zos/storage LocalStorage (API_LEVEL 3.0+, 官方推荐)
 const _localStorage = new LocalStorage()
-
-function readSleepSkipCounter() {
-  try {
-    const val = _localStorage.getItem('lw_skip', 0)
-    return typeof val === 'number' ? val : 0
-  } catch (e) {}
-  return 0
-}
-
-function writeSleepSkipCounter(value) {
-  try {
-    _localStorage.setItem('lw_skip', value)
-  } catch (e) {
-    console.log('[LiveWatch:device] Failed to persist sleepSkipCounter: ' + e.message)
-  }
-}
 
 function readNumber(key, fallback) {
   try {
@@ -111,10 +96,6 @@ function clampSyncIntervalSeconds(value) {
   const numeric = Number(value)
   const seconds = Number.isFinite(numeric) ? numeric : DEFAULT_SYNC_INTERVAL_SECONDS
   return Math.max(MIN_SYNC_INTERVAL_SECONDS, Math.min(MAX_SYNC_INTERVAL_SECONDS, seconds))
-}
-
-function getSleepUploadEveryCycles() {
-  return Math.max(1, Math.floor(MAX_SLEEP_UPLOAD_GAP_MS / syncIntervalMs))
 }
 
 function writeString(key, value) {
@@ -152,10 +133,6 @@ AppService(
   onInit(options) {
     console.log('[LiveWatch:device] AppService init (single-execution)')
 
-    // Restore sleepSkipCounter from file
-    sleepSkipCounter = readSleepSkipCounter()
-    console.log('[LiveWatch:device] sleepSkipCounter restored: ' + sleepSkipCounter)
-
     // Restore lastSpo2SyncTime from file
     lastSpo2SyncTime = readLastSpo2SyncTime()
     lastSpo2SyncDate = readString('lw_spo2_date', '')
@@ -165,22 +142,26 @@ AppService(
     lastTempSyncDate = readString('lw_temp_date', '')
     console.log('[LiveWatch:device] lastSpo2SyncTime restored: ' + lastSpo2SyncTime)
 
-    // Read config
+    // Read config from local storage first. Companion config sync is deferred
+    // until an upload cycle so skipped sleep cycles do not wake BLE just to ask.
     restoreConfig()
-    requestConfigFromCompanion(this)
 
     const manualFullSync = readManualFullSyncRequest()
+    const shouldSync = (enabled || manualFullSync) && serverUrl && token
+    let uploadQueued = false
 
     // Collect and upload data. Manual upload is one-shot and does not enable
     // recurring background sync.
-    if ((enabled || manualFullSync) && serverUrl && token) {
-      collectAndUpload({ forceFull: manualFullSync, messenger: this })
+    if (shouldSync) {
+      uploadQueued = collectAndUpload({ forceFull: manualFullSync, messenger: this })
     }
 
-    // Alarm will be set after async config arrives (requestConfigFromCompanion callback).
-    // Fallback: if restoreConfig already had config, set alarm now.
     if (enabled && serverUrl && token) {
-      setupNextAlarm()
+      setupNextAlarm(alarmDelayForCurrentCycle())
+    }
+
+    if (uploadQueued || !shouldSync) {
+      requestConfigFromCompanion(this)
     }
   },
 
@@ -249,12 +230,11 @@ function requestConfigFromCompanion(messenger) {
         applyConfig(cfg)
         writeLocalConfig(currentConfigSnapshot())
         console.log('[LiveWatch:device] Config synced from companion')
-        // Config refreshed — reschedule alarm with correct interval
-        setupNextAlarm()
+        rescheduleFromConfig()
       }, function (e) {
         console.log('[LiveWatch:device] Config sync failed: ' + ((e && e.message) || e))
         // Even on failure, try to keep the alarm going with existing config
-        setupNextAlarm()
+        rescheduleFromConfig()
       })
     }
   } catch (e) {
@@ -324,9 +304,9 @@ function clearPendingPayloads() {
 
 function readManualFullSyncRequest() {
   try {
-    const value = _localStorage.getItem(MANUAL_FULL_SYNC_KEY, 0)
-    _localStorage.setItem(MANUAL_FULL_SYNC_KEY, 0)
-    return value === 1 || value === true || value === '1'
+    const value = _localStorage.getItem(MANUAL_FULL_SYNC_KEY, false)
+    _localStorage.setItem(MANUAL_FULL_SYNC_KEY, false)
+    return value === true || value === 1 || value === '1' || value === 'true'
   } catch (e) {}
   return false
 }
@@ -339,6 +319,18 @@ function applyConfig(cfg) {
   restoreSensorConfig(cfg)
 }
 
+function rescheduleFromConfig() {
+  if (enabled && serverUrl && token) {
+    setupNextAlarm(alarmDelayForCurrentCycle())
+  } else {
+    cancelWatchServiceAlarms(true)
+  }
+}
+
+function alarmDelayForCurrentCycle() {
+  return sleepCadenceForCurrentCycle ? SLEEP_UPLOAD_INTERVAL_MS : syncIntervalMs
+}
+
 // ── Data Collection & Upload (Optimized) ──
 
 function collectAndUpload(options = {}) {
@@ -346,6 +338,8 @@ function collectAndUpload(options = {}) {
   const now = new Date()
   const nowISO = now.toISOString()
   const extra = {}
+  nextAlarmDelayMs = syncIntervalMs
+  sleepCadenceForCurrentCycle = false
 
   // 1. 先检测睡眠状态 (API_LEVEL 3.0+)
   let isSleeping = false
@@ -359,35 +353,15 @@ function collectAndUpload(options = {}) {
     }
   }
 
-  // 2. 智能传输策略：首次检测到睡眠时必须上传（让服务端立即知道），
-  //    之后按同步间隔动态跳过，确保服务端不会超过 15 分钟没有状态心跳。
+  // 2. 智能传输策略：睡眠期按 Zepp Sleep 文档的系统默认更新节奏，
+  //    约每 30 分钟唤醒一次；避免普通同步间隔下反复启动 AppService。
   if (isSleeping && !forceFull) {
-    const sleepUploadEveryCycles = getSleepUploadEveryCycles()
-    if (sleepSkipCounter === 0) {
-      // 首次检测到睡眠 → 强制上传，让服务端立即知道用户睡着了
-      sleepSkipCounter = 1
-      writeSleepSkipCounter(sleepSkipCounter)
-      console.log('[LiveWatch:device] First sleep detected, force upload')
-    } else {
-      sleepSkipCounter++
-      writeSleepSkipCounter(sleepSkipCounter)
-      if (sleepSkipCounter < sleepUploadEveryCycles) {
-        console.log('[LiveWatch:device] Sleeping, skip all (' + sleepSkipCounter + '/' + sleepUploadEveryCycles + ')')
-        return // 直接退出，不获取任何传感器数据
-      }
-      sleepSkipCounter = 0 // 重置计数器
-      writeSleepSkipCounter(sleepSkipCounter)
-      console.log('[LiveWatch:device] Sleeping but uploading')
-    }
-  } else {
-    if (sleepSkipCounter !== 0) {
-      sleepSkipCounter = 0 // 清醒时重置计数器
-      writeSleepSkipCounter(sleepSkipCounter)
-      console.log('[LiveWatch:device] sleepSkipCounter reset (awake)')
-    }
+    nextAlarmDelayMs = SLEEP_UPLOAD_INTERVAL_MS
+    sleepCadenceForCurrentCycle = true
+    console.log('[LiveWatch:device] Sleeping upload, next alarm in 30 minutes')
   }
 
-  // 3. 清醒状态（或睡眠第6次）才获取传感器数据
+  // 3. 清醒状态（或睡眠 30 分钟周期到期）才获取传感器数据
   // Battery
   if (sensorBattery) {
     try {
@@ -429,12 +403,13 @@ function collectAndUpload(options = {}) {
   const compactStatus = {
     a: 'zw',                       // app_id
     ts: unixTs,                    // timestamp (Unix seconds, no ISO string overhead)
-    b: extra.battery_percent ?? 0, // battery
-    se: extra.steps ?? 0,          // steps
-    st: extra.steps_target ?? 0,   // steps_target
+    b: sensorBattery && extra.battery_percent !== undefined ? extra.battery_percent : undefined, // battery
+    se: sensorStep && extra.steps !== undefined ? extra.steps : undefined, // steps
+    st: sensorStep && extra.steps_target !== undefined ? extra.steps_target : undefined, // steps_target
     sp: sensorSleep ? isSleeping : undefined, // sleeping
     hr: extra.heart_rate ?? 0,     // current heart rate
     hrr: extra.heart_rate_resting ?? 0, // resting HR
+    ni: Math.round(nextAlarmDelayMs), // next interval in ms for server energy policy metadata
     d: { p: 'zp' },                // device: { platform: 'zepp' }
   }
 
@@ -451,7 +426,7 @@ function collectAndUpload(options = {}) {
     o: compactSpo2, // [[value, timeSec], ...]
     t: compactTemp, // [[value, minuteOffset], ...]
     sl: compactSleep,
-    m: forceFull ? 1 : undefined,
+    m: forceFull ? true : undefined,
   }
 
   const compactSize = JSON.stringify(compactPayload).length
@@ -463,10 +438,11 @@ function collectAndUpload(options = {}) {
 
   // Send compact data to side-service over ZML BLE. Side-service expands and uploads.
   sendToCompanion({ payloads: payloads }, options.messenger)
+  return true
 }
 
 function sendToCompanion(payload, messenger) {
-  sendToCompanionViaZml(payload, messenger)
+  return sendToCompanionViaZml(payload, messenger)
 }
 
 function sendToCompanionViaZml(payload, messenger) {
@@ -740,26 +716,26 @@ function collectSleepDetails(forceFull = false) {
 
 // ── Alarm Management (System-level, survives screen-off) ──
 
-function setupNextAlarm() {
-  if (!enabled || syncIntervalMs < 60_000) return
+function setupNextAlarm(delayMs) {
+  if (!enabled || syncIntervalMs < 60_000) {
+    cancelWatchServiceAlarms(false)
+    return
+  }
 
   try {
-    // Cancel our previous alarms
-    const alarms = getAllAlarms()
-    if (alarms && alarms.length > 0) {
-      alarms.forEach(a => {
-        cancelAlarm(a)
-      })
-    }
+    cancelWatchServiceAlarms(true)
+    const alarmDelayMs = Number.isFinite(delayMs) ? Math.max(60_000, delayMs) : syncIntervalMs
+    const delaySec = Math.ceil(alarmDelayMs / 1000)
 
     // Setup next alarm (persistent, survives reboot)
     const alarmId = setAlarm({
       url: 'app-service/live-watch',
-      delay: Math.ceil(syncIntervalMs / 1000),
+      delay: delaySec,
       store: true,
     })
+    if (alarmId > 0) writeNumber(ALARM_ID_KEY, alarmId)
 
-    console.log('[LiveWatch:device] Next alarm set, id=' + alarmId + ', delay=' + Math.ceil(syncIntervalMs / 1000) + 's')
+    console.log('[LiveWatch:device] Next alarm set, id=' + alarmId + ', delay=' + delaySec + 's')
   } catch (e) {
     console.log('[LiveWatch:device] Alarm setup failed: ' + e.message)
   }
@@ -784,15 +760,27 @@ function stopSync() {
     })
   } catch (e) {}
 
-  // Cancel all our alarms
-  try {
-    const alarms = getAllAlarms()
-    if (alarms) {
-      alarms.forEach(a => {
-        cancelAlarm(a)
-      })
-    }
-  } catch (e) {}
+  cancelWatchServiceAlarms(true)
 
   console.log('[LiveWatch:device] Sync stopped')
+}
+
+function cancelWatchServiceAlarms(fallbackAll) {
+  try {
+    const alarmId = readNumber(ALARM_ID_KEY, 0)
+    if (alarmId > 0) {
+      cancelAlarm(alarmId)
+      writeNumber(ALARM_ID_KEY, 0)
+      return
+    }
+
+    if (fallbackAll) {
+      const alarms = getAllAlarms()
+      if (alarms) {
+        alarms.forEach(a => {
+          cancelAlarm(a)
+        })
+      }
+    }
+  } catch (e) {}
 }

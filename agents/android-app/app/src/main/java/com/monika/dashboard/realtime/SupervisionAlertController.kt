@@ -39,7 +39,7 @@ object SupervisionAlertController {
                 ?: (System.currentTimeMillis() + DEFAULT_ACTIVE_MS),
             restartCooldownMs = payload.optLong("restart_cooldown_seconds", DEFAULT_RESTART_COOLDOWN_MS / 1000)
                 .coerceIn(30, 600) * 1000,
-            vibrate = payload.optBoolean("vibrate", true),
+            vibrate = payload.strictBoolean("vibrate", defaultWhenMissing = true),
         )
         active = alert
         DebugLog.log("监督", "收到监督提醒: ${alert.id}")
@@ -112,6 +112,11 @@ object SupervisionAlertController {
 
     private fun parseTime(value: String): Long? =
         runCatching { java.time.Instant.parse(value).toEpochMilli() }.getOrNull()
+
+    private fun JSONObject.strictBoolean(key: String, defaultWhenMissing: Boolean): Boolean {
+        if (!has(key) || isNull(key)) return defaultWhenMissing
+        return opt(key) as? Boolean ?: false
+    }
 
     @SuppressLint("MissingPermission")
     private fun startVibration(context: Context, alert: ActiveAlert) {

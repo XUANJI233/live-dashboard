@@ -50,6 +50,7 @@ import com.monika.dashboard.ui.components.SegmentedControl
 import com.monika.dashboard.ui.components.SectionTitle
 import com.monika.dashboard.ui.components.StatusBlock
 import com.monika.dashboard.ui.components.StatusPill
+import com.monika.dashboard.ui.components.friendlyErrorMessage
 import com.monika.dashboard.ui.theme.Border
 import com.monika.dashboard.ui.theme.TextMuted
 import java.time.Instant
@@ -60,9 +61,21 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun SettingsHubScreen(settings: SettingsStore) {
+fun SettingsHubScreen(
+    settings: SettingsStore,
+    selectedIndex: Int? = null,
+    onSelectedIndexChange: ((Int) -> Unit)? = null,
+) {
     val context = LocalContext.current
-    var selected by rememberSaveable { mutableIntStateOf(0) }
+    var localSelected by rememberSaveable { mutableIntStateOf(0) }
+    val selected = selectedIndex ?: localSelected
+    val selectTab: (Int) -> Unit = {
+        if (onSelectedIndexChange != null) {
+            onSelectedIndexChange(it)
+        } else {
+            localSelected = it
+        }
+    }
     var showLogs by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -84,7 +97,7 @@ fun SettingsHubScreen(settings: SettingsStore) {
             SegmentedControl(
                 options = listOf("配置", "健康", "总结", "诊断"),
                 selectedIndex = selected,
-                onSelect = { selected = it },
+                onSelect = selectTab,
             )
         }
 
@@ -189,7 +202,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     localEditedAt = null
                     status = "已同步服务器设置"
                 }
-                .onFailure { status = it.message ?: "同步失败" }
+                .onFailure { status = friendlyErrorMessage(it) }
             loading = false
         }
     }
@@ -256,7 +269,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                         Toast.makeText(context, "计划已同步到服务器", Toast.LENGTH_SHORT).show()
                     }
                 }
-                .onFailure { status = it.message ?: "保存失败" }
+                .onFailure { status = friendlyErrorMessage(it) }
             loading = false
         }
     }
@@ -288,7 +301,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                         else -> "服务器还没有 AI 配置"
                     }
                 }
-                .onFailure { aiStatus = it.message ?: "AI 配置读取失败" }
+                .onFailure { aiStatus = friendlyErrorMessage(it) }
             aiLoading = false
         }
     }
@@ -327,7 +340,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     }
                 }
                 .onFailure {
-                    val message = it.message ?: "AI 连接测试失败"
+                    val message = friendlyErrorMessage(it)
                     aiStatus = message
                     if (message.contains("AI_CONFIG_LOCKED") || message.contains("环境变量")) {
                         showAiLockedDialog = true
@@ -366,7 +379,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     aiStatus = if (reusedKey) "AI 配置已保存，沿用服务器已保存密钥" else "AI 配置已加密保存"
                 }
                 .onFailure {
-                    val message = it.message ?: "AI 配置保存失败"
+                    val message = friendlyErrorMessage(it)
                     aiStatus = message
                     if (message.contains("AI_CONFIG_LOCKED") || message.contains("环境变量")) {
                         showAiLockedDialog = true

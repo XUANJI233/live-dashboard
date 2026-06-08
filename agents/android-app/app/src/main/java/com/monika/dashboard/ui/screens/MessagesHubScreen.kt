@@ -18,8 +18,20 @@ import com.monika.dashboard.ui.components.CompactPageHeader
 import com.monika.dashboard.ui.components.SegmentedControl
 
 @Composable
-fun MessagesHubScreen(settings: SettingsStore) {
-    var selected by rememberSaveable { mutableIntStateOf(0) }
+fun MessagesHubScreen(
+    settings: SettingsStore,
+    selectedIndex: Int? = null,
+    onSelectedIndexChange: ((Int) -> Unit)? = null,
+) {
+    var localSelected by rememberSaveable { mutableIntStateOf(0) }
+    val selected = selectedIndex ?: localSelected
+    val selectTab: (Int) -> Unit = {
+        if (onSelectedIndexChange != null) {
+            onSelectedIndexChange(it)
+        } else {
+            localSelected = it
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -35,7 +47,7 @@ fun MessagesHubScreen(settings: SettingsStore) {
             SegmentedControl(
                 options = listOf("私聊", "公开留言"),
                 selectedIndex = selected,
-                onSelect = { selected = it },
+                onSelect = selectTab,
             )
         }
 

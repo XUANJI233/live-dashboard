@@ -35,7 +35,7 @@
           "path": "setting/index"
         },
         "app-event": {
-          "path": "app-event/index"
+          "path": "app-service/live-watch"
         }
       },
       "platforms": [
@@ -47,18 +47,14 @@
   },
   "permissions": [
     "device:os.alarm",
-    "device:os.timer",
-    "device:os.bg_service",
     "device:os.ble",
     "device:os.local_storage",
-    "data:os.device.info",
     "data:user.hd.heart_rate",
     "data:user.hd.spo2",
     "data:user.hd.body_temp",
     "data:user.hd.step",
     "data:user.hd.sleep",
-    "event:os.health.heart_rate_abnl",
-    "event:os.health.wear_status"
+    "event:os.health.sleep_status"
   ],
   "i18n": {
     "en-US": {

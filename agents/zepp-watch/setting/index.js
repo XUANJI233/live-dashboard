@@ -73,7 +73,7 @@ AppSettingsPage({
       // ── 启用开关 ──
       Toggle({
         label: '启用同步',
-        value: Boolean(get('enabled', true)),
+        value: Boolean(get('enabled', false)),
         onChange: (value) => writeConfig({ enabled: Boolean(value) }),
       }),
 

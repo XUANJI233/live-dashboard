@@ -9,6 +9,7 @@ var gConfig = {}
 var gWUrl = null, gWBtn = null, gWUpload = null, gWStatus = null, gWDebug = null
 var gWRefresh = null
 const CONFIG_KEY = 'lw_cfg'
+const ALARM_ID_KEY = 'lw_alarm_id'
 const MANUAL_FULL_SYNC_KEY = 'lw_manual_full'
 const localStorage = new LocalStorage()
 
@@ -28,7 +29,9 @@ Page(
         updateUI()
         if (gRunning && gUrl && gToken) {
           persistDeviceConfig(true)
-          scheduleWatchService(1, true)
+          if (!hasScheduledWatchServiceAlarm()) {
+            scheduleWatchService(1, true)
+          }
         }
       }).catch(function () {})
     },
@@ -140,7 +143,7 @@ function onManualUpload() {
   hmUI.showToast({ text: '全量上传已排队' })
   persistDeviceConfig(gRunning)
   try {
-    localStorage.setItem(MANUAL_FULL_SYNC_KEY, 1)
+    localStorage.setItem(MANUAL_FULL_SYNC_KEY, true)
     scheduleWatchService(1, false)
   } catch (e) {
     dbg('manual alarm failed: ' + ((e && e.message) || e))
@@ -197,19 +200,52 @@ function updateUI() {
 
 function scheduleWatchService(delaySec, store) {
   try {
-    return setAlarm({
+    var alarmId = setAlarm({
       url: 'app-service/live-watch',
       delay: delaySec,
       store: Boolean(store),
     })
+    if (store && alarmId > 0) writeWatchAlarmId(alarmId)
+    return alarmId
   } catch (e) {
     dbg('schedule failed: ' + ((e && e.message) || e))
     return null
   }
 }
 
+function readWatchAlarmId() {
+  try {
+    var val = localStorage.getItem(ALARM_ID_KEY, 0)
+    return typeof val === 'number' ? val : 0
+  } catch (e) {}
+  return 0
+}
+
+function writeWatchAlarmId(alarmId) {
+  try {
+    localStorage.setItem(ALARM_ID_KEY, alarmId)
+  } catch (e) {}
+}
+
+function hasScheduledWatchServiceAlarm() {
+  try {
+    var alarmId = readWatchAlarmId()
+    if (!alarmId) return false
+    var alarms = getAllAlarms()
+    return alarms && alarms.indexOf(alarmId) >= 0
+  } catch (e) {}
+  return false
+}
+
 function cancelWatchServiceAlarms() {
   try {
+    var alarmId = readWatchAlarmId()
+    if (alarmId > 0) {
+      cancelAlarm(alarmId)
+      writeWatchAlarmId(0)
+      return
+    }
+
     var alarms = getAllAlarms()
     if (alarms && alarms.length) {
       alarms.forEach(function (id) { cancelAlarm(id) })

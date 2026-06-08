@@ -39,6 +39,7 @@ import com.monika.dashboard.ui.components.ScreenHeader
 import com.monika.dashboard.ui.components.SegmentedControl
 import com.monika.dashboard.ui.components.SectionTitle
 import com.monika.dashboard.ui.components.StatusPill
+import com.monika.dashboard.ui.components.friendlyErrorMessage
 import com.monika.dashboard.ui.theme.TextMuted
 import java.time.Instant
 import java.time.LocalDate
@@ -68,16 +69,7 @@ fun OverviewScreen(settings: SettingsStore) {
         scope.launch {
             refreshing = true
             error = null
-            val result = withContext(Dispatchers.IO) {
-                val url = settings.serverUrl.first()
-                val token = settings.getToken()
-                if (url.isBlank() || token.isNullOrBlank()) {
-                    Result.failure(IllegalStateException("请先在设置中配置服务器和 Token"))
-                } else {
-                    val client = ReportClient(url, token)
-                    if (isWeekly) client.refreshWeeklySummary(selectedDate) else client.refreshDailySummary(selectedDate)
-                }
-            }
+            val result = refreshOverviewSummary(settings, selectedDate, isWeekly)
             result
                 .onSuccess { summary ->
                     when (summary) {
@@ -85,7 +77,7 @@ fun OverviewScreen(settings: SettingsStore) {
                         is ReportClient.DailySummary -> dailySummary = summary
                     }
                 }
-                .onFailure { error = it.message ?: it.javaClass.simpleName }
+                .onFailure { error = friendlyErrorMessage(it) }
             refreshing = false
         }
     }
@@ -96,51 +88,13 @@ fun OverviewScreen(settings: SettingsStore) {
         dailySummary = null
         weeklySummary = null
         timeline = null
-        val result = withContext(Dispatchers.IO) {
-            val url = settings.serverUrl.first()
-            val token = settings.getToken()
-            if (url.isBlank() || token.isNullOrBlank()) {
-                Result.failure(IllegalStateException("请先在设置中配置服务器和 Token"))
-            } else {
-                val client = ReportClient(url, token)
-                try {
-                    if (isWeekly) {
-                        val summary = client.fetchWeeklySummary(selectedDate).getOrThrow()
-                        val segments = weekDatesFor(selectedDate)
-                            .flatMap { date -> client.fetchTimeline(date).getOrThrow().segments }
-                        Result.success(
-                            OverviewLoad(
-                                dailySummary = null,
-                                weeklySummary = summary,
-                                timeline = ReportClient.TimelineResponse(
-                                    date = selectedDate,
-                                    segments = segments,
-                                    summary = emptyMap(),
-                                ),
-                            ),
-                        )
-                    } else {
-                        val summary = client.fetchDailySummary(selectedDate).getOrThrow()
-                        val timelineResponse = client.fetchTimeline(selectedDate).getOrThrow()
-                        Result.success(
-                            OverviewLoad(
-                                dailySummary = summary,
-                                weeklySummary = null,
-                                timeline = timelineResponse,
-                            ),
-                        )
-                    }
-                } finally {
-                    client.shutdown()
-                }
-            }
-        }
+        val result = loadOverviewData(settings, selectedDate, isWeekly)
         result.onSuccess { data ->
                 dailySummary = data.dailySummary
                 weeklySummary = data.weeklySummary
                 timeline = data.timeline
             }
-            .onFailure { error = it.message ?: it.javaClass.simpleName }
+            .onFailure { error = friendlyErrorMessage(it) }
         loading = false
     }
 
@@ -282,6 +236,71 @@ private data class OverviewLoad(
     val weeklySummary: ReportClient.WeeklySummary?,
     val timeline: ReportClient.TimelineResponse,
 )
+
+private suspend fun loadOverviewData(
+    settings: SettingsStore,
+    selectedDate: String,
+    isWeekly: Boolean,
+): Result<OverviewLoad> = withContext(Dispatchers.IO) {
+    val url = settings.serverUrl.first()
+    val token = settings.getToken()
+    if (url.isBlank() || token.isNullOrBlank()) {
+        return@withContext Result.failure(IllegalStateException("请先在设置中配置服务器和 Token"))
+    }
+
+    val client = ReportClient(url, token)
+    try {
+        runCatching {
+            if (isWeekly) {
+                val summary = client.fetchWeeklySummary(selectedDate).getOrThrow()
+                val segments = weekDatesFor(selectedDate)
+                    .flatMap { date -> client.fetchTimeline(date).getOrThrow().segments }
+                OverviewLoad(
+                    dailySummary = null,
+                    weeklySummary = summary,
+                    timeline = ReportClient.TimelineResponse(
+                        date = selectedDate,
+                        segments = segments,
+                        summary = emptyMap(),
+                    ),
+                )
+            } else {
+                OverviewLoad(
+                    dailySummary = client.fetchDailySummary(selectedDate).getOrThrow(),
+                    weeklySummary = null,
+                    timeline = client.fetchTimeline(selectedDate).getOrThrow(),
+                )
+            }
+        }
+    } finally {
+        client.shutdown()
+    }
+}
+
+private suspend fun refreshOverviewSummary(
+    settings: SettingsStore,
+    selectedDate: String,
+    isWeekly: Boolean,
+): Result<Any> = withContext(Dispatchers.IO) {
+    val url = settings.serverUrl.first()
+    val token = settings.getToken()
+    if (url.isBlank() || token.isNullOrBlank()) {
+        return@withContext Result.failure(IllegalStateException("请先在设置中配置服务器和 Token"))
+    }
+
+    val client = ReportClient(url, token)
+    try {
+        if (isWeekly) {
+            client.refreshWeeklySummary(selectedDate)
+        } else {
+            client.refreshDailySummary(selectedDate)
+        }
+    } catch (e: Exception) {
+        Result.failure(e)
+    } finally {
+        client.shutdown()
+    }
+}
 
 private fun aggregateUsage(segments: List<ReportClient.TimelineSegment>): List<UsageItem> =
     segments

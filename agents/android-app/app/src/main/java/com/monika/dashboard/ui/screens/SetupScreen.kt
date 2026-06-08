@@ -191,7 +191,7 @@ fun SetupScreen(settings: SettingsStore, showHeader: Boolean = true) {
                         placeholder = { Text("https://live.example.com") },
                         isError = urlError != null,
                         supportingText = urlError?.let { err -> { Text(err) } }
-                            ?: { Text("必须使用 HTTPS，仅 localhost 允许 HTTP。") },
+                            ?: { Text("必须使用 HTTPS；HTTP 仅支持 localhost/127.0.0.1。模拟器连电脑本地服务需先 adb reverse。") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(10.dp),
@@ -393,7 +393,7 @@ fun SetupScreen(settings: SettingsStore, showHeader: Boolean = true) {
                                 try {
                                     val url = urlInput.trim()
                                     if (!SettingsStore.validateUrl(url)) {
-                                        urlError = "地址无效：必须使用 HTTPS 或 http://localhost"
+                                        urlError = "地址无效：必须使用 HTTPS，或 HTTP localhost/127.0.0.1"
                                         return@launch
                                     }
                                     if (!settings.isSecureStorageAvailable) {

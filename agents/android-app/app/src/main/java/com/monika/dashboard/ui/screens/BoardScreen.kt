@@ -42,6 +42,7 @@ import com.monika.dashboard.ui.components.InitialBadge
 import com.monika.dashboard.ui.components.ScreenHeader
 import com.monika.dashboard.ui.components.SectionTitle
 import com.monika.dashboard.ui.components.StatusPill
+import com.monika.dashboard.ui.components.friendlyErrorMessage
 import com.monika.dashboard.ui.theme.TextMuted
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -91,7 +92,7 @@ fun BoardScreen(settings: SettingsStore, showHeader: Boolean = true) {
         }
         freshResult
             .onSuccess { publicMessages = mergePublicMessages(publicMessages, it) }
-            .onFailure { loadError = it.message ?: it.javaClass.simpleName }
+            .onFailure { loadError = friendlyErrorMessage(it) }
         loading = false
     }
 

@@ -142,6 +142,11 @@ class HeartbeatWorker(
             if (sleepingWithoutMedia) {
                 nextIntervalSec = nextIntervalSec.coerceAtLeast(SLEEPING_INTERVAL_SECONDS)
             }
+            val offlineTimeoutMinutes = if (snapshot.isSleeping()) {
+                OfflineTimeoutPolicy.forCadenceSeconds(nextIntervalSec)
+            } else {
+                null
+            }
             val environment = DeviceEnvironmentCollector.collect(
                 applicationContext,
                 includeAmbientLight = !snapshot.isSleeping(),
@@ -171,6 +176,7 @@ class HeartbeatWorker(
                     snapshot = snapshot,
                     environment = environment,
                 ),
+                offlineTimeoutMinutes = offlineTimeoutMinutes,
                 heartbeatOnly = false,
             )
 
@@ -266,6 +272,7 @@ class HeartbeatWorker(
     private data class StatusPayloadInput(
         val identity: StatusIdentity,
         val telemetry: StatusTelemetry,
+        val offlineTimeoutMinutes: Int?,
         val heartbeatOnly: Boolean,
     )
 
@@ -307,6 +314,7 @@ class HeartbeatWorker(
             device.put("ambient_lux", (lux.coerceIn(0f, 200_000f) * 10f).toInt() / 10.0)
         }
         if (input.heartbeatOnly) device.put("heartbeat_only", true)
+        input.offlineTimeoutMinutes?.let { device.put(OFFLINE_TIMEOUT_FIELD, it) }
         telemetry.snapshot?.let {
             device.put("capability_mode", it.capabilityMode)
             device.put("last_sample_at", Instant.ofEpochMilli(it.sampledAt).toString())
