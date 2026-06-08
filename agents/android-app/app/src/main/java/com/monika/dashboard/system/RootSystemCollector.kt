@@ -12,21 +12,18 @@ class RootSystemCollector(private val context: Context) {
     suspend fun collect(): SystemSnapshot? = withContext(Dispatchers.IO) {
         val activity = runRoot("dumpsys activity activities")
         val window = runRoot("dumpsys window")
-        val input = runRoot("dumpsys input_method")
         val media = runRoot("dumpsys media_session")
 
-        if (activity == null && window == null && input == null && media == null) {
+        if (activity == null && window == null && media == null) {
             DebugLog.log("root", "root采集不可用，降级为normal")
             return@withContext null
         }
 
         val foreground = parseForeground(activity.orEmpty(), window.orEmpty())
-        val inputInfo = parseInput(input.orEmpty())
         val mediaInfo = parseMedia(media.orEmpty())
         SystemSnapshot(
             capabilityMode = "root",
             foreground = foreground,
-            input = inputInfo,
             media = mediaInfo,
         )
     }
@@ -68,14 +65,6 @@ class RootSystemCollector(private val context: Context) {
             )
         }
         return null
-    }
-
-    private fun parseInput(inputDump: String): InputInfo? {
-        if (inputDump.isBlank()) return null
-        val active = inputDump.contains("mInputShown=true", ignoreCase = true) ||
-            inputDump.contains("inputShown=true", ignoreCase = true) ||
-            inputDump.contains("mServedView", ignoreCase = true)
-        return InputInfo(inputActive = active, isTyping = active, source = "root")
     }
 
     private fun parseMedia(mediaDump: String): MediaInfo? {

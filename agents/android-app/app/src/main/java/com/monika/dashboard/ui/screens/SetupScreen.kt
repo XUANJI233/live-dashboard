@@ -82,7 +82,6 @@ fun SetupScreen(settings: SettingsStore, showHeader: Boolean = true) {
     val uploadNetwork by settings.uploadNetwork.collectAsState(initial = true)
     val uploadLocation by settings.uploadLocation.collectAsState(initial = false)
     val uploadVpnStatus by settings.uploadVpnStatus.collectAsState(initial = false)
-    val uploadInputState by settings.uploadInputState.collectAsState(initial = false)
     val highFrequencyReport by settings.highFrequencyReport.collectAsState(initial = false)
     val debugMode by settings.debugMode.collectAsState(initial = false)
 
@@ -95,7 +94,6 @@ fun SetupScreen(settings: SettingsStore, showHeader: Boolean = true) {
     var networkInput by remember(uploadNetwork) { mutableStateOf(uploadNetwork) }
     var locationInput by remember(uploadLocation) { mutableStateOf(uploadLocation) }
     var vpnInput by remember(uploadVpnStatus) { mutableStateOf(uploadVpnStatus) }
-    var inputStateInput by remember(uploadInputState) { mutableStateOf(uploadInputState) }
     var highFrequencyInput by remember(highFrequencyReport) { mutableStateOf(highFrequencyReport) }
     var debugInput by remember(debugMode) { mutableStateOf(debugMode) }
     var showToken by remember { mutableStateOf(false) }
@@ -338,14 +336,6 @@ fun SetupScreen(settings: SettingsStore, showHeader: Boolean = true) {
                         scope.launch { settings.setUploadVpnStatus(it); notifySaved() }
                     }
                     SettingSwitchRow(
-                        checked = inputStateInput,
-                        title = "输入状态",
-                        body = "只上传是否正在输入，不上传文本、剪贴板或候选词。",
-                    ) {
-                        inputStateInput = it
-                        scope.launch { settings.setUploadInputState(it); notifySaved() }
-                    }
-                    SettingSwitchRow(
                         checked = debugInput,
                         title = "调试模式",
                         body = "在诊断页显示最近上传 payload 和本地日志。",
@@ -421,7 +411,6 @@ fun SetupScreen(settings: SettingsStore, showHeader: Boolean = true) {
                                     settings.setUploadNetwork(networkInput)
                                     settings.setUploadLocation(locationInput)
                                     settings.setUploadVpnStatus(vpnInput)
-                                    settings.setUploadInputState(inputStateInput)
                                     settings.setDebugMode(debugInput)
                                     publishLsposedConfig()
                                     if (locationInput) requestLocationPermissionIfNeeded(context)
@@ -457,7 +446,6 @@ fun SetupScreen(settings: SettingsStore, showHeader: Boolean = true) {
                                     settings.setUploadNetwork(networkInput)
                                     settings.setUploadLocation(locationInput)
                                     settings.setUploadVpnStatus(vpnInput)
-                                    settings.setUploadInputState(inputStateInput)
                                     settings.setDebugMode(debugInput)
                                     publishLsposedConfig()
                                     if (locationInput) requestLocationPermissionIfNeeded(context)

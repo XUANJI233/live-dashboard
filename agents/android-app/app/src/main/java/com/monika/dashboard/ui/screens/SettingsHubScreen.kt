@@ -40,6 +40,7 @@ import com.monika.dashboard.BuildConfig
 import com.monika.dashboard.data.DebugLog
 import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.network.ReportClient
+import com.monika.dashboard.network.SupervisionRules
 import com.monika.dashboard.system.LsposedConfigBridge
 import com.monika.dashboard.ui.components.CompactPageHeader
 import com.monika.dashboard.ui.components.DashboardCard
@@ -126,6 +127,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
     var supervisionVibrate by rememberSaveable { mutableStateOf(true) }
     var supervisionSkipWatchSleep by rememberSaveable { mutableStateOf(true) }
     var supervisionLspFreeze by rememberSaveable { mutableStateOf(false) }
+    var supervisionRules by remember { mutableStateOf(SupervisionRules.empty()) }
     var supervisionRulesUpdatedAt by remember { mutableStateOf<String?>(null) }
     var supervisionRulesError by remember { mutableStateOf<String?>(null) }
     var unfreezeCountdown by rememberSaveable { mutableIntStateOf(0) }
@@ -180,6 +182,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     supervisionVibrate = it.supervisionVibrate
                     supervisionSkipWatchSleep = it.supervisionSkipWatchSleep
                     supervisionLspFreeze = it.supervisionLspFreeze
+                    supervisionRules = it.supervisionRules
                     supervisionRulesUpdatedAt = it.supervisionRulesUpdatedAt
                     supervisionRulesError = it.supervisionRulesError
                     updatedAt = it.updatedAt
@@ -240,6 +243,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     supervisionVibrate = it.supervisionVibrate
                     supervisionSkipWatchSleep = it.supervisionSkipWatchSleep
                     supervisionLspFreeze = it.supervisionLspFreeze
+                    supervisionRules = it.supervisionRules
                     supervisionRulesUpdatedAt = it.supervisionRulesUpdatedAt
                     supervisionRulesError = it.supervisionRulesError
                     updatedAt = it.updatedAt
@@ -693,6 +697,9 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     text = supervisionMeta,
                     tone = if (!supervisionRulesError.isNullOrBlank()) DashboardTone.Warn else DashboardTone.Neutral,
                 )
+                if (supervisionRules.hasContent()) {
+                    SupervisionRulesView(supervisionRules)
+                }
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),

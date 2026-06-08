@@ -72,9 +72,9 @@ object MessageSocketManager {
                 put("type", "device_status")
                 put("payload", JSONObject(jsonPayload))
             }
-            ws.send(msg.toString())
-            DebugLog.log("消息", "WS发送device_status成功")
-            true
+            val queued = ws.send(msg.toString())
+            DebugLog.log("消息", if (queued) "WS发送device_status成功" else "WS发送device_status未入队")
+            queued
         } catch (e: Exception) {
             DebugLog.log("消息", "WS发送device_status失败: ${e.message}")
             false

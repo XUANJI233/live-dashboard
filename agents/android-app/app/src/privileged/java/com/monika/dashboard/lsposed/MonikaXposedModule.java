@@ -15,7 +15,14 @@ import android.content.ComponentName;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
+import android.media.AudioDeviceInfo;
+import android.media.AudioManager;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
@@ -31,9 +38,7 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.telephony.TelephonyManager;
-import android.text.InputType;
 import android.util.Log;
-import android.view.inputmethod.EditorInfo;
 
 import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
@@ -78,6 +83,7 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String ACTION_BROWSER_TITLE = "com.monika.dashboard.LSPOSED_BROWSER_TITLE";
     private static final String CONFIG_PERMISSION = "com.monika.dashboard.permission.LSPOSED_CONFIG";
     private static final String PREFS_DIRECT_UPLOAD = "monika_lsp_direct_upload";
+    private static final String KEY_PENDING_DIRECT_BODY = "pending_direct_body";
     private static final String KEY_BROWSER_TITLE_NONCE = "browser_title_nonce";
     private static final String EXTRA_CONFIG_COMMAND = "command";
     private static final String COMMAND_CLEAR_SUPERVISION_FREEZE = "clear_supervision_freeze";
@@ -99,8 +105,9 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long MEDIA_VALIDATE_MS = 60_000L; // low-frequency stale-session guard
     private static final long BROWSER_NONCE_RELOAD_MS = 60_000L;
     private static final long BROWSER_WEB_TITLE_FRESH_MS = 10_000L;
+    private static final long DIRECT_FULL_STATE_INTERVAL_MS = 5 * 60_000L;
+    private static final long AMBIENT_LIGHT_CACHE_MS = 60_000L;
     private static final long SUPERVISION_DEFAULT_FREEZE_MS = 10 * 60_000L;
-    private static final int START_INPUT_FLAG_IS_TEXT_EDITOR = 1 << 1;
     
     // Static instance for global access
     private static MonikaXposedModule instance;
@@ -188,7 +195,6 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile boolean directUploadMedia = true;
     private volatile boolean directUploadNetwork = true;
     private volatile boolean directUploadVpn = false;
-    private volatile boolean directUploadInput = false;
     private volatile String browserTitleNonce = "";
     private volatile long lastDirectUploadAt = 0L;
     private volatile String pendingDirectBody = "";
@@ -199,7 +205,6 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String foregroundActivity = "";
     private volatile String foregroundTitle = "";
     private volatile boolean mediaPlaying = false;
-    private volatile boolean inputActive = false;
     private volatile String mediaPackage = "";
     private volatile String mediaApp = "";
     private volatile String mediaTitle = "";
@@ -211,6 +216,11 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile long lastTitleBroadcastAt = 0L;
     private volatile String lastBroadcastTitle = "";
     private volatile long lastBrowserNonceLoadAt = 0L;
+    private volatile String lastDirectStateSignature = "";
+    private volatile long lastDirectFullReportAt = 0L;
+    private volatile float lastAmbientLux = -1f;
+    private volatile long lastAmbientLightAt = 0L;
+    private volatile boolean ambientLightListenerRegistered = false;
     private volatile String recentForegroundBrowser = "";
     private volatile long recentForegroundBrowserAt = 0L;
     private volatile long lastScreenOffCheckAt = 0L;
@@ -260,7 +270,8 @@ public final class MonikaXposedModule extends XposedModule {
         scheduleSystemServerReceivers(handler, 1500L);
         installInternalMediaHooks(cl);
         installForegroundSampler(cl);
-        installInputMethodHooks(cl);
+        // Keyboard input state is intentionally not collected: it is noisy and
+        // tends to pollute timeline semantics without adding reliable context.
     }
 
     @Override
@@ -436,136 +447,6 @@ public final class MonikaXposedModule extends XposedModule {
             foregroundSnapshotPending = false;
             try { broadcastSnapshot(); } catch (Throwable ignored) {}
         }
-    }
-
-    private void installInputMethodHooks(ClassLoader cl) {
-        try {
-            Class<?> clazz = cachedClassForName("com.android.server.inputmethod.InputMethodManagerService", cl);
-            if (clazz == null) throw new ClassNotFoundException("InputMethodManagerService");
-            int hooked = 0;
-            for (Method method : clazz.getDeclaredMethods()) {
-                String name = method.getName();
-                if (name == null) continue;
-                int inputHookKind = inputMethodHookKind(name);
-                if (inputHookKind == 0) continue;
-                hook(method)
-                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                        .intercept(chain -> {
-                            Object result = chain.proceed();
-                            if (!inputHookResultSucceeded(result)) return result;
-                            boolean nextActive;
-                            if (inputHookKind == 2) {
-                                Boolean requestedShow = firstBooleanArg(chain.getArgs());
-                                if (requestedShow == null) return result;
-                                nextActive = requestedShow;
-                            } else if (name.contains("startInputOrWindowGainedFocus")) {
-                                nextActive = hasTextEditorInfo(chain.getArgs());
-                            } else {
-                                nextActive = inputHookKind > 0;
-                            }
-                            if (inputActive != nextActive) {
-                                inputActive = nextActive;
-                                try { maybeDirectUpload(true); } catch (Throwable ignored) {}
-                                try { broadcastSnapshot(); } catch (Throwable ignored) {}
-                            }
-                            return result;
-                        });
-                hooked++;
-            }
-            log(Log.INFO, TAG, "hooked InputMethodManagerService methods: " + hooked);
-        } catch (Throwable t) {
-            log(Log.WARN, TAG, "input method hooks skipped: " + t.getClass().getSimpleName());
-        }
-    }
-
-    private int inputMethodHookKind(String name) {
-        if ("startInputOrWindowGainedFocus".equals(name)
-                || "startInputOrWindowGainedFocusAsync".equals(name)) {
-            return 1;
-        }
-        if ("showSoftInput".equals(name)
-                || "showCurrentInput".equals(name)
-                || "showCurrentInputInternal".equals(name)
-                || "showCurrentInputLocked".equals(name)) {
-            return 1;
-        }
-        if ("hideSoftInput".equals(name)
-                || "hideCurrentInput".equals(name)
-                || "hideCurrentInputInternal".equals(name)
-                || "hideCurrentInputLocked".equals(name)) {
-            return -1;
-        }
-        if ("onShowHideSoftInputRequested".equals(name)) {
-            return 2;
-        }
-        return 0;
-    }
-
-    private boolean inputHookResultSucceeded(Object result) {
-        if (result == null) return true;
-        if (result instanceof Boolean) return (Boolean) result;
-        String className = result.getClass().getName();
-        if (className.endsWith("InputBindResult")) {
-            Object code = readField(result, "result");
-            if (!(code instanceof Integer)) code = readField(result, "mResult");
-            if (code instanceof Integer) {
-                int value = (Integer) code;
-                return value == 0 || value == 1 || value == 2 || value == 3 || value == 4 || value == 16;
-            }
-            String text = safeString(String.valueOf(result));
-            return text.length() == 0 || !text.contains("ERROR_");
-        }
-        return true;
-    }
-
-    private boolean hasTextEditorInfo(List<Object> args) {
-        try {
-            int startInputFlags = startInputFlagsFromArgs(args);
-            if (startInputFlags >= 0) {
-                return (startInputFlags & START_INPUT_FLAG_IS_TEXT_EDITOR) != 0;
-            }
-            boolean sawEditorInfo = false;
-            for (Object arg : args) {
-                if (arg instanceof EditorInfo) {
-                    sawEditorInfo = true;
-                    int inputType = ((EditorInfo) arg).inputType;
-                    if (inputType != InputType.TYPE_NULL) return true;
-                }
-            }
-            return false;
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
-    private int startInputFlagsFromArgs(List<Object> args) {
-        try {
-            for (int i = 0; i < args.size(); i++) {
-                if (args.get(i) instanceof EditorInfo) {
-                    java.util.ArrayList<Integer> intValues = new java.util.ArrayList<>();
-                    for (int j = 0; j < i; j++) {
-                        Object arg = args.get(j);
-                        if (arg instanceof Integer) intValues.add((Integer) arg);
-                    }
-                    int count = intValues.size();
-                    if (count >= 3) return intValues.get(count - 3);
-                    break;
-                }
-            }
-            if (args.size() > 3 && args.get(3) instanceof Integer) {
-                return (Integer) args.get(3);
-            }
-        } catch (Throwable ignored) {}
-        return -1;
-    }
-
-    private Boolean firstBooleanArg(List<Object> args) {
-        try {
-            for (Object arg : args) {
-                if (arg instanceof Boolean) return (Boolean) arg;
-            }
-        } catch (Throwable ignored) {}
-        return null;
     }
 
     private void startForegroundSampler() {
@@ -1456,6 +1337,14 @@ public final class MonikaXposedModule extends XposedModule {
             hookWebViewNavigation(webView, packageName, "goBack");
             hookWebViewNavigation(webView, packageName, "goForward");
             hookWebViewClientPageFinished(cl, webView, packageName);
+            hookWebViewClientTitleEvent(cl, webView, packageName, "onPageCommitVisible", webView, String.class);
+            hookWebViewClientTitleEvent(cl, webView, packageName, "doUpdateVisitedHistory", webView, String.class, boolean.class);
+            hookWebViewClientTitleEvent(cl, webView, packageName, "shouldOverrideUrlLoading", webView, String.class);
+            Class<?> webResourceRequest = cachedClassForName("android.webkit.WebResourceRequest", cl);
+            if (webResourceRequest != null) {
+                hookWebViewClientTitleEvent(cl, webView, packageName, "shouldOverrideUrlLoading", webView, webResourceRequest);
+            }
+            hookWebChromeProgress(cl, webView, packageName);
             hookWebViewClientInstallers(webView, packageName);
         } catch (Throwable ignored) {}
     }
@@ -1473,9 +1362,9 @@ public final class MonikaXposedModule extends XposedModule {
                             Object result = chain.proceed();
                             try {
                                 List<Object> args = chain.getArgs();
-                                if (args.size() > 0 && args.get(0) != null) {
-                                    hookSpecificWebChromeClient(args.get(0).getClass(), webView, packageName);
-                                }
+            if (args.size() > 0 && args.get(0) != null) {
+                hookSpecificWebChromeClient(args.get(0).getClass(), webView, packageName);
+            }
                             } catch (Throwable ignored) {}
                             return result;
                         });
@@ -1529,6 +1418,7 @@ public final class MonikaXposedModule extends XposedModule {
                     });
             log(Log.INFO, TAG, "hooked concrete WebChromeClient#onReceivedTitle: " + className);
         } catch (Throwable ignored) {}
+        hookSpecificWebChromeProgress(clientClass, webView, packageName);
     }
 
     private void hookSpecificWebViewClient(Class<?> clientClass, Class<?> webView, String packageName) {
@@ -1555,6 +1445,13 @@ public final class MonikaXposedModule extends XposedModule {
                     });
             log(Log.INFO, TAG, "hooked concrete WebViewClient#onPageFinished: " + className);
         } catch (Throwable ignored) {}
+        hookSpecificWebViewClientTitleEvent(clientClass, webView, packageName, "onPageCommitVisible", webView, String.class);
+        hookSpecificWebViewClientTitleEvent(clientClass, webView, packageName, "doUpdateVisitedHistory", webView, String.class, boolean.class);
+        hookSpecificWebViewClientTitleEvent(clientClass, webView, packageName, "shouldOverrideUrlLoading", webView, String.class);
+        Class<?> request = cachedClassForName("android.webkit.WebResourceRequest", webView.getClassLoader());
+        if (request != null) {
+            hookSpecificWebViewClientTitleEvent(clientClass, webView, packageName, "shouldOverrideUrlLoading", webView, request);
+        }
     }
 
     private void hookWebViewClientPageFinished(ClassLoader cl, Class<?> webView, String packageName) {
@@ -1705,6 +1602,78 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable ignored) {}
     }
 
+    private void hookWebViewClientTitleEvent(ClassLoader cl, Class<?> webView, String packageName, String methodName, Class<?>... paramTypes) {
+        try {
+            Class<?> viewClient = cachedClassForName("android.webkit.WebViewClient", cl);
+            if (viewClient == null) throw new ClassNotFoundException("android.webkit.WebViewClient");
+            hookSpecificWebViewClientTitleEvent(viewClient, webView, packageName, methodName, paramTypes);
+        } catch (Throwable ignored) {}
+    }
+
+    private void hookSpecificWebViewClientTitleEvent(Class<?> clientClass, Class<?> webView, String packageName, String methodName, Class<?>... paramTypes) {
+        if (clientClass == null) return;
+        String className = clientClass.getName();
+        String hookKey = packageName + ":" + className + ":" + methodName + ":" + paramTypes.length;
+        if (!hookedWebViewClientClasses.add(hookKey)) return;
+        Method method = findMethod(clientClass, methodName, paramTypes);
+        if (method == null) return;
+        try { method.setAccessible(true); } catch (Throwable ignored) {}
+        try { deoptimize(method); } catch (Throwable ignored) {}
+        try {
+            hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            List<Object> args = chain.getArgs();
+                            if (args.size() > 0) {
+                                scheduleWebViewTitleRead(args.get(0), packageName, 120L);
+                                scheduleWebViewTitleRead(args.get(0), packageName, 650L);
+                                scheduleWebViewTitleRead(args.get(0), packageName, 1800L);
+                            }
+                        } catch (Throwable ignored) {}
+                        return result;
+                    });
+            log(Log.INFO, TAG, "hooked WebViewClient#" + methodName + ": " + className);
+        } catch (Throwable ignored) {}
+    }
+
+    private void hookWebChromeProgress(ClassLoader cl, Class<?> webView, String packageName) {
+        try {
+            Class<?> chromeClient = cachedClassForName("android.webkit.WebChromeClient", cl);
+            if (chromeClient == null) throw new ClassNotFoundException("android.webkit.WebChromeClient");
+            hookSpecificWebChromeProgress(chromeClient, webView, packageName);
+        } catch (Throwable ignored) {}
+    }
+
+    private void hookSpecificWebChromeProgress(Class<?> clientClass, Class<?> webView, String packageName) {
+        if (clientClass == null) return;
+        String className = clientClass.getName();
+        String hookKey = packageName + ":" + className + ":onProgressChanged";
+        if (!hookedWebChromeClientClasses.add(hookKey)) return;
+        Method method = findMethod(clientClass, "onProgressChanged", webView, int.class);
+        if (method == null) return;
+        try { method.setAccessible(true); } catch (Throwable ignored) {}
+        try { deoptimize(method); } catch (Throwable ignored) {}
+        try {
+            hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            List<Object> args = chain.getArgs();
+                            int progress = args.size() > 1 && args.get(1) instanceof Integer ? (Integer) args.get(1) : 0;
+                            if (args.size() > 0 && progress >= 70) {
+                                scheduleWebViewTitleRead(args.get(0), packageName, progress >= 100 ? 80L : 500L);
+                                if (progress >= 100) scheduleWebViewTitleRead(args.get(0), packageName, 900L);
+                            }
+                        } catch (Throwable ignored) {}
+                        return result;
+                    });
+            log(Log.INFO, TAG, "hooked WebChromeClient#onProgressChanged: " + className);
+        } catch (Throwable ignored) {}
+    }
+
     private Activity findActivityContext(Object value) {
         try {
             Object current = value;
@@ -1816,9 +1785,7 @@ public final class MonikaXposedModule extends XposedModule {
                 sleepIntent.putExtra("package_name", "sleeping");
                 sleepIntent.putExtra("app_name", "sleeping");
                 sleepIntent.putExtra("activity", "");
-                sleepIntent.putExtra("input_active", false);
                 putMediaExtras(sleepIntent);
-                inputActive = false;
                 Context ctx = getSystemContext();
                 if (ctx != null) {
                     long token = Binder.clearCallingIdentity();
@@ -1907,12 +1874,10 @@ public final class MonikaXposedModule extends XposedModule {
                 intent.putExtra("package_name", "idle");
                 intent.putExtra("app_name", "idle");
                 intent.putExtra("activity", "");
-                intent.putExtra("input_active", inputActive);
             } else {
                 intent.putExtra("package_name", foregroundPackage);
                 intent.putExtra("app_name", foregroundApp);
                 intent.putExtra("activity", foregroundActivity);
-                intent.putExtra("input_active", inputActive);
                 if (foregroundTitle.length() > 0 || isBrowserPackage(foregroundPackage)) {
                     intent.putExtra("title", foregroundTitle);
                 }
@@ -2288,8 +2253,8 @@ public final class MonikaXposedModule extends XposedModule {
                         directUploadMedia = dps.getBoolean("upload_media", true);
                         directUploadNetwork = dps.getBoolean("upload_network", true);
                         directUploadVpn = dps.getBoolean("upload_vpn", false);
-                        directUploadInput = dps.getBoolean("upload_input", false);
                         browserTitleNonce = normalizeNonce(dps.getString(KEY_BROWSER_TITLE_NONCE, ""));
+                        pendingDirectBody = safeString(dps.getString(KEY_PENDING_DIRECT_BODY, ""));
                         logDebug("config loaded from DPS: enabled=" + directUploadEnabled);
                         return;
                     }
@@ -2305,8 +2270,8 @@ public final class MonikaXposedModule extends XposedModule {
             directUploadMedia = prefs.getBoolean("upload_media", true);
             directUploadNetwork = prefs.getBoolean("upload_network", true);
             directUploadVpn = prefs.getBoolean("upload_vpn", false);
-            directUploadInput = prefs.getBoolean("upload_input", false);
             browserTitleNonce = normalizeNonce(prefs.getString(KEY_BROWSER_TITLE_NONCE, ""));
+            pendingDirectBody = safeString(prefs.getString(KEY_PENDING_DIRECT_BODY, ""));
             logDebug("config loaded from remote prefs: enabled=" + directUploadEnabled);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "load config failed: " + Log.getStackTraceString(t));
@@ -2323,7 +2288,6 @@ public final class MonikaXposedModule extends XposedModule {
             boolean uploadMedia = intent.getBooleanExtra("upload_media", true);
             boolean uploadNetwork = intent.getBooleanExtra("upload_network", true);
             boolean uploadVpn = intent.getBooleanExtra("upload_vpn", false);
-            boolean uploadInput = intent.getBooleanExtra("upload_input", false);
             String incomingBrowserTitleNonce = normalizeNonce(intent.getStringExtra(KEY_BROWSER_TITLE_NONCE));
             if (incomingBrowserTitleNonce.length() == 0) incomingBrowserTitleNonce = browserTitleNonce;
 
@@ -2352,7 +2316,7 @@ public final class MonikaXposedModule extends XposedModule {
                         .putBoolean("upload_media", uploadMedia)
                         .putBoolean("upload_network", uploadNetwork)
                         .putBoolean("upload_vpn", uploadVpn)
-                        .putBoolean("upload_input", uploadInput)
+                        .putBoolean("upload_input", false)
                         .putString(KEY_BROWSER_TITLE_NONCE, incomingBrowserTitleNonce)
                         .commit();
             } catch (Throwable ignored) {}
@@ -2369,7 +2333,6 @@ public final class MonikaXposedModule extends XposedModule {
             directUploadMedia = uploadMedia;
             directUploadNetwork = uploadNetwork;
             directUploadVpn = uploadVpn;
-            directUploadInput = uploadInput;
             browserTitleNonce = incomingBrowserTitleNonce;
             log(Log.INFO, TAG, "config applied from broadcast: enabled=" + enabled + " url=" + serverUrl + " token=" + (token.length() > 0 ? "set" : "empty"));
 
@@ -2390,16 +2353,17 @@ public final class MonikaXposedModule extends XposedModule {
         lastDirectUploadAt = now;
 
         // Use dedicated upload HandlerThread (single background thread, no unbounded spawning).
-        final String url = directServerUrl;
-        final String tok = directToken;
-        final long sampleAt = now;
-        Handler handler = getUploadHandler();
+            final String url = directServerUrl;
+            final String tok = directToken;
+            final long sampleAt = now;
+            final boolean forceRequested = force;
+            Handler handler = getUploadHandler();
         if (handler == null) {
             log(Log.WARN, TAG, "upload skipped: background handler unavailable");
             return;
         }
         handler.post(() -> {
-            final String body = buildDirectReportBody(sampleAt);
+            final String body = buildDirectReportBody(sampleAt, forceRequested);
             if (body == null) return;
 
             // Diagnostic log: show what we're about to upload
@@ -2411,15 +2375,15 @@ public final class MonikaXposedModule extends XposedModule {
             String pending = pendingDirectBody;
             if (pending.length() > 0 && !pending.equals(body)) {
                 if (sendDirectReport(url, tok, pending)) {
-                    pendingDirectBody = "";
+                    setPendingDirectBody("");
                 } else {
                     return;
                 }
             }
             if (sendDirectReport(url, tok, body)) {
-                if (body.equals(pendingDirectBody)) pendingDirectBody = "";
+                if (body.equals(pendingDirectBody)) setPendingDirectBody("");
             } else {
-                pendingDirectBody = body;
+                setPendingDirectBody(body);
             }
         });
     }
@@ -2454,7 +2418,7 @@ public final class MonikaXposedModule extends XposedModule {
         return Math.max(MIN_DIRECT_UPLOAD_MS, Math.min(MAX_DIRECT_UPLOAD_MS, intervalMs));
     }
 
-    private String buildDirectReportBody(long now) {
+    private String buildDirectReportBody(long now, boolean forceRequested) {
         try {
             validateMediaStateIfNeeded(now);
             String appId = directUploadForeground ? safeString(foregroundPackage) : "";
@@ -2482,6 +2446,11 @@ public final class MonikaXposedModule extends XposedModule {
             String wm = getWindowingMode();
             if (wm != null) device.put("window_mode", wm);
             fillNetworkExtras(device);
+            fillAudioOutputExtras(device);
+            fillAmbientLightExtras(device, now);
+            if (shouldSendDirectHeartbeatOnly(now, forceRequested)) {
+                device.put("heartbeat_only", true);
+            }
             JSONArray frozen = frozenPackagesJson(now);
             if (frozen.length() > 0) device.put("frozen_packages", frozen);
             extra.put("device", device);
@@ -2508,13 +2477,6 @@ public final class MonikaXposedModule extends XposedModule {
                 if (mediaState.length() > 0) media.put("state", mediaState);
                 media.put("source", "lsposed");
                 extra.put("media", media);
-            }
-            if (directUploadInput) {
-                JSONObject input = new JSONObject();
-                input.put("input_active", inputActive);
-                input.put("is_typing", inputActive);
-                input.put("source", "lsposed");
-                extra.put("input", input);
             }
             return new JSONObject()
                     .put("app_id", appId)
@@ -2594,6 +2556,181 @@ public final class MonikaXposedModule extends XposedModule {
             }
         } catch (Throwable t) {
             logDebug("network extras skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void fillAudioOutputExtras(JSONObject device) {
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return;
+            AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+            if (am == null) return;
+            AudioCandidate best = null;
+            AudioDeviceInfo[] devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+            if (devices != null) {
+                for (AudioDeviceInfo info : devices) {
+                    AudioCandidate candidate = audioCandidate(info);
+                    if (candidate != null && (best == null || candidate.priority > best.priority)) {
+                        best = candidate;
+                    }
+                }
+            }
+            if (best != null) {
+                device.put("audio_output_connected", true);
+                device.put("audio_output_type", best.type);
+                if (best.name.length() > 0) device.put("audio_output_name", best.name);
+            } else {
+                device.put("audio_output_connected", false);
+                device.put("audio_output_type", "speaker");
+            }
+        } catch (Throwable t) {
+            logDebug("audio output skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private AudioCandidate audioCandidate(AudioDeviceInfo info) {
+        if (info == null) return null;
+        String name = "";
+        try {
+            CharSequence productName = info.getProductName();
+            if (productName != null) name = safeString(productName.toString());
+        } catch (Throwable ignored) {}
+        switch (info.getType()) {
+            case AudioDeviceInfo.TYPE_BLUETOOTH_A2DP:
+            case AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
+                return new AudioCandidate("bluetooth_headset", name, 90);
+            case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
+            case AudioDeviceInfo.TYPE_WIRED_HEADSET:
+                return new AudioCandidate("wired_headset", name, 80);
+            case AudioDeviceInfo.TYPE_USB_HEADSET:
+            case AudioDeviceInfo.TYPE_USB_DEVICE:
+                return new AudioCandidate("usb_audio", name, 70);
+            case AudioDeviceInfo.TYPE_HEARING_AID:
+                return new AudioCandidate("hearing_aid", name, 65);
+            case AudioDeviceInfo.TYPE_HDMI:
+            case AudioDeviceInfo.TYPE_HDMI_ARC:
+            case AudioDeviceInfo.TYPE_HDMI_EARC:
+                return new AudioCandidate("hdmi_audio", name, 50);
+            default:
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    int type = info.getType();
+                    if (type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                            type == AudioDeviceInfo.TYPE_BLE_SPEAKER ||
+                            type == AudioDeviceInfo.TYPE_BLE_BROADCAST) {
+                        return new AudioCandidate("bluetooth_headset", name, 85);
+                    }
+                }
+                return null;
+        }
+    }
+
+    private void fillAmbientLightExtras(JSONObject device, long now) {
+        try {
+            if (lastAmbientLux >= 0f && now - lastAmbientLightAt <= AMBIENT_LIGHT_CACHE_MS) {
+                device.put("ambient_lux", Math.round(lastAmbientLux * 10f) / 10.0);
+            }
+            requestAmbientLightSample();
+        } catch (Throwable t) {
+            logDebug("ambient light skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void requestAmbientLightSample() {
+        if (ambientLightListenerRegistered) return;
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return;
+            SensorManager sm = (SensorManager) ctx.getSystemService(Context.SENSOR_SERVICE);
+            if (sm == null) return;
+            Sensor sensor = sm.getDefaultSensor(Sensor.TYPE_LIGHT);
+            if (sensor == null) return;
+            Handler handler = getUploadHandler();
+            if (handler == null) return;
+            final SensorEventListener[] holder = new SensorEventListener[1];
+            holder[0] = new SensorEventListener() {
+                @Override
+                public void onSensorChanged(SensorEvent event) {
+                    try {
+                        if (event != null && event.values != null && event.values.length > 0) {
+                            lastAmbientLux = Math.max(0f, Math.min(200000f, event.values[0]));
+                            lastAmbientLightAt = System.currentTimeMillis();
+                        }
+                    } catch (Throwable ignored) {
+                    } finally {
+                        try { sm.unregisterListener(holder[0]); } catch (Throwable ignored) {}
+                        ambientLightListenerRegistered = false;
+                    }
+                }
+
+                @Override
+                public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+            };
+            if (sm.registerListener(holder[0], sensor, SensorManager.SENSOR_DELAY_NORMAL, handler)) {
+                ambientLightListenerRegistered = true;
+                handler.postDelayed(() -> {
+                    try {
+                        if (ambientLightListenerRegistered) {
+                            sm.unregisterListener(holder[0]);
+                            ambientLightListenerRegistered = false;
+                        }
+                    } catch (Throwable ignored) {}
+                }, 1000L);
+            }
+        } catch (Throwable ignored) {
+            ambientLightListenerRegistered = false;
+        }
+    }
+
+    private boolean shouldSendDirectHeartbeatOnly(long now, boolean forceRequested) {
+        String signature = directStateSignature();
+        if (forceRequested || signature.length() == 0 || !signature.equals(lastDirectStateSignature)) {
+            lastDirectStateSignature = signature;
+            lastDirectFullReportAt = now;
+            return false;
+        }
+        if (lastDirectFullReportAt <= 0L || now - lastDirectFullReportAt >= DIRECT_FULL_STATE_INTERVAL_MS) {
+            lastDirectFullReportAt = now;
+            return false;
+        }
+        return true;
+    }
+
+    private String directStateSignature() {
+        return safeString(foregroundPackage) + "|" +
+                safeString(foregroundTitle) + "|" +
+                safeString(mediaPackage) + "|" +
+                safeString(mediaTitle) + "|" +
+                mediaPlaying + "|" +
+                safeString(mediaState);
+    }
+
+    private void setPendingDirectBody(String body) {
+        String safeBody = safeString(body);
+        pendingDirectBody = safeBody;
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return;
+            SharedPreferences prefs = ctx.createDeviceProtectedStorageContext()
+                    .getSharedPreferences(PREFS_DIRECT_UPLOAD, Context.MODE_PRIVATE);
+            prefs.edit().putString(KEY_PENDING_DIRECT_BODY, safeBody).apply();
+        } catch (Throwable ignored) {}
+    }
+
+    private static final class AudioCandidate {
+        final String type;
+        final String name;
+        final int priority;
+
+        AudioCandidate(String type, String name, int priority) {
+            this.type = safeStatic(type);
+            this.name = safeStatic(name);
+            this.priority = priority;
+        }
+
+        private static String safeStatic(String value) {
+            if (value == null) return "";
+            String trimmed = value.trim();
+            return trimmed.length() > 64 ? trimmed.substring(0, 64) : trimmed;
         }
     }
 
@@ -3133,6 +3270,7 @@ public final class MonikaXposedModule extends XposedModule {
         if (isIgnoredPackage(packageName)) return true;
         if (TARGET_PACKAGE.equals(packageName)) return true;
         if (packageName.startsWith("com.monika.dashboard")) return true;
+        if (isSystemApplicationPackage(packageName)) return true;
         if (packageName.startsWith("com.android.inputmethod")) return true;
         if (packageName.startsWith("com.google.android.inputmethod")) return true;
         switch (packageName) {
@@ -3157,6 +3295,23 @@ public final class MonikaXposedModule extends XposedModule {
                 return true;
             default:
                 return false;
+        }
+    }
+
+    private boolean isSystemApplicationPackage(String packageName) {
+        try {
+            if (packageName == null || packageName.length() == 0) return false;
+            if (packageName.startsWith("com.android.")) return true;
+            Context ctx = getSystemContext();
+            if (ctx == null) return false;
+            PackageManager pm = ctx.getPackageManager();
+            if (pm == null) return false;
+            ApplicationInfo info = pm.getApplicationInfo(packageName, 0);
+            int systemFlags = ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP;
+            return (info.flags & systemFlags) != 0;
+        } catch (Throwable t) {
+            logDebug("system app freeze guard failed: " + t.getClass().getSimpleName());
+            return packageName != null && packageName.startsWith("com.android.");
         }
     }
 

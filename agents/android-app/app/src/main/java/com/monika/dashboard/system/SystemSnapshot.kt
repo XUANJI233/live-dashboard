@@ -9,12 +9,6 @@ data class ForegroundInfo(
     val confidence: Double = 0.0,
 )
 
-data class InputInfo(
-    val inputActive: Boolean? = null,
-    val isTyping: Boolean? = null,
-    val source: String = "normal",
-)
-
 data class MediaInfo(
     val playing: Boolean? = null,
     val title: String? = null,
@@ -28,7 +22,6 @@ data class MediaInfo(
 data class SystemSnapshot(
     val capabilityMode: String = "normal",
     val foreground: ForegroundInfo? = null,
-    val input: InputInfo? = null,
     val media: MediaInfo? = null,
     val sampledAt: Long = System.currentTimeMillis(),
 )
@@ -75,7 +68,6 @@ object SystemSnapshotStore {
         latestLsposed = SystemSnapshot(
             capabilityMode = "lsposed",
             foreground = mergeForeground(previous?.foreground, snapshot.foreground),
-            input = snapshot.input ?: previous?.input,
             media = mergeMedia(previous?.media, snapshot.media),
             sampledAt = System.currentTimeMillis(),
         )

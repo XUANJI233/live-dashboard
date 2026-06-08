@@ -26,13 +26,6 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
             source = "lsposed",
             confidence = 0.95,
         )
-        val input = InputInfo(
-            inputActive = intent.takeIf { it.hasExtra(EXTRA_INPUT_ACTIVE) }
-                ?.getBooleanExtra(EXTRA_INPUT_ACTIVE, false),
-            isTyping = intent.takeIf { it.hasExtra(EXTRA_INPUT_ACTIVE) }
-                ?.getBooleanExtra(EXTRA_INPUT_ACTIVE, false),
-            source = "lsposed",
-        )
         val media = MediaInfo(
             playing = intent.takeIf { it.hasExtra(EXTRA_MEDIA_PLAYING) }
                 ?.getBooleanExtra(EXTRA_MEDIA_PLAYING, false),
@@ -48,7 +41,6 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
         val snapshot = SystemSnapshot(
             capabilityMode = "lsposed",
             foreground = foreground.takeIf { it.packageName != null || it.activity != null || it.title != null },
-            input = input.takeIf { it.inputActive != null },
             media = media.takeIf { it.playing != null || it.title != null || it.app != null },
         )
         SystemSnapshotStore.updateFromLsposed(snapshot)
@@ -84,7 +76,6 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
         const val EXTRA_APP_NAME = "app_name"
         const val EXTRA_ACTIVITY = "activity"
         const val EXTRA_TITLE = "title"
-        const val EXTRA_INPUT_ACTIVE = "input_active"
         const val EXTRA_MEDIA_PLAYING = "media_playing"
         const val EXTRA_MEDIA_PACKAGE = "media_package"
         const val EXTRA_MEDIA_TITLE = "media_title"

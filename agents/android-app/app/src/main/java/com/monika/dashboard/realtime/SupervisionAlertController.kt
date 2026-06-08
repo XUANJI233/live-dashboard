@@ -10,6 +10,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import com.monika.dashboard.data.DebugLog
 import com.monika.dashboard.system.SystemSnapshot
+import com.monika.dashboard.system.SystemPackageGuard
 import org.json.JSONObject
 
 object SupervisionAlertController {
@@ -51,6 +52,13 @@ object SupervisionAlertController {
         val now = System.currentTimeMillis()
         if (now >= alert.activeUntil) {
             clear(context, alert)
+            return
+        }
+
+        val packageName = snapshot.foreground?.packageName
+        if (SystemPackageGuard.isProtectedForSupervision(context, packageName)) {
+            if (alert.vibrating) stopVibration(context, alert, keepActive = true)
+            alert.recoveredAt = now
             return
         }
 

@@ -33,7 +33,6 @@ class SettingsStore(private val context: Context) {
         val UPLOAD_MEDIA = booleanPreferencesKey("upload_media")
         val UPLOAD_NETWORK = booleanPreferencesKey("upload_network")
         val UPLOAD_VPN_STATUS = booleanPreferencesKey("upload_vpn_status")
-        val UPLOAD_INPUT_STATE = booleanPreferencesKey("upload_input_state")
         val HIGH_FREQUENCY_REPORT = booleanPreferencesKey("high_frequency_report")
         val DEBUG_MODE = booleanPreferencesKey("debug_mode")
     }
@@ -81,10 +80,6 @@ class SettingsStore(private val context: Context) {
 
     val uploadVpnStatus: Flow<Boolean> = context.dataStore.data.map { prefs ->
         prefs[Keys.UPLOAD_VPN_STATUS] ?: false
-    }
-
-    val uploadInputState: Flow<Boolean> = context.dataStore.data.map { prefs ->
-        prefs[Keys.UPLOAD_INPUT_STATE] ?: false
     }
 
     val highFrequencyReport: Flow<Boolean> = context.dataStore.data.map { prefs ->
@@ -147,10 +142,6 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setUploadVpnStatus(enabled: Boolean) {
         context.dataStore.edit { it[Keys.UPLOAD_VPN_STATUS] = enabled }
-    }
-
-    suspend fun setUploadInputState(enabled: Boolean) {
-        context.dataStore.edit { it[Keys.UPLOAD_INPUT_STATE] = enabled }
     }
 
     suspend fun setHighFrequencyReport(enabled: Boolean) {

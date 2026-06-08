@@ -16,12 +16,16 @@ import androidx.work.*
 import com.monika.dashboard.BuildConfig
 import com.monika.dashboard.data.DebugLog
 import com.monika.dashboard.data.MessageInboxStore
+import com.monika.dashboard.data.PendingReportStore
+import com.monika.dashboard.data.ReportCadenceStore
 import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.data.UploadItem
 import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.network.ReportClient
 import com.monika.dashboard.realtime.MessageSocketManager
 import com.monika.dashboard.realtime.SupervisionAlertController
+import com.monika.dashboard.system.DeviceEnvironment
+import com.monika.dashboard.system.DeviceEnvironmentCollector
 import com.monika.dashboard.system.RootSystemCollector
 import com.monika.dashboard.system.LsposedConfigBridge
 import com.monika.dashboard.system.LocationSnapshot
@@ -120,7 +124,6 @@ class HeartbeatWorker(
             }
 
             // ── Normal / Root mode: collect data and send via WebSocket device_status ──
-            val uploadInputState = settings.uploadInputState.first()
             val uploadLocation = settings.uploadLocation.first()
             val uploadVpnStatus = settings.uploadVpnStatus.first()
             val uploadForeground = settings.uploadForeground.first()
@@ -128,7 +131,8 @@ class HeartbeatWorker(
             val uploadNetwork = settings.uploadNetwork.first()
 
             val battery = getBatteryInfo()
-            val snapshot = collectSystemSnapshot(capabilityMode, uploadInputState, uploadForeground, uploadMedia)
+            val snapshot = collectSystemSnapshot(capabilityMode, uploadForeground, uploadMedia)
+            val environment = DeviceEnvironmentCollector.collect(applicationContext)
             SupervisionAlertController.onSnapshot(applicationContext, snapshot)
             val mediaPackage = snapshot.media?.packageName?.takeIf { snapshot.media?.playing == true }
             val appId = when {
@@ -146,32 +150,43 @@ class HeartbeatWorker(
 
             // Ensure WebSocket is connected for device_status
             MessageSocketManager.ensureStarted(applicationContext)
+            val payloadInput = StatusPayloadInput(
+                identity = StatusIdentity(appId, windowTitle),
+                telemetry = StatusTelemetry(
+                    battery = battery,
+                    network = networkState,
+                    vpn = vpnState,
+                    location = location,
+                    snapshot = snapshot,
+                    environment = environment,
+                ),
+                heartbeatOnly = false,
+            )
 
             // Build JSON payload matching /api/report body structure
-            val payload = buildStatusPayload(
-                appId, windowTitle,
-                batteryPercent = battery?.first,
-                batteryCharging = battery?.second,
-                networkConnected = networkState?.connected,
-                networkType = networkState?.type,
-                cellularGeneration = networkState?.cellularGeneration,
-                vpnActive = vpnState?.first,
-                vpnName = vpnState?.second,
-                location = location,
-                snapshot = snapshot,
-            )
+            val fullPayload = buildStatusPayload(payloadInput)
+            val signature = ReportCadenceStore.signature(appId, windowTitle, snapshot, environment)
+            val heartbeatOnly = ReportCadenceStore.shouldSendHeartbeatOnly(applicationContext, signature)
+            val payload = if (heartbeatOnly) {
+                buildStatusPayload(payloadInput.copy(heartbeatOnly = true))
+            } else {
+                fullPayload
+            }
+            UploadStatusStore.setLastPayload(applicationContext, JSONObject(payload).toString(2))
 
             // Try WebSocket first (fast, persistent, no per-request overhead)
             val wsSent = MessageSocketManager.sendDeviceStatus(payload)
             if (wsSent) {
-                DebugLog.log("心跳Worker", "WS上报成功: $appId ${windowTitle.take(80)}")
-                markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, true, "OK(ws)")
+                ReportCadenceStore.markSent(applicationContext, signature, heartbeatOnly)
+                DebugLog.log("心跳Worker", "WS上报成功: $appId ${windowTitle.take(80)}${if (heartbeatOnly) " (心跳)" else ""}")
+                markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, true, "OK(ws)")
                 Log.i(TAG, "WS heartbeat sent: $appId")
                 
                 // Sync messages even when WebSocket is used for status reporting
                 var client: ReportClient? = null
                 try {
                     client = ReportClient(url, token, applicationContext)
+                    PendingReportWorker.flush(applicationContext, client)
                     syncBlockedViewers(client)
                     syncMessageHistory(client)
                     pollMessages(client)
@@ -186,31 +201,24 @@ class HeartbeatWorker(
                 var client: ReportClient? = null
                 try {
                     client = ReportClient(url, token, applicationContext)
+                    PendingReportWorker.flush(applicationContext, client)
                     syncBlockedViewers(client)
-                    val result = client.reportApp(
-                        appId = appId,
-                        windowTitle = windowTitle,
-                        batteryPercent = battery?.first,
-                        batteryCharging = battery?.second,
-                        networkConnected = networkState?.connected,
-                        networkType = networkState?.type,
-                        cellularGeneration = networkState?.cellularGeneration,
-                        vpnActive = vpnState?.first,
-                        vpnName = vpnState?.second,
-                        location = location,
-                        snapshot = snapshot
-                    )
+                    val result = client.postReportBody(payload)
                     if (result.isSuccess) {
-                        DebugLog.log("心跳Worker", "HTTP上报成功: $appId ${windowTitle.take(80)}")
-                        markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, true, "OK(http)")
+                        ReportCadenceStore.markSent(applicationContext, signature, heartbeatOnly)
+                        DebugLog.log("心跳Worker", "HTTP上报成功: $appId ${windowTitle.take(80)}${if (heartbeatOnly) " (心跳)" else ""}")
+                        markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, true, "OK(http)")
                         Log.i(TAG, "HTTP heartbeat sent: $appId")
                     } else {
                         val message = result.exceptionOrNull()?.message ?: "unknown"
-                        markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, false, message)
+                        maybeQueueFullPayload(fullPayload, heartbeatOnly, message)
+                        markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, false, message)
                         DebugLog.log("心跳Worker", "HTTP上报失败: $message")
                     }
                 } catch (e: Exception) {
-                    markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, uploadInputState, false, e.message ?: "error")
+                    val message = e.message ?: "error"
+                    maybeQueueFullPayload(fullPayload, heartbeatOnly, message)
+                    markUploadStatuses(uploadForeground, uploadMedia, uploadNetwork, uploadLocation, uploadVpnStatus, false, message)
                     DebugLog.log("心跳Worker", "HTTP异常: ${e.message}")
                     Log.e(TAG, "Heartbeat HTTP error", e)
                 } finally {
@@ -230,39 +238,65 @@ class HeartbeatWorker(
         return Result.success()
     }
 
+    private data class StatusIdentity(
+        val appId: String,
+        val windowTitle: String,
+    )
+
+    private data class StatusTelemetry(
+        val battery: Pair<Int, Boolean>?,
+        val network: NetworkState?,
+        val vpn: Pair<Boolean, String?>?,
+        val location: LocationSnapshot?,
+        val snapshot: SystemSnapshot?,
+        val environment: DeviceEnvironment?,
+    )
+
+    private data class StatusPayloadInput(
+        val identity: StatusIdentity,
+        val telemetry: StatusTelemetry,
+        val heartbeatOnly: Boolean,
+    )
+
     /**
      * Build a JSON payload string compatible with the /api/report body format.
      * This is sent as the "payload" field of a device_status WebSocket message.
      */
-    private fun buildStatusPayload(
-        appId: String,
-        windowTitle: String,
-        batteryPercent: Int?,
-        batteryCharging: Boolean?,
-        networkConnected: Boolean?,
-        networkType: String?,
-        cellularGeneration: String?,
-        vpnActive: Boolean?,
-        vpnName: String?,
-        location: LocationSnapshot?,
-        snapshot: SystemSnapshot?,
-    ): String = JSONObject().apply {
-        put("app_id", appId)
-        put("window_title", windowTitle)
+    private fun buildStatusPayload(input: StatusPayloadInput): String = JSONObject().apply {
+        val telemetry = input.telemetry
+        put("app_id", input.identity.appId)
+        put("window_title", input.identity.windowTitle)
         put("timestamp", Instant.now().toString())
 
         val extra = JSONObject()
-        batteryPercent?.let { extra.put("battery_percent", it) }
-        batteryCharging?.let { extra.put("battery_charging", it) }
-        if (snapshot?.isSleeping() == true) extra.put("sleeping", true)
+        telemetry.battery?.let {
+            extra.put("battery_percent", it.first)
+            extra.put("battery_charging", it.second)
+        }
+        if (telemetry.snapshot?.isSleeping() == true) extra.put("sleeping", true)
 
         val device = JSONObject()
-        networkConnected?.let { device.put("network_connected", it) }
-        networkType?.takeIf { it.isNotBlank() }?.let { device.put("network_type", it.take(64)) }
-        cellularGeneration?.takeIf { it.isNotBlank() }?.let { device.put("cellular_generation", it.take(64)) }
-        vpnActive?.let { device.put("vpn_active", it) }
-        vpnName?.takeIf { !it.isNullOrBlank() }?.let { device.put("vpn_name", it.take(64)) }
-        snapshot?.let {
+        telemetry.network?.let { network ->
+            device.put("network_connected", network.connected)
+            network.type.takeIf { it.isNotBlank() }?.let { device.put("network_type", it.take(64)) }
+            network.cellularGeneration?.takeIf { it.isNotBlank() }?.let {
+                device.put("cellular_generation", it.take(64))
+            }
+        }
+        telemetry.vpn?.let { vpn ->
+            device.put("vpn_active", vpn.first)
+            vpn.second?.takeIf { it.isNotBlank() }?.let { device.put("vpn_name", it.take(64)) }
+        }
+        telemetry.environment?.audioOutput?.let { audio ->
+            device.put("audio_output_connected", audio.connected)
+            if (audio.type.isNotBlank()) device.put("audio_output_type", audio.type.take(64))
+            if (audio.name.isNotBlank()) device.put("audio_output_name", audio.name.take(64))
+        }
+        telemetry.environment?.ambientLux?.takeIf { it.isFinite() }?.let { lux ->
+            device.put("ambient_lux", (lux.coerceIn(0f, 200_000f) * 10f).toInt() / 10.0)
+        }
+        if (input.heartbeatOnly) device.put("heartbeat_only", true)
+        telemetry.snapshot?.let {
             device.put("capability_mode", it.capabilityMode)
             device.put("last_sample_at", Instant.ofEpochMilli(it.sampledAt).toString())
             device.put(
@@ -274,7 +308,7 @@ class HeartbeatWorker(
         device.put("device_kind", detectDeviceKind())
         if (device.length() > 0) extra.put("device", device)
 
-        location?.let { loc ->
+        telemetry.location?.let { loc ->
             extra.put("location", JSONObject().apply {
                 put("latitude", loc.latitude)
                 put("longitude", loc.longitude)
@@ -284,7 +318,7 @@ class HeartbeatWorker(
             })
         }
 
-        snapshot?.foreground?.let { fg ->
+        telemetry.snapshot?.foreground?.let { fg ->
             val fgObj = JSONObject()
             fg.packageName?.let { fgObj.put("package_name", it.take(64)) }
             fg.appName?.let { fgObj.put("app_name", it.take(64)) }
@@ -295,15 +329,7 @@ class HeartbeatWorker(
             if (fgObj.length() > 0) extra.put("foreground", fgObj)
         }
 
-        snapshot?.input?.let { inputInfo ->
-            val inputObj = JSONObject()
-            inputInfo.inputActive?.let { inputObj.put("input_active", it) }
-            inputInfo.isTyping?.let { inputObj.put("is_typing", it) }
-            inputObj.put("source", inputInfo.source)
-            if (inputObj.length() > 0) extra.put("input", inputObj)
-        }
-
-        snapshot?.media?.let { mediaInfo ->
+        telemetry.snapshot?.media?.let { mediaInfo ->
             val mediaObj = JSONObject()
             mediaInfo.playing?.let { mediaObj.put("playing", it) }
             mediaInfo.title?.let { mediaObj.put("title", it.take(256)) }
@@ -341,7 +367,6 @@ class HeartbeatWorker(
 
     private suspend fun collectSystemSnapshot(
         mode: String,
-        includeInput: Boolean,
         includeForeground: Boolean,
         includeMedia: Boolean,
     ): SystemSnapshot {
@@ -353,13 +378,11 @@ class HeartbeatWorker(
             val latest = SystemSnapshotStore.latestLsposedFresh()
             if (latest != null && latest.hasUsefulPrivilegedData()) return latest.copy(
                 foreground = latest.foreground.takeIf { includeForeground } ?: normal.foreground,
-                input = latest.input.takeIf { includeInput },
                 media = latest.media.takeIf { includeMedia } ?: normal.media,
             )
             val rootSnapshot = RootSystemCollector(applicationContext).collect()
             if (rootSnapshot != null) return rootSnapshot.copy(
                 foreground = rootSnapshot.foreground.takeIf { includeForeground } ?: normal.foreground,
-                input = rootSnapshot.input.takeIf { includeInput },
                 media = rootSnapshot.media.takeIf { includeMedia } ?: normal.media,
             )
         }
@@ -373,7 +396,6 @@ class HeartbeatWorker(
             foreground?.title?.isNotBlank() == true ||
             foreground?.activity?.isNotBlank() == true
         return foregroundUseful ||
-            input?.inputActive != null ||
             media?.title?.isNotBlank() == true ||
             media?.playing == true
     }
@@ -413,7 +435,6 @@ class HeartbeatWorker(
         network: Boolean,
         location: Boolean,
         vpn: Boolean,
-        input: Boolean,
         ok: Boolean,
         message: String,
     ) {
@@ -422,7 +443,15 @@ class HeartbeatWorker(
         if (network) UploadStatusStore.mark(applicationContext, UploadItem.NETWORK, ok, message)
         if (location) UploadStatusStore.mark(applicationContext, UploadItem.LOCATION, ok, message)
         if (vpn) UploadStatusStore.mark(applicationContext, UploadItem.VPN, ok, message)
-        if (input) UploadStatusStore.mark(applicationContext, UploadItem.INPUT, ok, message)
+    }
+
+    private fun maybeQueueFullPayload(fullPayload: String, heartbeatOnly: Boolean, message: String) {
+        if (heartbeatOnly) return
+        val queued = PendingReportStore.enqueue(applicationContext, fullPayload, message)
+        if (queued != null) {
+            PendingReportWorker.schedule(applicationContext)
+            DebugLog.log("上报队列", "已保存失败上报，等待网络恢复补传")
+        }
     }
 
     /** Detect device form factor: "phone", "tablet", or "foldable" */

@@ -9,7 +9,6 @@ enum class UploadItem(val key: String, val label: String) {
     NETWORK("network", "网络状态"),
     LOCATION("location", "位置"),
     VPN("vpn", "VPN"),
-    INPUT("input", "输入状态"),
     HEALTH("health", "健康数据"),
 }
 

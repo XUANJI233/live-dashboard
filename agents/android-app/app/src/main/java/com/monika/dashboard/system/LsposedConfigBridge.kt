@@ -27,7 +27,6 @@ object LsposedConfigBridge {
         val uploadMedia = settings.uploadMedia.first()
         val uploadNetwork = settings.uploadNetwork.first()
         val uploadVpn = settings.uploadVpnStatus.first()
-        val uploadInput = settings.uploadInputState.first()
         val browserTitleNonce = getOrCreateBrowserTitleNonce(context)
 
         // Write to standard SharedPreferences so LSPosed module can read it on boot via getRemotePreferences
@@ -42,7 +41,7 @@ object LsposedConfigBridge {
                 .putBoolean("upload_media", uploadMedia)
                 .putBoolean("upload_network", uploadNetwork)
                 .putBoolean("upload_vpn", uploadVpn)
-                .putBoolean("upload_input", uploadInput)
+                .putBoolean("upload_input", false)
                 .putString(KEY_BROWSER_TITLE_NONCE, browserTitleNonce)
                 .apply()
         } catch (e: Exception) {
@@ -58,7 +57,7 @@ object LsposedConfigBridge {
             putExtra("upload_media", uploadMedia)
             putExtra("upload_network", uploadNetwork)
             putExtra("upload_vpn", uploadVpn)
-            putExtra("upload_input", uploadInput)
+            putExtra("upload_input", false)
             putExtra(KEY_BROWSER_TITLE_NONCE, browserTitleNonce)
         }
         try {

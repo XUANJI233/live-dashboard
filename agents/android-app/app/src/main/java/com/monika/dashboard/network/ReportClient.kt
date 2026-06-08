@@ -27,8 +27,47 @@ import javax.crypto.spec.SecretKeySpec
 import org.bouncycastle.crypto.params.X25519PrivateKeyParameters
 import org.bouncycastle.crypto.params.X25519PublicKeyParameters
 import com.monika.dashboard.system.LocationSnapshot
+import com.monika.dashboard.system.DeviceEnvironment
 import com.monika.dashboard.system.SystemSnapshot
 import com.monika.dashboard.system.isSleeping
+
+data class ReportAppRequest(
+    val appId: String,
+    val windowTitle: String,
+    val telemetry: ReportTelemetry = ReportTelemetry(),
+)
+
+data class ReportTelemetry(
+    val battery: ReportBattery? = null,
+    val network: ReportNetwork? = null,
+    val vpn: ReportVpn? = null,
+    val location: LocationSnapshot? = null,
+    val snapshot: SystemSnapshot? = null,
+    val environment: DeviceEnvironment? = null,
+    val music: ReportMusic? = null,
+)
+
+data class ReportBattery(
+    val percent: Int,
+    val charging: Boolean,
+)
+
+data class ReportNetwork(
+    val connected: Boolean,
+    val type: String? = null,
+    val cellularGeneration: String? = null,
+)
+
+data class ReportVpn(
+    val active: Boolean,
+    val name: String? = null,
+)
+
+data class ReportMusic(
+    val title: String,
+    val artist: String? = null,
+    val app: String? = null,
+)
 
 /**
  * HTTP client for reporting app activity and health data.
@@ -53,38 +92,33 @@ class ReportClient(
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
-    fun reportApp(
-        appId: String,
-        windowTitle: String,
-        batteryPercent: Int? = null,
-        batteryCharging: Boolean? = null,
-        networkConnected: Boolean? = null,
-        networkType: String? = null,
-        cellularGeneration: String? = null,
-        vpnActive: Boolean? = null,
-        vpnName: String? = null,
-        location: LocationSnapshot? = null,
-        snapshot: SystemSnapshot? = null,
-        musicTitle: String? = null,
-        musicArtist: String? = null,
-        musicApp: String? = null
-    ): Result<Unit> {
+    fun reportApp(request: ReportAppRequest): Result<Unit> {
+        val telemetry = request.telemetry
         val body = JSONObject().apply {
-            put("app_id", appId)
-            put("window_title", windowTitle)
+            put("app_id", request.appId)
+            put("window_title", request.windowTitle)
             put("timestamp", Instant.now().toString())
 
             val extra = JSONObject()
-            batteryPercent?.let { extra.put("battery_percent", it) }
-            batteryCharging?.let { extra.put("battery_charging", it) }
-            if (snapshot?.isSleeping() == true) extra.put("sleeping", true)
+            telemetry.battery?.let {
+                extra.put("battery_percent", it.percent)
+                extra.put("battery_charging", it.charging)
+            }
+            if (telemetry.snapshot?.isSleeping() == true) extra.put("sleeping", true)
             val device = JSONObject()
-            networkConnected?.let { device.put("network_connected", it) }
-            networkType?.takeIf { it.isNotBlank() }?.let { device.put("network_type", it.take(64)) }
-            cellularGeneration?.takeIf { it.isNotBlank() }?.let { device.put("cellular_generation", it.take(64)) }
-            vpnActive?.let { device.put("vpn_active", it) }
-            vpnName?.let { device.put("vpn_name", it.take(64)) }
-            snapshot?.let {
+            telemetry.network?.let { network ->
+                device.put("network_connected", network.connected)
+                network.type?.takeIf { it.isNotBlank() }?.let { device.put("network_type", it.take(64)) }
+                network.cellularGeneration?.takeIf { it.isNotBlank() }?.let {
+                    device.put("cellular_generation", it.take(64))
+                }
+            }
+            telemetry.vpn?.let { vpn ->
+                device.put("vpn_active", vpn.active)
+                vpn.name?.let { device.put("vpn_name", it.take(64)) }
+            }
+            putEnvironmentExtras(device, telemetry.environment)
+            telemetry.snapshot?.let {
                 device.put("capability_mode", it.capabilityMode)
                 device.put("last_sample_at", Instant.ofEpochMilli(it.sampledAt).toString())
                 device.put(
@@ -94,7 +128,7 @@ class ReportClient(
             }
             if (device.length() > 0) extra.put("device", device)
 
-            location?.let { loc ->
+            telemetry.location?.let { loc ->
                 extra.put("location", JSONObject().apply {
                     put("latitude", loc.latitude)
                     put("longitude", loc.longitude)
@@ -104,7 +138,7 @@ class ReportClient(
                 })
             }
 
-            snapshot?.foreground?.let { fg ->
+            telemetry.snapshot?.foreground?.let { fg ->
                 val foreground = JSONObject()
                 fg.packageName?.let { foreground.put("package_name", it.take(64)) }
                 fg.appName?.let { foreground.put("app_name", it.take(64)) }
@@ -115,15 +149,7 @@ class ReportClient(
                 if (foreground.length() > 0) extra.put("foreground", foreground)
             }
 
-            snapshot?.input?.let { inputInfo ->
-                val input = JSONObject()
-                inputInfo.inputActive?.let { input.put("input_active", it) }
-                inputInfo.isTyping?.let { input.put("is_typing", it) }
-                input.put("source", inputInfo.source)
-                if (input.length() > 0) extra.put("input", input)
-            }
-
-            snapshot?.media?.let { mediaInfo ->
+            telemetry.snapshot?.media?.let { mediaInfo ->
                 val media = JSONObject()
                 mediaInfo.playing?.let { media.put("playing", it) }
                 mediaInfo.title?.let { media.put("title", it.take(256)) }
@@ -135,11 +161,11 @@ class ReportClient(
                 if (media.length() > 0) extra.put("media", media)
             }
 
-            if (musicTitle != null) {
+            telemetry.music?.let { reportMusic ->
                 val music = JSONObject()
-                music.put("title", musicTitle.take(256))
-                musicArtist?.let { music.put("artist", it.take(256)) }
-                musicApp?.let { music.put("app", it.take(64)) }
+                music.put("title", reportMusic.title.take(256))
+                reportMusic.artist?.let { music.put("artist", it.take(256)) }
+                reportMusic.app?.let { music.put("app", it.take(64)) }
                 extra.put("music", music)
             }
 
@@ -150,6 +176,11 @@ class ReportClient(
 
         context?.let { UploadStatusStore.setLastPayload(it, body.toString(2)) }
         return post("${serverUrl.trimEnd('/')}/api/report", body)
+    }
+
+    fun postReportBody(body: String): Result<Unit> {
+        context?.let { UploadStatusStore.setLastPayload(it, body.take(12_000)) }
+        return postRaw("${serverUrl.trimEnd('/')}/api/report", body)
     }
 
     fun reportHealthData(records: List<HealthRecord>): Result<Unit> {
@@ -388,6 +419,7 @@ class ReportClient(
         val supervisionVibrate: Boolean,
         val supervisionSkipWatchSleep: Boolean,
         val supervisionLspFreeze: Boolean,
+        val supervisionRules: SupervisionRules,
         val supervisionRulesUpdatedAt: String?,
         val supervisionRulesError: String?,
         val updatedAt: String?,
@@ -690,12 +722,15 @@ class ReportClient(
         }
     }
 
-    private fun post(url: String, body: JSONObject): Result<Unit> {
+    private fun post(url: String, body: JSONObject): Result<Unit> =
+        postRaw(url, body.toString())
+
+    private fun postRaw(url: String, body: String): Result<Unit> {
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $token")
             .addHeader("Content-Type", "application/json")
-            .post(body.toString().toRequestBody(jsonMediaType))
+            .post(body.toRequestBody(jsonMediaType))
             .build()
 
         return try {
@@ -777,6 +812,7 @@ class ReportClient(
                         supervisionVibrate = json.optBoolean("supervision_vibrate", true),
                         supervisionSkipWatchSleep = json.optBoolean("supervision_skip_watch_sleep", true),
                         supervisionLspFreeze = json.optBoolean("supervision_lsp_freeze", false),
+                        supervisionRules = parseSupervisionRules(json.optJSONObject("supervision_rules")),
                         supervisionRulesUpdatedAt = json.optString("supervision_rules_updated_at").takeIf { value -> value.isNotBlank() && value != "null" },
                         supervisionRulesError = json.optString("supervision_rules_error").takeIf { value -> value.isNotBlank() && value != "null" },
                         updatedAt = json.optString("updated_at").takeIf { value -> value.isNotBlank() && value != "null" },
@@ -802,25 +838,6 @@ class ReportClient(
         } catch (e: Exception) {
             DebugLog.log("AI", "配置请求异常: ${sanitizeLogText(e.message.orEmpty()).take(800)}")
             Result.failure(e)
-        }
-    }
-
-    private fun parseSummaryPlan(arr: JSONArray?): List<SummaryPlanDay> {
-        val byWeekday = mutableMapOf<Int, SummaryPlanDay>()
-        if (arr != null) {
-            for (i in 0 until arr.length()) {
-                val item = arr.optJSONObject(i) ?: continue
-                val weekday = item.optInt("weekday", 0).coerceIn(0, 7)
-                if (weekday == 0) continue
-                byWeekday[weekday] = SummaryPlanDay(
-                    weekday = weekday,
-                    target = item.optString("target", ""),
-                    plannedRest = false,
-                )
-            }
-        }
-        return (1..7).map { weekday ->
-            byWeekday[weekday] ?: SummaryPlanDay(weekday, "", false)
         }
     }
 
@@ -999,6 +1016,19 @@ class ReportClient(
         val text: String,
         val payload: String? = null,
     )
+}
+
+private fun putEnvironmentExtras(device: JSONObject, environment: DeviceEnvironment?) {
+    val audio = environment?.audioOutput
+    if (audio != null) {
+        device.put("audio_output_connected", audio.connected)
+        if (audio.type.isNotBlank()) device.put("audio_output_type", audio.type.take(64))
+        if (audio.name.isNotBlank()) device.put("audio_output_name", audio.name.take(64))
+    }
+    val lux = environment?.ambientLux
+    if (lux != null && lux.isFinite()) {
+        device.put("ambient_lux", (lux.coerceIn(0f, 200_000f) * 10f).toInt() / 10.0)
+    }
 }
 
 private fun base64UrlEncode(bytes: ByteArray): String =

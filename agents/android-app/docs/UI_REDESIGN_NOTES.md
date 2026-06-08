@@ -38,3 +38,5 @@ This is an Android-native administrator utility for monitoring device reports, h
 - Upload status belongs beside the relevant upload switch in setup; diagnostics should not repeat the same upload list when embedded in settings.
 - When no health data types are enabled, health options stay collapsed behind a single compact card. Expanded health data type rows should appear only after explicit user intent or when some type is already enabled.
 - Use native Material 3 / Compose primitives. Apply Apple-like restraint through spacing, color, and hierarchy, not through large decorative headers or web-style hero composition.
+- New settings/debug switches should use explicit `true` / `false` semantics, not numeric `0` / `1` flags.
+- Keep new UI and service additions decoupled. Do not keep expanding large hub screens or network files when a focused component/helper module can carry the new behavior.
