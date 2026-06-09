@@ -737,6 +737,7 @@ function isDeviceEndpoint(p, method) {
   if (p === "/api/ai-config") return true;
   if ((p === "/api/daily-summary" || p === "/api/weekly-summary") && method === "POST") return true;
   return p === "/api/report" ||
+    p === "/api/supervision/ack" ||
     p === "/api/health-data" ||
     p === "/api/location" ||
     p === "/api/messages" ||

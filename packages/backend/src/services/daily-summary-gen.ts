@@ -110,6 +110,8 @@ interface SupervisionHistoryPromptEntry {
   outcome?: string;
   reason?: string;
   message?: string;
+  freezeCommands?: string[];
+  unfreezeCommands?: string[];
 }
 
 const MODE_LABELS: Record<SummaryMode, string> = {
@@ -271,7 +273,7 @@ export async function generateDailySummary(options: {
     tzOffsetMinutes,
     sleepLines: healthContextLinesForRange(range.start, range.end, 16),
     supervisionLines: baseSettings.supervision_enabled
-      ? supervisionHistoryLinesForRange(range.start, range.end, 6)
+      ? supervisionHistoryLinesForRange(range.start, range.end, 12)
       : [],
   });
 
@@ -322,7 +324,7 @@ export async function generateWeeklySummary(options: {
     tzOffsetMinutes,
     sleepLines: healthContextLinesForRange(startRange.start, endRange.start, 24),
     supervisionLines: baseSettings.supervision_enabled
-      ? supervisionHistoryLinesForRange(startRange.start, endRange.start, 10)
+      ? supervisionHistoryLinesForRange(startRange.start, endRange.start, 40)
       : [],
   });
 
@@ -667,7 +669,10 @@ async function generateSummaryText(input: {
         ),
       },
     ];
-    const finalInstruction = `现在基于以上全部上下文生成中文${input.kind === "weekly" ? "周总结" : "日总结"}。只输出总结正文。`;
+    const finalInstruction = [
+      `当前生成时间: ${new Date().toISOString()}（必须按这个真实时间理解“现在”，不要使用模型训练时间）`,
+      `现在基于以上全部上下文生成中文${input.kind === "weekly" ? "周总结" : "日总结"}。只输出总结正文。`,
+    ].join("\n");
     const messages = [...contextMessages, { role: "user" as const, content: finalInstruction }];
     const maxTokens = input.kind === "weekly" ? WEEKLY_SUMMARY_MAX_TOKENS : DAILY_SUMMARY_MAX_TOKENS;
     const temperature = input.settings.mode === "sharp" ? 0.85 : 0.72;
@@ -920,8 +925,8 @@ function supervisionHistoryLinesForRange(start: string, end: string, maxLines: n
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return [];
   return readSupervisionHistory()
     .filter((item) => {
-      if (item.kind !== "verify" || item.outcome !== "deviated") return false;
-      if (!item.message) return false;
+      if (item.kind !== "verify") return false;
+      if (!item.message && !item.reason) return false;
       const at = Date.parse(item.at);
       return Number.isFinite(at) && at >= startMs && at < endMs;
     })
@@ -929,7 +934,9 @@ function supervisionHistoryLinesForRange(start: string, end: string, maxLines: n
     .map((item) => {
       const reason = sanitizeContextText(item.reason);
       const message = sanitizeContextText(item.message);
-      return `- ${formatIsoMinute(item.at)} 监督提醒: ${message}${reason ? `；原因: ${reason}` : ""}`;
+      const freeze = item.freezeCommands?.length ? `；冻结: ${item.freezeCommands.map((value) => sanitizeContextText(value).slice(0, 40)).join("、")}` : "";
+      const unfreeze = item.unfreezeCommands?.length ? `；解冻: ${item.unfreezeCommands.map((value) => sanitizeContextText(value).slice(0, 40)).join("、")}` : "";
+      return `- ${formatIsoMinute(item.at)} 监督回复: ${message || reason}${reason && message ? `；原因: ${reason}` : ""}${freeze}${unfreeze}`;
     });
 }
 
@@ -949,11 +956,22 @@ function readSupervisionHistory(): SupervisionHistoryPromptEntry[] {
           outcome: sanitizeContextText(typeof row.outcome === "string" ? row.outcome : ""),
           reason: sanitizeContextText(typeof row.reason === "string" ? row.reason : ""),
           message: sanitizeContextText(typeof row.message === "string" ? row.message : ""),
+          freezeCommands: sanitizeContextArray(row.freezeCommands),
+          unfreezeCommands: sanitizeContextArray(row.unfreezeCommands),
         };
       });
   } catch {
     return [];
   }
+}
+
+function sanitizeContextArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => sanitizeContextText(item).slice(0, 80))
+    .filter(Boolean)
+    .slice(0, 12);
 }
 
 function formatIsoMinute(value: string): string {

@@ -8,6 +8,7 @@ import { handleHealth } from "./routes/health";
 import { handleHealthData, handleHealthDataQuery } from "./routes/health-data";
 import { handleHealthWebhook } from "./routes/health-webhook";
 import { handleConfig } from "./routes/config";
+import { handleSupervisionAck } from "./routes/supervision-ack";
 import { authenticateToken } from "./middleware/auth";
 import {
   handleDailySummary,
@@ -224,6 +225,8 @@ const server = Bun.serve<WsData>({
         return Response.json({ error: "WebSocket upgrade failed" }, { status: 400 });
       } else if (pathname === "/api/report" && req.method === "POST") {
         response = await handleReport(req);
+      } else if (pathname === "/api/supervision/ack" && req.method === "POST") {
+        response = await handleSupervisionAck(req);
       } else if (pathname === "/api/current" && req.method === "GET") {
         response = handleCurrent(req, clientIp, req.headers.get("user-agent") || undefined);
         response = noStore(response, ["current", "realtime", "status"]);

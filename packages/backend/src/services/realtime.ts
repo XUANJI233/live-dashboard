@@ -4,6 +4,7 @@ import { currentHourWindow, currentMessageSlot, noStore, withCdnHeaders } from "
 import { verifyViewerToken, viewerTokenFromRequest, viewerTokenRateLimit, edgeViewerIdentity } from "./viewer-auth";
 import { processReportPayload, ReportPayloadError } from "./device-status-handler";
 import { requestSupervisionCheckFromReportPayload } from "./supervision-report-trigger";
+import { supervisionAckWsResponse } from "./supervision-ack";
 import type { DeviceInfo } from "../types";
 import type { ServerWebSocket } from "bun";
 
@@ -604,6 +605,32 @@ export function sendSupervisorMessageToDevices(
   return { sent, queued, targets: targets.length };
 }
 
+export function sendSupervisorMessagesToDevices(messages: Array<{
+  deviceId: string;
+  text: string;
+  payload: Record<string, unknown> | null;
+}>): { sent: number; queued: number; targets: number } {
+  let sent = 0;
+  let queued = 0;
+  let targets = 0;
+  const createdAt = new Date().toISOString();
+
+  for (const item of messages) {
+    const targetDeviceId = cleanDeviceId(item.deviceId);
+    if (!targetDeviceId || !supportsDeviceMessages(targetDeviceId)) continue;
+    const clean = cleanText(item.text) || "监督模式更新";
+    const messageId = `supervision_${crypto.randomUUID()}`;
+    recordMessage(messageId, targetDeviceId, "__supervisor__", "监督模式", "private", "viewer", clean, createdAt);
+    const status = deliverViewerMessage(targetDeviceId, "__supervisor__", "监督模式", "private", clean, messageId, createdAt, item.payload);
+    targets += 1;
+    if (status === "sent") sent += 1;
+    else queued += 1;
+  }
+
+  console.log(`[supervision] per-device delivery targets=${targets} sent=${sent} queued=${queued}`);
+  return { sent, queued, targets };
+}
+
 function deliverQueuedMessages(deviceId: string, ws: ServerWebSocket<WsData>) {
   const rows = getPendingMessages.all(deviceId) as {
     id: string;
@@ -775,6 +802,11 @@ export const realtimeWebSocket = {
         status,
       });
       send(ws, { type: "ack", message_id: messageId, status, sent, queued });
+      return;
+    }
+
+    if (ws.data.role === "device" && data.type === "supervision_ack") {
+      send(ws, supervisionAckWsResponse(data, ws.data.device));
       return;
     }
 

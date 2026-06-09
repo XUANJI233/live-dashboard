@@ -9,6 +9,7 @@ process.env.DB_PATH = join(tempDir, "test.db");
 process.env.HASH_SECRET = randomHex(32);
 delete process.env.AI_API_URL;
 delete process.env.AI_API_KEY;
+process.env.DEVICE_TOKEN_1 = "supervision-ack-token:ack-device:Ack Android:android";
 
 const encoder = new TextEncoder();
 
@@ -647,6 +648,52 @@ describe("ai-config", () => {
     expect(queuedRows.every((row) => row.payload?.includes("supervision_alert"))).toBe(true);
   });
 
+  test("confirms supervision acks over HTTP and WebSocket payloads", async () => {
+    const { handleSupervisionAck } = await import("../src/routes/supervision-ack");
+    const { supervisionAckWsResponse } = await import("../src/services/supervision-ack");
+
+    const response = await handleSupervisionAck(new Request("https://example.test/api/supervision/ack", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer supervision-ack-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        type: "supervision_ack",
+        ack_id: "ack-http-1",
+        alert_id: "supervision_test",
+        action: "freeze",
+        status: "applied",
+        source: "lsposed",
+      }),
+    }));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      received: true,
+      ack_id: "ack-http-1",
+    });
+
+    expect(supervisionAckWsResponse({
+      type: "supervision_ack",
+      payload: {
+        type: "supervision_ack",
+        ack_id: "ack-ws-1",
+        action: "unfreeze",
+        status: "applied",
+      },
+    }, { device_id: "ack-device", device_name: "Ack Android", platform: "android" })).toEqual({
+      type: "supervision_ack_received",
+      ack_id: "ack-ws-1",
+      received: true,
+    });
+
+    const invalidAck = supervisionAckWsResponse({
+      type: "supervision_ack",
+      payload: { type: "supervision_ack", action: "freeze" },
+    }) as { received?: unknown };
+    expect(invalidAck.received).toBe(false);
+  });
+
   test("delivers AI unfreeze supervisor commands with reply timestamps", async () => {
     const { db } = await import("../src/db");
     const {
@@ -690,6 +737,8 @@ describe("ai-config", () => {
       VALUES (?, 'Android phone', 'android', 'com.example.shortvideo', 'Short Video', '', 'Short Video', ?, ?, 1)
     `).run(deviceId, checkedAt.toISOString(), JSON.stringify({
       device: {
+        capability_mode: "lsposed",
+        uploader: "lsposed",
         frozen_packages: [{
           package_name: "com.example.shortvideo",
           app_name: "Short Video",
@@ -706,6 +755,7 @@ describe("ai-config", () => {
     globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       const body = JSON.parse(String(init?.body || "{}"));
       expect(body.messages.at(-1)?.content).toContain("监督复核 JSON");
+      expect(JSON.stringify(body.messages)).toContain("设备能力与当前已冻结列表 JSON");
       return Response.json({
         id: "chatcmpl-unfreeze-test",
         object: "chat.completion",
@@ -716,10 +766,16 @@ describe("ai-config", () => {
           message: {
             role: "assistant",
             content: JSON.stringify({
-              type: "supervision_alert",
-              unfreeze: true,
-              reason: "已回到目标任务",
-              unfreeze_all: true,
+              "设备命令": [{
+                device_id: deviceId,
+                "是否偏离": false,
+                "原因": "已回到目标任务",
+                "冻结命令": [],
+                "解冻命令": ["全部"],
+                "是否震动": false,
+                "是否息屏": false,
+                "要说的话": "已回到目标任务",
+              }],
             }),
           },
           finish_reason: "stop",
@@ -747,6 +803,272 @@ describe("ai-config", () => {
     expect(payload.unfreeze_all).toBe(true);
     expect(payload.checked_at).toBe(checkedAt.toISOString());
     expect(Date.parse(String(payload.ai_replied_at))).toBeGreaterThanOrEqual(checkedAt.getTime());
+  });
+
+  test("translates AI freeze command arrays into supervisor payload commands", async () => {
+    const { db } = await import("../src/db");
+    const {
+      describeAiConfig,
+      saveEncryptedAiConfigFromDevice,
+    } = await import("../src/services/ai-config");
+    const {
+      getSummarySettings,
+      saveSummarySettings,
+    } = await import("../src/services/daily-summary-gen");
+    const { runSupervisionTick } = await import("../src/services/supervision");
+
+    const suffix = randomHex(8);
+    const token = `supervision-freeze-token-${suffix}`;
+    const deviceId = `android-freeze-${suffix}`;
+    const checkedAt = new Date("2026-06-07T13:00:00.000Z");
+    const encryption = (await describeAiConfig()).encryption!;
+    await saveEncryptedAiConfigFromDevice(await encryptAiConfigForServer(encryption.public_key, token, {
+      api_url: "https://ai-freeze.example/v1/chat/completions",
+      api_key: `ai-freeze-key-${suffix}`,
+      model: "gpt-4o-mini",
+    }), token);
+
+    db.prepare("DELETE FROM meta WHERE key IN ('supervision_last_alert_at', 'supervision_last_ai_check_at')").run();
+    saveSummarySettings({
+      ...getSummarySettings(),
+      target: "写代码",
+      supervision_enabled: true,
+      supervision_check_mode: "hourly",
+      supervision_check_interval_minutes: 60,
+      supervision_vibrate: true,
+      supervision_skip_watch_sleep: false,
+      supervision_lsp_freeze: true,
+      supervision_rules: {
+        whitelist_app_regex: ["Code"],
+        blacklist_app_regex: ["TikTok", "VPN"],
+        target_app_regex: ["Code"],
+        reason: "test",
+      },
+    });
+
+    db.prepare(`
+      INSERT INTO device_states (device_id, device_name, platform, app_id, app_name, window_title, display_title, last_seen_at, extra, is_online)
+      VALUES (?, 'Android phone', 'android', 'com.zhiliaoapp.musically', 'TikTok', '', 'TikTok', ?, ?, 1)
+    `).run(deviceId, checkedAt.toISOString(), JSON.stringify({
+      device: {
+        capability_mode: "lsposed",
+        uploader: "lsposed",
+        frozen_packages: [],
+      },
+    }));
+    db.prepare(`
+      INSERT INTO activities (device_id, device_name, platform, app_id, app_name, window_title, display_title, extra, title_hash, time_bucket, started_at)
+      VALUES (?, 'Android phone', 'android', 'com.zhiliaoapp.musically', 'TikTok', 'short video', 'short video', '{}', ?, 2, ?)
+    `).run(deviceId, `hash-freeze-${suffix}`, new Date(checkedAt.getTime() - 35 * 60_000).toISOString());
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      expect(JSON.stringify(body.messages)).toContain("新增时间线 JSON");
+      return Response.json({
+        id: "chatcmpl-freeze-test",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: JSON.stringify({
+              "设备命令": [{
+                device_id: deviceId,
+                "是否偏离": true,
+                "原因": "短视频偏离写代码目标",
+                "冻结命令": ["com\\.zhiliaoapp\\.musically", "Clash|VPN"],
+                "解冻命令": [],
+                "是否震动": false,
+                "是否息屏": false,
+                "要说的话": "先断开短视频和代理，回到代码。",
+              }],
+            }),
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+      });
+    }) as typeof fetch;
+
+    try {
+      await runSupervisionTick(checkedAt, { force: true });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const row = db.prepare(`
+      SELECT payload
+      FROM device_messages
+      WHERE viewer_id = '__supervisor__' AND device_id = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(deviceId) as { payload?: string } | null;
+    const payload = JSON.parse(row?.payload || "{}") as Record<string, unknown>;
+    expect(payload.type).toBe("supervision_alert");
+    expect(payload.freeze).toBe(true);
+    expect(payload.vibrate).toBe(false);
+    expect(payload.screen_off).toBe(false);
+    expect(payload.freeze_commands).toEqual(["com\\.zhiliaoapp\\.musically", "Clash|VPN"]);
+    expect(payload.violation_regex).toEqual(["com\\.zhiliaoapp\\.musically", "Clash|VPN"]);
+    expect(payload.checked_at).toBe(checkedAt.toISOString());
+  });
+
+  test("routes supervision commands by device capability", async () => {
+    const { db } = await import("../src/db");
+    const {
+      describeAiConfig,
+      saveEncryptedAiConfigFromDevice,
+    } = await import("../src/services/ai-config");
+    const {
+      getSummarySettings,
+      saveSummarySettings,
+    } = await import("../src/services/daily-summary-gen");
+    const { runSupervisionTick } = await import("../src/services/supervision");
+
+    const suffix = randomHex(8);
+    const token = `supervision-route-token-${suffix}`;
+    const lspId = `android-lsp-${suffix}`;
+    const normalId = `android-normal-${suffix}`;
+    const desktopId = `desktop-${suffix}`;
+    const checkedAt = new Date("2026-06-07T14:00:00.000Z");
+    const encryption = (await describeAiConfig()).encryption!;
+    await saveEncryptedAiConfigFromDevice(await encryptAiConfigForServer(encryption.public_key, token, {
+      api_url: "https://ai-route.example/v1/chat/completions",
+      api_key: `ai-route-key-${suffix}`,
+      model: "gpt-4o-mini",
+    }), token);
+
+    db.prepare("DELETE FROM meta WHERE key IN ('supervision_last_alert_at', 'supervision_last_ai_check_at')").run();
+    saveSummarySettings({
+      ...getSummarySettings(),
+      target: "写代码",
+      supervision_enabled: true,
+      supervision_check_mode: "hourly",
+      supervision_check_interval_minutes: 60,
+      supervision_vibrate: true,
+      supervision_skip_watch_sleep: false,
+      supervision_lsp_freeze: true,
+      supervision_rules: {
+        whitelist_app_regex: ["Code"],
+        blacklist_app_regex: ["TikTok", "Game"],
+        target_app_regex: ["Code"],
+        reason: "test",
+      },
+    });
+
+    const insertDevice = db.prepare(`
+      INSERT INTO device_states (device_id, device_name, platform, app_id, app_name, window_title, display_title, last_seen_at, extra, is_online)
+      VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 1)
+    `);
+    insertDevice.run(lspId, "LSP Android", "android", "com.zhiliaoapp.musically", "TikTok", "TikTok", checkedAt.toISOString(), JSON.stringify({
+      device: { capability_mode: "lsposed", uploader: "lsposed", frozen_packages: [] },
+    }));
+    insertDevice.run(normalId, "Normal Android", "android", "com.example.game", "Game", "Game", checkedAt.toISOString(), JSON.stringify({
+      device: { capability_mode: "normal", frozen_packages: [] },
+    }));
+    insertDevice.run(desktopId, "Desktop", "windows", "steam", "Game", "Game", checkedAt.toISOString(), "{}");
+
+    const insertActivity = db.prepare(`
+      INSERT INTO activities (device_id, device_name, platform, app_id, app_name, window_title, display_title, extra, title_hash, time_bucket, started_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?)
+    `);
+    insertActivity.run(lspId, "LSP Android", "android", "com.zhiliaoapp.musically", "TikTok", "short video", "short video", `hash-lsp-${suffix}`, 3, new Date(checkedAt.getTime() - 30 * 60_000).toISOString());
+    insertActivity.run(normalId, "Normal Android", "android", "com.example.game", "Game", "game", "game", `hash-normal-${suffix}`, 4, new Date(checkedAt.getTime() - 25 * 60_000).toISOString());
+    insertActivity.run(desktopId, "Desktop", "windows", "steam", "Game", "game", "game", `hash-desktop-${suffix}`, 5, new Date(checkedAt.getTime() - 20 * 60_000).toISOString());
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      expect(JSON.stringify(body.messages)).toContain("android_lsp");
+      expect(JSON.stringify(body.messages)).toContain("desktop_message");
+      return Response.json({
+        id: "chatcmpl-route-test",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: JSON.stringify({
+              "设备命令": [
+                {
+                  device_id: lspId,
+                  "是否偏离": true,
+                  "原因": "短视频偏离写代码目标",
+                  "冻结命令": ["com\\.zhiliaoapp\\.musically", "VPN"],
+                  "解冻命令": [],
+                  "是否震动": true,
+                  "是否息屏": true,
+                  "要说的话": "先停短视频。",
+                },
+                {
+                  device_id: normalId,
+                  "是否偏离": true,
+                  "原因": "普通安卓只能提醒",
+                  "冻结命令": ["com\\.example\\.game"],
+                  "解冻命令": [],
+                  "是否震动": true,
+                  "是否息屏": true,
+                  "要说的话": "先离开游戏。",
+                },
+                {
+                  device_id: desktopId,
+                  "是否偏离": true,
+                  "原因": "桌面端只发提醒",
+                  "冻结命令": ["steam"],
+                  "解冻命令": ["全部"],
+                  "是否震动": true,
+                  "是否息屏": true,
+                  "要说的话": "桌面端回到代码。",
+                },
+              ],
+            }),
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+      });
+    }) as typeof fetch;
+
+    try {
+      await runSupervisionTick(checkedAt, { force: true });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const rows = db.prepare(`
+      SELECT device_id, payload
+      FROM device_messages
+      WHERE viewer_id = '__supervisor__' AND device_id IN (?, ?, ?)
+      ORDER BY device_id ASC
+    `).all(lspId, normalId, desktopId) as { device_id: string; payload?: string }[];
+    const payloadByDevice = new Map(rows.map((row) => [row.device_id, JSON.parse(row.payload || "{}") as Record<string, unknown>]));
+
+    const lspPayload = payloadByDevice.get(lspId)!;
+    expect(lspPayload.freeze).toBe(true);
+    expect(lspPayload.vibrate).toBe(true);
+    expect(lspPayload.screen_off).toBe(false);
+    expect(lspPayload.freeze_commands).toEqual(["com\\.zhiliaoapp\\.musically", "VPN"]);
+    expect(lspPayload.target_device_id).toBe(lspId);
+
+    const normalPayload = payloadByDevice.get(normalId)!;
+    expect(normalPayload.freeze).toBe(false);
+    expect(normalPayload.vibrate).toBe(true);
+    expect(normalPayload.screen_off).toBe(false);
+    expect(normalPayload.freeze_commands).toEqual([]);
+    expect(normalPayload.target_device_id).toBe(normalId);
+
+    const desktopPayload = payloadByDevice.get(desktopId)!;
+    expect(desktopPayload.freeze).toBe(false);
+    expect(desktopPayload.vibrate).toBe(false);
+    expect(desktopPayload.screen_off).toBe(false);
+    expect(desktopPayload.unfreeze).toBeUndefined();
+    expect(desktopPayload.freeze_commands).toEqual([]);
+    expect(desktopPayload.target_device_id).toBe(desktopId);
   });
 
   test("reuses the stored AI key when the app leaves the key field blank", async () => {
