@@ -12,7 +12,6 @@ import logging
 import logging.handlers
 import os
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -21,6 +20,15 @@ from pathlib import Path
 
 import psutil
 import requests
+
+from settings_dialog import SettingsDialogController
+from win_control import (
+    ActivationEventServer,
+    SingleInstanceGuard,
+    is_autostart_enabled,
+    remove_legacy_startup_task,
+    set_registry_autostart,
+)
 
 try:
     import websocket as _ws_lib
@@ -412,98 +420,6 @@ def validate_config(cfg: dict) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Windows autostart
-# ---------------------------------------------------------------------------
-AUTOSTART_NAME = "LiveDashboardAgent"
-AUTOSTART_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-
-
-def _get_autostart_command() -> str:
-    """Return the command line used for login autostart."""
-    if getattr(sys, "frozen", False):
-        return subprocess.list2cmdline([str(Path(sys.executable).resolve())])
-    return subprocess.list2cmdline([sys.executable, str(Path(__file__).resolve())])
-
-
-def _has_registry_autostart() -> bool:
-    """Return whether the current user has a Run-key startup entry."""
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY) as key:
-            value, _ = winreg.QueryValueEx(key, AUTOSTART_NAME)
-    except FileNotFoundError:
-        return False
-    except OSError as e:
-        log.warning("Autostart registry query failed: %s", e)
-        return False
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _set_registry_autostart(enabled: bool) -> bool:
-    """Enable/disable login autostart through the current-user Run key."""
-    try:
-        import winreg
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY) as key:
-            if enabled:
-                winreg.SetValueEx(
-                    key, AUTOSTART_NAME, 0, winreg.REG_SZ, _get_autostart_command()
-                )
-            else:
-                try:
-                    winreg.DeleteValue(key, AUTOSTART_NAME)
-                except FileNotFoundError:
-                    pass
-        return True
-    except OSError as e:
-        log.error("Autostart registry update failed: %s", e)
-        return False
-
-
-def _has_legacy_startup_task() -> bool:
-    """Return whether the legacy scheduled task based autostart exists."""
-    try:
-        result = subprocess.run(
-            ["schtasks", "/query", "/tn", AUTOSTART_NAME],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        log.debug("Autostart task query failed: %s", e)
-        return False
-    return result.returncode == 0
-
-
-def _remove_legacy_startup_task() -> bool:
-    """Remove the legacy scheduled task if it exists."""
-    if not _has_legacy_startup_task():
-        return True
-    try:
-        result = subprocess.run(
-            ["schtasks", "/delete", "/tn", AUTOSTART_NAME, "/f"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        log.warning("Legacy startup task removal failed: %s", e)
-        return False
-    if result.returncode == 0:
-        return True
-    output = (result.stderr or result.stdout).strip()
-    if output:
-        log.warning("Legacy startup task removal failed: %s", output)
-    return False
-
-
-def is_autostart_enabled() -> bool:
-    """Return whether the agent is configured to launch at Windows logon."""
-    return _has_registry_autostart() or _has_legacy_startup_task()
-
-
 def show_message(title: str, message: str, error: bool = False) -> None:
     """Show a best-effort native message box for user-facing actions."""
     try:
@@ -511,90 +427,6 @@ def show_message(title: str, message: str, error: bool = False) -> None:
         ctypes.windll.user32.MessageBoxW(None, message, title, flags)  # type: ignore[attr-defined]
     except Exception:
         log.info("%s: %s", title, message)
-
-
-# ---------------------------------------------------------------------------
-# Settings Dialog
-# ---------------------------------------------------------------------------
-def show_settings_dialog(current_config: dict | None = None) -> dict | None:
-    """Show tkinter settings dialog. Returns new config or None if cancelled."""
-    try:
-        import tkinter as tk
-        from tkinter import ttk, messagebox
-    except ImportError:
-        log.error("tkinter 不可用, 请手动编辑 %s", CONFIG_PATH)
-        return None
-
-    cfg = current_config or dict(_DEFAULT_CFG)
-    result: list[dict | None] = [None]
-
-    root = tk.Tk()
-    root.title("Live Dashboard - 设置")
-    root.resizable(False, False)
-
-    frame = ttk.Frame(root, padding=20)
-    frame.pack(fill="both", expand=True)
-
-    ttk.Label(frame, text="服务器地址:").grid(row=0, column=0, sticky="w", pady=6)
-    url_var = tk.StringVar(value=cfg.get("server_url", ""))
-    ttk.Entry(frame, textvariable=url_var, width=45).grid(row=0, column=1, pady=6, padx=(8, 0))
-
-    ttk.Label(frame, text="Token:").grid(row=1, column=0, sticky="w", pady=6)
-    token_var = tk.StringVar(value=cfg.get("token", ""))
-    ttk.Entry(frame, textvariable=token_var, width=45, show="*").grid(row=1, column=1, pady=6, padx=(8, 0))
-
-    ttk.Label(frame, text="上报间隔 (秒):").grid(row=2, column=0, sticky="w", pady=6)
-    interval_var = tk.IntVar(value=cfg.get("interval_seconds", 5))
-    ttk.Spinbox(frame, textvariable=interval_var, from_=1, to=300, width=10).grid(row=2, column=1, sticky="w", pady=6, padx=(8, 0))
-
-    ttk.Label(frame, text="心跳间隔 (秒):").grid(row=3, column=0, sticky="w", pady=6)
-    heartbeat_var = tk.IntVar(value=cfg.get("heartbeat_seconds", 60))
-    ttk.Spinbox(frame, textvariable=heartbeat_var, from_=10, to=600, width=10).grid(row=3, column=1, sticky="w", pady=6, padx=(8, 0))
-
-    ttk.Label(frame, text="AFK 判定 (秒):").grid(row=4, column=0, sticky="w", pady=6)
-    idle_var = tk.IntVar(value=cfg.get("idle_threshold_seconds", 300))
-    ttk.Spinbox(frame, textvariable=idle_var, from_=30, to=3600, width=10).grid(row=4, column=1, sticky="w", pady=6, padx=(8, 0))
-
-    log_var = tk.BooleanVar(value=cfg.get("enable_log", False))
-    ttk.Checkbutton(frame, text="开启日志文件 (保留 2 天)", variable=log_var).grid(
-        row=5, column=0, columnspan=2, sticky="w", pady=6
-    )
-
-    def on_save():
-        new_cfg = {
-            "server_url": url_var.get().strip(),
-            "token": token_var.get().strip(),
-            "interval_seconds": interval_var.get(),
-            "heartbeat_seconds": heartbeat_var.get(),
-            "idle_threshold_seconds": idle_var.get(),
-            "enable_log": log_var.get(),
-        }
-        err = validate_config(new_cfg)
-        if err:
-            messagebox.showerror("配置错误", err, parent=root)
-            return
-        if save_config(new_cfg):
-            result[0] = new_cfg
-            root.destroy()
-        else:
-            messagebox.showerror("保存失败", "无法写入 config.json", parent=root)
-
-    btn_frame = ttk.Frame(frame)
-    btn_frame.grid(row=6, column=0, columnspan=2, pady=16)
-    ttk.Button(btn_frame, text="保存", command=on_save).pack(side="left", padx=12)
-    ttk.Button(btn_frame, text="取消", command=root.destroy).pack(side="left", padx=12)
-
-    # Center on screen
-    root.update_idletasks()
-    w, h = root.winfo_reqwidth(), root.winfo_reqheight()
-    x = (root.winfo_screenwidth() - w) // 2
-    y = (root.winfo_screenheight() - h) // 2
-    root.geometry(f"+{x}+{y}")
-    root.lift()
-    root.focus_force()
-
-    root.mainloop()
-    return result[0]
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +502,10 @@ class Reporter:
     def retry_delay(self) -> float:
         return self.pause_remaining or self.backoff
 
+    def close(self) -> None:
+        """Release HTTP resources before runtime reload or shutdown."""
+        self.session.close()
+
 
 # ---------------------------------------------------------------------------
 # WebSocket Client — real-time bidirectional communication
@@ -685,7 +521,7 @@ class WsClient:
         self._token = token
         self._on_viewer_message = on_viewer_message
         self._ws = None
-        self._stop = False
+        self._stop_event = threading.Event()
         self._connected = False
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -697,18 +533,24 @@ class WsClient:
         if not HAS_WEBSOCKET:
             log.warning("websocket-client 未安装, WebSocket 功能禁用")
             return
-        self._stop = False
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="ws-client")
         self._thread.start()
 
     def stop(self):
-        self._stop = True
+        self._stop_event.set()
         ws = self._ws
         if ws:
             try:
                 ws.close()
             except Exception:
                 pass
+        if self._thread:
+            self._thread.join(timeout=5)
+            self._thread = None
+        self._connected = False
 
     @property
     def connected(self) -> bool:
@@ -754,7 +596,7 @@ class WsClient:
                 return False
 
     def _run(self):
-        while not self._stop:
+        while not self._stop_event.is_set():
             try:
                 url = self._build_ws_url()
                 self._ws = _ws_lib.WebSocketApp(
@@ -765,14 +607,14 @@ class WsClient:
                     on_error=self._on_error,
                     on_close=self._on_close,
                 )
-                self._ws.run_forever(ping_interval=25, ping_timeout=35)
+                self._ws.run_forever(ping_interval=30, ping_timeout=10)
             except Exception as exc:
                 log.debug("WS run_forever 异常: %s", exc)
-            if self._stop:
+            if self._stop_event.is_set():
                 break
             self._connected = False
             log.info("WebSocket 断开, %d 秒后重连...", self._backoff)
-            time.sleep(self._backoff)
+            self._stop_event.wait(self._backoff)
             self._backoff = min(self._backoff * 2, self.MAX_BACKOFF)
 
     def _on_open(self, ws):
@@ -862,18 +704,22 @@ class MessageClient:
             r = self._session.get(f"{self._server_url}/api/messages", timeout=10)
             if r.status_code != 200:
                 return []
-            msgs = r.json() if isinstance(r.json(), list) else []
+            parsed = r.json()
+            msgs = parsed if isinstance(parsed, list) else []
         except Exception as exc:
             log.debug("获取待处理留言失败: %s", exc)
             return []
+        new_messages = []
         with self._lock:
             existing_ids = {m.get("message_id") for m in self._cache}
             for m in msgs:
                 mid = m.get("message_id", "")
                 if mid and mid not in existing_ids:
                     self._cache.insert(0, m)
-                    self._notify(m)
+                    new_messages.append(m)
             self._cache = self._cache[:self.MAX_CACHED]
+        for m in new_messages:
+            self._notify(m)
         return msgs
 
     def fetch_history(self, since: str = "") -> list[dict]:
@@ -969,11 +815,27 @@ class MessageClient:
         with self._lock:
             return list(self._cache[:limit])
 
+    def close(self) -> None:
+        """Release HTTP resources before runtime reload or shutdown."""
+        self._session.close()
+
 
 # ---------------------------------------------------------------------------
 # System Tray
 # ---------------------------------------------------------------------------
 shutdown_event = threading.Event()
+reload_event = threading.Event()
+
+
+def control_wait(timeout: float) -> bool:
+    """Wait until timeout, shutdown, or config reload. Returns True if interrupted."""
+    deadline = time.monotonic() + max(0, timeout)
+    while not shutdown_event.is_set() and not reload_event.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        shutdown_event.wait(min(remaining, 0.5))
+    return True
 
 
 def _make_tray_icon(color: str = "green") -> "PIL.Image.Image":
@@ -991,14 +853,14 @@ def _make_tray_icon(color: str = "green") -> "PIL.Image.Image":
 class TrayAgent:
     """System tray with Chinese UI, hover tooltip, and integrated settings."""
 
-    def __init__(self):
+    def __init__(self, settings_controller: SettingsDialogController | None = None):
         import pystray
         self._pystray = pystray
         self._lock = threading.Lock()
         self._status = "初始化中"
         self._current_target = ""
         self._icon: pystray.Icon | None = None
-        self._settings_requested = False
+        self._settings_controller = settings_controller
         self._msg_client: MessageClient | None = None
         self._unread_count = 0
         self._icons = {
@@ -1008,7 +870,9 @@ class TrayAgent:
         }
 
     def set_message_client(self, mc: MessageClient):
-        self._msg_client = mc
+        with self._lock:
+            self._msg_client = mc
+            self._unread_count = 0
         mc.on_message(self._on_new_message)
 
     def _on_new_message(self, msg: dict):
@@ -1027,14 +891,15 @@ class TrayAgent:
     def _build_menu(self):
         p = self._pystray
         items = [
+            p.MenuItem("打开主界面", self._open_settings, default=True, visible=False),
             p.MenuItem(lambda _: f"状态: {self._get_status()}", None, enabled=False),
             p.MenuItem(lambda _: f"当前: {self._get_current() or '无'}", None, enabled=False),
             p.Menu.SEPARATOR,
+            p.MenuItem("打开主界面", self._open_settings),
             p.MenuItem("日志文件", self._toggle_log,
                        checked=lambda _: _file_handler is not None),
             p.MenuItem("开机自启", self._toggle_autostart,
                        checked=lambda _: is_autostart_enabled()),
-            p.MenuItem("设置", self._open_settings),
         ]
         if self._msg_client is not None:
             items.append(p.Menu.SEPARATOR)
@@ -1056,10 +921,15 @@ class TrayAgent:
 
     def update_status(self, status: str, current_target: str | None = None):
         with self._lock:
+            previous_status = self._status
+            previous_target = self._current_target
             self._status = status
             if current_target is not None:
                 self._current_target = current_target
             current_target_value = self._current_target
+            changed = previous_status != self._status or previous_target != self._current_target
+        if not changed:
+            return
         if self._icon:
             color = {"在线": "green", "AFK": "orange"}.get(status, "gray")
             self._icon.icon = self._icons[color]
@@ -1082,8 +952,8 @@ class TrayAgent:
     def _toggle_autostart(self):
         enabled = is_autostart_enabled()
         if enabled:
-            registry_ok = _set_registry_autostart(False)
-            legacy_ok = _remove_legacy_startup_task()
+            registry_ok = set_registry_autostart(False)
+            legacy_ok = remove_legacy_startup_task()
             if registry_ok and legacy_ok:
                 log.info("Autostart disabled")
             else:
@@ -1093,7 +963,8 @@ class TrayAgent:
                     error=True,
                 )
         else:
-            if _set_registry_autostart(True):
+            remove_legacy_startup_task()
+            if set_registry_autostart(True):
                 log.info("Autostart enabled")
             else:
                 show_message(
@@ -1105,9 +976,8 @@ class TrayAgent:
             self._icon.update_menu()
 
     def _open_settings(self):
-        self._settings_requested = True
-        if self._icon:
-            self._icon.stop()
+        if self._settings_controller:
+            self._settings_controller.open(load_config())
 
     def _show_messages(self):
         """Show recent messages in a dialog."""
@@ -1135,12 +1005,6 @@ class TrayAgent:
         shutdown_event.set()
         if self._icon:
             self._icon.stop()
-        logging.shutdown()
-        os._exit(0)
-
-    @property
-    def settings_requested(self) -> bool:
-        return self._settings_requested
 
     def run(self):
         """Run the tray icon (blocking — call from main thread)."""
@@ -1196,7 +1060,7 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
                 return True
         return reporter.send(app_id, title, extra)
 
-    while not shutdown_event.is_set():
+    while not shutdown_event.is_set() and not reload_event.is_set():
         try:
             now = time.time()
 
@@ -1234,14 +1098,14 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
                         if tray:
                             tray.update_status("AFK", idle_target)
                     elif reporter.retry_delay > 0:
-                        shutdown_event.wait(reporter.retry_delay)
+                        control_wait(reporter.retry_delay)
                         continue
-                shutdown_event.wait(interval)
+                control_wait(interval)
                 continue
 
             info = get_foreground_info()
             if info is None:
-                shutdown_event.wait(interval)
+                control_wait(interval)
                 continue
 
             app_id, title = info
@@ -1269,14 +1133,14 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
                     if changed:
                         log.info("Reported: %s", reported_target)
                 elif reporter.retry_delay > 0:
-                    shutdown_event.wait(reporter.retry_delay)
+                    control_wait(reporter.retry_delay)
                     continue
 
-            shutdown_event.wait(interval)
+            control_wait(interval)
 
         except Exception as e:
             log.error("Error: %s", e, exc_info=True)
-            shutdown_event.wait(interval)
+            control_wait(interval)
 
     log.info("Monitor stopped")
 
@@ -1284,92 +1148,137 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+class RuntimeSupervisor:
+    """Owns the active reporter, websocket, message client, and monitor loop."""
+
+    def __init__(self, tray: TrayAgent | None):
+        self._tray = tray
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._run, name="runtime-supervisor", daemon=True)
+        self._thread.start()
+
+    def join(self, timeout: float | None = None) -> None:
+        if self._thread:
+            self._thread.join(timeout=timeout)
+            self._thread = None
+
+    def _run(self) -> None:
+        while not shutdown_event.is_set():
+            reload_event.clear()
+            cfg = load_config()
+            err = validate_config(cfg)
+            if err:
+                log.warning("Invalid config: %s", err)
+                if self._tray:
+                    self._tray.update_status("配置错误")
+                control_wait(5)
+                continue
+
+            set_file_logging(cfg.get("enable_log", False))
+            if cfg.get("enable_log"):
+                log.info("HTTP: %s", "HTTPS" if cfg["server_url"].startswith("https") else "HTTP (内网)")
+
+            reporter = Reporter(cfg["server_url"], cfg["token"])
+            ws_client: WsClient | None = None
+            msg_client: MessageClient | None = None
+
+            try:
+                if HAS_WEBSOCKET:
+                    ws_client = WsClient(cfg["server_url"], cfg["token"])
+                    msg_client = MessageClient(cfg["server_url"], cfg["token"], ws_client)
+                    ws_client._on_viewer_message = msg_client.on_ws_message
+                    ws_client.start()
+                    log.info("WebSocket 客户端已启动")
+                else:
+                    log.info("websocket-client 未安装, 仅使用 HTTP 上报")
+                    msg_client = MessageClient(cfg["server_url"], cfg["token"])
+
+                if self._tray and msg_client:
+                    self._tray.set_message_client(msg_client)
+
+                _monitor_loop(cfg, reporter, self._tray, ws_client, msg_client)
+            finally:
+                if ws_client:
+                    ws_client.stop()
+                if msg_client:
+                    msg_client.close()
+                reporter.close()
+
+            if reload_event.is_set() and not shutdown_event.is_set():
+                log.info("配置已更新，正在重载 Windows Agent 运行时")
+                continue
+            break
+
+
 def main() -> None:
     log.info("Live Dashboard Windows Agent")
 
-    while True:
+    guard = SingleInstanceGuard()
+    if guard.already_running:
+        if not guard.notify_existing():
+            show_message("Live Dashboard", "Windows Agent 已在后台运行。")
+        guard.close()
+        return
+
+    settings_controller = SettingsDialogController(
+        load_config=load_config,
+        validate_config=validate_config,
+        save_config=save_config,
+        on_saved=reload_event.set,
+    )
+    activation_server = ActivationEventServer(lambda: settings_controller.open(load_config()))
+    supervisor: RuntimeSupervisor | None = None
+
+    try:
+        activation_server.start()
         cfg = load_config()
 
-        # No valid config → show settings dialog
-        if not cfg.get("server_url") or not cfg.get("token") or cfg.get("token") == "YOUR_TOKEN_HERE":
-            cfg = show_settings_dialog(cfg)
+        while not cfg.get("server_url") or not cfg.get("token") or cfg.get("token") == "YOUR_TOKEN_HERE":
+            cfg = settings_controller.open(cfg, blocking=True)
             if cfg is None:
                 return
             cfg = load_config()
 
         err = validate_config(cfg)
-        if err:
+        while err:
             log.warning("Invalid config: %s", err)
-            cfg = show_settings_dialog(cfg)
+            cfg = settings_controller.open(cfg, blocking=True)
             if cfg is None:
                 return
             cfg = load_config()
-            continue
-
-        # Apply log preference
-        set_file_logging(cfg.get("enable_log", False))
-        if cfg.get("enable_log"):
-            log.info("HTTP: %s", "HTTPS" if cfg["server_url"].startswith("https") else "HTTP (内网)")
-
-        reporter = Reporter(cfg["server_url"], cfg["token"])
-
-        # Initialize WebSocket client
-        ws_client: WsClient | None = None
-        msg_client: MessageClient | None = None
-        if HAS_WEBSOCKET:
-            ws_client = WsClient(cfg["server_url"], cfg["token"])
-            msg_client = MessageClient(cfg["server_url"], cfg["token"], ws_client)
-            ws_client.start()
-            log.info("WebSocket 客户端已启动")
-        else:
-            log.info("websocket-client 未安装, 仅使用 HTTP 上报")
-            msg_client = MessageClient(cfg["server_url"], cfg["token"])
+            err = validate_config(cfg)
 
         tray: TrayAgent | None = None
         try:
-            tray = TrayAgent()
-            if msg_client:
-                tray.set_message_client(msg_client)
+            tray = TrayAgent(settings_controller)
         except ImportError:
             log.warning("pystray/Pillow not installed, running without tray")
         except Exception as e:
             log.warning("Tray init failed: %s", e)
 
-        # Wire WS viewer_message → MessageClient
-        if ws_client and msg_client:
-            ws_client._on_viewer_message = msg_client.on_ws_message
+        reload_event.clear()
+        supervisor = RuntimeSupervisor(tray)
+        supervisor.start()
 
         if tray:
-            monitor = threading.Thread(
-                target=_monitor_loop,
-                args=(cfg, reporter, tray, ws_client, msg_client),
-                daemon=True,
-            )
-            monitor.start()
-            tray.run()  # Blocks until quit or settings
-            shutdown_event.set()
-            monitor.join(timeout=5)
-            if ws_client:
-                ws_client.stop()
-
-            if tray.settings_requested:
-                shutdown_event.clear()
-                new_cfg = show_settings_dialog(cfg)
-                if new_cfg is None:
-                    continue  # Cancelled, restart with old config
-                continue  # Restart with new config
-            else:
-                break  # Quit
+            tray.run()
         else:
-            try:
-                _monitor_loop(cfg, reporter, None, ws_client, msg_client)
-            except KeyboardInterrupt:
-                pass
-            if ws_client:
-                ws_client.stop()
-            break
-
-    log.info("Agent stopped")
+            while not shutdown_event.is_set():
+                shutdown_event.wait(1)
+    except KeyboardInterrupt:
+        shutdown_event.set()
+    finally:
+        shutdown_event.set()
+        activation_server.stop()
+        if supervisor:
+            supervisor.join(timeout=10)
+        guard.close()
+        log.info("Agent stopped")
+        logging.shutdown()
 
 
 if __name__ == "__main__":
