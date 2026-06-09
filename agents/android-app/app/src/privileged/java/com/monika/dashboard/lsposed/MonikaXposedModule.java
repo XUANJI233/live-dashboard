@@ -452,6 +452,11 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
+    private void forceForegroundSnapshot() {
+        foregroundSnapshotPending = false;
+        scheduleForegroundSnapshot(0L);
+    }
+
     private void startForegroundSampler() {
         if (samplerStarted) return;
         try {
@@ -651,6 +656,7 @@ public final class MonikaXposedModule extends XposedModule {
 
                     applyForegroundTitle(cleanTitle != null ? cleanTitle : "", source);
                     logDebug("browser title received: " + pkg + " title=" + foregroundTitle + " source=" + source);
+                    maybeApplySupervisionFreeze(foregroundPackage, foregroundApp, foregroundTitle);
                     maybeDirectUpload(true);
                 }
             };
@@ -3042,6 +3048,7 @@ public final class MonikaXposedModule extends XposedModule {
                     freezeUntil,
                     safeString(payload.optString("reason", text)));
             log(Log.INFO, TAG, "supervision freeze armed until " + isoTime(freezeUntil));
+            forceForegroundSnapshot();
             maybeApplySupervisionFreeze(foregroundPackage, foregroundApp, foregroundTitle);
         } catch (Throwable t) {
             logDebug("supervision payload ignored: " + t.getClass().getSimpleName());

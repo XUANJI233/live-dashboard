@@ -12,6 +12,7 @@ import android.util.Base64
 import com.monika.dashboard.data.DebugLog
 import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.data.VisitorMessage
+import java.net.SocketTimeoutException
 import java.net.URLEncoder
 import java.net.URI
 import java.nio.charset.StandardCharsets
@@ -87,8 +88,9 @@ class ReportClient(
             (scheme == "http" && (host == "localhost" || host == "127.0.0.1"))
         ) { "Only HTTPS or http://localhost allowed" }
     }
-        // Shared OkHttpClient — single connection pool for all operations
+        // Shared OkHttpClient — single connection pool for normal operations.
         private val client get() = sharedClient
+        private val slowClient get() = sharedSlowClient
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
@@ -501,7 +503,7 @@ class ReportClient(
                 .addHeader("Authorization", "Bearer $token")
                 .get()
                 .build()
-            val response = client.newCall(request).execute()
+            val response = slowClient.newCall(request).execute()
             response.use {
                 if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}"))
                 val body = it.body?.string().orEmpty()
@@ -516,7 +518,7 @@ class ReportClient(
                 )
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(aiPendingFailure(e))
         }
     }
 
@@ -546,7 +548,7 @@ class ReportClient(
             .build()
 
         return try {
-            val response = client.newCall(request).execute()
+            val response = slowClient.newCall(request).execute()
             response.use {
                 if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(it.body?.string())}"))
                 val json = JSONObject(it.body?.string().orEmpty())
@@ -560,7 +562,7 @@ class ReportClient(
                 )
             }
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(aiPendingFailure(e))
         }
     }
 
@@ -750,6 +752,8 @@ class ReportClient(
     companion object {
         @Volatile
         private var _shared: OkHttpClient? = null
+        @Volatile
+        private var _slowShared: OkHttpClient? = null
 
         val sharedClient: OkHttpClient
             get() {
@@ -765,6 +769,20 @@ class ReportClient(
                 }
             }
 
+        val sharedSlowClient: OkHttpClient
+            get() {
+                _slowShared?.let { return it }
+                synchronized(this) {
+                    _slowShared?.let { return it }
+                    _slowShared = sharedClient.newBuilder()
+                        .writeTimeout(30, TimeUnit.SECONDS)
+                        .readTimeout(90, TimeUnit.SECONDS)
+                        .callTimeout(120, TimeUnit.SECONDS)
+                        .build()
+                    return _slowShared!!
+                }
+            }
+
         const val PUBLIC_RECENT_HOURS = 168
         private const val CURVE25519_KEY_SIZE = 32
         private const val AES_256_KEY_SIZE = 32
@@ -773,25 +791,29 @@ class ReportClient(
     }
 
     private fun executeSummaryRequest(request: Request, fallbackDate: String): Result<WeeklySummary> {
-        val response = client.newCall(request).execute()
-        response.use {
-            if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(it.body?.string())}"))
-            val json = JSONObject(it.body?.string().orEmpty())
-            return Result.success(
-                WeeklySummary(
-                    weekStart = json.optString("week_start", fallbackDate),
-                    weekEnd = json.optString("week_end", fallbackDate),
-                    summary = json.optString("summary").takeIf { value -> value.isNotBlank() && value != "null" },
-                    generatedAt = json.optString("generated_at").takeIf { value -> value.isNotBlank() && value != "null" },
-                    mode = json.optString("mode").takeIf { value -> value.isNotBlank() && value != "null" },
-                ),
-            )
+        return try {
+            val response = slowClient.newCall(request).execute()
+            response.use {
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(it.body?.string())}"))
+                val json = JSONObject(it.body?.string().orEmpty())
+                Result.success(
+                    WeeklySummary(
+                        weekStart = json.optString("week_start", fallbackDate),
+                        weekEnd = json.optString("week_end", fallbackDate),
+                        summary = json.optString("summary").takeIf { value -> value.isNotBlank() && value != "null" },
+                        generatedAt = json.optString("generated_at").takeIf { value -> value.isNotBlank() && value != "null" },
+                        mode = json.optString("mode").takeIf { value -> value.isNotBlank() && value != "null" },
+                    ),
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(aiPendingFailure(e))
         }
     }
 
     private fun executeSettingsRequest(request: Request): Result<SummarySettings> {
         return try {
-            val response = client.newCall(request).execute()
+            val response = slowClient.newCall(request).execute()
             response.use {
                 if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(it.body?.string())}"))
                 val json = JSONObject(it.body?.string().orEmpty())
@@ -820,14 +842,15 @@ class ReportClient(
                     ),
                 )
             }
+
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(aiPendingFailure(e))
         }
     }
 
     private fun executeAiConfigRequest(request: Request): Result<AiConfig> {
         return try {
-            val response = client.newCall(request).execute()
+            val response = slowClient.newCall(request).execute()
             response.use {
                 val raw = it.body?.string().orEmpty()
                 DebugLog.log("AI", "配置响应 HTTP ${it.code}: ${sanitizeLogText(raw).take(1200)}")
@@ -836,8 +859,9 @@ class ReportClient(
                 Result.success(parseAiConfig(json))
             }
         } catch (e: Exception) {
-            DebugLog.log("AI", "配置请求异常: ${sanitizeLogText(e.message.orEmpty()).take(800)}")
-            Result.failure(e)
+            val failure = aiPendingFailure(e)
+            DebugLog.log("AI", "配置请求异常: ${sanitizeLogText(failure.message.orEmpty()).take(800)}")
+            Result.failure(failure)
         }
     }
 
@@ -885,7 +909,7 @@ class ReportClient(
 
     private fun executeAiConfigTestRequest(request: Request): Result<AiConfigTestResult> {
         return try {
-            val response = client.newCall(request).execute()
+            val response = slowClient.newCall(request).execute()
             response.use {
                 val raw = it.body?.string().orEmpty()
                 DebugLog.log("AI", "测试响应 HTTP ${it.code}: ${sanitizeLogText(raw).take(1200)}")
@@ -899,8 +923,9 @@ class ReportClient(
                 Result.success(parsed)
             }
         } catch (e: Exception) {
-            DebugLog.log("AI", "测试异常: ${sanitizeLogText(e.message.orEmpty()).take(800)}")
-            Result.failure(e)
+            val failure = aiPendingFailure(e)
+            DebugLog.log("AI", "测试异常: ${sanitizeLogText(failure.message.orEmpty()).take(800)}")
+            Result.failure(failure)
         }
     }
 
@@ -986,6 +1011,13 @@ class ReportClient(
             val error = json.optString("error")
             listOf(code, error).filter { it.isNotBlank() }.joinToString(": ")
         }.getOrDefault(raw.orEmpty()).let(::sanitizeLogText).take(1000).ifBlank { "request failed" }
+
+    private fun aiPendingFailure(e: Exception): Exception {
+        val message = e.message.orEmpty()
+        val timedOut = e is SocketTimeoutException || message.contains("timeout", ignoreCase = true)
+        if (!timedOut) return e
+        return IOException("服务端仍在处理 AI 请求，请稍后刷新结果。", e)
+    }
 
     private fun safeAiEndpointForLog(value: String): String =
         sanitizeLogText(value.trim()).take(300).ifBlank { "未填写" }
