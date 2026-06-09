@@ -3085,6 +3085,10 @@ public final class MonikaXposedModule extends XposedModule {
     private void handleSupervisionPayload(JSONObject payload, String text) {
         try {
             if (payload == null || !"supervision_alert".equals(payload.optString("type"))) return;
+            if (strictBoolean(payload, "unfreeze", false)) {
+                handleSupervisionUnfreezePayload(payload, text);
+                return;
+            }
             if (!strictBoolean(payload, "freeze", false)) {
                 activeFreezeAlert = null;
                 return;
@@ -3115,6 +3119,28 @@ public final class MonikaXposedModule extends XposedModule {
             maybeApplySupervisionFreeze(foregroundPackage, foregroundApp, foregroundTitle);
         } catch (Throwable t) {
             logDebug("supervision payload ignored: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void handleSupervisionUnfreezePayload(JSONObject payload, String text) {
+        try {
+            String reason = safeString(payload.optString("reason", text));
+            java.util.List<java.util.regex.Pattern> patterns = compileSafePatterns(payload.optJSONArray("unfreeze_regex"));
+            if (patterns.isEmpty()) {
+                patterns = compileSafePatterns(payload.optJSONArray("recovery_regex"));
+            }
+            boolean unfreezeAll = strictBoolean(payload, "unfreeze_all", false) || patterns.isEmpty();
+            if (unfreezeAll) {
+                clearSupervisionFreeze("AI unfreeze: " + reason);
+                return;
+            }
+            int count = unfreezeFrozenPackages(patterns, "AI unfreeze: " + reason);
+            if (count > 0) {
+                log(Log.WARN, TAG, "supervision unfroze " + count + " package(s) by AI command");
+                maybeDirectUpload(true);
+            }
+        } catch (Throwable t) {
+            logDebug("supervision unfreeze ignored: " + t.getClass().getSimpleName());
         }
     }
 
@@ -3167,6 +3193,31 @@ public final class MonikaXposedModule extends XposedModule {
             } catch (Throwable ignored) {}
         }
         return false;
+    }
+
+    private int unfreezeFrozenPackages(java.util.List<java.util.regex.Pattern> patterns, String reason) {
+        int count = 0;
+        try {
+            for (String pkg : frozenPackages.keySet()) {
+                FrozenPackageRecord record = frozenPackages.get(pkg);
+                if (record == null) continue;
+                if (!matchesFrozenRecord(record, patterns)) continue;
+                if ("suspended".equals(record.mode)) setPackageSuspended(record.packageName, false);
+                frozenPackages.remove(pkg);
+                count++;
+            }
+            if (frozenPackages.isEmpty()) activeFreezeAlert = null;
+            if (count > 0) log(Log.WARN, TAG, safeString(reason));
+        } catch (Throwable t) {
+            logDebug("supervision unfreeze failed: " + t.getClass().getSimpleName());
+        }
+        return count;
+    }
+
+    private boolean matchesFrozenRecord(FrozenPackageRecord record, java.util.List<java.util.regex.Pattern> patterns) {
+        if (record == null) return false;
+        String text = safeString(record.packageName) + " " + safeString(record.appName) + " " + safeString(record.reason);
+        return matchesAny(patterns, text);
     }
 
     private void clearSupervisionFreeze(String reason) {
