@@ -9,7 +9,7 @@ import {
   upsertWeeklySummary,
 } from "../db";
 import { buildTimelineSegments } from "../routes/timeline";
-import { getAiRuntimeConfig, requestAiChatCompletion } from "./ai-config";
+import { getAiRuntimeConfig, requestAiChatCompletion, requestAiChatCompletionWithCachePriming } from "./ai-config";
 import { logAiDebug } from "./ai-debug";
 import { safeTimezoneOffset, utcRangeForLocalDate } from "./cdn";
 import { healthContextLinesForRange } from "./health-context";
@@ -43,6 +43,7 @@ export interface SummarySettings {
   daily_summary_time: string;
   weekly_summary_weekday: number;
   weekly_summary_time: string;
+  timezone_offset_minutes: number | null;
   supervision_enabled: boolean;
   supervision_check_mode: SupervisionCheckMode;
   supervision_check_interval_minutes: number;
@@ -143,6 +144,7 @@ export function getSummarySettings(): SummarySettings {
       daily_summary_time: normalizeClockTime(parsed.daily_summary_time ?? (parsed as Record<string, unknown>).dailySummaryTime, "21:00"),
       weekly_summary_weekday: normalizeWeekday(parsed.weekly_summary_weekday ?? (parsed as Record<string, unknown>).weeklySummaryWeekday, 7),
       weekly_summary_time: normalizeClockTime(parsed.weekly_summary_time ?? (parsed as Record<string, unknown>).weeklySummaryTime, "21:30"),
+      timezone_offset_minutes: normalizeTimezoneOffset(parsed.timezone_offset_minutes ?? (parsed as Record<string, unknown>).timezoneOffsetMinutes ?? (parsed as Record<string, unknown>).tz, null),
       supervision_enabled: normalizeBoolean(parsed.supervision_enabled ?? (parsed as Record<string, unknown>).supervisionEnabled),
       supervision_check_mode: normalizeSupervisionCheckMode(parsed.supervision_check_mode ?? (parsed as Record<string, unknown>).supervisionCheckMode),
       supervision_check_interval_minutes: normalizeSupervisionInterval(parsed.supervision_check_interval_minutes ?? (parsed as Record<string, unknown>).supervisionCheckIntervalMinutes, 60),
@@ -196,6 +198,9 @@ export function updateSummarySettings(input: unknown): SummarySettings {
     weekly_summary_time: source.weekly_summary_time === undefined && source.weeklySummaryTime === undefined
       ? current.weekly_summary_time
       : normalizeClockTime(source.weekly_summary_time ?? source.weeklySummaryTime, current.weekly_summary_time),
+    timezone_offset_minutes: source.timezone_offset_minutes === undefined && source.timezoneOffsetMinutes === undefined && source.tz === undefined
+      ? current.timezone_offset_minutes
+      : normalizeTimezoneOffset(source.timezone_offset_minutes ?? source.timezoneOffsetMinutes ?? source.tz, current.timezone_offset_minutes),
     supervision_enabled: source.supervision_enabled === undefined && source.supervisionEnabled === undefined
       ? current.supervision_enabled
       : normalizeBoolean(source.supervision_enabled ?? source.supervisionEnabled),
@@ -246,15 +251,15 @@ export async function generateDailySummary(options: {
   date?: string;
   tzOffsetMinutes?: number;
 } = {}): Promise<SummaryGenerationResult> {
-  const date = validDateString(options.date) ? options.date! : todayStr();
-  const tzOffsetMinutes = safeTimezoneOffset(options.tzOffsetMinutes ?? new Date().getTimezoneOffset());
+  const baseSettings = rememberSummaryTimezoneOffset(options.tzOffsetMinutes);
+  const tzOffsetMinutes = summaryTimezoneOffset(baseSettings, options.tzOffsetMinutes);
+  const date = validDateString(options.date) ? options.date! : todayStr(tzOffsetMinutes);
   const range = utcRangeForLocalDate(date, tzOffsetMinutes);
   if (!range) {
     return { ok: false, kind: "daily", date, reason: "Invalid date" };
   }
 
   const segments = getTimelineSegmentsForRange(range.start, range.end);
-  const baseSettings = getSummarySettings();
   const contextDays = getDailyContextDays(date, tzOffsetMinutes, 2, baseSettings);
   const settings = settingsForDate(baseSettings, date);
   const generated = await generateSummaryText({
@@ -292,12 +297,13 @@ export async function generateWeeklySummary(options: {
   weekStart?: string;
   tzOffsetMinutes?: number;
 } = {}): Promise<SummaryGenerationResult> {
+  const baseSettings = rememberSummaryTimezoneOffset(options.tzOffsetMinutes);
+  const tzOffsetMinutes = summaryTimezoneOffset(baseSettings, options.tzOffsetMinutes);
   const weekStart = validDateString(options.weekStart)
     ? startOfWeek(options.weekStart!)
-    : startOfWeek(validDateString(options.date) ? options.date! : todayStr());
+    : startOfWeek(validDateString(options.date) ? options.date! : todayStr(tzOffsetMinutes));
   const weekEnd = addDays(weekStart, 6);
   const weekEndExclusive = addDays(weekStart, 7);
-  const tzOffsetMinutes = safeTimezoneOffset(options.tzOffsetMinutes ?? new Date().getTimezoneOffset());
   const startRange = utcRangeForLocalDate(weekStart, tzOffsetMinutes);
   const endRange = utcRangeForLocalDate(weekEndExclusive, tzOffsetMinutes);
   if (!startRange || !endRange) {
@@ -305,7 +311,6 @@ export async function generateWeeklySummary(options: {
   }
 
   const segments = getTimelineSegmentsForRange(startRange.start, endRange.start);
-  const baseSettings = getSummarySettings();
   const contextDays = getWeekContextDays(weekStart, tzOffsetMinutes, baseSettings);
   const settings = baseSettings;
   const generated = await generateSummaryText({
@@ -367,6 +372,7 @@ function defaultSummarySettings(): SummarySettings {
     daily_summary_time: "21:00",
     weekly_summary_weekday: 7,
     weekly_summary_time: "21:30",
+    timezone_offset_minutes: null,
     supervision_enabled: false,
     supervision_check_mode: "hourly",
     supervision_check_interval_minutes: 60,
@@ -395,6 +401,29 @@ function normalizeBoolean(value: unknown): boolean {
   if (typeof value === "boolean") return value;
   const raw = String(value || "").trim().toLowerCase();
   return raw === "true" || raw === "yes" || raw === "on" || raw === "计划休息";
+}
+
+function normalizeTimezoneOffset(value: unknown, fallback: number | null): number | null {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return safeTimezoneOffset(parsed);
+}
+
+export function summaryTimezoneOffset(settings = getSummarySettings(), override?: number): number {
+  if (override != null) return safeTimezoneOffset(override);
+  return safeTimezoneOffset(settings.timezone_offset_minutes ?? new Date().getTimezoneOffset());
+}
+
+export function rememberSummaryTimezoneOffset(value: number | undefined): SummarySettings {
+  const current = getSummarySettings();
+  if (value == null) return current;
+  const timezoneOffset = safeTimezoneOffset(value);
+  if (current.timezone_offset_minutes === timezoneOffset) return current;
+  return saveSummarySettings({
+    ...current,
+    timezone_offset_minutes: timezoneOffset,
+  });
 }
 
 function normalizeMinuteThreshold(value: unknown, fallback: number): number {
@@ -504,6 +533,7 @@ function settingsForStorage(settings: SummarySettings): Omit<SummarySettings, "s
     daily_summary_time: settings.daily_summary_time,
     weekly_summary_weekday: settings.weekly_summary_weekday,
     weekly_summary_time: settings.weekly_summary_time,
+    timezone_offset_minutes: settings.timezone_offset_minutes,
     supervision_enabled: settings.supervision_enabled,
     supervision_check_mode: settings.supervision_check_mode,
     supervision_check_interval_minutes: settings.supervision_check_interval_minutes,
@@ -596,9 +626,9 @@ function getWeekContextDays(weekStart: string, tzOffsetMinutes: number, settings
   return out;
 }
 
-function todayStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function todayStr(tzOffsetMinutes = new Date().getTimezoneOffset()) {
+  const d = new Date(Date.now() - safeTimezoneOffset(tzOffsetMinutes) * 60_000);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
 async function generateSummaryText(input: {
@@ -621,7 +651,7 @@ async function generateSummaryText(input: {
   }
 
   try {
-    const messages = [
+    const contextMessages = [
       { role: "system" as const, content: buildSystemPrompt(input.kind, input.settings) },
       {
         role: "user" as const,
@@ -637,6 +667,8 @@ async function generateSummaryText(input: {
         ),
       },
     ];
+    const finalInstruction = `现在基于以上全部上下文生成中文${input.kind === "weekly" ? "周总结" : "日总结"}。只输出总结正文。`;
+    const messages = [...contextMessages, { role: "user" as const, content: finalInstruction }];
     const maxTokens = input.kind === "weekly" ? WEEKLY_SUMMARY_MAX_TOKENS : DAILY_SUMMARY_MAX_TOKENS;
     const temperature = input.settings.mode === "sharp" ? 0.85 : 0.72;
     logAiDebug("summary.request", {
@@ -647,8 +679,9 @@ async function generateSummaryText(input: {
       temperature,
       messages,
     });
-    let rawSummary = await requestAiChatCompletion(aiConfig, {
-      messages,
+    let rawSummary = await requestAiChatCompletionWithCachePriming(aiConfig, {
+      messages: contextMessages,
+      finalUserMessage: finalInstruction,
       maxTokens,
       temperature,
       timeoutMs: 30_000,
@@ -664,6 +697,10 @@ async function generateSummaryText(input: {
     if (!summary) {
       const retryMessages = [
         ...messages,
+        {
+          role: "assistant" as const,
+          content: rawSummary.slice(0, 1000),
+        },
         {
           role: "user" as const,
           content: `上一条回复清洗后为空，说明包含了不允许的 HTML、代码、链接、命令或脚本。请重新返回一段安全 Markdown 中文${input.kind === "weekly" ? "周总结" : "日总结"}，只写总结正文。`,
@@ -768,7 +805,6 @@ function buildUserPrompt(
     kind === "weekly"
       ? `默认目标: ${sanitizePromptText(settings.target, 240) || "未设置；每周计划空白日期不要虚构目标"}`
       : `当天目标/计划: ${formatPlanForPrompt(settings.target, settings.planned_rest)}`,
-    `请求时间: ${new Date().toISOString()}`,
     `范围: ${periodLabel}`,
     ...(weekday && kind === "daily" ? [`星期: ${weekdayLabel(weekday)}`] : []),
     `总记录时长: ${formatMinutes(totalMinutes)}`,

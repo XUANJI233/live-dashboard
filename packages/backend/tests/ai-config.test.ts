@@ -138,15 +138,18 @@ describe("ai-config", () => {
       daily_summary_time: "21:00",
       weekly_summary_weekday: 7,
       weekly_summary_time: "21:30",
+      tz: -480,
       client_updated_at: "2026-06-07T10:00:00.000Z",
     });
     expect(newer.sync_status).toBe("applied");
     expect(newer.target).toBe("finish the draft");
     expect(newer.weekly_plan[0]?.planned_rest).toBe(false);
+    expect(newer.timezone_offset_minutes).toBe(-480);
 
     const stale = updateSummarySettings({
       target: "older stale draft",
       weekly_plan: [{ weekday: 1, target: "stale", planned_rest: true }],
+      tz: 0,
       client_updated_at: "2026-06-07T09:00:00.000Z",
     });
     expect(stale.sync_status).toBe("ignored_stale");
@@ -158,6 +161,7 @@ describe("ai-config", () => {
     expect(current.target).toBe("finish the draft");
     expect(current.weekly_plan[0]?.target).toBe("write");
     expect(current.weekly_plan[0]?.planned_rest).toBe(false);
+    expect(current.timezone_offset_minutes).toBe(-480);
 
     const fresher = updateSummarySettings({
       target: "ship the draft",
@@ -291,6 +295,108 @@ describe("ai-config", () => {
       });
       expect(text).toBe("OK");
       expect(requested).toEqual(["https://api.deepseek.com/v1/chat/completions"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("uses Vercel AI Gateway provider for gateway endpoints", async () => {
+    const { requestAiChatCompletion } = await import("../src/services/ai-config");
+    const originalFetch = globalThis.fetch;
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+      requested.push(url);
+      expect(url).toBe("https://ai-gateway.vercel.sh/v3/ai/language-model");
+      const headers = init?.headers instanceof Headers
+        ? init.headers
+        : new Headers(init?.headers as Record<string, string> | undefined);
+      expect(headers.get("authorization")).toBe("Bearer gateway-key");
+      expect(headers.get("ai-language-model-id")).toBe("deepseek/deepseek-v3.2");
+      const body = JSON.parse(String(init?.body || "{}"));
+      expect(body.providerOptions?.deepseek?.thinking).toEqual({ type: "enabled" });
+      expect(body.prompt.at(-1)?.role).toBe("user");
+      return Response.json({
+        content: [{ type: "text", text: "OK" }],
+        finishReason: { unified: "stop", raw: "stop" },
+        usage: {
+          inputTokens: { total: 16, noCache: 4, cacheRead: 12, cacheWrite: 0 },
+          outputTokens: { total: 1, text: 1, reasoning: 0 },
+        },
+      });
+    }) as typeof fetch;
+    try {
+      const text = await requestAiChatCompletion({
+        apiUrl: "https://ai-gateway.vercel.sh/v3/ai",
+        apiKey: "gateway-key",
+        model: "deepseek/deepseek-v3.2",
+      }, {
+        messages: [
+          { role: "system", content: "只返回 OK" },
+          { role: "user", content: "ping" },
+        ],
+        maxTokens: 8,
+        temperature: 0,
+      });
+      expect(text).toBe("OK");
+      expect(requested).toEqual(["https://ai-gateway.vercel.sh/v3/ai/language-model"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("primes DeepSeek context before the final chat request", async () => {
+    const { requestAiChatCompletionWithCachePriming } = await import("../src/services/ai-config");
+    const originalFetch = globalThis.fetch;
+    const bodies: Array<Record<string, any>> = [];
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      bodies.push(body);
+      const isWarmup = bodies.length === 1;
+      if (isWarmup) {
+        expect(body.max_tokens).toBe(32);
+        expect(body.messages.at(-1)?.content).toContain("CONTEXT_READY");
+      } else {
+        expect(body.max_tokens).toBe(64);
+        expect(body.messages.at(-3)?.content).toContain("CONTEXT_READY");
+        expect(body.messages.at(-2)).toEqual({ role: "assistant", content: "{\"status\":\"CONTEXT_READY\"}" });
+        expect(body.messages.at(-1)?.content).toBe("现在输出最终结果");
+      }
+      return Response.json({
+        id: isWarmup ? "deepseek-cache-warmup-test" : "deepseek-cache-final-test",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: isWarmup ? "CONTEXT_READY" : "FINAL" },
+          finish_reason: "stop",
+        }],
+        usage: {
+          prompt_tokens: isWarmup ? 100 : 110,
+          completion_tokens: 1,
+          total_tokens: isWarmup ? 101 : 111,
+          prompt_cache_hit_tokens: isWarmup ? 0 : 100,
+          prompt_cache_miss_tokens: isWarmup ? 100 : 10,
+        },
+      });
+    }) as typeof fetch;
+    try {
+      const text = await requestAiChatCompletionWithCachePriming({
+        apiUrl: "https://api.deepseek.com/",
+        apiKey: `deepseek-key-${randomHex(8)}`,
+        model: "deepseek-chat",
+      }, {
+        messages: [
+          { role: "system", content: "只按用户上下文回答" },
+          { role: "user", content: "大段可缓存上下文" },
+        ],
+        finalUserMessage: "现在输出最终结果",
+        maxTokens: 64,
+        temperature: 0,
+      });
+      expect(text).toBe("FINAL");
+      expect(bodies).toHaveLength(2);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -504,6 +610,143 @@ describe("ai-config", () => {
     const response = handlePublicMessages(new Request("https://example.test/api/messages/public?recent=1"));
     const body = await response.json() as { messages?: Array<{ id?: string }> };
     expect(body.messages?.some((message) => message.id === id)).toBe(true);
+  });
+
+  test("queues supervisor alerts for all message-capable devices", async () => {
+    const { db } = await import("../src/db");
+    const { sendSupervisorMessageToDevices } = await import("../src/services/realtime");
+    const suffix = randomHex(8);
+    const androidId = `android-${suffix}`;
+    const desktopId = `desktop-${suffix}`;
+    const zeppId = `zepp-${suffix}`;
+    const now = new Date().toISOString();
+    const insertDevice = db.prepare(`
+      INSERT INTO device_states (device_id, device_name, platform, app_id, app_name, window_title, display_title, last_seen_at, extra, is_online)
+      VALUES (?, ?, ?, 'idle', 'Idle', '', 'Idle', ?, '{}', 1)
+    `);
+    insertDevice.run(androidId, "Android phone", "android", now);
+    insertDevice.run(desktopId, "Desktop", "windows", now);
+    insertDevice.run(zeppId, "Zepp watch", "zepp", now);
+
+    const delivery = sendSupervisorMessageToDevices("回到目标", {
+      type: "supervision_alert",
+      vibrate: true,
+      freeze: false,
+    });
+
+    expect(delivery.targets).toBeGreaterThanOrEqual(2);
+    const queuedRows = db.prepare(`
+      SELECT device_id, payload
+      FROM device_messages
+      WHERE id LIKE 'supervision_%'
+        AND viewer_id = '__supervisor__'
+        AND device_id IN (?, ?, ?)
+      ORDER BY device_id ASC
+    `).all(androidId, desktopId, zeppId) as { device_id: string; payload?: string }[];
+    expect(queuedRows.map((row) => row.device_id)).toEqual([androidId, desktopId].sort());
+    expect(queuedRows.every((row) => row.payload?.includes("supervision_alert"))).toBe(true);
+  });
+
+  test("delivers AI unfreeze supervisor commands with reply timestamps", async () => {
+    const { db } = await import("../src/db");
+    const {
+      describeAiConfig,
+      saveEncryptedAiConfigFromDevice,
+    } = await import("../src/services/ai-config");
+    const {
+      getSummarySettings,
+      saveSummarySettings,
+    } = await import("../src/services/daily-summary-gen");
+    const { runSupervisionTick } = await import("../src/services/supervision");
+
+    const suffix = randomHex(8);
+    const token = `supervision-token-${suffix}`;
+    const deviceId = `android-unfreeze-${suffix}`;
+    const checkedAt = new Date("2026-06-07T12:00:00.000Z");
+    const encryption = (await describeAiConfig()).encryption!;
+    await saveEncryptedAiConfigFromDevice(await encryptAiConfigForServer(encryption.public_key, token, {
+      api_url: "https://ai-unfreeze.example/v1/chat/completions",
+      api_key: `ai-unfreeze-key-${suffix}`,
+      model: "gpt-4o-mini",
+    }), token);
+
+    saveSummarySettings({
+      ...getSummarySettings(),
+      target: "写代码",
+      supervision_enabled: true,
+      supervision_check_mode: "hourly",
+      supervision_skip_watch_sleep: false,
+      supervision_lsp_freeze: true,
+      supervision_rules: {
+        whitelist_app_regex: ["Code"],
+        blacklist_app_regex: ["Short Video"],
+        target_app_regex: ["Code"],
+        reason: "test",
+      },
+    });
+
+    db.prepare(`
+      INSERT INTO device_states (device_id, device_name, platform, app_id, app_name, window_title, display_title, last_seen_at, extra, is_online)
+      VALUES (?, 'Android phone', 'android', 'com.example.shortvideo', 'Short Video', '', 'Short Video', ?, ?, 1)
+    `).run(deviceId, checkedAt.toISOString(), JSON.stringify({
+      device: {
+        frozen_packages: [{
+          package_name: "com.example.shortvideo",
+          app_name: "Short Video",
+          reason: "偏离写代码目标",
+        }],
+      },
+    }));
+    db.prepare(`
+      INSERT INTO activities (device_id, device_name, platform, app_id, app_name, window_title, display_title, extra, title_hash, time_bucket, started_at)
+      VALUES (?, 'Android phone', 'android', 'com.microsoft.vscode', 'Code', 'project', 'project', '{}', ?, 1, ?)
+    `).run(deviceId, `hash-${suffix}`, new Date(checkedAt.getTime() - 20 * 60_000).toISOString());
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      expect(body.messages.at(-1)?.content).toContain("监督复核 JSON");
+      return Response.json({
+        id: "chatcmpl-unfreeze-test",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: JSON.stringify({
+              type: "supervision_alert",
+              unfreeze: true,
+              reason: "已回到目标任务",
+              unfreeze_all: true,
+            }),
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+      });
+    }) as typeof fetch;
+
+    try {
+      await runSupervisionTick(checkedAt, { force: true });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const row = db.prepare(`
+      SELECT payload
+      FROM device_messages
+      WHERE viewer_id = '__supervisor__' AND device_id = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(deviceId) as { payload?: string } | null;
+    const payload = JSON.parse(row?.payload || "{}") as Record<string, unknown>;
+    expect(payload.type).toBe("supervision_alert");
+    expect(payload.unfreeze).toBe(true);
+    expect(payload.unfreeze_all).toBe(true);
+    expect(payload.checked_at).toBe(checkedAt.toISOString());
+    expect(Date.parse(String(payload.ai_replied_at))).toBeGreaterThanOrEqual(checkedAt.getTime());
   });
 
   test("reuses the stored AI key when the app leaves the key field blank", async () => {

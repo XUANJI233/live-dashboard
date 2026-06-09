@@ -248,6 +248,13 @@ const getMessageTargetDevices = db.prepare(`
   LIMIT 20
 `);
 
+const getMessageTargetDevice = db.prepare(`
+  SELECT device_id
+  FROM device_states
+  WHERE device_id = ? AND platform <> 'zepp'
+  LIMIT 1
+`);
+
 function send(ws: ServerWebSocket<WsData>, payload: unknown) {
   ws.send(JSON.stringify(payload));
 }
@@ -522,12 +529,20 @@ function wsRateLimit(viewerId: string): boolean {
 
 function messageTargets(preferredDeviceId = ""): string[] {
   const ids = new Set<string>();
-  if (preferredDeviceId) ids.add(preferredDeviceId);
+  if (preferredDeviceId && supportsDeviceMessages(preferredDeviceId)) ids.add(preferredDeviceId);
   for (const row of getMessageTargetDevices.all() as { device_id: string }[]) {
     if (row.device_id) ids.add(row.device_id);
   }
-  for (const id of deviceSockets.keys()) ids.add(id);
+  for (const [id, ws] of deviceSockets) {
+    if (ws.data.device?.platform !== "zepp") ids.add(id);
+  }
   return Array.from(ids).slice(0, 20);
+}
+
+function supportsDeviceMessages(deviceId: string): boolean {
+  const socketDevice = deviceSockets.get(deviceId)?.data.device;
+  if (socketDevice) return socketDevice.platform !== "zepp";
+  return !!getMessageTargetDevice.get(deviceId);
 }
 
 function deliverViewerMessage(
@@ -554,8 +569,13 @@ function deliverViewerMessage(
     };
     const parsedPayload = parseMessagePayload(payloadText);
     if (parsedPayload) message.payload = parsedPayload;
-    send(deviceWs, message);
-    return "sent";
+    try {
+      send(deviceWs, message);
+      return "sent";
+    } catch {
+      deviceSockets.delete(targetDeviceId);
+      devicePongTimes.delete(targetDeviceId);
+    }
   }
   queueMessage(targetDeviceId, viewerId, text, messageId, payloadText);
   return "queued";
@@ -580,6 +600,7 @@ export function sendSupervisorMessageToDevices(
     if (status === "sent") sent += 1;
     else queued += 1;
   }
+  console.log(`[supervision] alert delivery targets=${targets.length} sent=${sent} queued=${queued}`);
   return { sent, queued, targets: targets.length };
 }
 

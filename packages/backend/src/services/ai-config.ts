@@ -2,7 +2,8 @@ import { HASH_SECRET, metaGet, metaSet } from "../db";
 import { x25519 } from "@noble/curves/ed25519.js";
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { generateText } from "ai";
+import { createGateway, generateText, wrapLanguageModel, type LanguageModel, type LanguageModelMiddleware } from "ai";
+import { deepSeekCachePrimingMiddleware } from "./ai-cache-middleware";
 import { logAiDebug } from "./ai-debug";
 
 const ENV_AI_API_URL = process.env.AI_API_URL || "";
@@ -232,6 +233,7 @@ export async function requestAiChatCompletion(
     maxTokens: number;
     temperature?: number;
     timeoutMs?: number;
+    middleware?: LanguageModelMiddleware | LanguageModelMiddleware[];
   },
 ): Promise<string> {
   const timeoutMs = Math.max(options.timeoutMs ?? AI_CHAT_TIMEOUT_MS, AI_CHAT_TIMEOUT_MS);
@@ -240,7 +242,7 @@ export async function requestAiChatCompletion(
     .map((message) => message.content)
     .join("\n\n") || undefined;
   const messages = options.messages.filter((message) => message.role !== "system");
-  const providerOptions = deepSeekProviderOptions(config);
+  const providerOptions = aiProviderOptions(config);
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= AI_CHAT_MAX_RETRIES; attempt += 1) {
@@ -248,7 +250,7 @@ export async function requestAiChatCompletion(
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const result = await generateText({
-        model: languageModelForConfig(config),
+        model: languageModelForConfig(config, options.middleware),
         ...(system ? { system } : {}),
         messages,
         maxOutputTokens: options.maxTokens,
@@ -288,6 +290,34 @@ export async function requestAiChatCompletion(
   });
 }
 
+export async function requestAiChatCompletionWithCachePriming(
+  config: Pick<AiRuntimeConfig, "apiUrl" | "apiKey" | "model">,
+  options: {
+    messages: AiChatMessage[];
+    finalUserMessage: string;
+    maxTokens: number;
+    temperature?: number;
+    timeoutMs?: number;
+    warmupMaxTokens?: number;
+  },
+): Promise<string> {
+  const finalUserMessage: AiChatMessage = { role: "user", content: options.finalUserMessage };
+  return requestAiChatCompletion(config, {
+    messages: [...options.messages, finalUserMessage],
+    maxTokens: options.maxTokens,
+    temperature: options.temperature,
+    timeoutMs: options.timeoutMs,
+    ...(isDeepSeekRequest(config)
+      ? {
+        middleware: deepSeekCachePrimingMiddleware({
+          model: config.model,
+          warmupMaxTokens: options.warmupMaxTokens,
+        }),
+      }
+      : {}),
+  });
+}
+
 function modelForConnectionTest(requestedModel: string, models: string[], apiUrl: string): string {
   const requested = requestedModel.trim();
   if (models.length === 0) {
@@ -306,21 +336,33 @@ function isOpenAiDefaultModel(model: string): boolean {
   return !model || model === "gpt-4o-mini" || model.startsWith("gpt-");
 }
 
-function languageModelForConfig(config: Pick<AiRuntimeConfig, "apiUrl" | "apiKey" | "model">) {
+function languageModelForConfig(
+  config: Pick<AiRuntimeConfig, "apiUrl" | "apiKey" | "model">,
+  middleware?: LanguageModelMiddleware | LanguageModelMiddleware[],
+) {
   const baseURL = baseUrlFromAiApiUrl(config.apiUrl);
-  if (isDeepSeekEndpoint(config.apiUrl)) {
+  let model: LanguageModel;
+  if (isAiGatewayEndpoint(config.apiUrl)) {
+    const provider = createGateway({
+      apiKey: config.apiKey,
+      baseURL,
+    });
+    model = provider.chat(config.model as never);
+  } else if (isDeepSeekEndpoint(config.apiUrl)) {
     const provider = createDeepSeek({
       apiKey: config.apiKey,
       baseURL,
     });
-    return provider.chat(config.model as never);
+    model = provider.chat(config.model as never);
+  } else {
+    const provider = createOpenAICompatible({
+      name: "configured-openai-compatible",
+      apiKey: config.apiKey,
+      baseURL,
+    });
+    model = provider.chatModel(config.model);
   }
-  const provider = createOpenAICompatible({
-    name: "configured-openai-compatible",
-    apiKey: config.apiKey,
-    baseURL,
-  });
-  return provider.chatModel(config.model);
+  return middleware ? wrapLanguageModel({ model, middleware }) : model;
 }
 
 function isDeepSeekEndpoint(apiUrl: string): boolean {
@@ -332,8 +374,27 @@ function isDeepSeekEndpoint(apiUrl: string): boolean {
   }
 }
 
-function deepSeekProviderOptions(config: Pick<AiRuntimeConfig, "apiUrl">) {
-  if (!isDeepSeekEndpoint(config.apiUrl)) return undefined;
+function isAiGatewayEndpoint(apiUrl: string): boolean {
+  try {
+    const host = new URL(apiUrl).hostname.toLowerCase();
+    return host === "ai-gateway.vercel.sh";
+  } catch {
+    return false;
+  }
+}
+
+function providerSlugFromGatewayModel(model: string): string {
+  const [slug] = model.split("/", 1);
+  return slug?.trim().toLowerCase() || "";
+}
+
+function isDeepSeekRequest(config: Pick<AiRuntimeConfig, "apiUrl" | "model">): boolean {
+  return isDeepSeekEndpoint(config.apiUrl) ||
+    (isAiGatewayEndpoint(config.apiUrl) && providerSlugFromGatewayModel(config.model) === "deepseek");
+}
+
+function aiProviderOptions(config: Pick<AiRuntimeConfig, "apiUrl" | "model">) {
+  if (!isDeepSeekRequest(config)) return undefined;
   return {
     deepseek: {
       thinking: { type: "enabled" },
@@ -364,14 +425,28 @@ function logAiCacheUsage(model: string, usage: unknown, providerMetadata: unknow
     numberValue(details.noCacheTokens) ??
     numberValue(deepseek.promptCacheMissTokens) ??
     numberValue(raw.prompt_cache_miss_tokens);
+  const inputTokens =
+    numberValue(source.inputTokens) ??
+    sumTokenCounts(cacheReadTokens, cacheMissTokens) ??
+    numberValue(raw.prompt_tokens);
   if (cacheReadTokens == null && cacheWriteTokens == null && cacheMissTokens == null) return;
+  const cacheHitRate = inputTokens && cacheReadTokens != null
+    ? `${Math.round((cacheReadTokens / inputTokens) * 1000) / 10}%`
+    : undefined;
   const parts = [
     `model=${model}`,
+    inputTokens != null ? `input_tokens=${inputTokens}` : "",
     cacheReadTokens != null ? `cache_read=${cacheReadTokens}` : "",
     cacheWriteTokens != null ? `cache_write=${cacheWriteTokens}` : "",
     cacheMissTokens != null ? `cache_miss=${cacheMissTokens}` : "",
+    cacheHitRate ? `cache_hit_rate=${cacheHitRate}` : "",
   ].filter(Boolean);
   console.log(`[ai-cache] ${parts.join(" ")}`);
+}
+
+function sumTokenCounts(left: number | undefined, right: number | undefined): number | undefined {
+  if (left == null && right == null) return undefined;
+  return (left ?? 0) + (right ?? 0);
 }
 
 function nestedNumber(source: Record<string, unknown>, path: string[]): number | undefined {

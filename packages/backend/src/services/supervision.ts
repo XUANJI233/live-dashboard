@@ -6,11 +6,12 @@ import {
   getSummarySettings,
   isoWeekday,
   saveSummarySettings,
+  summaryTimezoneOffset,
   type SummarySettings,
   type SupervisionRules,
   weekdayLabel,
 } from "./daily-summary-gen";
-import { getAiRuntimeConfig, requestAiChatCompletion, type AiChatMessage, type AiRuntimeConfig } from "./ai-config";
+import { getAiRuntimeConfig, requestAiChatCompletion, requestAiChatCompletionWithCachePriming, type AiChatMessage, type AiRuntimeConfig } from "./ai-config";
 import { logAiDebug } from "./ai-debug";
 import { healthContextLinesForRange, trustedWatchSleepingAt } from "./health-context";
 import { parseAiJsonObject } from "./ai-json";
@@ -30,6 +31,8 @@ const SUPERVISION_VERIFY_MAX_TOKENS = 8192;
 const REPORT_TRIGGER_MIN_INTERVAL_MS = 60_000;
 
 let supervisionInFlight = false;
+let reportTriggeredCheckScheduled = false;
+let pendingReportTriggeredAt: Date | null = null;
 
 export interface SupervisionReportCandidate {
   requested: boolean;
@@ -79,6 +82,7 @@ export async function refreshSupervisionRules(settings = getSummarySettings()): 
       timeoutMs: 30_000,
       parse: parseRulesResponse,
       retryInstruction: "上一次响应不是合法的监督规则 JSON。请只按指定字段重新返回严格 JSON，不要 Markdown，不要解释。",
+      finalInstruction: "现在根据以上全部上下文生成监督规则 JSON。只返回严格 JSON。",
       debugLabel: "supervision.rules",
     });
     appendSupervisionHistory({
@@ -108,13 +112,16 @@ export async function refreshSupervisionRules(settings = getSummarySettings()): 
   }
 }
 
-export async function runSupervisionTick(now = new Date()): Promise<void> {
-  if (supervisionInFlight) return;
+export async function runSupervisionTick(now = new Date(), options: { force?: boolean } = {}): Promise<void> {
+  if (supervisionInFlight) {
+    if (options.force) scheduleReportTriggeredCheck(now, 5_000);
+    return;
+  }
 
   const settings = getSummarySettings();
   if (!settings.supervision_enabled) return;
   if (settings.supervision_skip_watch_sleep && trustedWatchSleepingAt(now)) return;
-  if (!isAiCheckDue(settings, now)) return;
+  if (!options.force && !isAiCheckDue(settings, now)) return;
 
   const rules = compileRules(settings.supervision_rules);
   const windowMinutes = settings.supervision_check_mode === "hourly"
@@ -162,12 +169,13 @@ export async function runSupervisionTick(now = new Date()): Promise<void> {
       message: decision.message,
       stats,
     });
-    if (!decision.deviated || !decision.message) return;
-    if (!isAlertDue(settings, now)) return;
+    if (!shouldDeliverSupervisionDecision(decision)) return;
+    if (!decision.unfreeze && !isAlertDue(settings, now)) return;
 
+    const repliedAt = new Date();
     const { sendSupervisorMessageToDevices } = await import("./realtime");
-    const delivery = sendSupervisorMessageToDevices(decision.message, buildSupervisorPayload(settings, rules, decision, now));
-    if (delivery.targets > 0) metaSet(LAST_ALERT_AT_KEY, now.toISOString());
+    const delivery = sendSupervisorMessageToDevices(decision.message, buildSupervisorPayload(settings, rules, decision, now, repliedAt));
+    if (delivery.targets > 0) metaSet(LAST_ALERT_AT_KEY, repliedAt.toISOString());
   } finally {
     supervisionInFlight = false;
   }
@@ -183,12 +191,24 @@ export function requestSupervisionCheckForReport(candidate: SupervisionReportCan
   if (!matchesReportCandidate(candidate, rules)) return false;
 
   metaSet(LAST_REPORT_TRIGGER_AT_KEY, now.toISOString());
+  scheduleReportTriggeredCheck(now);
+  return true;
+}
+
+function scheduleReportTriggeredCheck(now: Date, delayMs = 0): void {
+  pendingReportTriggeredAt = pendingReportTriggeredAt && pendingReportTriggeredAt.getTime() > now.getTime()
+    ? pendingReportTriggeredAt
+    : now;
+  if (reportTriggeredCheckScheduled) return;
+  reportTriggeredCheckScheduled = true;
   setTimeout(() => {
-    runSupervisionTick(new Date()).catch((e) => {
+    const scheduledAt = pendingReportTriggeredAt ?? new Date();
+    pendingReportTriggeredAt = null;
+    reportTriggeredCheckScheduled = false;
+    runSupervisionTick(scheduledAt, { force: true }).catch((e) => {
       console.error("[supervision] report-triggered check failed:", safeErrorMessage(e, "AI supervision failed"));
     });
-  }, 0);
-  return true;
+  }, delayMs);
 }
 
 function isAiCheckDue(settings: SummarySettings, now: Date): boolean {
@@ -255,7 +275,8 @@ function supervisionRulesSystemPrompt(): string {
 }
 
 function buildRulesUserPrompt(settings: SummarySettings): string {
-  const today = localDateString(new Date());
+  const tzOffsetMinutes = summaryTimezoneOffset(settings);
+  const today = localDateStringForOffset(new Date(), tzOffsetMinutes);
   const recentDays = [addDays(today, -2), addDays(today, -1), today];
   const lines: string[] = [
     `默认目标: ${promptText(settings.target, 240) || "未设置"}`,
@@ -291,7 +312,7 @@ function buildRulesUserPrompt(settings: SummarySettings): string {
   lines.push("", "最近活动 JSON（按设备和应用会话聚合，按时间升序）:");
   lines.push(timelineJsonBlockForPrompt(segments, {
     label: "recent_activity_for_rules",
-    tzOffsetMinutes: new Date().getTimezoneOffset(),
+    tzOffsetMinutes,
   }));
   return lines.join("\n");
 }
@@ -319,6 +340,9 @@ async function verifyDeviationWithAi(
       vibrate: false,
       freeze: false,
       freeze_minutes: 10,
+      unfreeze: false,
+      unfreeze_all: false,
+      unfreeze_regex: [],
     };
   }
 
@@ -332,6 +356,7 @@ async function verifyDeviationWithAi(
     timeoutMs: 30_000,
     parse: parseDecisionResponse,
     retryInstruction: "上一次响应不是合法的监督复核 JSON。请只按指定字段重新返回严格 JSON，不要 Markdown，不要解释。",
+    finalInstruction: buildVerifyFinalInstruction(settings, meta),
     debugLabel: "supervision.verify",
   });
 }
@@ -356,7 +381,10 @@ function supervisionVerifySystemPrompt(settings: SummarySettings): string {
   "violation_regex": ["再次匹配这些应用/标题时应恢复震动的偏离正则"],
   "vibrate": true或false,
   "freeze": true或false,
-  "freeze_minutes": 5到60之间的整数，用作本次冻结指令的新鲜度窗口；LSPosed 实际解冻只由 recovery_regex 匹配或每日凌晨3点统一重置触发
+  "freeze_minutes": 5到60之间的整数，用作本次冻结指令的新鲜度窗口；LSPosed 实际解冻只由 recovery_regex 匹配或每日凌晨3点统一重置触发,
+  "unfreeze": true或false,
+  "unfreeze_all": true或false,
+  "unfreeze_regex": ["需要立即解冻的冻结记录匹配正则；没有时可留空并用 recovery_regex 兼容"]
 }
 要求:
 - ${lspRule}
@@ -367,6 +395,9 @@ function supervisionVerifySystemPrompt(settings: SummarySettings): string {
 - 本地规则、黑名单匹配和历史提醒都是证据线索，不是最终结论；必须解释为什么本窗口确实偏离或为什么不偏离。
 - freeze 仅在明确持续偏离、提醒不足以打断且需要 LSPosed 短时停止偏离应用时才为 true；系统、桌面、安全、输入法、电话、设置、Monika 本身永远不能冻结。
 - 冻结后不要依赖固定分钟数自动单独解冻；只有用户切回 recovery_regex 描述的目标/白名单活动时才可恢复，兜底自动恢复时间是设备本地凌晨3点。
+- 如果最近冻结记录存在，而检查窗口显示用户已经回到目标/白名单活动，或此前冻结明显不再合理，应返回 deviated=false、unfreeze=true，并给出 unfreeze_regex；需要清除全部冻结时设置 unfreeze_all=true。
+- unfreeze 必须是真布尔；unfreeze_all 也必须是真布尔。不要同时让 freeze 和 unfreeze 为 true。
+- unfreeze_regex 优先匹配已冻结记录的包名、应用名或冻结原因；如果没有可靠正则但确实应该恢复，设置 unfreeze_all=true。没有 unfreeze_regex 时设备会兼容使用 recovery_regex。
 - recovery_regex/violation_regex 必须简单安全，不要反向引用、lookbehind、嵌套量词。
 - violation_regex 必须尽量匹配具体偏离应用包名或应用名，二者都可以；不要生成兜底匹配所有应用的正则。
 - recovery_regex 必须尽量匹配目标/白名单应用包名或应用名，二者都可以；不要匹配系统桌面或所有应用。
@@ -389,14 +420,15 @@ function buildVerifyUserPrompt(
   },
 ): string {
   const at = new Date(meta.now);
-  const today = localDateString(Number.isNaN(at.getTime()) ? new Date() : at);
+  const now = Number.isNaN(at.getTime()) ? new Date() : at;
+  const tzOffsetMinutes = summaryTimezoneOffset(settings);
+  const today = localDateStringForOffset(now, tzOffsetMinutes);
   const weekday = isoWeekday(today);
   const todayPlan = settings.weekly_plan.find((item) => item.weekday === weekday);
   const effectiveTarget = todayPlan?.target || settings.target;
   const lines = [
     `默认目标: ${promptText(settings.target, 240) || "未设置"}`,
     `当天日期: ${today} ${weekdayLabel(weekday)}`,
-    `当前时间: ${meta.now}`,
     `当天目标/计划: ${promptText(effectiveTarget, 240) || "未设置"}${todayPlan?.target ? "" : "（沿用默认目标）"}`,
     "每周目标计划:",
     ...settings.weekly_plan.map((item) => `- ${weekdayLabel(item.weekday)}: ${promptText(item.target, 180) || "沿用默认目标"}`),
@@ -414,7 +446,6 @@ function buildVerifyUserPrompt(
     "最近日总结评价:",
     ...recentSummaryLines(today, 2),
     "",
-    `检查窗口: ${meta.windowStart} 至 ${meta.now}，窗口${meta.windowMinutes}分钟`,
     `触发情况: 黑名单=${meta.blacklistTriggered ? "是" : "否"}，目标不足=${meta.targetTriggered ? "是" : "否"}`,
     `统计: 黑名单${stats.blacklistMinutes}分钟，目标${stats.targetMinutes}分钟，白名单${stats.whitelistMinutes}分钟，总计${stats.totalMinutes}分钟`,
     `黑名单匹配: ${stats.blacklistApps.join("、") || "无"}`,
@@ -424,7 +455,7 @@ function buildVerifyUserPrompt(
   ];
   lines.push(timelineJsonBlockForPrompt(segments.slice(-MAX_TIMELINE_ROWS), {
     label: "supervision_check_window",
-    tzOffsetMinutes: new Date().getTimezoneOffset(),
+    tzOffsetMinutes,
   }));
   const healthLines = healthContextLinesForRange(meta.windowStart, meta.now, 16);
   if (healthLines.length > 0) {
@@ -435,6 +466,26 @@ function buildVerifyUserPrompt(
     lines.push("", "最近LSPosed短时冻结记录（如冻结明显不合理，本次应判断未偏离并避免继续冻结）:", ...frozenLines);
   }
   return lines.join("\n");
+}
+
+function buildVerifyFinalInstruction(
+  settings: SummarySettings,
+  meta: {
+    windowStart: string;
+    now: string;
+    windowMinutes: number;
+  },
+): string {
+  const at = new Date(meta.now);
+  const now = Number.isNaN(at.getTime()) ? new Date() : at;
+  const windowStart = new Date(meta.windowStart);
+  const tzOffsetMinutes = summaryTimezoneOffset(settings);
+  return [
+    "本次判断时间基准:",
+    `- 当前时间: ${formatPromptDateTime(now, tzOffsetMinutes)}（必须按这个时间判断，不要使用模型训练时间或其它系统时间）`,
+    `- 检查窗口: ${formatPromptDateTime(windowStart, tzOffsetMinutes)} 至 ${formatPromptDateTime(now, tzOffsetMinutes)}，窗口${meta.windowMinutes}分钟`,
+    "现在根据以上全部上下文判断本次检查窗口是否偏离或是否应该解冻。只返回严格监督复核 JSON。",
+  ].join("\n");
 }
 
 interface CompiledRules {
@@ -464,6 +515,9 @@ interface SupervisionDecision {
   vibrate: boolean;
   freeze: boolean;
   freeze_minutes: number;
+  unfreeze: boolean;
+  unfreeze_all: boolean;
+  unfreeze_regex: string[];
 }
 
 function compileRules(rules: SupervisionRules): CompiledRules {
@@ -559,23 +613,28 @@ function parseRulesResponse(raw: string): SupervisionRules {
 
 function parseDecisionResponse(raw: string): SupervisionDecision {
   const parsed = parseJsonObject(raw);
-  if (typeof parsed.deviated !== "boolean") {
+  const unfreeze = parsed.unfreeze === true;
+  if (typeof parsed.deviated !== "boolean" && !unfreeze) {
     throw new Error("AI supervision response missing deviated boolean");
   }
-  if (typeof parsed.vibrate !== "boolean" || typeof parsed.freeze !== "boolean") {
+  if (!unfreeze && (typeof parsed.vibrate !== "boolean" || typeof parsed.freeze !== "boolean")) {
     throw new Error("AI supervision response missing vibrate/freeze booleans");
   }
-  const reason = promptText(String(parsed.reason || ""), 180);
+  const reason = promptText(String(parsed.reason || ""), 180) || (unfreeze ? "已回到目标任务" : "");
   const message = promptText(String(parsed.message || ""), 180);
+  const deviated = parsed.deviated === true;
   return {
-    deviated: parsed.deviated === true,
-    message: message || (parsed.deviated === true ? reason : ""),
+    deviated,
+    message: message || (deviated || unfreeze ? reason : ""),
     reason,
     recovery_regex: normalizePatternList(parsed.recovery_regex ?? parsed.recoveryRegex),
     violation_regex: normalizePatternList(parsed.violation_regex ?? parsed.violationRegex),
-    vibrate: parsed.vibrate === true,
-    freeze: parsed.freeze === true,
+    vibrate: !unfreeze && parsed.vibrate === true,
+    freeze: !unfreeze && parsed.freeze === true,
     freeze_minutes: normalizeFreezeMinutes(parsed.freeze_minutes ?? parsed.freezeMinutes),
+    unfreeze,
+    unfreeze_all: parsed.unfreeze_all === true || parsed.unfreezeAll === true,
+    unfreeze_regex: normalizePatternList(parsed.unfreeze_regex ?? parsed.unfreezeRegex),
   };
 }
 
@@ -588,6 +647,7 @@ async function requestParsedSupervisionJson<T>(
     timeoutMs: number;
     parse: (raw: string) => T;
     retryInstruction: string;
+    finalInstruction: string;
     debugLabel?: string;
   },
 ): Promise<T> {
@@ -597,8 +657,9 @@ async function requestParsedSupervisionJson<T>(
     temperature: options.temperature,
     messages: options.messages,
   });
-  const raw = await requestAiChatCompletion(config, {
+  const raw = await requestAiChatCompletionWithCachePriming(config, {
     messages: options.messages,
+    finalUserMessage: options.finalInstruction,
     maxTokens: options.maxTokens,
     temperature: options.temperature,
     timeoutMs: options.timeoutMs,
@@ -615,6 +676,10 @@ async function requestParsedSupervisionJson<T>(
     });
     const retryMessages = [
       ...options.messages,
+      {
+        role: "assistant" as const,
+        content: raw.slice(0, 1000),
+      },
       {
         role: "user" as const,
         content: `${options.retryInstruction}\n解析错误: ${safeErrorMessage(firstError, "invalid JSON")}\n上一次响应摘要: ${promptText(raw, 1000)}`,
@@ -732,7 +797,8 @@ function buildSupervisorPayload(
   settings: SummarySettings,
   rules: CompiledRules,
   decision: SupervisionDecision,
-  now: Date,
+  checkedAt: Date,
+  repliedAt: Date,
 ): Record<string, unknown> {
   const recoveryRegex = decision.recovery_regex.length > 0
     ? decision.recovery_regex
@@ -740,20 +806,36 @@ function buildSupervisorPayload(
   const violationRegex = decision.violation_regex.length > 0
     ? decision.violation_regex
     : rules.blacklistPatterns;
+  const unfreezeRegex = decision.unfreeze_regex.length > 0
+    ? decision.unfreeze_regex
+    : recoveryRegex;
+  const unfreezeAll = decision.unfreeze && (decision.unfreeze_all || unfreezeRegex.length === 0);
   return {
     type: "supervision_alert",
     v: 1,
-    alert_id: `supervision_${now.toISOString()}`,
+    alert_id: `supervision_${repliedAt.toISOString()}`,
     reason: decision.reason,
-    vibrate: settings.supervision_vibrate && decision.vibrate,
-    freeze: settings.supervision_lsp_freeze && decision.freeze && violationRegex.length > 0,
-    freeze_until: new Date(now.getTime() + decision.freeze_minutes * 60_000).toISOString(),
+    checked_at: checkedAt.toISOString(),
+    ai_replied_at: repliedAt.toISOString(),
+    vibrate: !decision.unfreeze && settings.supervision_vibrate && decision.vibrate,
+    freeze: !decision.unfreeze && settings.supervision_lsp_freeze && decision.freeze && violationRegex.length > 0,
+    freeze_until: new Date(repliedAt.getTime() + decision.freeze_minutes * 60_000).toISOString(),
     daily_unfreeze_hour: 3,
     recovery_regex: recoveryRegex.slice(0, MAX_REGEX_COUNT),
     violation_regex: violationRegex.slice(0, MAX_REGEX_COUNT),
-    active_until: new Date(now.getTime() + ALERT_ACTIVE_MINUTES * 60_000).toISOString(),
+    ...(decision.unfreeze ? {
+      unfreeze: true,
+      unfreeze_all: unfreezeAll,
+      unfreeze_regex: unfreezeAll ? [] : unfreezeRegex.slice(0, MAX_REGEX_COUNT),
+    } : {}),
+    active_until: new Date(repliedAt.getTime() + ALERT_ACTIVE_MINUTES * 60_000).toISOString(),
     restart_cooldown_seconds: LOCAL_RESTART_COOLDOWN_SECONDS,
   };
+}
+
+function shouldDeliverSupervisionDecision(decision: SupervisionDecision): boolean {
+  if (decision.unfreeze) return true;
+  return decision.deviated && !!decision.message;
 }
 
 interface SupervisionHistoryEntry {
@@ -889,6 +971,32 @@ function promptText(value: string | null | undefined, maxLength: number): string
 
 function localDateString(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function formatPromptDateTime(date: Date, tzOffsetMinutes: number): string {
+  const value = Number.isNaN(date.getTime()) ? new Date() : date;
+  const offsetMinutes = -tzOffsetMinutes;
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  const offset = `UTC${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
+  return `${value.toISOString()}（本地 ${localDateTimeStringForOffset(value, tzOffsetMinutes)}，${offset}）`;
+}
+
+function localDateTimeStringForOffset(date: Date, tzOffsetMinutes: number): string {
+  const local = localDateForOffset(date, tzOffsetMinutes);
+  return [
+    localDateStringForOffset(date, tzOffsetMinutes),
+    `${String(local.getUTCHours()).padStart(2, "0")}:${String(local.getUTCMinutes()).padStart(2, "0")}:${String(local.getUTCSeconds()).padStart(2, "0")}`,
+  ].join(" ");
+}
+
+function localDateStringForOffset(date: Date, tzOffsetMinutes: number): string {
+  const local = localDateForOffset(date, tzOffsetMinutes);
+  return `${local.getUTCFullYear()}-${String(local.getUTCMonth() + 1).padStart(2, "0")}-${String(local.getUTCDate()).padStart(2, "0")}`;
+}
+
+function localDateForOffset(date: Date, tzOffsetMinutes: number): Date {
+  return new Date(date.getTime() - tzOffsetMinutes * 60_000);
 }
 
 function timestampMs(value: string | null | undefined): number | null {

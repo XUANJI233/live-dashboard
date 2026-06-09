@@ -228,11 +228,11 @@ function normalizeWeekParam(url: URL, body: Record<string, unknown> = {}): strin
   return null;
 }
 
-function pickTimezoneOffset(url: URL, body: Record<string, unknown>): number {
+function pickTimezoneOffset(url: URL, body: Record<string, unknown>): number | undefined {
   const bodyTz = body.tz ?? body.tz_offset_minutes;
-  const raw = typeof bodyTz === "number" || typeof bodyTz === "string"
-    ? bodyTz
-    : url.searchParams.get("tz");
+  const urlTz = url.searchParams.get("tz");
+  const raw = typeof bodyTz === "number" || typeof bodyTz === "string" ? bodyTz : urlTz;
+  if (raw === null || raw === undefined || raw === "") return undefined;
   const value = typeof raw === "number" ? raw : Number.parseInt(String(raw || "0"), 10);
   return safeTimezoneOffset(value);
 }
