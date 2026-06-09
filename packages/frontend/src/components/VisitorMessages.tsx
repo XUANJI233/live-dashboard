@@ -7,6 +7,7 @@ import { sendRealtime, subscribeRealtime, subscribeRealtimeState } from "@/lib/r
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 const PUBLIC_RECENT_HOURS = 24 * 365;
+const PUBLIC_POLL_INTERVAL_MS = 30_000;
 
 interface Props {
   device?: DeviceState;
@@ -136,11 +137,16 @@ export default function VisitorMessages({ device }: Props) {
 
   useEffect(() => {
     setLines(loadHistory(device?.device_id));
+    const controller = new AbortController();
+    let closed = false;
     // One-time sync of offline replies (server tracks last_read)
     ensureViewerToken().then(({ token }) => {
+      if (closed || controller.signal.aborted) return;
       fetch(`${API_BASE}/api/messages/viewer/history`, {
         headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
       }).then(r => r.json()).then(data => {
+        if (closed || controller.signal.aborted) return;
         if (!Array.isArray(data.messages)) return;
         const merged = new Map<string, ChatLine>();
         for (const l of loadHistory(device?.device_id)) merged.set(l.id, l);
@@ -167,6 +173,10 @@ export default function VisitorMessages({ device }: Props) {
         saveHistory(device?.device_id, next);
       }).catch(() => {});
     }).catch(() => {});
+    return () => {
+      closed = true;
+      controller.abort();
+    };
   }, [device?.device_id]);
 
   useEffect(() => {
@@ -274,34 +284,72 @@ export default function VisitorMessages({ device }: Props) {
 
   useEffect(() => {
     let stopped = false;
-    let isFirstLoad = true;
-    const loadPublic = async () => {
+    let slotsInFlight = false;
+    let recentInFlight = false;
+    let idleId: number | null = null;
+    let lazyTimer: ReturnType<typeof setTimeout> | null = null;
+    const controller = new AbortController();
+    const loadPublic = async (mode: "slots" | "recent") => {
+      if (stopped || controller.signal.aborted) return;
+      if (mode === "slots" && slotsInFlight) return;
+      if (mode === "recent" && recentInFlight) return;
+      if (mode === "slots") slotsInFlight = true;
+      else recentInFlight = true;
       try {
-        const initialLoad = isFirstLoad;
-        const urls = initialLoad
+        const urls = mode === "recent"
           ? [`${API_BASE}/api/messages/public?recent=1&hours=${PUBLIC_RECENT_HOURS}`]
           : pollMessageSlots().map((slot) => `${API_BASE}/api/messages/public?slot=${slot}`);
         const payloads = await Promise.all(urls.map(async (url) => {
-          const res = await fetch(url);
+          const res = await fetch(url, { signal: controller.signal });
           if (!res.ok || stopped) return [];
           const data = await res.json();
           return Array.isArray(data.messages) ? data.messages : [];
         }));
-        if (stopped) return;
-        isFirstLoad = false;
+        if (stopped || controller.signal.aborted) return;
         const nextMessages = payloads.flat()
           .map(normalizePublicMessage)
           .filter((message: PublicLine | null): message is PublicLine => Boolean(message));
-        setPublicLines((prev) => initialLoad ? mergePublicLines([], nextMessages) : mergePublicLines(prev, nextMessages));
+        setPublicLines((prev) => mergePublicLines(prev, nextMessages));
       } catch {
         // Public board is best-effort for visitors.
+      } finally {
+        if (mode === "slots") slotsInFlight = false;
+        else recentInFlight = false;
       }
     };
-    loadPublic();
-    const timer = setInterval(loadPublic, 30_000);
+    const scheduleLazyRecent = () => {
+      if (typeof window === "undefined") return;
+      const idleWindow = window as Window & {
+        requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+        cancelIdleCallback?: (handle: number) => void;
+      };
+      if (idleWindow.requestIdleCallback) {
+        idleId = idleWindow.requestIdleCallback(() => {
+          idleId = null;
+          void loadPublic("recent");
+        }, { timeout: 5_000 });
+      } else {
+        lazyTimer = setTimeout(() => {
+          lazyTimer = null;
+          void loadPublic("recent");
+        }, 1_500);
+      }
+    };
+
+    void loadPublic("slots");
+    scheduleLazyRecent();
+    const timer = setInterval(() => {
+      void loadPublic("slots");
+    }, PUBLIC_POLL_INTERVAL_MS);
     return () => {
       stopped = true;
+      controller.abort();
       clearInterval(timer);
+      if (lazyTimer) clearTimeout(lazyTimer);
+      if (idleId !== null) {
+        const idleWindow = window as Window & { cancelIdleCallback?: (handle: number) => void };
+        idleWindow.cancelIdleCallback?.(idleId);
+      }
     };
   }, []);
 

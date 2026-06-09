@@ -321,8 +321,11 @@ async function fetchHealthDataRequest(
   if (deviceId) url += `&device_id=${encodeURIComponent(deviceId)}`;
   if (options?.summary) url += "&summary=1";
   if (window) url += `&window=${encodeURIComponent(window)}`;
-  if (viewerToken) url += `&viewer_token=${encodeURIComponent(viewerToken)}`;
-  const res = await fetch(url, { signal, cache: window && !isLiveClientWindow(window) ? "default" : isTodayForClientTimezone(date) ? "no-store" : "default" });
+  const res = await fetch(url, {
+    signal,
+    cache: window && !isLiveClientWindow(window) ? "default" : isTodayForClientTimezone(date) ? "no-store" : "default",
+    headers: viewerToken ? { Authorization: `Bearer ${viewerToken}` } : undefined,
+  });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
