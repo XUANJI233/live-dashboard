@@ -806,6 +806,10 @@ class Reporter:
     def retry_delay(self) -> float:
         return self.pause_remaining or self.backoff
 
+    def close(self) -> None:
+        """Release HTTP resources before runtime restart or shutdown."""
+        self.session.close()
+
 
 # ---------------------------------------------------------------------------
 # WebSocket Client — real-time bidirectional communication
@@ -821,7 +825,7 @@ class WsClient:
         self._token = token
         self._on_viewer_message = on_viewer_message
         self._ws = None
-        self._stop = False
+        self._stop_event = threading.Event()
         self._connected = False
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -833,18 +837,24 @@ class WsClient:
         if not HAS_WEBSOCKET:
             log.warning("websocket-client 未安装, WebSocket 功能禁用")
             return
-        self._stop = False
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="ws-client")
         self._thread.start()
 
     def stop(self):
-        self._stop = True
+        self._stop_event.set()
         ws = self._ws
         if ws:
             try:
                 ws.close()
             except Exception:
                 pass
+        if self._thread:
+            self._thread.join(timeout=5)
+            self._thread = None
+        self._connected = False
 
     @property
     def connected(self) -> bool:
@@ -890,7 +900,7 @@ class WsClient:
                 return False
 
     def _run(self):
-        while not self._stop:
+        while not self._stop_event.is_set():
             try:
                 url = self._build_ws_url()
                 self._ws = _ws_lib.WebSocketApp(
@@ -904,11 +914,11 @@ class WsClient:
                 self._ws.run_forever(ping_interval=25, ping_timeout=35)
             except Exception as exc:
                 log.debug("WS run_forever 异常: %s", exc)
-            if self._stop:
+            if self._stop_event.is_set():
                 break
             self._connected = False
             log.info("WebSocket 断开, %d 秒后重连...", self._backoff)
-            time.sleep(self._backoff)
+            self._stop_event.wait(self._backoff)
             self._backoff = min(self._backoff * 2, self.MAX_BACKOFF)
 
     def _on_open(self, ws):
@@ -998,18 +1008,22 @@ class MessageClient:
             r = self._session.get(f"{self._server_url}/api/messages", timeout=10)
             if r.status_code != 200:
                 return []
-            msgs = r.json() if isinstance(r.json(), list) else []
+            parsed = r.json()
+            msgs = parsed if isinstance(parsed, list) else []
         except Exception as exc:
             log.debug("获取待处理留言失败: %s", exc)
             return []
+        new_messages = []
         with self._lock:
             existing_ids = {m.get("message_id") for m in self._cache}
             for m in msgs:
                 mid = m.get("message_id", "")
                 if mid and mid not in existing_ids:
                     self._cache.insert(0, m)
-                    self._notify(m)
+                    new_messages.append(m)
             self._cache = self._cache[:self.MAX_CACHED]
+        for m in new_messages:
+            self._notify(m)
         return msgs
 
     def fetch_history(self, since: str = "") -> list[dict]:
@@ -1121,6 +1135,10 @@ class MessageClient:
         with self._lock:
             return list(self._cache[:limit])
 
+    def close(self) -> None:
+        """Release HTTP resources before runtime restart or shutdown."""
+        self._session.close()
+
 
 # ---------------------------------------------------------------------------
 # System Tray
@@ -1160,7 +1178,9 @@ class TrayAgent:
         }
 
     def set_message_client(self, mc: MessageClient):
-        self._msg_client = mc
+        with self._lock:
+            self._msg_client = mc
+            self._unread_count = 0
         mc.on_message(self._on_new_message)
 
     def _on_new_message(self, msg: dict):
@@ -1179,14 +1199,15 @@ class TrayAgent:
     def _build_menu(self):
         p = self._pystray
         items = [
+            p.MenuItem("打开主界面", self._open_settings, default=True, visible=False),
             p.MenuItem(lambda _: f"状态: {self._get_status()}", None, enabled=False),
             p.MenuItem(lambda _: f"当前: {self._get_current() or '无'}", None, enabled=False),
             p.Menu.SEPARATOR,
+            p.MenuItem("打开主界面", self._open_settings),
             p.MenuItem("日志文件", self._toggle_log,
                        checked=lambda _: _file_handler is not None),
             p.MenuItem("开机自启", self._toggle_autostart,
                        checked=lambda _: is_autostart_enabled()),
-            p.MenuItem("设置", self._open_settings),
         ]
         if self._msg_client is not None:
             items.append(p.Menu.SEPARATOR)
@@ -1208,10 +1229,15 @@ class TrayAgent:
 
     def update_status(self, status: str, current_target: str | None = None):
         with self._lock:
+            previous_status = self._status
+            previous_target = self._current_target
             self._status = status
             if current_target is not None:
                 self._current_target = current_target
             current_target_value = self._current_target
+            changed = previous_status != self._status or previous_target != self._current_target
+        if not changed:
+            return
         if self._icon:
             color = {"在线": "green", "AFK": "orange"}.get(status, "gray")
             self._icon.icon = self._icons[color]
@@ -1245,6 +1271,7 @@ class TrayAgent:
                     error=True,
                 )
         else:
+            _remove_legacy_startup_task()
             if _set_registry_autostart(True):
                 log.info("Autostart enabled")
             else:
@@ -1540,6 +1567,9 @@ def main() -> None:
                 monitor.join(timeout=5)
                 if ws_client:
                     ws_client.stop()
+                if msg_client:
+                    msg_client.close()
+                reporter.close()
 
                 if tray.settings_requested:
                     shutdown_event.clear()
@@ -1554,6 +1584,9 @@ def main() -> None:
                     pass
                 if ws_client:
                     ws_client.stop()
+                if msg_client:
+                    msg_client.close()
+                reporter.close()
                 break
     finally:
         control.close()
