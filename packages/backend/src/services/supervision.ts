@@ -186,7 +186,7 @@ export async function runSupervisionTick(now = new Date(), options: { force?: bo
     const delivery = sendSupervisorMessagesToDevices(dueDecisions.map((item) => ({
       deviceId: item.device_id,
       text: item.message || item.reason,
-      payload: buildSupervisorPayload(settings, rules, item, now, repliedAt),
+      payload: buildSupervisorPayload(settings, item, now, repliedAt),
     })));
     if (delivery.targets > 0) metaSet(LAST_ALERT_AT_KEY, repliedAt.toISOString());
   } finally {
@@ -346,17 +346,13 @@ async function verifyDeviationWithAi(
       deviated: false,
       message: "",
       reason: "AI not configured",
-      recovery_regex: [],
-      violation_regex: [],
       vibrate: false,
       freeze: false,
       freeze_commands: [],
       freeze_minutes: 10,
       screen_off: false,
       unfreeze: false,
-      unfreeze_all: false,
       unfreeze_commands: [],
-      unfreeze_regex: [],
       device_decisions: [],
     };
   }
@@ -456,7 +452,7 @@ function buildVerifyPromptParts(
     ...settings.weekly_plan.map((item) => `- ${weekdayLabel(item.weekday)}: ${promptText(item.target, 180) || "沿用默认目标"}`),
     "",
     `监督方式: ${settings.supervision_check_mode === "hourly" ? "定时复核" : "阈值触发"}`,
-    `LSPosed冻结能力: ${settings.supervision_lsp_freeze ? "开启；只有明确持续偏离的非系统应用才允许 freeze=true" : "关闭；freeze 必须为 false"}`,
+    `LSPosed冻结能力: ${settings.supervision_lsp_freeze ? "开启；只有明确持续偏离的非系统应用才允许填写冻结命令" : "关闭；冻结命令必须为空数组"}`,
     `震动提醒: ${settings.supervision_vibrate ? "开启" : "关闭"}`,
     `现有白名单正则: ${settings.supervision_rules.whitelist_app_regex.join(" / ") || "无"}`,
     `现有黑名单正则: ${settings.supervision_rules.blacklist_app_regex.join(" / ") || "无"}`,
@@ -533,17 +529,13 @@ interface SupervisionCommandDecision {
   deviated: boolean;
   message: string;
   reason: string;
-  recovery_regex: string[];
-  violation_regex: string[];
   vibrate: boolean;
   freeze: boolean;
   freeze_commands: string[];
   freeze_minutes: number;
   screen_off: boolean;
   unfreeze: boolean;
-  unfreeze_all: boolean;
   unfreeze_commands: string[];
-  unfreeze_regex: string[];
 }
 
 interface SupervisionDecision extends Omit<SupervisionCommandDecision, "device_id"> {
@@ -695,17 +687,13 @@ function parseDeviceDecision(parsed: Record<string, unknown>): SupervisionComman
     deviated,
     message: message || (deviated || unfreeze ? reason : ""),
     reason,
-    recovery_regex: [],
-    violation_regex: freezeCommands,
     vibrate: !unfreeze && vibrateValue === true,
     freeze: !unfreeze && freezeCommands.length > 0,
     freeze_commands: freezeCommands,
     freeze_minutes: normalizeFreezeMinutes(parsed.freeze_minutes ?? parsed.freezeMinutes),
     screen_off: !unfreeze && screenOffValue === true,
     unfreeze,
-    unfreeze_all: unfreezeAll,
     unfreeze_commands: unfreezeAll ? ["全部"] : unfreezeCommands,
-    unfreeze_regex: unfreezeCommands,
   };
 }
 
@@ -714,8 +702,6 @@ function aggregateDeviceDecisions(deviceDecisions: SupervisionCommandDecision[])
     deviated: deviceDecisions.some((item) => item.deviated),
     message: promptText(deviceDecisions.map((item) => item.message).filter(Boolean).join(" / "), 180),
     reason: promptText(deviceDecisions.map((item) => item.reason).filter(Boolean).join(" / "), 180),
-    recovery_regex: uniquePatterns(deviceDecisions.flatMap((item) => item.recovery_regex)),
-    violation_regex: uniquePatterns(deviceDecisions.flatMap((item) => item.violation_regex)),
     vibrate: deviceDecisions.some((item) => item.vibrate),
     freeze: deviceDecisions.some((item) => item.freeze),
     freeze_commands: uniquePatterns(deviceDecisions.flatMap((item) => item.freeze_commands)),
@@ -724,9 +710,7 @@ function aggregateDeviceDecisions(deviceDecisions: SupervisionCommandDecision[])
       : 10,
     screen_off: deviceDecisions.some((item) => item.screen_off),
     unfreeze: deviceDecisions.some((item) => item.unfreeze),
-    unfreeze_all: deviceDecisions.some((item) => item.unfreeze_all),
     unfreeze_commands: uniquePatterns(deviceDecisions.flatMap((item) => item.unfreeze_commands)),
-    unfreeze_regex: uniquePatterns(deviceDecisions.flatMap((item) => item.unfreeze_regex)),
     device_decisions: deviceDecisions,
   };
 }
@@ -915,26 +899,19 @@ function decodeQuotedArgument(raw: string, quote: string): string {
 
 function buildSupervisorPayload(
   settings: SummarySettings,
-  rules: CompiledRules,
   decision: SupervisionCommandDecision,
   checkedAt: Date,
   repliedAt: Date,
 ): Record<string, unknown> {
-  const recoveryRegex = decision.recovery_regex.length > 0
-    ? decision.recovery_regex
-    : uniquePatterns([...rules.targetPatterns, ...rules.whitelistPatterns]);
-  const violationRegex = decision.violation_regex.length > 0
-    ? decision.violation_regex
-    : decision.freeze
-      ? rules.blacklistPatterns
-      : [];
-  const unfreezeRegex = decision.unfreeze_regex.length > 0
-    ? decision.unfreeze_regex
-    : recoveryRegex;
-  const unfreezeAll = decision.unfreeze && (decision.unfreeze_all || unfreezeRegex.length === 0);
+  const freezeCommands = settings.supervision_lsp_freeze && decision.freeze
+    ? decision.freeze_commands.slice(0, MAX_REGEX_COUNT)
+    : [];
+  const unfreezeCommands = decision.unfreeze
+    ? decision.unfreeze_commands.slice(0, MAX_REGEX_COUNT)
+    : [];
   return {
     type: "supervision_alert",
-    v: 1,
+    v: 2,
     alert_id: `supervision_${repliedAt.toISOString()}`,
     device_id: decision.device_id,
     target_device_id: decision.device_id,
@@ -942,20 +919,12 @@ function buildSupervisorPayload(
     checked_at: checkedAt.toISOString(),
     ai_replied_at: repliedAt.toISOString(),
     say: decision.message,
-    freeze_commands: decision.freeze ? violationRegex.slice(0, MAX_REGEX_COUNT) : [],
-    unfreeze_commands: decision.unfreeze ? decision.unfreeze_commands.slice(0, MAX_REGEX_COUNT) : [],
+    freeze_commands: freezeCommands,
+    unfreeze_commands: unfreezeCommands,
     vibrate: !decision.unfreeze && settings.supervision_vibrate && decision.vibrate,
-    screen_off: !decision.unfreeze && decision.screen_off,
-    freeze: !decision.unfreeze && settings.supervision_lsp_freeze && decision.freeze && violationRegex.length > 0,
+    screen_off: false,
     freeze_until: new Date(repliedAt.getTime() + decision.freeze_minutes * 60_000).toISOString(),
     daily_unfreeze_hour: 3,
-    recovery_regex: decision.freeze || decision.unfreeze ? recoveryRegex.slice(0, MAX_REGEX_COUNT) : [],
-    violation_regex: violationRegex.slice(0, MAX_REGEX_COUNT),
-    ...(decision.unfreeze ? {
-      unfreeze: true,
-      unfreeze_all: unfreezeAll,
-      unfreeze_regex: unfreezeAll ? [] : unfreezeRegex.slice(0, MAX_REGEX_COUNT),
-    } : {}),
     active_until: new Date(repliedAt.getTime() + ALERT_ACTIVE_MINUTES * 60_000).toISOString(),
     restart_cooldown_seconds: LOCAL_RESTART_COOLDOWN_SECONDS,
   };
@@ -972,11 +941,8 @@ function constrainDecisionForCapability(
       ...decision,
       freeze: settings.supervision_lsp_freeze && decision.freeze,
       freeze_commands: settings.supervision_lsp_freeze ? decision.freeze_commands : [],
-      violation_regex: settings.supervision_lsp_freeze ? decision.violation_regex : [],
       unfreeze: decision.unfreeze,
-      unfreeze_all: decision.unfreeze_all,
       unfreeze_commands: decision.unfreeze_commands,
-      unfreeze_regex: decision.unfreeze_regex,
       screen_off: false,
     };
   }
@@ -985,12 +951,8 @@ function constrainDecisionForCapability(
       ...decision,
       freeze: false,
       freeze_commands: [],
-      violation_regex: [],
       unfreeze: false,
-      unfreeze_all: false,
       unfreeze_commands: [],
-      unfreeze_regex: [],
-      recovery_regex: [],
       screen_off: false,
     };
   }
@@ -998,12 +960,8 @@ function constrainDecisionForCapability(
     ...decision,
     freeze: false,
     freeze_commands: [],
-    violation_regex: [],
     unfreeze: false,
-    unfreeze_all: false,
     unfreeze_commands: [],
-    unfreeze_regex: [],
-    recovery_regex: [],
     vibrate: false,
     screen_off: false,
   };

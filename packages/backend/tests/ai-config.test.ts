@@ -631,8 +631,11 @@ describe("ai-config", () => {
 
     const delivery = sendSupervisorMessageToDevices("回到目标", {
       type: "supervision_alert",
+      v: 2,
       vibrate: true,
-      freeze: false,
+      screen_off: false,
+      freeze_commands: [],
+      unfreeze_commands: [],
     });
 
     expect(delivery.targets).toBeGreaterThanOrEqual(2);
@@ -799,8 +802,12 @@ describe("ai-config", () => {
     `).get(deviceId) as { payload?: string } | null;
     const payload = JSON.parse(row?.payload || "{}") as Record<string, unknown>;
     expect(payload.type).toBe("supervision_alert");
-    expect(payload.unfreeze).toBe(true);
-    expect(payload.unfreeze_all).toBe(true);
+    expect(payload.v).toBe(2);
+    expect(payload.unfreeze_commands).toEqual(["全部"]);
+    expect(payload.freeze_commands).toEqual([]);
+    expect("unfreeze" in payload).toBe(false);
+    expect("unfreeze_all" in payload).toBe(false);
+    expect("unfreeze_regex" in payload).toBe(false);
     expect(payload.checked_at).toBe(checkedAt.toISOString());
     expect(Date.parse(String(payload.ai_replied_at))).toBeGreaterThanOrEqual(checkedAt.getTime());
   });
@@ -908,11 +915,13 @@ describe("ai-config", () => {
     `).get(deviceId) as { payload?: string } | null;
     const payload = JSON.parse(row?.payload || "{}") as Record<string, unknown>;
     expect(payload.type).toBe("supervision_alert");
-    expect(payload.freeze).toBe(true);
+    expect(payload.v).toBe(2);
     expect(payload.vibrate).toBe(false);
     expect(payload.screen_off).toBe(false);
     expect(payload.freeze_commands).toEqual(["com\\.zhiliaoapp\\.musically", "Clash|VPN"]);
-    expect(payload.violation_regex).toEqual(["com\\.zhiliaoapp\\.musically", "Clash|VPN"]);
+    expect(payload.unfreeze_commands).toEqual([]);
+    expect("freeze" in payload).toBe(false);
+    expect("violation_regex" in payload).toBe(false);
     expect(payload.checked_at).toBe(checkedAt.toISOString());
   });
 
@@ -1049,25 +1058,32 @@ describe("ai-config", () => {
     const payloadByDevice = new Map(rows.map((row) => [row.device_id, JSON.parse(row.payload || "{}") as Record<string, unknown>]));
 
     const lspPayload = payloadByDevice.get(lspId)!;
-    expect(lspPayload.freeze).toBe(true);
+    expect(lspPayload.v).toBe(2);
     expect(lspPayload.vibrate).toBe(true);
     expect(lspPayload.screen_off).toBe(false);
     expect(lspPayload.freeze_commands).toEqual(["com\\.zhiliaoapp\\.musically", "VPN"]);
+    expect(lspPayload.unfreeze_commands).toEqual([]);
+    expect("freeze" in lspPayload).toBe(false);
+    expect("violation_regex" in lspPayload).toBe(false);
     expect(lspPayload.target_device_id).toBe(lspId);
 
     const normalPayload = payloadByDevice.get(normalId)!;
-    expect(normalPayload.freeze).toBe(false);
     expect(normalPayload.vibrate).toBe(true);
     expect(normalPayload.screen_off).toBe(false);
     expect(normalPayload.freeze_commands).toEqual([]);
+    expect(normalPayload.unfreeze_commands).toEqual([]);
+    expect("freeze" in normalPayload).toBe(false);
+    expect("violation_regex" in normalPayload).toBe(false);
     expect(normalPayload.target_device_id).toBe(normalId);
 
     const desktopPayload = payloadByDevice.get(desktopId)!;
-    expect(desktopPayload.freeze).toBe(false);
     expect(desktopPayload.vibrate).toBe(false);
     expect(desktopPayload.screen_off).toBe(false);
-    expect(desktopPayload.unfreeze).toBeUndefined();
+    expect(desktopPayload.unfreeze_commands).toEqual([]);
     expect(desktopPayload.freeze_commands).toEqual([]);
+    expect("unfreeze" in desktopPayload).toBe(false);
+    expect("unfreeze_all" in desktopPayload).toBe(false);
+    expect("unfreeze_regex" in desktopPayload).toBe(false);
     expect(desktopPayload.target_device_id).toBe(desktopId);
   });
 

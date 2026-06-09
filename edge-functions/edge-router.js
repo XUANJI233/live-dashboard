@@ -138,7 +138,7 @@ export default {
     try {
       // 可信设备请求直接签名回源。放在边缘限流和访客鉴权前，避免管理员设备被误限或误判为 viewer token。
       const isTrustedDevice = await isDeviceTokenRequest(request, secret, deviceTokens, deviceTokenHashes);
-        if (isTrustedDevice && isDeviceEndpoint(pathname, method)) {
+      if (isTrustedDevice && isDeviceEndpoint(pathname, method)) {
         return passthroughSigned(request, origin, clientIp, secret, cors);
       }
 
@@ -748,7 +748,7 @@ function isDeviceEndpoint(p, method) {
     p === "/api/messages/block" ||
     p === "/api/messages/unblock" ||
     p === "/api/messages/viewer/delete" ||
-     p === "/api/health-webhook" ||
+    p === "/api/health-webhook" ||
     p === "/api/device";
 }
 
