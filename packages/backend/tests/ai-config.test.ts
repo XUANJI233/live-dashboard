@@ -335,6 +335,57 @@ describe("ai-config", () => {
     }
   });
 
+  test("retries empty AI responses before failing the chat request", async () => {
+    const { requestAiChatCompletion } = await import("../src/services/ai-config");
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      calls += 1;
+      const body = JSON.parse(String(init?.body || "{}"));
+      if (calls < 4) {
+        return Response.json({
+          id: "empty-ai-response-test",
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: body.model,
+          choices: [{
+            index: 0,
+            message: { role: "assistant", content: "" },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 1, completion_tokens: 0, total_tokens: 1 },
+        });
+      }
+      return Response.json({
+        id: "empty-ai-response-test",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: "OK" },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+    }) as typeof fetch;
+    try {
+      const text = await requestAiChatCompletion({
+        apiUrl: "https://api.deepseek.com/",
+        apiKey: `deepseek-key-${randomHex(8)}`,
+        model: "deepseek-v4-flash",
+      }, {
+        messages: [{ role: "user", content: "ping" }],
+        maxTokens: 8192,
+        temperature: 0,
+      });
+      expect(text).toBe("OK");
+      expect(calls).toBe(4);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("tests DeepSeek chat with an available model when the app still has the OpenAI default selected", async () => {
     const { testAiConfigConnection } = await import("../src/services/ai-config");
     const originalFetch = globalThis.fetch;

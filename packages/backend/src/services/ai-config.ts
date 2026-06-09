@@ -3,6 +3,7 @@ import { x25519 } from "@noble/curves/ed25519.js";
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateText } from "ai";
+import { logAiDebug } from "./ai-debug";
 
 const ENV_AI_API_URL = process.env.AI_API_URL || "";
 const ENV_AI_API_KEY = process.env.AI_API_KEY || "";
@@ -17,6 +18,8 @@ const AI_CONFIG_PAYLOAD_VERSION = 2;
 const SEALED_JSON_VERSION = 2;
 const STORE_SEALING_SALT = "live-dashboard-ai-config-store-v2";
 const AI_CONFIG_TEST_MAX_TOKENS = 8192;
+const AI_CHAT_TIMEOUT_MS = 5 * 60_000;
+const AI_CHAT_MAX_RETRIES = 3;
 
 export interface AiRuntimeConfig {
   apiUrl: string;
@@ -231,39 +234,58 @@ export async function requestAiChatCompletion(
     timeoutMs?: number;
   },
 ): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs ?? 30_000);
-  try {
-    const system = options.messages
-      .filter((message) => message.role === "system")
-      .map((message) => message.content)
-      .join("\n\n") || undefined;
-    const messages = options.messages.filter((message) => message.role !== "system");
-    const providerOptions = deepSeekProviderOptions(config);
-    const result = await generateText({
-      model: languageModelForConfig(config),
-      ...(system ? { system } : {}),
-      messages,
-      maxOutputTokens: options.maxTokens,
-      temperature: options.temperature,
-      ...(providerOptions ? { providerOptions } : {}),
-      abortSignal: controller.signal,
-      maxRetries: 1,
-    });
-    logAiCacheUsage(config.model, result.usage, result.providerMetadata);
-    const text = result.text.trim();
-    if (!text) {
-      throw Object.assign(new Error("Empty AI response"), { code: "AI_CHAT_EMPTY" });
+  const timeoutMs = Math.max(options.timeoutMs ?? AI_CHAT_TIMEOUT_MS, AI_CHAT_TIMEOUT_MS);
+  const system = options.messages
+    .filter((message) => message.role === "system")
+    .map((message) => message.content)
+    .join("\n\n") || undefined;
+  const messages = options.messages.filter((message) => message.role !== "system");
+  const providerOptions = deepSeekProviderOptions(config);
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= AI_CHAT_MAX_RETRIES; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const result = await generateText({
+        model: languageModelForConfig(config),
+        ...(system ? { system } : {}),
+        messages,
+        maxOutputTokens: options.maxTokens,
+        temperature: options.temperature,
+        ...(providerOptions ? { providerOptions } : {}),
+        abortSignal: controller.signal,
+        maxRetries: 0,
+      });
+      logAiCacheUsage(config.model, result.usage, result.providerMetadata);
+      const text = result.text.trim();
+      if (!text) {
+        throw Object.assign(new Error("Empty AI response"), { code: "AI_CHAT_EMPTY" });
+      }
+      return text;
+    } catch (e) {
+      lastError = (e as Error).name === "AbortError"
+        ? Object.assign(new Error("AI API request timed out"), { code: "AI_CHAT_TIMEOUT" })
+        : e;
+      if (attempt >= AI_CHAT_MAX_RETRIES) break;
+      logAiDebug("chat.retry", {
+        model: config.model,
+        attempt: attempt + 1,
+        retriesRemaining: AI_CHAT_MAX_RETRIES - attempt,
+        error: safeErrorMessage(lastError),
+      });
+    } finally {
+      clearTimeout(timeoutId);
     }
-    return text;
-  } catch (e) {
-    if ((e as Error).name === "AbortError") {
-      throw Object.assign(new Error("AI API request timed out"), { code: "AI_CHAT_TIMEOUT" });
-    }
-    throw Object.assign(new Error(redactAiError(safeErrorMessage(e), config.apiKey)), { code: "AI_CHAT_FAILED" });
-  } finally {
-    clearTimeout(timeoutId);
   }
+
+  const code = (lastError as { code?: string } | null)?.code;
+  if (code === "AI_CHAT_TIMEOUT") {
+    throw Object.assign(new Error("AI API request timed out"), { code });
+  }
+  throw Object.assign(new Error(redactAiError(safeErrorMessage(lastError), config.apiKey)), {
+    code: code === "AI_CHAT_EMPTY" ? "AI_CHAT_EMPTY" : "AI_CHAT_FAILED",
+  });
 }
 
 function modelForConnectionTest(requestedModel: string, models: string[], apiUrl: string): string {
