@@ -95,6 +95,8 @@ public final class MonikaXposedModule extends XposedModule {
     private static final String EXTRA_MEDIA_STATE = "media_state";
     private static final String MESSAGE_CHANNEL_ID = "monika_lsp_messages";
     private static final int MESSAGE_NOTIFICATION_ID = 2002;
+    private static final String SUPERVISION_CHANNEL_ID = "monika_lsp_supervision";
+    private static final int SUPERVISION_FREEZE_NOTIFICATION_ID = 2003;
     private static final long HEARTBEAT_MS = 5 * 60_000L; // low-frequency fallback; events drive normal uploads
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
     private static final long MIN_DIRECT_UPLOAD_MS = 5000L;
@@ -113,6 +115,7 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long SUPERVISION_DEFAULT_FREEZE_MS = 10 * 60_000L;
     private static final long SUPERVISION_CHECK_REQUEST_MIN_MS = 60_000L;
     private static final long SUPERVISION_CHECK_REQUEST_SAME_KEY_MS = 5 * 60_000L;
+    private static final int SUPERVISION_DAILY_UNFREEZE_HOUR = 3;
     
     // Static instance for global access
     private static MonikaXposedModule instance;
@@ -187,6 +190,7 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String currentProcessName = "";
     private volatile boolean systemServerProcess = false;
     private volatile boolean browserTitleReceiverRegistered = false;
+    private volatile boolean dailyFreezeCleanupScheduled = false;
     private volatile Handler uploadHandler;
     private HandlerThread uploadThread;
     private volatile String lastForegroundKey = "";
@@ -469,6 +473,7 @@ public final class MonikaXposedModule extends XposedModule {
             // Keep the delayed pass as a system-ready fallback for ROMs where
             // the system context or MediaSessionService appears late.
             scheduleSystemServerReceivers(handler, 10000L);
+            scheduleDailyFreezeCleanup(handler);
             handler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
@@ -529,6 +534,18 @@ public final class MonikaXposedModule extends XposedModule {
             try { initMediaSessionListener(); } catch (Throwable t) { log(Log.WARN, TAG, "deferred init media listener failed: " + t.getClass().getSimpleName()); }
             try { broadcastSnapshot(); } catch (Throwable t) { logDebug("deferred initial snapshot skipped: " + t.getClass().getSimpleName()); }
         }, Math.max(0L, delayMs));
+    }
+
+    private void scheduleDailyFreezeCleanup(Handler handler) {
+        if (handler == null || dailyFreezeCleanupScheduled || !isSystemServerProcess()) return;
+        dailyFreezeCleanupScheduled = true;
+        long now = System.currentTimeMillis();
+        long delay = Math.max(1000L, nextDailyUnfreezeAt(now) - now);
+        handler.postDelayed(() -> {
+            dailyFreezeCleanupScheduled = false;
+            clearSupervisionFreeze("daily reset");
+            scheduleDailyFreezeCleanup(handler);
+        }, delay);
     }
 
     private void initUploadThread() {
@@ -2540,6 +2557,19 @@ public final class MonikaXposedModule extends XposedModule {
         return (int) Math.min(MAX_REPORTED_OFFLINE_TIMEOUT_MINUTES, timeoutMinutes);
     }
 
+    private long nextDailyUnfreezeAt(long now) {
+        java.util.Calendar calendar = java.util.Calendar.getInstance();
+        calendar.setTimeInMillis(now);
+        calendar.set(java.util.Calendar.HOUR_OF_DAY, SUPERVISION_DAILY_UNFREEZE_HOUR);
+        calendar.set(java.util.Calendar.MINUTE, 0);
+        calendar.set(java.util.Calendar.SECOND, 0);
+        calendar.set(java.util.Calendar.MILLISECOND, 0);
+        if (calendar.getTimeInMillis() <= now) {
+            calendar.add(java.util.Calendar.DAY_OF_YEAR, 1);
+        }
+        return calendar.getTimeInMillis();
+    }
+
     private void fillBatteryExtras(JSONObject extra) {
         try {
             Context ctx = getSystemContext();
@@ -3061,20 +3091,23 @@ public final class MonikaXposedModule extends XposedModule {
             }
             long now = System.currentTimeMillis();
             long activeUntil = parseIsoMillis(payload.optString("active_until"), now + SUPERVISION_DEFAULT_FREEZE_MS);
-            long freezeUntil = parseIsoMillis(payload.optString("freeze_until"), now + SUPERVISION_DEFAULT_FREEZE_MS);
-            if (activeUntil <= now || freezeUntil <= now) {
+            long payloadFreezeUntil = parseIsoMillis(payload.optString("freeze_until"), now + SUPERVISION_DEFAULT_FREEZE_MS);
+            if (activeUntil <= now || payloadFreezeUntil <= now) {
                 activeFreezeAlert = null;
                 return;
             }
+            long freezeUntil = nextDailyUnfreezeAt(now);
             java.util.List<java.util.regex.Pattern> patterns = compileSafePatterns(payload.optJSONArray("violation_regex"));
             if (patterns.isEmpty()) {
                 activeFreezeAlert = null;
                 return;
             }
+            java.util.List<java.util.regex.Pattern> recoveryPatterns = compileSafePatterns(payload.optJSONArray("recovery_regex"));
             activeFreezeAlert = new SupervisionFreezeAlert(
                     payload.optString("alert_id", "supervision"),
                     patterns,
-                    Math.min(activeUntil, freezeUntil),
+                    recoveryPatterns,
+                    activeUntil,
                     freezeUntil,
                     safeString(payload.optString("reason", text)));
             log(Log.INFO, TAG, "supervision freeze armed until " + isoTime(freezeUntil));
@@ -3097,18 +3130,15 @@ public final class MonikaXposedModule extends XposedModule {
             }
             String pkg = safeString(packageName);
             if (pkg.length() == 0 || isProtectedFreezePackage(pkg)) return;
+            String matchText = pkg + " " + safeString(appName) + " " + safeString(title);
+            if (matchesAny(alert.recoveryPatterns, matchText)) {
+                clearSupervisionFreeze("AI recovery match: " + pkg);
+                return;
+            }
             FrozenPackageRecord existing = frozenPackages.get(pkg);
             if (existing != null && existing.until > now) return;
-            String matchText = pkg + " " + safeString(appName) + " " + safeString(title);
-            boolean matched = false;
-            for (java.util.regex.Pattern pattern : alert.violationPatterns) {
-                if (pattern.matcher(matchText).find()) {
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched) return;
-            long until = Math.min(alert.freezeUntil, now + SUPERVISION_DEFAULT_FREEZE_MS);
+            if (!matchesAny(alert.violationPatterns, matchText)) return;
+            long until = nextDailyUnfreezeAt(now);
             boolean suspended = setPackageSuspended(pkg, true);
             boolean stopped = forceStopPackage(pkg);
             if (!suspended && !stopped) return;
@@ -3120,10 +3150,23 @@ public final class MonikaXposedModule extends XposedModule {
                     alert.reason,
                     suspended ? "suspended" : "force_stopped"));
             log(Log.WARN, TAG, "supervision froze " + pkg + " mode=" + (suspended ? "suspended" : "force_stopped") + " until " + isoTime(until));
+            postSupervisionFreezeNotification(pkg, safeString(appName), alert.reason, until);
             maybeDirectUpload(true);
         } catch (Throwable t) {
             logDebug("supervision freeze skipped: " + t.getClass().getSimpleName());
         }
+    }
+
+    private boolean matchesAny(java.util.List<java.util.regex.Pattern> patterns, String text) {
+        if (patterns == null || patterns.isEmpty()) return false;
+        String value = safeString(text);
+        if (value.length() == 0) return false;
+        for (java.util.regex.Pattern pattern : patterns) {
+            try {
+                if (pattern.matcher(value).find()) return true;
+            } catch (Throwable ignored) {}
+        }
+        return false;
     }
 
     private void clearSupervisionFreeze(String reason) {
@@ -3372,6 +3415,44 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
+    private void postSupervisionFreezeNotification(String packageName, String appName, String reason, long until) {
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return;
+            NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationChannel channel = new NotificationChannel(
+                        SUPERVISION_CHANNEL_ID,
+                        "Monika 监督冻结",
+                        NotificationManager.IMPORTANCE_HIGH);
+                channel.setDescription("监督模式冻结应用时提醒");
+                nm.createNotificationChannel(channel);
+            }
+            String label = safeString(appName).length() > 0 ? safeString(appName) : safeString(packageName);
+            String body = safeString(reason);
+            if (body.length() == 0) body = "监督模式已冻结该应用";
+            body = body + "。自动统一解冻时间：" + localClock(until);
+            Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    ? new Notification.Builder(ctx, SUPERVISION_CHANNEL_ID)
+                    : new Notification.Builder(ctx);
+            builder.setSmallIcon(android.R.drawable.stat_sys_warning)
+                    .setContentTitle("已冻结 " + label)
+                    .setContentText(body.length() > 120 ? body.substring(0, 120) : body)
+                    .setStyle(new Notification.BigTextStyle().bigText(body.length() > 500 ? body.substring(0, 500) : body))
+                    .setAutoCancel(true)
+                    .setShowWhen(true)
+                    .setWhen(System.currentTimeMillis())
+                    .setCategory(Notification.CATEGORY_STATUS)
+                    .setPriority(Notification.PRIORITY_HIGH)
+                    .setDefaults(Notification.DEFAULT_VIBRATE)
+                    .setVisibility(Notification.VISIBILITY_PUBLIC);
+            nm.notify(SUPERVISION_FREEZE_NOTIFICATION_ID, builder.build());
+        } catch (Throwable t) {
+            logDebug("supervision freeze notification skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
     private void postViewerMessageNotification(Context ctx, JSONObject data, String text, String viewerId) {
         try {
             NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
@@ -3473,6 +3554,14 @@ public final class MonikaXposedModule extends XposedModule {
         SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
         format.setTimeZone(TimeZone.getTimeZone("UTC"));
         return format.format(new java.util.Date(millis));
+    }
+
+    private String localClock(long millis) {
+        try {
+            return new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new java.util.Date(millis));
+        } catch (Throwable ignored) {
+            return isoTime(millis);
+        }
     }
 
     private Object callAny(Object target, String methodName) {
@@ -3857,6 +3946,7 @@ public final class MonikaXposedModule extends XposedModule {
     private static final class SupervisionFreezeAlert {
         final String id;
         final java.util.List<java.util.regex.Pattern> violationPatterns;
+        final java.util.List<java.util.regex.Pattern> recoveryPatterns;
         final long activeUntil;
         final long freezeUntil;
         final String reason;
@@ -3864,11 +3954,13 @@ public final class MonikaXposedModule extends XposedModule {
         SupervisionFreezeAlert(
                 String id,
                 java.util.List<java.util.regex.Pattern> violationPatterns,
+                java.util.List<java.util.regex.Pattern> recoveryPatterns,
                 long activeUntil,
                 long freezeUntil,
                 String reason) {
             this.id = id;
             this.violationPatterns = violationPatterns;
+            this.recoveryPatterns = recoveryPatterns;
             this.activeUntil = activeUntil;
             this.freezeUntil = freezeUntil;
             this.reason = reason;
