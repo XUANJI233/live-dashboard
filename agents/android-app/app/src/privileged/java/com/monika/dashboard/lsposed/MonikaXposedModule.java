@@ -111,6 +111,8 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long DIRECT_FULL_STATE_INTERVAL_MS = 5 * 60_000L;
     private static final long AMBIENT_LIGHT_CACHE_MS = 60_000L;
     private static final long SUPERVISION_DEFAULT_FREEZE_MS = 10 * 60_000L;
+    private static final long SUPERVISION_CHECK_REQUEST_MIN_MS = 60_000L;
+    private static final long SUPERVISION_CHECK_REQUEST_SAME_KEY_MS = 5 * 60_000L;
     
     // Static instance for global access
     private static MonikaXposedModule instance;
@@ -203,6 +205,8 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String pendingDirectBody = "";
     private volatile LspWebSocketClient wsClient = null;
     private volatile boolean wsReconnectPending = false;
+    private volatile long lastSupervisionCheckRequestAt = 0L;
+    private volatile String lastSupervisionCheckRequestKey = "";
     private volatile String foregroundPackage = "";
     private volatile String foregroundApp = "";
     private volatile String foregroundActivity = "";
@@ -2454,6 +2458,9 @@ public final class MonikaXposedModule extends XposedModule {
             if (sleeping) {
                 device.put(OFFLINE_TIMEOUT_FIELD, directOfflineTimeoutMinutes());
             }
+            if (shouldRequestSupervisionCheck(now, windowTitle)) {
+                device.put("supervision_check_requested", true);
+            }
             // Multi-window / tablet detection
             device.put("device_kind", getDeviceFormFactor());
             String wm = getWindowingMode();
@@ -2500,6 +2507,29 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable t) {
             log(Log.WARN, TAG, "build direct body failed: " + t.getClass().getSimpleName());
             return null;
+        }
+    }
+
+    private boolean shouldRequestSupervisionCheck(long now, String windowTitle) {
+        try {
+            if (!directUploadForeground) return false;
+            String pkg = safeString(foregroundPackage);
+            if (pkg.length() == 0 || "idle".equals(pkg) || "sleeping".equals(pkg)) return false;
+            if (isProtectedFreezePackage(pkg)) return false;
+
+            String key = pkg + "|" + safeString(foregroundApp) + "|" + safeString(windowTitle);
+            long elapsed = now - lastSupervisionCheckRequestAt;
+            if (elapsed >= 0 && elapsed < SUPERVISION_CHECK_REQUEST_MIN_MS) return false;
+            if (key.equals(lastSupervisionCheckRequestKey)
+                    && elapsed >= 0
+                    && elapsed < SUPERVISION_CHECK_REQUEST_SAME_KEY_MS) {
+                return false;
+            }
+            lastSupervisionCheckRequestAt = now;
+            lastSupervisionCheckRequestKey = key;
+            return true;
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
