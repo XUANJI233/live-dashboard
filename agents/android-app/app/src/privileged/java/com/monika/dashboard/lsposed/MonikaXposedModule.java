@@ -47,6 +47,7 @@ import com.monika.dashboard.BuildConfig;
 
 import java.lang.reflect.Field;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
@@ -116,6 +117,8 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long SUPERVISION_CHECK_REQUEST_MIN_MS = 60_000L;
     private static final long SUPERVISION_CHECK_REQUEST_SAME_KEY_MS = 5 * 60_000L;
     private static final int SUPERVISION_DAILY_UNFREEZE_HOUR = 3;
+    private static final String SUPERVISION_ACK_PATH = "/api/supervision/ack";
+    private static final int MAX_PENDING_SUPERVISION_ACKS = 8;
     
     // Static instance for global access
     private static MonikaXposedModule instance;
@@ -207,6 +210,7 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String browserTitleNonce = "";
     private volatile long lastDirectUploadAt = 0L;
     private volatile String pendingDirectBody = "";
+    private final ConcurrentLinkedQueue<String> pendingSupervisionAcks = new ConcurrentLinkedQueue<>();
     private volatile LspWebSocketClient wsClient = null;
     private volatile boolean wsReconnectPending = false;
     private volatile long lastSupervisionCheckRequestAt = 0L;
@@ -2393,6 +2397,7 @@ public final class MonikaXposedModule extends XposedModule {
             return;
         }
         handler.post(() -> {
+            flushSupervisionAcks(url, tok);
             final String body = buildDirectReportBody(sampleAt, forceRequested);
             if (body == null) return;
 
@@ -2913,6 +2918,131 @@ public final class MonikaXposedModule extends XposedModule {
         return false;
     }
 
+    private void enqueueSupervisionAck(JSONObject ack) {
+        try {
+            if (ack == null) return;
+            pendingSupervisionAcks.offer(ack.toString());
+            while (pendingSupervisionAcks.size() > MAX_PENDING_SUPERVISION_ACKS) {
+                pendingSupervisionAcks.poll();
+            }
+            final String url = directServerUrl;
+            final String tok = directToken;
+            Handler handler = getUploadHandler();
+            if (handler != null && url.length() > 0 && tok.length() > 0) {
+                handler.post(() -> flushSupervisionAcks(url, tok));
+            }
+        } catch (Throwable t) {
+            logDebug("supervision ack enqueue failed: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void flushSupervisionAcks(String url, String tok) {
+        if (url == null || url.length() == 0 || tok == null || tok.length() == 0) return;
+        if (sendSupervisionAcksOverWs(url, tok)) return;
+        int sent = 0;
+        while (sent < MAX_PENDING_SUPERVISION_ACKS) {
+            String body = pendingSupervisionAcks.peek();
+            if (body == null || body.length() == 0) return;
+            if (!postSupervisionAck(url, tok, body)) return;
+            pendingSupervisionAcks.poll();
+            sent++;
+        }
+    }
+
+    private boolean sendSupervisionAcksOverWs(String url, String tok) {
+        ensureWsConnected(url, tok);
+        final LspWebSocketClient client = wsClient;
+        if (client == null || !client.isConnected()) return false;
+        boolean sentAny = false;
+        int sent = 0;
+        for (String body : pendingSupervisionAcks) {
+            if (body == null || body.length() == 0) continue;
+            if (sent >= MAX_PENDING_SUPERVISION_ACKS) break;
+            try {
+                String msg = new JSONObject()
+                        .put("type", "supervision_ack")
+                        .put("payload", new JSONObject(body))
+                        .toString();
+                if (!client.sendText(msg)) return sentAny;
+                sentAny = true;
+                sent++;
+            } catch (Throwable t) {
+                logDebug("supervision ack WS send failed: " + t.getClass().getSimpleName());
+                return sentAny;
+            }
+        }
+        return sentAny;
+    }
+
+    private boolean postSupervisionAck(String baseUrl, String tok, String body) {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(baseUrl + SUPERVISION_ACK_PATH);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(8000);
+            connection.setReadTimeout(8000);
+            connection.setRequestMethod("POST");
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Authorization", "Bearer " + tok);
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(bytes.length);
+            connection.getOutputStream().write(bytes);
+            int code = connection.getResponseCode();
+            if (code < 200 || code >= 300) {
+                logDebug("supervision ack HTTP " + code);
+                return false;
+            }
+            String response = readUtf8(connection.getInputStream());
+            JSONObject json = new JSONObject(response);
+            boolean received = strictBoolean(json, "received", false) || strictBoolean(json, "ok", false);
+            if (!received) logDebug("supervision ack not confirmed");
+            return received;
+        } catch (Throwable t) {
+            logDebug("supervision ack failed: " + t.getClass().getSimpleName());
+            return false;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    private void handleWsTextMessage(String payloadText) {
+        if (handleSupervisionAckReceived(payloadText)) return;
+        forwardViewerMessageToApp(payloadText);
+    }
+
+    private boolean handleSupervisionAckReceived(String payloadText) {
+        try {
+            JSONObject data = new JSONObject(payloadText);
+            String type = data.optString("type", "");
+            if (!"supervision_ack_received".equals(type)) return false;
+            boolean received = strictBoolean(data, "received", false) || strictBoolean(data, "ok", false);
+            String ackId = safeString(data.optString("ack_id", ""));
+            if (!received || ackId.length() == 0) return true;
+            if (removePendingSupervisionAck(ackId)) {
+                logDebug("supervision ack confirmed: " + ackId);
+            }
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private boolean removePendingSupervisionAck(String ackId) {
+        try {
+            for (String body : pendingSupervisionAcks) {
+                if (body == null || body.length() == 0) continue;
+                JSONObject ack = new JSONObject(body);
+                if (ackId.equals(ack.optString("ack_id", ""))) {
+                    return pendingSupervisionAcks.remove(body);
+                }
+            }
+        } catch (Throwable t) {
+            logDebug("remove supervision ack failed: " + t.getClass().getSimpleName());
+        }
+        return false;
+    }
+
     private void fetchQueuedMessagesFallback() {
         HttpURLConnection connection = null;
         try {
@@ -3124,20 +3254,30 @@ public final class MonikaXposedModule extends XposedModule {
 
     private void handleSupervisionUnfreezePayload(JSONObject payload, String text) {
         try {
+            String alertId = safeString(payload.optString("alert_id", "supervision"));
             String reason = safeString(payload.optString("reason", text));
             java.util.List<java.util.regex.Pattern> patterns = compileSafePatterns(payload.optJSONArray("unfreeze_regex"));
             if (patterns.isEmpty()) {
                 patterns = compileSafePatterns(payload.optJSONArray("recovery_regex"));
             }
             boolean unfreezeAll = strictBoolean(payload, "unfreeze_all", false) || patterns.isEmpty();
-            if (unfreezeAll) {
-                clearSupervisionFreeze("AI unfreeze: " + reason);
-                return;
-            }
-            int count = unfreezeFrozenPackages(patterns, "AI unfreeze: " + reason);
+            int count = unfreezeFrozenPackages(
+                    unfreezeAll ? null : patterns,
+                    "AI unfreeze: " + reason,
+                    alertId);
             if (count > 0) {
                 log(Log.WARN, TAG, "supervision unfroze " + count + " package(s) by AI command");
                 maybeDirectUpload(true);
+            } else {
+                enqueueSupervisionAck(buildSupervisionAck(
+                        alertId,
+                        "unfreeze",
+                        "ignored",
+                        "",
+                        "",
+                        "",
+                        reason,
+                        0L));
             }
         } catch (Throwable t) {
             logDebug("supervision unfreeze ignored: " + t.getClass().getSimpleName());
@@ -3158,7 +3298,8 @@ public final class MonikaXposedModule extends XposedModule {
             if (pkg.length() == 0 || isProtectedFreezePackage(pkg)) return;
             String matchText = pkg + " " + safeString(appName) + " " + safeString(title);
             if (matchesAny(alert.recoveryPatterns, matchText)) {
-                clearSupervisionFreeze("AI recovery match: " + pkg);
+                unfreezeFrozenPackages(null, "AI recovery match: " + pkg, alert.id);
+                maybeDirectUpload(true);
                 return;
             }
             FrozenPackageRecord existing = frozenPackages.get(pkg);
@@ -3177,6 +3318,15 @@ public final class MonikaXposedModule extends XposedModule {
                     suspended ? "suspended" : "force_stopped"));
             log(Log.WARN, TAG, "supervision froze " + pkg + " mode=" + (suspended ? "suspended" : "force_stopped") + " until " + isoTime(until));
             postSupervisionFreezeNotification(pkg, safeString(appName), alert.reason, until);
+            enqueueSupervisionAck(buildSupervisionAck(
+                    alert.id,
+                    "freeze",
+                    "applied",
+                    pkg,
+                    safeString(appName),
+                    suspended ? "suspended" : "force_stopped",
+                    alert.reason,
+                    until));
             maybeDirectUpload(true);
         } catch (Throwable t) {
             logDebug("supervision freeze skipped: " + t.getClass().getSimpleName());
@@ -3195,15 +3345,24 @@ public final class MonikaXposedModule extends XposedModule {
         return false;
     }
 
-    private int unfreezeFrozenPackages(java.util.List<java.util.regex.Pattern> patterns, String reason) {
+    private int unfreezeFrozenPackages(java.util.List<java.util.regex.Pattern> patterns, String reason, String alertId) {
         int count = 0;
         try {
             for (String pkg : frozenPackages.keySet()) {
                 FrozenPackageRecord record = frozenPackages.get(pkg);
                 if (record == null) continue;
-                if (!matchesFrozenRecord(record, patterns)) continue;
+                if (patterns != null && !patterns.isEmpty() && !matchesFrozenRecord(record, patterns)) continue;
                 if ("suspended".equals(record.mode)) setPackageSuspended(record.packageName, false);
                 frozenPackages.remove(pkg);
+                enqueueSupervisionAck(buildSupervisionAck(
+                        alertId,
+                        "unfreeze",
+                        "applied",
+                        record.packageName,
+                        record.appName,
+                        record.mode,
+                        reason,
+                        0L));
                 count++;
             }
             if (frozenPackages.isEmpty()) activeFreezeAlert = null;
@@ -3218,6 +3377,34 @@ public final class MonikaXposedModule extends XposedModule {
         if (record == null) return false;
         String text = safeString(record.packageName) + " " + safeString(record.appName) + " " + safeString(record.reason);
         return matchesAny(patterns, text);
+    }
+
+    private JSONObject buildSupervisionAck(
+            String alertId,
+            String action,
+            String status,
+            String packageName,
+            String appName,
+            String mode,
+            String reason,
+            long until) {
+        JSONObject ack = new JSONObject();
+        try {
+            ack.put("type", "supervision_ack");
+            ack.put("v", 1);
+            ack.put("ack_id", java.util.UUID.randomUUID().toString());
+            ack.put("alert_id", safeString(alertId));
+            ack.put("action", safeString(action));
+            ack.put("status", safeString(status));
+            ack.put("source", "lsposed");
+            ack.put("at", isoTime(System.currentTimeMillis()));
+            if (packageName != null && packageName.length() > 0) ack.put("package_name", safeString(packageName));
+            if (appName != null && appName.length() > 0) ack.put("app_name", safeString(appName));
+            if (mode != null && mode.length() > 0) ack.put("mode", safeString(mode));
+            if (reason != null && reason.length() > 0) ack.put("reason", safeString(reason));
+            if (until > 0L) ack.put("until", isoTime(until));
+        } catch (Throwable ignored) {}
+        return ack;
     }
 
     private void clearSupervisionFreeze(String reason) {
@@ -4312,7 +4499,7 @@ public final class MonikaXposedModule extends XposedModule {
 
                     switch (opcode) {
                         case OP_TEXT:
-                            forwardViewerMessageToApp(new String(payload, StandardCharsets.UTF_8));
+                            handleWsTextMessage(new String(payload, StandardCharsets.UTF_8));
                             break;
                         case OP_PING:
                             // Respond with pong (echo the ping payload).
