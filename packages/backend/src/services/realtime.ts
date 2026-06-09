@@ -3,6 +3,7 @@ import { authenticateToken } from "../middleware/auth";
 import { currentHourWindow, currentMessageSlot, noStore, withCdnHeaders } from "./cdn";
 import { verifyViewerToken, viewerTokenFromRequest, viewerTokenRateLimit, edgeViewerIdentity } from "./viewer-auth";
 import { processReportPayload, ReportPayloadError } from "./device-status-handler";
+import { requestSupervisionCheckFromReportPayload } from "./supervision-report-trigger";
 import type { DeviceInfo } from "../types";
 import type { ServerWebSocket } from "bun";
 
@@ -820,6 +821,7 @@ export const realtimeWebSocket = {
         let publicPayload: ReturnType<typeof processReportPayload> = null;
         try {
           publicPayload = processReportPayload(data.payload, ws.data.device);
+          requestSupervisionCheckFromReportPayload(data.payload, ws.data.device);
         } catch (e: any) {
           if (e instanceof ReportPayloadError) {
             send(ws, { type: "error", error: e.code, message: e.message });

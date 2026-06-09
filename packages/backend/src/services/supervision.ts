@@ -12,13 +12,13 @@ import {
 } from "./daily-summary-gen";
 import { getAiRuntimeConfig, requestAiChatCompletion, type AiChatMessage, type AiRuntimeConfig } from "./ai-config";
 import { logAiDebug } from "./ai-debug";
-import { sendSupervisorMessageToDevices } from "./realtime";
 import { healthContextLinesForRange, trustedWatchSleepingAt } from "./health-context";
 import { parseAiJsonObject } from "./ai-json";
 import { timelineJsonBlockForPrompt } from "./timeline-prompt";
 
 const LAST_AI_CHECK_AT_KEY = "supervision_last_ai_check_at";
 const LAST_ALERT_AT_KEY = "supervision_last_alert_at";
+const LAST_REPORT_TRIGGER_AT_KEY = "supervision_last_report_trigger_at";
 const SUPERVISION_HISTORY_KEY = "supervision_recent_history";
 const MAX_REGEX_COUNT = 12;
 const MAX_TIMELINE_ROWS = 48;
@@ -27,8 +27,20 @@ const ALERT_ACTIVE_MINUTES = 45;
 const LOCAL_RESTART_COOLDOWN_SECONDS = 120;
 const SUPERVISION_RULES_MAX_TOKENS = 8192;
 const SUPERVISION_VERIFY_MAX_TOKENS = 8192;
+const REPORT_TRIGGER_MIN_INTERVAL_MS = 60_000;
 
 let supervisionInFlight = false;
+
+export interface SupervisionReportCandidate {
+  requested: boolean;
+  deviceId: string;
+  deviceName: string;
+  platform: string;
+  appId: string;
+  appName: string;
+  title: string;
+  source: string;
+}
 
 const getActivityRows = db.prepare(`
   SELECT *
@@ -153,11 +165,30 @@ export async function runSupervisionTick(now = new Date()): Promise<void> {
     if (!decision.deviated || !decision.message) return;
     if (!isAlertDue(settings, now)) return;
 
+    const { sendSupervisorMessageToDevices } = await import("./realtime");
     const delivery = sendSupervisorMessageToDevices(decision.message, buildSupervisorPayload(settings, rules, decision, now));
     if (delivery.targets > 0) metaSet(LAST_ALERT_AT_KEY, now.toISOString());
   } finally {
     supervisionInFlight = false;
   }
+}
+
+export function requestSupervisionCheckForReport(candidate: SupervisionReportCandidate, now = new Date()): boolean {
+  const settings = getSummarySettings();
+  if (!candidate.requested || !settings.supervision_enabled) return false;
+  if (settings.supervision_skip_watch_sleep && trustedWatchSleepingAt(now)) return false;
+  if (!isReportTriggerDue(now)) return false;
+
+  const rules = compileRules(settings.supervision_rules);
+  if (!matchesReportCandidate(candidate, rules)) return false;
+
+  metaSet(LAST_REPORT_TRIGGER_AT_KEY, now.toISOString());
+  setTimeout(() => {
+    runSupervisionTick(new Date()).catch((e) => {
+      console.error("[supervision] report-triggered check failed:", safeErrorMessage(e, "AI supervision failed"));
+    });
+  }, 0);
+  return true;
 }
 
 function isAiCheckDue(settings: SummarySettings, now: Date): boolean {
@@ -171,6 +202,33 @@ function isAlertDue(settings: SummarySettings, now: Date): boolean {
   if (last === null) return true;
   const minInterval = Math.min(settings.supervision_check_interval_minutes, 60);
   return now.getTime() - last >= minInterval * 60_000;
+}
+
+function isReportTriggerDue(now: Date): boolean {
+  const last = timestampMs(metaGet(LAST_REPORT_TRIGGER_AT_KEY));
+  if (last === null) return true;
+  return now.getTime() - last >= REPORT_TRIGGER_MIN_INTERVAL_MS;
+}
+
+function matchesReportCandidate(candidate: SupervisionReportCandidate, rules: CompiledRules): boolean {
+  if (candidate.platform !== "android") return false;
+  const text = supervisionReportText(candidate);
+  if (!text) return false;
+  if (rules.whitelist.some((rule) => rule.test(text))) return false;
+  return rules.blacklist.some((rule) => rule.test(text));
+}
+
+function supervisionReportText(candidate: SupervisionReportCandidate): string {
+  return promptText(
+    [
+      candidate.deviceName,
+      candidate.source,
+      candidate.appName,
+      candidate.appId,
+      candidate.title,
+    ].filter(Boolean).join(" "),
+    320,
+  );
 }
 
 function supervisionRulesSystemPrompt(): string {

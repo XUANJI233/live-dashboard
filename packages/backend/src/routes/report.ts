@@ -1,5 +1,6 @@
 import { authenticateToken } from "../middleware/auth";
 import { processReportPayload, ReportPayloadError } from "../services/device-status-handler";
+import { requestSupervisionCheckFromReportPayload } from "../services/supervision-report-trigger";
 
 /**
  * v1 HTTP report endpoint — legacy path still used by older clients
@@ -33,6 +34,7 @@ export async function handleReport(req: Request): Promise<Response> {
 
   try {
     processReportPayload(body as Record<string, unknown>, device);
+    requestSupervisionCheckFromReportPayload(body as Record<string, unknown>, device);
   } catch (e: any) {
     if (e instanceof ReportPayloadError) {
       return Response.json({ error: e.message, code: e.code }, { status: e.status });
