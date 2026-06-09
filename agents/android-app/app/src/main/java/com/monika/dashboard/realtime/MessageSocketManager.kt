@@ -32,6 +32,10 @@ object MessageSocketManager {
     private const val PREFS = "message_controls"
     private const val BASE_RECONNECT_DELAY_MS = 10_000L
     private const val MAX_RECONNECT_DELAY_MS = 300_000L // 5 minutes max
+    const val EXTRA_DESTINATION = "destination"
+    const val EXTRA_MESSAGES_SECTION = "messages_section"
+    const val DESTINATION_MESSAGES = "messages"
+    const val MESSAGES_SECTION_PRIVATE = "private"
     @Volatile
     private var reconnectAttempts = 0
     const val ACTION_BLOCK_VIEWER = "com.monika.dashboard.action.BLOCK_VIEWER"
@@ -54,8 +58,8 @@ object MessageSocketManager {
 
     fun isConnected(): Boolean = connected
 
-        // OkHttp pingInterval=25s handles keepalive; connected implies healthy
-        fun isHealthy(): Boolean = connected
+    // OkHttp pingInterval=25s handles keepalive; connected implies healthy
+    fun isHealthy(): Boolean = connected
 
     /**
      * Send a device_status message over the WebSocket.
@@ -166,9 +170,14 @@ object MessageSocketManager {
         }
         createChannel(context)
         val intent = Intent(context, MainActivity::class.java)
+            .putExtra(EXTRA_DESTINATION, DESTINATION_MESSAGES)
+            .putExtra(EXTRA_MESSAGES_SECTION, MESSAGES_SECTION_PRIVATE)
+            .putExtra(EXTRA_VIEWER_ID, viewerId.orEmpty())
+            .putExtra("message_id", messageId)
+        val requestCode = notificationId(messageId, viewerId)
         val pending = PendingIntent.getActivity(
             context,
-            0,
+            requestCode,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -197,7 +206,12 @@ object MessageSocketManager {
         }
         val notification = builder.build()
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(NOTIFICATION_ID, notification)
+        nm.notify(requestCode, notification)
+    }
+
+    private fun notificationId(messageId: String, viewerId: String?): Int {
+        val key = messageId.ifBlank { viewerId.orEmpty() }.ifBlank { System.currentTimeMillis().toString() }
+        return NOTIFICATION_ID + (key.hashCode() and 0x00ffffff)
     }
 
     private fun buildWsUrl(serverUrl: String): String {

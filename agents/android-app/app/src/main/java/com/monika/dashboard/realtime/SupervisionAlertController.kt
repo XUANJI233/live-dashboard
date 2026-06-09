@@ -30,11 +30,12 @@ object SupervisionAlertController {
     ) {
         val payload = runCatching { JSONObject(payloadText.orEmpty()) }.getOrNull() ?: return
         if (payload.optString("type") != TYPE) return
+        val screenOff = payload.strictBoolean("screen_off", defaultWhenMissing = false)
 
         val alert = ActiveAlert(
             id = payload.optString("alert_id").ifBlank { messageId },
             recovery = compileRegexList(payload.optJSONArray("recovery_regex")),
-            violation = compileRegexList(payload.optJSONArray("violation_regex")),
+            violation = compileRegexList(payload.firstArray("freeze_commands", "violation_regex")),
             activeUntil = parseTime(payload.optString("active_until"))
                 ?: (System.currentTimeMillis() + DEFAULT_ACTIVE_MS),
             restartCooldownMs = payload.optLong("restart_cooldown_seconds", DEFAULT_RESTART_COOLDOWN_MS / 1000)
@@ -43,6 +44,7 @@ object SupervisionAlertController {
         )
         active = alert
         DebugLog.log("监督", "收到监督提醒: ${alert.id}")
+        if (screenOff) DebugLog.log("监督", "收到息屏命令，当前版本暂未执行")
         if (alert.vibrate) startVibration(context, alert)
         scheduleExpiry(context, alert)
     }
@@ -116,6 +118,14 @@ object SupervisionAlertController {
     private fun JSONObject.strictBoolean(key: String, defaultWhenMissing: Boolean): Boolean {
         if (!has(key) || isNull(key)) return defaultWhenMissing
         return opt(key) as? Boolean ?: false
+    }
+
+    private fun JSONObject.firstArray(vararg keys: String): org.json.JSONArray? {
+        for (key in keys) {
+            val arr = optJSONArray(key)
+            if (arr != null) return arr
+        }
+        return null
     }
 
     @SuppressLint("MissingPermission")

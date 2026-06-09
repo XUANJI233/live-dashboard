@@ -36,6 +36,7 @@ import com.monika.dashboard.data.MessageInboxStore
 import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.data.VisitorMessage
 import com.monika.dashboard.network.ReportClient
+import com.monika.dashboard.realtime.MessageHistorySyncer
 import com.monika.dashboard.realtime.MessageSocketManager
 import com.monika.dashboard.ui.components.DashboardCard
 import com.monika.dashboard.ui.components.DashboardTone
@@ -49,7 +50,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -67,21 +67,7 @@ fun MessagesScreen(settings: SettingsStore, showHeader: Boolean = true) {
     var detailMessage by remember { mutableStateOf<VisitorMessage?>(null) }
 
     val syncMessages: suspend () -> Unit = {
-        val url = settings.serverUrl.first()
-        val token = withContext(Dispatchers.IO) { settings.getToken() }
-        if (url.isNotBlank() && !token.isNullOrBlank()) {
-            withContext(Dispatchers.IO) {
-                val client = ReportClient(url, token)
-                try {
-                    val latest = MessageInboxStore.latestServerTimestamp(context)
-                    client.fetchMessageHistory(latest.takeIf { it.isNotBlank() }).getOrNull()?.let {
-                        MessageInboxStore.upsertAll(context, it)
-                    }
-                } finally {
-                    client.shutdown()
-                }
-            }
-        }
+        MessageHistorySyncer.sync(context, settings)
     }
 
     LaunchedEffect(Unit) {
@@ -89,11 +75,13 @@ fun MessagesScreen(settings: SettingsStore, showHeader: Boolean = true) {
     }
 
     LaunchedEffect(Unit) {
+        syncMessages()
+    }
+
+    LaunchedEffect(Unit) {
         while (true) {
-            if (!MessageSocketManager.isHealthy()) {
-                syncMessages()
-            }
             delay(15_000)
+            syncMessages()
         }
     }
 

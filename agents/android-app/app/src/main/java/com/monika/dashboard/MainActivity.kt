@@ -33,19 +33,27 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
 
     private lateinit var settings: SettingsStore
+    private var navigationRequest by mutableStateOf<DashboardNavigationRequest?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settings = SettingsStore(applicationContext)
+        navigationRequest = DashboardNavigationRequest.from(intent)
         enableEdgeToEdge()
         requestNotificationPermission()
         MessageSocketManager.ensureStarted(applicationContext)
 
         setContent {
             DashboardTheme {
-                MainContent(settings = settings)
+                MainContent(settings = settings, navigationRequest = navigationRequest)
             }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        navigationRequest = DashboardNavigationRequest.from(intent)
     }
 
     private fun requestNotificationPermission() {
@@ -62,7 +70,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun MainContent(settings: SettingsStore, modifier: Modifier = Modifier) {
+private fun MainContent(
+    settings: SettingsStore,
+    navigationRequest: DashboardNavigationRequest?,
+    modifier: Modifier = Modifier,
+) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var selectedMessagesTab by rememberSaveable { mutableIntStateOf(0) }
     var selectedSettingsTab by rememberSaveable { mutableIntStateOf(0) }
@@ -74,6 +86,16 @@ private fun MainContent(settings: SettingsStore, modifier: Modifier = Modifier) 
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val useNavigationRail = configuration.screenWidthDp > configuration.screenHeightDp
+
+    LaunchedEffect(navigationRequest) {
+        if (navigationRequest?.destination == MessageSocketManager.DESTINATION_MESSAGES) {
+            selectedTab = 1
+            selectedMessagesTab = when (navigationRequest.messagesSection) {
+                "public" -> 1
+                else -> 0
+            }
+        }
+    }
 
     // Trigger foreground health sync once on app open
     LaunchedEffect(Unit) {
@@ -239,3 +261,19 @@ private data class NavItem(
     val title: String,
     val glyph: String,
 )
+
+private data class DashboardNavigationRequest(
+    val destination: String,
+    val messagesSection: String,
+    val requestId: Long,
+) {
+    companion object {
+        fun from(intent: android.content.Intent?): DashboardNavigationRequest? {
+            val destination = intent?.getStringExtra(MessageSocketManager.EXTRA_DESTINATION).orEmpty()
+            if (destination != MessageSocketManager.DESTINATION_MESSAGES) return null
+            val section = intent?.getStringExtra(MessageSocketManager.EXTRA_MESSAGES_SECTION)
+                ?: MessageSocketManager.MESSAGES_SECTION_PRIVATE
+            return DashboardNavigationRequest(destination, section, System.nanoTime())
+        }
+    }
+}

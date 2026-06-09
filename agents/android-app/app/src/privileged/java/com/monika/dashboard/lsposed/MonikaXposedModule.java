@@ -98,6 +98,7 @@ public final class MonikaXposedModule extends XposedModule {
     private static final int MESSAGE_NOTIFICATION_ID = 2002;
     private static final String SUPERVISION_CHANNEL_ID = "monika_lsp_supervision";
     private static final int SUPERVISION_FREEZE_NOTIFICATION_ID = 2003;
+    private static final int SUPERVISION_ALERT_NOTIFICATION_ID = 2004;
     private static final long HEARTBEAT_MS = 5 * 60_000L; // low-frequency fallback; events drive normal uploads
     private static final long BROADCAST_DEBOUNCE_MS = 1500L;
     private static final long MIN_DIRECT_UPLOAD_MS = 5000L;
@@ -3190,7 +3191,9 @@ public final class MonikaXposedModule extends XposedModule {
                 long token = Binder.clearCallingIdentity();
                 try {
                     ctx.sendBroadcast(intent, CONFIG_PERMISSION);
-                    if (!isSupervisionPayload(data)) {
+                    if (isSupervisionPayload(data)) {
+                        postSupervisionAlertNotification(ctx, data, text);
+                    } else {
                         postViewerMessageNotification(ctx, data, text, viewerId);
                     }
                 } finally {
@@ -3215,11 +3218,11 @@ public final class MonikaXposedModule extends XposedModule {
     private void handleSupervisionPayload(JSONObject payload, String text) {
         try {
             if (payload == null || !"supervision_alert".equals(payload.optString("type"))) return;
-            if (strictBoolean(payload, "unfreeze", false)) {
+            if (strictBoolean(payload, "unfreeze", false) || hasNonEmptyArray(payload, "unfreeze_commands", "解冻命令")) {
                 handleSupervisionUnfreezePayload(payload, text);
                 return;
             }
-            if (!strictBoolean(payload, "freeze", false)) {
+            if (!strictBoolean(payload, "freeze", false) && !hasNonEmptyArray(payload, "freeze_commands", "冻结命令")) {
                 activeFreezeAlert = null;
                 return;
             }
@@ -3231,7 +3234,7 @@ public final class MonikaXposedModule extends XposedModule {
                 return;
             }
             long freezeUntil = nextDailyUnfreezeAt(now);
-            java.util.List<java.util.regex.Pattern> patterns = compileSafePatterns(payload.optJSONArray("violation_regex"));
+            java.util.List<java.util.regex.Pattern> patterns = compileSafePatterns(firstJsonArray(payload, "freeze_commands", "冻结命令", "violation_regex"));
             if (patterns.isEmpty()) {
                 activeFreezeAlert = null;
                 return;
@@ -3243,7 +3246,7 @@ public final class MonikaXposedModule extends XposedModule {
                     recoveryPatterns,
                     activeUntil,
                     freezeUntil,
-                    safeString(payload.optString("reason", text)));
+                    supervisionReason(payload, text));
             log(Log.INFO, TAG, "supervision freeze armed until " + isoTime(freezeUntil));
             forceForegroundSnapshot();
             maybeApplySupervisionFreeze(foregroundPackage, foregroundApp, foregroundTitle);
@@ -3255,12 +3258,15 @@ public final class MonikaXposedModule extends XposedModule {
     private void handleSupervisionUnfreezePayload(JSONObject payload, String text) {
         try {
             String alertId = safeString(payload.optString("alert_id", "supervision"));
-            String reason = safeString(payload.optString("reason", text));
-            java.util.List<java.util.regex.Pattern> patterns = compileSafePatterns(payload.optJSONArray("unfreeze_regex"));
+            String reason = supervisionReason(payload, text);
+            JSONArray unfreezeCommands = firstJsonArray(payload, "unfreeze_commands", "解冻命令");
+            java.util.List<java.util.regex.Pattern> patterns = compileSafePatterns(unfreezeCommands);
             if (patterns.isEmpty()) {
                 patterns = compileSafePatterns(payload.optJSONArray("recovery_regex"));
             }
-            boolean unfreezeAll = strictBoolean(payload, "unfreeze_all", false) || patterns.isEmpty();
+            boolean unfreezeAll = strictBoolean(payload, "unfreeze_all", false)
+                    || containsAllSupervisionCommand(unfreezeCommands)
+                    || patterns.isEmpty();
             int count = unfreezeFrozenPackages(
                     unfreezeAll ? null : patterns,
                     "AI unfreeze: " + reason,
@@ -3354,6 +3360,7 @@ public final class MonikaXposedModule extends XposedModule {
                 if (patterns != null && !patterns.isEmpty() && !matchesFrozenRecord(record, patterns)) continue;
                 if ("suspended".equals(record.mode)) setPackageSuspended(record.packageName, false);
                 frozenPackages.remove(pkg);
+                cancelSupervisionFreezeNotification(record.packageName);
                 enqueueSupervisionAck(buildSupervisionAck(
                         alertId,
                         "unfreeze",
@@ -3412,6 +3419,7 @@ public final class MonikaXposedModule extends XposedModule {
             activeFreezeAlert = null;
             for (FrozenPackageRecord record : frozenPackages.values()) {
                 if ("suspended".equals(record.mode)) setPackageSuspended(record.packageName, false);
+                cancelSupervisionFreezeNotification(record.packageName);
             }
             frozenPackages.clear();
             log(Log.WARN, TAG, "supervision freeze cleared: " + safeString(reason));
@@ -3557,6 +3565,9 @@ public final class MonikaXposedModule extends XposedModule {
                     if (record != null && "suspended".equals(record.mode)) {
                         setPackageSuspended(record.packageName, false);
                     }
+                    if (record != null) {
+                        cancelSupervisionFreezeNotification(record.packageName);
+                    }
                     frozenPackages.remove(pkg);
                 }
             }
@@ -3568,6 +3579,7 @@ public final class MonikaXposedModule extends XposedModule {
         if (arr == null) return out;
         for (int i = 0; i < arr.length(); i++) {
             String pattern = safeString(arr.optString(i));
+            if (isAllSupervisionCommand(pattern)) continue;
             if (!isSafeSupervisionPattern(pattern)) continue;
             try {
                 out.add(java.util.regex.Pattern.compile(pattern, java.util.regex.Pattern.CASE_INSENSITIVE));
@@ -3575,6 +3587,47 @@ public final class MonikaXposedModule extends XposedModule {
             if (out.size() >= 12) break;
         }
         return out;
+    }
+
+    private JSONArray firstJsonArray(JSONObject object, String... keys) {
+        if (object == null || keys == null) return null;
+        for (String key : keys) {
+            if (key == null) continue;
+            JSONArray arr = object.optJSONArray(key);
+            if (arr != null) return arr;
+        }
+        return null;
+    }
+
+    private boolean hasNonEmptyArray(JSONObject object, String... keys) {
+        JSONArray arr = firstJsonArray(object, keys);
+        return arr != null && arr.length() > 0;
+    }
+
+    private boolean containsAllSupervisionCommand(JSONArray arr) {
+        if (arr == null) return false;
+        for (int i = 0; i < arr.length(); i++) {
+            if (isAllSupervisionCommand(arr.optString(i))) return true;
+        }
+        return false;
+    }
+
+    private boolean isAllSupervisionCommand(String value) {
+        String clean = safeString(value).replaceAll("\\s+", "").toLowerCase(java.util.Locale.ROOT);
+        return "全部".equals(clean)
+                || "全量".equals(clean)
+                || "所有".equals(clean)
+                || "all".equals(clean)
+                || "*".equals(clean)
+                || ".*".equals(clean);
+    }
+
+    private String supervisionReason(JSONObject payload, String fallback) {
+        String reason = safeString(payload.optString("reason", ""));
+        if (reason.length() == 0) reason = safeString(payload.optString("say", ""));
+        if (reason.length() == 0) reason = safeString(payload.optString("要说的话", ""));
+        if (reason.length() == 0) reason = safeString(fallback);
+        return reason;
     }
 
     private boolean isSafeSupervisionPattern(String pattern) {
@@ -3662,9 +3715,9 @@ public final class MonikaXposedModule extends XposedModule {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 NotificationChannel channel = new NotificationChannel(
                         SUPERVISION_CHANNEL_ID,
-                        "Monika 监督冻结",
+                        "Monika 监督",
                         NotificationManager.IMPORTANCE_HIGH);
-                channel.setDescription("监督模式冻结应用时提醒");
+                channel.setDescription("监督模式提醒和冻结状态");
                 nm.createNotificationChannel(channel);
             }
             String label = safeString(appName).length() > 0 ? safeString(appName) : safeString(packageName);
@@ -3678,6 +3731,43 @@ public final class MonikaXposedModule extends XposedModule {
                     .setContentTitle("已冻结 " + label)
                     .setContentText(body.length() > 120 ? body.substring(0, 120) : body)
                     .setStyle(new Notification.BigTextStyle().bigText(body.length() > 500 ? body.substring(0, 500) : body))
+                    .setOngoing(true)
+                    .setAutoCancel(false)
+                    .setShowWhen(true)
+                    .setWhen(System.currentTimeMillis())
+                    .setCategory(Notification.CATEGORY_STATUS)
+                    .setPriority(Notification.PRIORITY_HIGH)
+                    .setDefaults(Notification.DEFAULT_VIBRATE)
+                    .setVisibility(Notification.VISIBILITY_PUBLIC);
+            nm.notify(notificationId("freeze:" + safeString(packageName), SUPERVISION_FREEZE_NOTIFICATION_ID), builder.build());
+        } catch (Throwable t) {
+            logDebug("supervision freeze notification skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void postSupervisionAlertNotification(Context ctx, JSONObject data, String text) {
+        try {
+            NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationChannel channel = new NotificationChannel(
+                        SUPERVISION_CHANNEL_ID,
+                        "Monika 监督",
+                        NotificationManager.IMPORTANCE_HIGH);
+                channel.setDescription("监督模式提醒和冻结状态");
+                nm.createNotificationChannel(channel);
+            }
+
+            PendingIntent pendingIntent = buildLaunchPendingIntent(ctx, data, "__supervisor__");
+            String body = text.length() > 120 ? text.substring(0, 120) : text;
+            Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    ? new Notification.Builder(ctx, SUPERVISION_CHANNEL_ID)
+                    : new Notification.Builder(ctx);
+            builder.setSmallIcon(android.R.drawable.stat_sys_warning)
+                    .setContentTitle("监督模式")
+                    .setContentText(body)
+                    .setStyle(new Notification.BigTextStyle().bigText(text.length() > 500 ? text.substring(0, 500) : text))
+                    .setContentIntent(pendingIntent)
                     .setAutoCancel(true)
                     .setShowWhen(true)
                     .setWhen(System.currentTimeMillis())
@@ -3685,9 +3775,9 @@ public final class MonikaXposedModule extends XposedModule {
                     .setPriority(Notification.PRIORITY_HIGH)
                     .setDefaults(Notification.DEFAULT_VIBRATE)
                     .setVisibility(Notification.VISIBILITY_PUBLIC);
-            nm.notify(SUPERVISION_FREEZE_NOTIFICATION_ID, builder.build());
+            nm.notify(notificationId("supervision:" + data.optString("message_id", ""), SUPERVISION_ALERT_NOTIFICATION_ID), builder.build());
         } catch (Throwable t) {
-            logDebug("supervision freeze notification skipped: " + t.getClass().getSimpleName());
+            logDebug("supervision alert notification skipped: " + t.getClass().getSimpleName());
         }
     }
 
@@ -3703,22 +3793,7 @@ public final class MonikaXposedModule extends XposedModule {
                 nm.createNotificationChannel(channel);
             }
 
-            Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(TARGET_PACKAGE);
-            if (launch == null) {
-                launch = new Intent();
-                launch.setComponent(new ComponentName(TARGET_PACKAGE, "com.monika.dashboard.MainActivity"));
-            }
-            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            launch.putExtra("viewer_id", viewerId);
-            launch.putExtra("message_id", data.optString("message_id", ""));
-
-            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
-            PendingIntent pendingIntent = PendingIntent.getActivity(
-                    ctx,
-                    viewerId.hashCode(),
-                    launch,
-                    flags);
+            PendingIntent pendingIntent = buildLaunchPendingIntent(ctx, data, viewerId);
 
             String title = "网页游客消息";
             String body = text.length() > 120 ? text.substring(0, 120) : text;
@@ -3737,10 +3812,49 @@ public final class MonikaXposedModule extends XposedModule {
                     .setPriority(Notification.PRIORITY_HIGH)
                     .setDefaults(Notification.DEFAULT_VIBRATE | Notification.DEFAULT_SOUND)
                     .setVisibility(Notification.VISIBILITY_PUBLIC);
-            nm.notify(MESSAGE_NOTIFICATION_ID, builder.build());
+            nm.notify(notificationId(data.optString("message_id", viewerId), MESSAGE_NOTIFICATION_ID), builder.build());
         } catch (Throwable t) {
             logDebug("LSP message notification skipped: " + t.getClass().getSimpleName());
         }
+    }
+
+    private PendingIntent buildLaunchPendingIntent(Context ctx, JSONObject data, String viewerId) {
+        Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(TARGET_PACKAGE);
+        if (launch == null) {
+            launch = new Intent();
+            launch.setComponent(new ComponentName(TARGET_PACKAGE, "com.monika.dashboard.MainActivity"));
+        }
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        launch.putExtra("destination", "messages");
+        launch.putExtra("messages_section", "private");
+        launch.putExtra("viewer_id", safeString(viewerId));
+        launch.putExtra("message_id", data.optString("message_id", ""));
+
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
+        return PendingIntent.getActivity(
+                ctx,
+                notificationId(data.optString("message_id", viewerId), MESSAGE_NOTIFICATION_ID),
+                launch,
+                flags);
+    }
+
+    private void cancelSupervisionFreezeNotification(String packageName) {
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return;
+            NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            nm.cancel(notificationId("freeze:" + safeString(packageName), SUPERVISION_FREEZE_NOTIFICATION_ID));
+        } catch (Throwable t) {
+            logDebug("cancel supervision freeze notification skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private int notificationId(String key, int fallback) {
+        String value = safeString(key);
+        if (value.length() == 0) return fallback;
+        return fallback + (value.hashCode() & 0x00ffffff);
     }
 
     private String buildLspWsUrl(String serverUrl) {
