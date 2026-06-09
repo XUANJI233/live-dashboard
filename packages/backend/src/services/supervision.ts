@@ -406,7 +406,7 @@ function supervisionVerifySystemPrompt(settings: SummarySettings): string {
 要求:
 - ${lspRule}
 - 必须按设备分别判断和输出命令；不要把一台设备的冻结列表、时间线或能力套到另一台设备上。
-- 设备能力 JSON 中 android_lsp 可接收冻结命令/解冻命令/震动/息屏字段；android_normal 可接收震动/息屏和提醒文本，但不能执行冻结/解冻；desktop_message 只能接收提醒文本，不能执行冻结/解冻/震动。
+- 设备能力 JSON 中 android_lsp 可接收冻结命令/解冻命令/震动和提醒文本；android_normal 可接收震动和提醒文本，但不能执行冻结/解冻；desktop_message 只能接收提醒文本，不能执行冻结/解冻/震动。
 - 未列入设备能力 JSON 的设备只作为整体上下文，不能输出设备命令。
 - 如果某台设备不需要动作也不需要提醒，不要为它生成设备命令；保持数组短小。
 - 定时复核或阈值触发只是检查条件，不等于必然偏离；需要结合时间线复核。
@@ -1175,8 +1175,8 @@ function supervisionCapability(platform: string, device: Record<string, unknown>
 }
 
 function supervisionCapabilityCommands(capability: SupervisionDeviceCapability): string[] {
-  if (capability === "android_lsp") return ["freeze", "unfreeze", "vibrate", "screen_off", "say"];
-  if (capability === "android_normal") return ["vibrate", "screen_off", "say"];
+  if (capability === "android_lsp") return ["freeze", "unfreeze", "vibrate", "say"];
+  if (capability === "android_normal") return ["vibrate", "say"];
   return ["say"];
 }
 
