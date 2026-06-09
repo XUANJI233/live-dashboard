@@ -12,6 +12,15 @@ const CONFIG_KEY = 'lw_cfg'
 const ALARM_ID_KEY = 'lw_alarm_id'
 const MANUAL_FULL_SYNC_KEY = 'lw_manual_full'
 const localStorage = new LocalStorage()
+const BUTTON_X = 42
+const BUTTON_W = 396
+const BUTTON_H = 50
+const BUTTON_TEXT_SIZE = 22
+const BUTTON_RADIUS = 10
+const SYNC_BUTTON_Y = 110
+const UPLOAD_BUTTON_Y = 168
+const STATUS_Y = 230
+const REFRESH_BUTTON_Y = 258
 
 function log(msg) { console.log('[WATCH] ' + msg) }
 
@@ -48,27 +57,17 @@ Page(
         text: '', text_size: px(14), color: 0xaaaaaa, align_h: hmUI.align.CENTER_H,
       })
 
-      gWBtn = hmUI.createWidget(hmUI.widget.BUTTON, {
-        x: px(42), y: px(110), w: px(396), h: px(50),
-        text: '启动同步', text_size: px(22), radius: px(10),
-        normal_color: 0x00aa55, press_color: 0x008844,
-        click_func: onToggle,
-      })
+      gWBtn = createSyncButton()
 
-      gWUpload = hmUI.createWidget(hmUI.widget.BUTTON, {
-        x: px(42), y: px(168), w: px(396), h: px(50),
-        text: '手动上传', text_size: px(22), radius: px(10),
-        normal_color: 0x3388cc, press_color: 0x226699,
-        click_func: onManualUpload,
-      })
+      gWUpload = createUploadButton()
 
       gWStatus = hmUI.createWidget(hmUI.widget.TEXT, {
-        x: px(42), y: px(230), w: px(396), h: px(20),
+        x: px(42), y: px(STATUS_Y), w: px(396), h: px(20),
         text: '', text_size: px(14), color: 0x888888, align_h: hmUI.align.CENTER_H,
       })
 
         gWRefresh = hmUI.createWidget(hmUI.widget.BUTTON, {
-          x: px(42), y: px(258), w: px(396), h: px(50),
+          x: px(BUTTON_X), y: px(REFRESH_BUTTON_Y), w: px(BUTTON_W), h: px(BUTTON_H),
           text: '刷新配置', text_size: px(20), radius: px(10),
           normal_color: 0x445566, press_color: 0x334455,
           click_func: onRefreshConfig,
@@ -89,6 +88,35 @@ Page(
 function dbg(msg) {
   log(msg)
   if (gWDebug) gWDebug.setProperty(hmUI.prop.MORE, { text: msg })
+}
+
+function buttonConfig(y, text, normalColor, pressColor, clickFunc) {
+  return {
+    x: px(BUTTON_X), y: px(y), w: px(BUTTON_W), h: px(BUTTON_H),
+    text: text, text_size: px(BUTTON_TEXT_SIZE), radius: px(BUTTON_RADIUS),
+    normal_color: normalColor, press_color: pressColor,
+    click_func: clickFunc,
+  }
+}
+
+function createSyncButton() {
+  return hmUI.createWidget(hmUI.widget.BUTTON, buttonConfig(
+    SYNC_BUTTON_Y,
+    gRunning ? '停止同步' : '启动同步',
+    gRunning ? 0xcc3333 : 0x00aa55,
+    gRunning ? 0x992222 : 0x008844,
+    onToggle,
+  ))
+}
+
+function createUploadButton() {
+  return hmUI.createWidget(hmUI.widget.BUTTON, buttonConfig(
+    UPLOAD_BUTTON_Y,
+    '手动上传',
+    0x3388cc,
+    0x226699,
+    onManualUpload,
+  ))
 }
 
 function onToggle() {
@@ -179,19 +207,8 @@ function updateUI() {
   // 重建按钮实现切换
   if (gWBtn) { hmUI.deleteWidget(gWBtn) }
   if (gWUpload) { hmUI.deleteWidget(gWUpload) }
-  gWBtn = hmUI.createWidget(hmUI.widget.BUTTON, {
-    x: px(42), y: px(150), w: px(396), h: px(55),
-    text: gRunning ? '停止同步' : '启动同步', text_size: px(24), radius: px(12),
-    normal_color: gRunning ? 0xcc3333 : 0x00aa55,
-    press_color: gRunning ? 0x992222 : 0x008844,
-    click_func: onToggle,
-  })
-  gWUpload = hmUI.createWidget(hmUI.widget.BUTTON, {
-    x: px(42), y: px(215), w: px(396), h: px(55),
-    text: '手动上传', text_size: px(24), radius: px(12),
-    normal_color: 0x3388cc, press_color: 0x226699,
-    click_func: onManualUpload,
-  })
+  gWBtn = createSyncButton()
+  gWUpload = createUploadButton()
   gWStatus.setProperty(hmUI.prop.MORE, {
     text: gRunning ? '正在后台同步' : (has ? '已配置，点击启动' : '请在手机端设置'),
     color: gRunning ? 0x00aa55 : (has ? 0xaaaaaa : 0x888888)
