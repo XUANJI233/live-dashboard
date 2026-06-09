@@ -139,7 +139,7 @@ describe("ai-config", () => {
       daily_summary_time: "21:00",
       weekly_summary_weekday: 7,
       weekly_summary_time: "21:30",
-      tz: -480,
+      timezone_offset_minutes: -480,
       client_updated_at: "2026-06-07T10:00:00.000Z",
     });
     expect(newer.sync_status).toBe("applied");
@@ -150,7 +150,7 @@ describe("ai-config", () => {
     const stale = updateSummarySettings({
       target: "older stale draft",
       weekly_plan: [{ weekday: 1, target: "stale", planned_rest: true }],
-      tz: 0,
+      timezone_offset_minutes: 0,
       client_updated_at: "2026-06-07T09:00:00.000Z",
     });
     expect(stale.sync_status).toBe("ignored_stale");
@@ -204,6 +204,43 @@ describe("ai-config", () => {
     expect(numericFlags.planned_rest).toBe(false);
     expect(numericFlags.supervision_enabled).toBe(false);
     expect(numericFlags.supervision_vibrate).toBe(false);
+  });
+
+  test("keeps summary settings API on snake_case fields and explicit booleans", async () => {
+    const { db } = await import("../src/db");
+    const { updateSummarySettings } = await import("../src/services/daily-summary-gen");
+
+    db.prepare("DELETE FROM meta WHERE key = 'ai_summary_settings'").run();
+    const camelCase = updateSummarySettings({
+      plannedRest: true,
+      supervisionEnabled: true,
+      supervisionVibrate: false,
+      supervisionLspFreeze: true,
+      timezoneOffsetMinutes: -480,
+      clientUpdatedAt: "2099-01-01T00:00:00.000Z",
+      updated_at: "2099-01-01T00:00:00.000Z",
+    });
+    expect(camelCase.planned_rest).toBe(false);
+    expect(camelCase.supervision_enabled).toBe(false);
+    expect(camelCase.supervision_vibrate).toBe(true);
+    expect(camelCase.supervision_lsp_freeze).toBe(false);
+    expect(camelCase.timezone_offset_minutes).toBeNull();
+    expect(camelCase.updated_at).not.toBe("2099-01-01T00:00:00.000Z");
+
+    db.prepare("DELETE FROM meta WHERE key = 'ai_summary_settings'").run();
+    const explicitOnly = updateSummarySettings({
+      planned_rest: "true",
+      supervision_enabled: "true",
+      supervision_vibrate: "true",
+      supervision_lsp_freeze: "true",
+      supervision_check_mode: "threshold",
+      client_updated_at: "2099-01-01T00:00:00.000Z",
+    });
+    expect(explicitOnly.planned_rest).toBe(false);
+    expect(explicitOnly.supervision_enabled).toBe(false);
+    expect(explicitOnly.supervision_vibrate).toBe(false);
+    expect(explicitOnly.supervision_lsp_freeze).toBe(false);
+    expect(explicitOnly.supervision_check_mode).toBe("hourly");
   });
 
   test("preserves bounded LSPosed frozen package records in device extras", async () => {

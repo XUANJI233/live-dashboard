@@ -141,25 +141,25 @@ export function getSummarySettings(): SummarySettings {
     return {
       mode: normalizeSummaryMode(parsed.mode),
       target: sanitizeTarget(parsed.target),
-      planned_rest: normalizeBoolean(parsed.planned_rest ?? (parsed as Record<string, unknown>).plannedRest),
-      weekly_plan: normalizeWeeklyPlan(parsed.weekly_plan ?? (parsed as Record<string, unknown>).weeklyPlan),
-      daily_summary_time: normalizeClockTime(parsed.daily_summary_time ?? (parsed as Record<string, unknown>).dailySummaryTime, "21:00"),
-      weekly_summary_weekday: normalizeWeekday(parsed.weekly_summary_weekday ?? (parsed as Record<string, unknown>).weeklySummaryWeekday, 7),
-      weekly_summary_time: normalizeClockTime(parsed.weekly_summary_time ?? (parsed as Record<string, unknown>).weeklySummaryTime, "21:30"),
-      timezone_offset_minutes: normalizeTimezoneOffset(parsed.timezone_offset_minutes ?? (parsed as Record<string, unknown>).timezoneOffsetMinutes ?? (parsed as Record<string, unknown>).tz, null),
-      supervision_enabled: normalizeBoolean(parsed.supervision_enabled ?? (parsed as Record<string, unknown>).supervisionEnabled),
-      supervision_check_mode: normalizeSupervisionCheckMode(parsed.supervision_check_mode ?? (parsed as Record<string, unknown>).supervisionCheckMode),
-      supervision_check_interval_minutes: normalizeSupervisionInterval(parsed.supervision_check_interval_minutes ?? (parsed as Record<string, unknown>).supervisionCheckIntervalMinutes, 60),
-      supervision_blacklist_minutes: normalizeMinuteThreshold(parsed.supervision_blacklist_minutes ?? (parsed as Record<string, unknown>).supervisionBlacklistMinutes, 20),
-      supervision_target_min_minutes: normalizeMinuteThreshold(parsed.supervision_target_min_minutes ?? (parsed as Record<string, unknown>).supervisionTargetMinMinutes, 25),
-      supervision_vibrate: parsed.supervision_vibrate === undefined && (parsed as Record<string, unknown>).supervisionVibrate === undefined
+      planned_rest: normalizeBoolean(parsed.planned_rest),
+      weekly_plan: normalizeWeeklyPlan(parsed.weekly_plan),
+      daily_summary_time: normalizeClockTime(parsed.daily_summary_time, "21:00"),
+      weekly_summary_weekday: normalizeWeekday(parsed.weekly_summary_weekday, 7),
+      weekly_summary_time: normalizeClockTime(parsed.weekly_summary_time, "21:30"),
+      timezone_offset_minutes: normalizeTimezoneOffset(parsed.timezone_offset_minutes, null),
+      supervision_enabled: normalizeBoolean(parsed.supervision_enabled),
+      supervision_check_mode: normalizeSupervisionCheckMode(parsed.supervision_check_mode),
+      supervision_check_interval_minutes: normalizeSupervisionInterval(parsed.supervision_check_interval_minutes, 60),
+      supervision_blacklist_minutes: normalizeMinuteThreshold(parsed.supervision_blacklist_minutes, 20),
+      supervision_target_min_minutes: normalizeMinuteThreshold(parsed.supervision_target_min_minutes, 25),
+      supervision_vibrate: parsed.supervision_vibrate === undefined
         ? true
-        : normalizeBoolean(parsed.supervision_vibrate ?? (parsed as Record<string, unknown>).supervisionVibrate),
-      supervision_skip_watch_sleep: parsed.supervision_skip_watch_sleep === undefined && (parsed as Record<string, unknown>).supervisionSkipWatchSleep === undefined
+        : normalizeBoolean(parsed.supervision_vibrate),
+      supervision_skip_watch_sleep: parsed.supervision_skip_watch_sleep === undefined
         ? true
-        : normalizeBoolean(parsed.supervision_skip_watch_sleep ?? (parsed as Record<string, unknown>).supervisionSkipWatchSleep),
-      supervision_lsp_freeze: normalizeBoolean(parsed.supervision_lsp_freeze ?? (parsed as Record<string, unknown>).supervisionLspFreeze),
-      supervision_rules: normalizeSupervisionRules(parsed.supervision_rules ?? (parsed as Record<string, unknown>).supervisionRules),
+        : normalizeBoolean(parsed.supervision_skip_watch_sleep),
+      supervision_lsp_freeze: normalizeBoolean(parsed.supervision_lsp_freeze),
+      supervision_rules: normalizeSupervisionRules(parsed.supervision_rules),
       supervision_rules_updated_at: typeof parsed.supervision_rules_updated_at === "string" ? parsed.supervision_rules_updated_at : null,
       supervision_rules_error: typeof parsed.supervision_rules_error === "string" ? parsed.supervision_rules_error : null,
       updated_at: typeof parsed.updated_at === "string" ? parsed.updated_at : null,
@@ -173,7 +173,7 @@ export function updateSummarySettings(input: unknown): SummarySettings {
   const source = input && typeof input === "object" ? input as Record<string, unknown> : {};
   const current = getSummarySettings();
   const incomingUpdatedAt = normalizeIsoTimestamp(
-    source.client_updated_at ?? source.clientUpdatedAt ?? source.updated_at ?? source.updatedAt,
+    source.client_updated_at,
     new Date().toISOString(),
   );
   const currentUpdatedMs = timestampMs(current.updated_at);
@@ -185,48 +185,48 @@ export function updateSummarySettings(input: unknown): SummarySettings {
   const next: SummarySettings = {
     mode: source.mode === undefined ? current.mode : normalizeSummaryMode(source.mode),
     target: source.target === undefined ? current.target : sanitizeTarget(source.target),
-    planned_rest: source.planned_rest === undefined && source.plannedRest === undefined
+    planned_rest: source.planned_rest === undefined
       ? current.planned_rest
-      : normalizeBoolean(source.planned_rest ?? source.plannedRest),
-    weekly_plan: source.weekly_plan === undefined && source.weeklyPlan === undefined
+      : normalizeBoolean(source.planned_rest),
+    weekly_plan: source.weekly_plan === undefined
       ? current.weekly_plan
-      : normalizeWeeklyPlan(source.weekly_plan ?? source.weeklyPlan),
-    daily_summary_time: source.daily_summary_time === undefined && source.dailySummaryTime === undefined
+      : normalizeWeeklyPlan(source.weekly_plan),
+    daily_summary_time: source.daily_summary_time === undefined
       ? current.daily_summary_time
-      : normalizeClockTime(source.daily_summary_time ?? source.dailySummaryTime, current.daily_summary_time),
-    weekly_summary_weekday: source.weekly_summary_weekday === undefined && source.weeklySummaryWeekday === undefined
+      : normalizeClockTime(source.daily_summary_time, current.daily_summary_time),
+    weekly_summary_weekday: source.weekly_summary_weekday === undefined
       ? current.weekly_summary_weekday
-      : normalizeWeekday(source.weekly_summary_weekday ?? source.weeklySummaryWeekday, current.weekly_summary_weekday),
-    weekly_summary_time: source.weekly_summary_time === undefined && source.weeklySummaryTime === undefined
+      : normalizeWeekday(source.weekly_summary_weekday, current.weekly_summary_weekday),
+    weekly_summary_time: source.weekly_summary_time === undefined
       ? current.weekly_summary_time
-      : normalizeClockTime(source.weekly_summary_time ?? source.weeklySummaryTime, current.weekly_summary_time),
-    timezone_offset_minutes: source.timezone_offset_minutes === undefined && source.timezoneOffsetMinutes === undefined && source.tz === undefined
+      : normalizeClockTime(source.weekly_summary_time, current.weekly_summary_time),
+    timezone_offset_minutes: source.timezone_offset_minutes === undefined
       ? current.timezone_offset_minutes
-      : normalizeTimezoneOffset(source.timezone_offset_minutes ?? source.timezoneOffsetMinutes ?? source.tz, current.timezone_offset_minutes),
-    supervision_enabled: source.supervision_enabled === undefined && source.supervisionEnabled === undefined
+      : normalizeTimezoneOffset(source.timezone_offset_minutes, current.timezone_offset_minutes),
+    supervision_enabled: source.supervision_enabled === undefined
       ? current.supervision_enabled
-      : normalizeBoolean(source.supervision_enabled ?? source.supervisionEnabled),
-    supervision_check_mode: source.supervision_check_mode === undefined && source.supervisionCheckMode === undefined
+      : normalizeBoolean(source.supervision_enabled),
+    supervision_check_mode: source.supervision_check_mode === undefined
       ? current.supervision_check_mode
-      : normalizeSupervisionCheckMode(source.supervision_check_mode ?? source.supervisionCheckMode),
-    supervision_check_interval_minutes: source.supervision_check_interval_minutes === undefined && source.supervisionCheckIntervalMinutes === undefined
+      : normalizeSupervisionCheckMode(source.supervision_check_mode),
+    supervision_check_interval_minutes: source.supervision_check_interval_minutes === undefined
       ? current.supervision_check_interval_minutes
-      : normalizeSupervisionInterval(source.supervision_check_interval_minutes ?? source.supervisionCheckIntervalMinutes, current.supervision_check_interval_minutes),
-    supervision_blacklist_minutes: source.supervision_blacklist_minutes === undefined && source.supervisionBlacklistMinutes === undefined
+      : normalizeSupervisionInterval(source.supervision_check_interval_minutes, current.supervision_check_interval_minutes),
+    supervision_blacklist_minutes: source.supervision_blacklist_minutes === undefined
       ? current.supervision_blacklist_minutes
-      : normalizeMinuteThreshold(source.supervision_blacklist_minutes ?? source.supervisionBlacklistMinutes, current.supervision_blacklist_minutes),
-    supervision_target_min_minutes: source.supervision_target_min_minutes === undefined && source.supervisionTargetMinMinutes === undefined
+      : normalizeMinuteThreshold(source.supervision_blacklist_minutes, current.supervision_blacklist_minutes),
+    supervision_target_min_minutes: source.supervision_target_min_minutes === undefined
       ? current.supervision_target_min_minutes
-      : normalizeMinuteThreshold(source.supervision_target_min_minutes ?? source.supervisionTargetMinMinutes, current.supervision_target_min_minutes),
-    supervision_vibrate: source.supervision_vibrate === undefined && source.supervisionVibrate === undefined
+      : normalizeMinuteThreshold(source.supervision_target_min_minutes, current.supervision_target_min_minutes),
+    supervision_vibrate: source.supervision_vibrate === undefined
       ? current.supervision_vibrate
-      : normalizeBoolean(source.supervision_vibrate ?? source.supervisionVibrate),
-    supervision_skip_watch_sleep: source.supervision_skip_watch_sleep === undefined && source.supervisionSkipWatchSleep === undefined
+      : normalizeBoolean(source.supervision_vibrate),
+    supervision_skip_watch_sleep: source.supervision_skip_watch_sleep === undefined
       ? current.supervision_skip_watch_sleep
-      : normalizeBoolean(source.supervision_skip_watch_sleep ?? source.supervisionSkipWatchSleep),
-    supervision_lsp_freeze: source.supervision_lsp_freeze === undefined && source.supervisionLspFreeze === undefined
+      : normalizeBoolean(source.supervision_skip_watch_sleep),
+    supervision_lsp_freeze: source.supervision_lsp_freeze === undefined
       ? current.supervision_lsp_freeze
-      : normalizeBoolean(source.supervision_lsp_freeze ?? source.supervisionLspFreeze),
+      : normalizeBoolean(source.supervision_lsp_freeze),
     supervision_rules: current.supervision_rules,
     supervision_rules_updated_at: current.supervision_rules_updated_at,
     supervision_rules_error: current.supervision_rules_error,
@@ -400,9 +400,7 @@ function sanitizeTarget(value: unknown): string {
 }
 
 function normalizeBoolean(value: unknown): boolean {
-  if (typeof value === "boolean") return value;
-  const raw = String(value || "").trim().toLowerCase();
-  return raw === "true" || raw === "yes" || raw === "on" || raw === "计划休息";
+  return value === true;
 }
 
 function normalizeTimezoneOffset(value: unknown, fallback: number | null): number | null {
@@ -439,16 +437,16 @@ export function normalizeSupervisionRules(value: unknown): SupervisionRules {
     ? value as Record<string, unknown>
     : {};
   return {
-    whitelist_app_regex: normalizeRegexList(source.whitelist_app_regex ?? source.whitelistAppRegex),
-    blacklist_app_regex: normalizeRegexList(source.blacklist_app_regex ?? source.blacklistAppRegex),
-    target_app_regex: normalizeRegexList(source.target_app_regex ?? source.targetAppRegex),
+    whitelist_app_regex: normalizeRegexList(source.whitelist_app_regex),
+    blacklist_app_regex: normalizeRegexList(source.blacklist_app_regex),
+    target_app_regex: normalizeRegexList(source.target_app_regex),
     reason: sanitizeTarget(source.reason).slice(0, 180),
   };
 }
 
 function normalizeSupervisionCheckMode(value: unknown): SupervisionCheckMode {
   const raw = String(value || "").trim().toLowerCase();
-  return raw === "triggered" || raw === "threshold" || raw === "阈值触发" ? "triggered" : "hourly";
+  return raw === "triggered" ? "triggered" : "hourly";
 }
 
 function normalizeSupervisionInterval(value: unknown, fallback: number): number {
