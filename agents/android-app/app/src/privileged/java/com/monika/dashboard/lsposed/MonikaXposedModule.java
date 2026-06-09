@@ -3218,11 +3218,13 @@ public final class MonikaXposedModule extends XposedModule {
     private void handleSupervisionPayload(JSONObject payload, String text) {
         try {
             if (payload == null || !"supervision_alert".equals(payload.optString("type"))) return;
-            if (strictBoolean(payload, "unfreeze", false) || hasNonEmptyArray(payload, "unfreeze_commands", "解冻命令")) {
+            JSONArray unfreezeCommands = payload.optJSONArray("unfreeze_commands");
+            if (unfreezeCommands != null && unfreezeCommands.length() > 0) {
                 handleSupervisionUnfreezePayload(payload, text);
                 return;
             }
-            if (!strictBoolean(payload, "freeze", false) && !hasNonEmptyArray(payload, "freeze_commands", "冻结命令")) {
+            JSONArray freezeCommands = payload.optJSONArray("freeze_commands");
+            if (freezeCommands == null || freezeCommands.length() == 0) {
                 activeFreezeAlert = null;
                 return;
             }
@@ -3234,16 +3236,14 @@ public final class MonikaXposedModule extends XposedModule {
                 return;
             }
             long freezeUntil = nextDailyUnfreezeAt(now);
-            java.util.List<java.util.regex.Pattern> patterns = compileSafePatterns(firstJsonArray(payload, "freeze_commands", "冻结命令", "violation_regex"));
+            java.util.List<java.util.regex.Pattern> patterns = compileSafePatterns(freezeCommands);
             if (patterns.isEmpty()) {
                 activeFreezeAlert = null;
                 return;
             }
-            java.util.List<java.util.regex.Pattern> recoveryPatterns = compileSafePatterns(payload.optJSONArray("recovery_regex"));
             activeFreezeAlert = new SupervisionFreezeAlert(
                     payload.optString("alert_id", "supervision"),
                     patterns,
-                    recoveryPatterns,
                     activeUntil,
                     freezeUntil,
                     supervisionReason(payload, text));
@@ -3259,13 +3259,9 @@ public final class MonikaXposedModule extends XposedModule {
         try {
             String alertId = safeString(payload.optString("alert_id", "supervision"));
             String reason = supervisionReason(payload, text);
-            JSONArray unfreezeCommands = firstJsonArray(payload, "unfreeze_commands", "解冻命令");
+            JSONArray unfreezeCommands = payload.optJSONArray("unfreeze_commands");
             java.util.List<java.util.regex.Pattern> patterns = compileSafePatterns(unfreezeCommands);
-            if (patterns.isEmpty()) {
-                patterns = compileSafePatterns(payload.optJSONArray("recovery_regex"));
-            }
-            boolean unfreezeAll = strictBoolean(payload, "unfreeze_all", false)
-                    || containsAllSupervisionCommand(unfreezeCommands)
+            boolean unfreezeAll = containsAllSupervisionCommand(unfreezeCommands)
                     || patterns.isEmpty();
             int count = unfreezeFrozenPackages(
                     unfreezeAll ? null : patterns,
@@ -3303,11 +3299,6 @@ public final class MonikaXposedModule extends XposedModule {
             String pkg = safeString(packageName);
             if (pkg.length() == 0 || isProtectedFreezePackage(pkg)) return;
             String matchText = pkg + " " + safeString(appName) + " " + safeString(title);
-            if (matchesAny(alert.recoveryPatterns, matchText)) {
-                unfreezeFrozenPackages(null, "AI recovery match: " + pkg, alert.id);
-                maybeDirectUpload(true);
-                return;
-            }
             FrozenPackageRecord existing = frozenPackages.get(pkg);
             if (existing != null && existing.until > now) return;
             if (!matchesAny(alert.violationPatterns, matchText)) return;
@@ -3589,21 +3580,6 @@ public final class MonikaXposedModule extends XposedModule {
         return out;
     }
 
-    private JSONArray firstJsonArray(JSONObject object, String... keys) {
-        if (object == null || keys == null) return null;
-        for (String key : keys) {
-            if (key == null) continue;
-            JSONArray arr = object.optJSONArray(key);
-            if (arr != null) return arr;
-        }
-        return null;
-    }
-
-    private boolean hasNonEmptyArray(JSONObject object, String... keys) {
-        JSONArray arr = firstJsonArray(object, keys);
-        return arr != null && arr.length() > 0;
-    }
-
     private boolean containsAllSupervisionCommand(JSONArray arr) {
         if (arr == null) return false;
         for (int i = 0; i < arr.length(); i++) {
@@ -3625,7 +3601,6 @@ public final class MonikaXposedModule extends XposedModule {
     private String supervisionReason(JSONObject payload, String fallback) {
         String reason = safeString(payload.optString("reason", ""));
         if (reason.length() == 0) reason = safeString(payload.optString("say", ""));
-        if (reason.length() == 0) reason = safeString(payload.optString("要说的话", ""));
         if (reason.length() == 0) reason = safeString(fallback);
         return reason;
     }
@@ -4298,7 +4273,6 @@ public final class MonikaXposedModule extends XposedModule {
     private static final class SupervisionFreezeAlert {
         final String id;
         final java.util.List<java.util.regex.Pattern> violationPatterns;
-        final java.util.List<java.util.regex.Pattern> recoveryPatterns;
         final long activeUntil;
         final long freezeUntil;
         final String reason;
@@ -4306,13 +4280,11 @@ public final class MonikaXposedModule extends XposedModule {
         SupervisionFreezeAlert(
                 String id,
                 java.util.List<java.util.regex.Pattern> violationPatterns,
-                java.util.List<java.util.regex.Pattern> recoveryPatterns,
                 long activeUntil,
                 long freezeUntil,
                 String reason) {
             this.id = id;
             this.violationPatterns = violationPatterns;
-            this.recoveryPatterns = recoveryPatterns;
             this.activeUntil = activeUntil;
             this.freezeUntil = freezeUntil;
             this.reason = reason;

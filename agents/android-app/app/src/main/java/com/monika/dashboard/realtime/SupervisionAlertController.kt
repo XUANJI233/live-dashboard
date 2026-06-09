@@ -17,8 +17,8 @@ object SupervisionAlertController {
     private const val TYPE = "supervision_alert"
     private const val DEFAULT_ACTIVE_MS = 45 * 60_000L
     private const val DEFAULT_RESTART_COOLDOWN_MS = 120_000L
-    private const val NON_RECOVERY_GRACE_MS = 30_000L
     private const val MAX_REGEX_COUNT = 12
+    private val VIBRATION_PATTERN = longArrayOf(0, 450, 350, 450)
 
     private val handler = Handler(Looper.getMainLooper())
     private var active: ActiveAlert? = null
@@ -34,8 +34,7 @@ object SupervisionAlertController {
 
         val alert = ActiveAlert(
             id = payload.optString("alert_id").ifBlank { messageId },
-            recovery = compileRegexList(payload.optJSONArray("recovery_regex")),
-            violation = compileRegexList(payload.firstArray("freeze_commands", "violation_regex")),
+            violation = compileRegexList(payload.optJSONArray("freeze_commands")),
             activeUntil = parseTime(payload.optString("active_until"))
                 ?: (System.currentTimeMillis() + DEFAULT_ACTIVE_MS),
             restartCooldownMs = payload.optLong("restart_cooldown_seconds", DEFAULT_RESTART_COOLDOWN_MS / 1000)
@@ -60,25 +59,14 @@ object SupervisionAlertController {
         val packageName = snapshot.foreground?.packageName
         if (SystemPackageGuard.isProtectedForSupervision(context, packageName)) {
             if (alert.vibrating) stopVibration(context, alert, keepActive = true)
-            alert.recoveredAt = now
             return
         }
 
         val text = snapshot.matchText()
-        val recovered = alert.recovery.isNotEmpty() && alert.recovery.any { it.containsMatchIn(text) }
-        if (recovered) {
-            if (alert.vibrating) stopVibration(context, alert, keepActive = true)
-            alert.recoveredAt = now
-            return
-        }
-
         if (!alert.vibrate || alert.vibrating) return
         val violated = alert.violation.isNotEmpty() && alert.violation.any { it.containsMatchIn(text) }
-        val leftRecoveryLongEnough = alert.recovery.isNotEmpty() &&
-            alert.recoveredAt > 0 &&
-            now - alert.recoveredAt >= NON_RECOVERY_GRACE_MS
         val cooldownOk = now - alert.lastVibrateAt >= alert.restartCooldownMs
-        if ((violated || leftRecoveryLongEnough) && cooldownOk) {
+        if (violated && cooldownOk) {
             DebugLog.log("监督", "检测到再次偏离，恢复震动")
             startVibration(context, alert)
         }
@@ -120,14 +108,6 @@ object SupervisionAlertController {
         return opt(key) as? Boolean ?: false
     }
 
-    private fun JSONObject.firstArray(vararg keys: String): org.json.JSONArray? {
-        for (key in keys) {
-            val arr = optJSONArray(key)
-            if (arr != null) return arr
-        }
-        return null
-    }
-
     @SuppressLint("MissingPermission")
     private fun startVibration(context: Context, alert: ActiveAlert) {
         val vibrator = vibrator(context) ?: return
@@ -135,11 +115,14 @@ object SupervisionAlertController {
         alert.vibrating = true
         alert.lastVibrateAt = System.currentTimeMillis()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vibrator.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 450, 350, 450, 1200), 1))
+            vibrator.vibrate(VibrationEffect.createWaveform(VIBRATION_PATTERN, -1))
         } else {
             @Suppress("DEPRECATION")
-            vibrator.vibrate(longArrayOf(0, 450, 350, 450, 1200), 1)
+            vibrator.vibrate(VIBRATION_PATTERN, -1)
         }
+        handler.postDelayed({
+            if (active?.id == alert.id) alert.vibrating = false
+        }, VIBRATION_PATTERN.sum().coerceAtLeast(1L))
     }
 
     private fun stopVibration(context: Context, alert: ActiveAlert, keepActive: Boolean) {
@@ -185,13 +168,11 @@ object SupervisionAlertController {
 
     private data class ActiveAlert(
         val id: String,
-        val recovery: List<Regex>,
         val violation: List<Regex>,
         val activeUntil: Long,
         val restartCooldownMs: Long,
         val vibrate: Boolean,
         var vibrating: Boolean = false,
-        var recoveredAt: Long = 0L,
         var lastVibrateAt: Long = 0L,
     )
 }
