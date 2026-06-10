@@ -21,6 +21,7 @@ from pathlib import Path
 import psutil
 import requests
 
+from autostart_actions import toggle_autostart
 from device_commands import execute_desktop_command, extract_device_command, receipt_frame
 from device_profile import with_device_capabilities
 from probe_cache import TimedProbe
@@ -29,8 +30,6 @@ from win_control import (
     ActivationEventServer,
     SingleInstanceGuard,
     is_autostart_enabled,
-    remove_legacy_startup_task,
-    set_registry_autostart,
 )
 
 try:
@@ -1051,28 +1050,10 @@ class TrayAgent:
             self._icon.update_menu()
 
     def _toggle_autostart(self, _icon=None, _item=None):
-        enabled = is_autostart_enabled()
-        if enabled:
-            registry_ok = set_registry_autostart(False)
-            legacy_ok = remove_legacy_startup_task()
-            if registry_ok and legacy_ok:
-                log.info("Autostart disabled")
-            else:
-                self._notify_user(
-                    "Live Dashboard",
-                    "关闭开机自启时未能清理全部启动项。\n请检查任务计划程序中的 LiveDashboardAgent。",
-                    error=True,
-                )
-        else:
-            remove_legacy_startup_task()
-            if set_registry_autostart(True):
-                log.info("Autostart enabled")
-            else:
-                self._notify_user(
-                    "Live Dashboard",
-                    "无法开启开机自启，请检查当前账户是否有写入启动项的权限。",
-                    error=True,
-                )
+        result = toggle_autostart()
+        log.info("Autostart %s: %s", "enabled" if result.enabled else "disabled", result.message)
+        if not result.ok:
+            self._notify_user("Live Dashboard", result.message, error=True)
         if self._icon:
             self._icon.update_menu()
 

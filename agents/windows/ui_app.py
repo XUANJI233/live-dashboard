@@ -9,6 +9,7 @@ import queue
 import threading
 from typing import Callable
 
+from autostart_actions import toggle_autostart
 from ui_theme import (
     BG,
     BORDER,
@@ -23,11 +24,7 @@ from ui_theme import (
     notice_palette,
     status_color,
 )
-from win_control import (
-    is_autostart_enabled,
-    remove_legacy_startup_task,
-    set_registry_autostart,
-)
+from win_control import is_autostart_enabled
 
 log = logging.getLogger("agent")
 
@@ -50,11 +47,10 @@ class DashboardUiController:
         log_path: Path | None = None,
     ):
         import tkinter as tk
-        from tkinter import messagebox, ttk
+        from tkinter import ttk
 
         self.tk = tk
         self.ttk = ttk
-        self.messagebox = messagebox
         self._load_config = load_config
         self._validate_config = validate_config
         self._save_config = save_config
@@ -430,56 +426,44 @@ class DashboardUiController:
             return
         err = self._validate_config(cfg)
         if err:
-            self.messagebox.showerror("配置错误", err, parent=self.root)
+            self._show_notice_now("配置错误", err, error=True)
             return
         if not self._save_config(cfg):
-            self.messagebox.showerror("保存失败", "无法写入 config.json", parent=self.root)
+            self._show_notice_now("保存失败", "无法写入 config.json", error=True)
             return
         if self._on_saved:
             self._on_saved()
         self._apply_config(self._load_config())
-        self.messagebox.showinfo("Live Dashboard", "配置已保存，后台运行时会自动重载。", parent=self.root)
+        self._show_notice_now("Live Dashboard", "配置已保存，后台运行时会自动重载。")
 
     def _int_value(self, raw: str, label: str, low: int, high: int) -> int | None:
         try:
             value = int(raw)
         except ValueError:
-            self.messagebox.showerror("配置错误", f"{label} 必须是整数", parent=self.root)
+            self._show_notice_now("配置错误", f"{label} 必须是整数", error=True)
             return None
         if value < low or value > high:
-            self.messagebox.showerror("配置错误", f"{label} 必须在 {low}-{high} 之间", parent=self.root)
+            self._show_notice_now("配置错误", f"{label} 必须在 {low}-{high} 之间", error=True)
             return None
         return value
 
     def _toggle_autostart(self) -> None:
-        enabled = is_autostart_enabled()
-        if enabled:
-            registry_ok = set_registry_autostart(False)
-            legacy_ok = remove_legacy_startup_task()
-            ok = registry_ok and legacy_ok
-            message = "开机自启动已关闭。" if ok else "关闭自启动时未能清理全部启动项，请检查任务计划程序。"
-        else:
-            remove_legacy_startup_task()
-            ok = set_registry_autostart(True)
-            message = "开机自启动已开启。" if ok else "无法开启自启动，请检查当前账户权限。"
+        result = toggle_autostart()
         self._refresh_view()
-        if ok:
-            self.messagebox.showinfo("Live Dashboard", message, parent=self.root)
-        else:
-            self.messagebox.showerror("Live Dashboard", message, parent=self.root)
+        self._show_notice_now("Live Dashboard", result.message, error=not result.ok)
 
     def _open_log(self) -> None:
         if not self._log_path or not self._log_path.exists():
-            self.messagebox.showinfo("Live Dashboard", "还没有日志文件。", parent=self.root)
+            self._show_notice_now("Live Dashboard", "还没有日志文件。")
             return
         try:
             os.startfile(self._log_path)  # type: ignore[attr-defined]
         except OSError as exc:
-            self.messagebox.showerror("Live Dashboard", f"无法打开日志: {exc}", parent=self.root)
+            self._show_notice_now("Live Dashboard", f"无法打开日志: {exc}", error=True)
 
     def _refresh_messages(self) -> None:
         if not self._message_client:
-            self.messagebox.showinfo("Live Dashboard", "消息客户端尚未启动。", parent=self.root)
+            self._show_notice_now("Live Dashboard", "消息客户端尚未启动。")
             return
 
         def worker() -> None:

@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 from typing import Callable
 
 log = logging.getLogger("agent")
@@ -92,15 +93,19 @@ class SingleInstanceGuard:
         self._handle = CreateMutexW(None, False, name)
         self.already_running = bool(self._handle and GetLastError() == ERROR_ALREADY_EXISTS)
 
-    def notify_existing(self) -> bool:
+    def notify_existing(self, attempts: int = 8, delay_seconds: float = 0.15) -> bool:
         """Ask the already-running instance to show its main window."""
-        handle = OpenEventW(EVENT_MODIFY_STATE, False, ACTIVATION_EVENT_NAME)
-        if not handle:
-            return False
-        try:
-            return bool(SetEvent(handle))
-        finally:
-            CloseHandle(handle)
+        for attempt in range(max(1, attempts)):
+            handle = OpenEventW(EVENT_MODIFY_STATE, False, ACTIVATION_EVENT_NAME)
+            if handle:
+                try:
+                    if SetEvent(handle):
+                        return True
+                finally:
+                    CloseHandle(handle)
+            if attempt + 1 < attempts:
+                time.sleep(max(0.01, delay_seconds))
+        return False
 
     def close(self) -> None:
         if self._handle:
