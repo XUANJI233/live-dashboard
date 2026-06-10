@@ -6,6 +6,51 @@ plugins {
         id("io.gitlab.arturbosch.detekt")
 }
 
+fun env(name: String): String? =
+    providers.environmentVariable(name).orNull?.takeIf { it.isNotBlank() }
+
+fun envInt(name: String): Int? =
+    env(name)?.toIntOrNull()?.takeIf { it > 0 }
+
+fun envTrue(name: String): Boolean =
+    env(name) == "true"
+
+data class AndroidSigningEnv(
+    val keystorePath: String,
+    val keystorePassword: String,
+    val keyAlias: String,
+    val keyPassword: String,
+)
+
+fun androidSigningEnv(): AndroidSigningEnv? {
+    val keystorePath = env("ANDROID_KEYSTORE_PATH")
+    val keystorePassword = env("ANDROID_KEYSTORE_PASSWORD")
+    val keyAlias = env("ANDROID_KEY_ALIAS")
+    val keyPassword = env("ANDROID_KEY_PASSWORD")
+    return if (listOf(keystorePath, keystorePassword, keyAlias, keyPassword).all { !it.isNullOrBlank() }) {
+        AndroidSigningEnv(
+            keystorePath = keystorePath!!,
+            keystorePassword = keystorePassword!!,
+            keyAlias = keyAlias!!,
+            keyPassword = keyPassword!!,
+        )
+    } else {
+        null
+    }
+}
+
+val ciBuildNumber = envInt("ANDROID_BUILD_NUMBER") ?: envInt("GITHUB_RUN_NUMBER")
+val appVersionCode = envInt("ANDROID_VERSION_CODE") ?: ciBuildNumber?.let { 10_000 + it } ?: 1
+val appVersionName = env("ANDROID_VERSION_NAME") ?: ciBuildNumber?.let { "1.0.0+$it" } ?: "1.0.0"
+val androidSigning = androidSigningEnv()
+val requireSigning = envTrue("REQUIRE_ANDROID_SIGNING") || envTrue("REQUIRE_ANDROID_RELEASE_SIGNING")
+
+if (requireSigning && androidSigning == null) {
+    throw GradleException(
+        "Android signing is required, but ANDROID_KEYSTORE_PATH/PASSWORD/ALIAS env vars are incomplete."
+    )
+}
+
 android {
     namespace = "com.monika.dashboard"
     compileSdk = 36
@@ -14,8 +59,8 @@ android {
         applicationId = "com.monika.dashboard"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
     }
 
     flavorDimensions += "capability"
@@ -31,9 +76,29 @@ android {
         }
     }
 
+    signingConfigs {
+        androidSigning?.let { signing ->
+            create("release") {
+                storeFile = file(signing.keystorePath)
+                storePassword = signing.keystorePassword
+                keyAlias = signing.keyAlias
+                keyPassword = signing.keyPassword
+                storeType = if (signing.keystorePath.endsWith(".p12", ignoreCase = true)) "pkcs12" else "jks"
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            if (androidSigning != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
         release {
             isMinifyEnabled = true
+            if (androidSigning != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

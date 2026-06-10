@@ -35,6 +35,7 @@ jobs:
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_BUILD_NUMBER: ${{ github.run_number }}
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v6
@@ -65,16 +66,22 @@ jobs:
       - name: Unit tests (Robolectric)
         working-directory: agents/android-app
         run: ./gradlew testNormalDebugUnitTest --stacktrace
-      - name: Setup release signing (ECDSA v3)
-        if: contains(matrix.tasks, 'Release')
+      - name: Setup Android signing (ECDSA v3)
+        if: github.event_name != 'pull_request'
         run: |
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > release.p12
-            echo "ANDROID_KEYSTORE_PATH=$PWD/release.p12" >> "$GITHUB_ENV"
-            echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
-            echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
-            echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] ||
+             [ -z "$ANDROID_KEYSTORE_PASSWORD" ] ||
+             [ -z "$ANDROID_KEY_ALIAS" ] ||
+             [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::error::Android signing secrets are incomplete"
+            exit 1
           fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > release.p12
+          echo "ANDROID_KEYSTORE_PATH=$PWD/release.p12" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
+          echo "REQUIRE_ANDROID_SIGNING=true" >> "$GITHUB_ENV"
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -90,6 +97,8 @@ jobs:
       - name: Build ${{ matrix.variant }}
         working-directory: agents/android-app
         run: ./gradlew ${{ matrix.tasks }} --stacktrace
+        env:
+          REQUIRE_ANDROID_SIGNING: ${{ github.event_name != 'pull_request' }}
       - name: Upload ${{ matrix.variant }} APK
         uses: actions/upload-artifact@v6
         with:
