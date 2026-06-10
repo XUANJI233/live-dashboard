@@ -9,6 +9,20 @@ import queue
 import threading
 from typing import Callable
 
+from ui_theme import (
+    BG,
+    BORDER,
+    BUTTON_ACTIVE_BG,
+    BUTTON_BG,
+    MUTED,
+    PRIMARY_ACTIVE_BG,
+    PRIMARY_BG,
+    SURFACE,
+    SURFACE_MUTED,
+    TEXT,
+    notice_palette,
+    status_color,
+)
 from win_control import (
     is_autostart_enabled,
     remove_legacy_startup_task,
@@ -20,17 +34,6 @@ log = logging.getLogger("agent")
 ConfigLoader = Callable[[], dict]
 ConfigValidator = Callable[[dict], str | None]
 ConfigSaver = Callable[[dict], bool]
-
-BG = "#F7F6F3"
-SURFACE = "#FFFFFF"
-SURFACE_MUTED = "#FBFBFA"
-BORDER = "#E7E3DC"
-TEXT = "#1F2428"
-MUTED = "#6B6F76"
-ACCENT = "#1F6C9F"
-SUCCESS = "#346538"
-WARNING = "#956400"
-ERROR = "#9F2F2D"
 
 
 class DashboardUiController:
@@ -67,6 +70,7 @@ class DashboardUiController:
         self._message_client = None
         self._visible = False
         self._active_tab = "overview"
+        self._notice_after_id: str | None = None
 
         self.root = tk.Tk()
         self.root.title("Live Dashboard")
@@ -95,11 +99,16 @@ class DashboardUiController:
         self._commands.put(("notice", (title, message, error)))
 
     def update_status(self, status: str, current_target: str | None = None) -> None:
+        changed = False
         with self._state_lock:
-            self._status = status
-            if current_target is not None:
+            if self._status != status:
+                self._status = status
+                changed = True
+            if current_target is not None and self._current_target != current_target:
                 self._current_target = current_target
-        self._commands.put(("refresh", None))
+                changed = True
+        if changed:
+            self._commands.put(("refresh", None))
 
     def set_message_client(self, client) -> None:
         if self._message_client is client:
@@ -166,6 +175,8 @@ class DashboardUiController:
             btn.pack(side="left", padx=(0, 8))
             self._nav_buttons[key] = btn
 
+        self._notice = self._build_notice(shell)
+
         self._content = tk.Frame(shell, bg=BG)
         self._content.pack(fill="both", expand=True)
 
@@ -175,6 +186,56 @@ class DashboardUiController:
             "settings": self._build_settings(self._content),
         }
         self._select_tab("overview")
+
+    def _build_notice(self, parent):
+        tk = self.tk
+        frame = tk.Frame(
+            parent,
+            bg=SURFACE_MUTED,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            padx=14,
+            pady=10,
+        )
+        frame.columnconfigure(0, weight=1)
+        text_area = tk.Frame(frame, bg=SURFACE_MUTED)
+        text_area.grid(row=0, column=0, sticky="ew")
+        self._notice_title = tk.Label(
+            text_area,
+            text="Live Dashboard",
+            bg=SURFACE_MUTED,
+            fg=TEXT,
+            font=("Segoe UI Semibold", 10),
+            anchor="w",
+        )
+        self._notice_title.pack(fill="x", anchor="w")
+        self._notice_message = tk.Label(
+            text_area,
+            text="",
+            bg=SURFACE_MUTED,
+            fg=MUTED,
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+            wraplength=640,
+        )
+        self._notice_message.pack(fill="x", anchor="w", pady=(2, 0))
+        self._notice_close = tk.Button(
+            frame,
+            text="×",
+            command=self._hide_notice,
+            relief="flat",
+            bg=SURFACE_MUTED,
+            fg=MUTED,
+            activebackground=SURFACE_MUTED,
+            activeforeground=TEXT,
+            padx=8,
+            pady=2,
+            cursor="hand2",
+            font=("Segoe UI Semibold", 10),
+        )
+        self._notice_close.grid(row=0, column=1, sticky="ne", padx=(10, 0))
+        return frame
 
     def _build_overview(self, parent):
         tk = self.tk
@@ -319,9 +380,9 @@ class DashboardUiController:
             padx=16,
             pady=8,
             cursor="hand2",
-            bg="#111111" if primary else "#EFECE6",
+            bg=PRIMARY_BG if primary else BUTTON_BG,
             fg="#FFFFFF" if primary else TEXT,
-            activebackground="#333333" if primary else "#E7E3DC",
+            activebackground=PRIMARY_ACTIVE_BG if primary else BUTTON_ACTIVE_BG,
             activeforeground="#FFFFFF" if primary else TEXT,
             font=("Segoe UI Semibold", 10),
         )
@@ -340,9 +401,9 @@ class DashboardUiController:
         for key, btn in self._nav_buttons.items():
             active = key == tab
             btn.configure(
-                bg="#111111" if active else "#EFECE6",
+                bg=PRIMARY_BG if active else BUTTON_BG,
                 fg="#FFFFFF" if active else TEXT,
-                activebackground="#333333" if active else "#E7E3DC",
+                activebackground=PRIMARY_ACTIVE_BG if active else BUTTON_ACTIVE_BG,
                 activeforeground="#FFFFFF" if active else TEXT,
             )
         self._refresh_view()
@@ -442,8 +503,7 @@ class DashboardUiController:
             status = self._status
             current = self._current_target
         self._status_value.configure(text=status)
-        tone = ERROR if "错误" in status else WARNING if status == "AFK" else SUCCESS if status == "在线" else TEXT
-        self._status_value.configure(foreground=tone)
+        self._status_value.configure(foreground=status_color(status))
         self._current_value.configure(text=current or "暂无窗口")
         cfg = self._load_config()
         server = cfg.get("server_url") or "未配置"
@@ -512,10 +572,9 @@ class DashboardUiController:
                 self._refresh_view()
             elif command == "notice":
                 title, message, error = payload  # type: ignore[misc]
-                if error:
-                    self.messagebox.showerror(str(title), str(message), parent=self.root)
-                else:
-                    self.messagebox.showinfo(str(title), str(message), parent=self.root)
+                if not self._visible:
+                    self._show(self._active_tab)
+                self._show_notice_now(str(title), str(message), bool(error))
             elif command == "message":
                 self._add_message_now(payload)
             elif command == "messages":
@@ -529,6 +588,34 @@ class DashboardUiController:
         self.root.attributes("-topmost", True)
         self.root.after(250, lambda: self.root.attributes("-topmost", False))
         self._visible = True
+
+    def _show_notice_now(self, title: str, message: str, error: bool = False) -> None:
+        if self._notice_after_id:
+            self.root.after_cancel(self._notice_after_id)
+            self._notice_after_id = None
+        palette = notice_palette(error)
+        self._notice.configure(bg=palette["background"], highlightbackground=palette["border"])
+        self._notice_title.configure(bg=palette["background"], fg=palette["title"], text=title)
+        self._notice_message.configure(
+            bg=palette["background"],
+            fg=palette["text"],
+            text=message,
+            wraplength=max(360, self.root.winfo_width() - 140),
+        )
+        self._notice_close.configure(
+            bg=palette["background"],
+            activebackground=palette["background"],
+        )
+        if not self._notice.winfo_ismapped():
+            self._notice.pack(fill="x", pady=(0, 14), before=self._content)
+        self._notice_after_id = self.root.after(10000, self._hide_notice)
+
+    def _hide_notice(self) -> None:
+        if self._notice_after_id:
+            self.root.after_cancel(self._notice_after_id)
+            self._notice_after_id = None
+        if self._notice.winfo_ismapped():
+            self._notice.pack_forget()
 
     def _add_message_now(self, payload: object) -> None:
         if not isinstance(payload, dict):
@@ -546,4 +633,3 @@ class DashboardUiController:
         for item in reversed(payload):
             self._add_message_now(item)
         self._render_messages()
-
