@@ -37,6 +37,9 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 
@@ -47,7 +50,6 @@ import com.monika.dashboard.BuildConfig;
 
 import java.lang.reflect.Field;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
@@ -114,12 +116,10 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long BROWSER_WEB_TITLE_FRESH_MS = 10_000L;
     private static final long DIRECT_FULL_STATE_INTERVAL_MS = 5 * 60_000L;
     private static final long AMBIENT_LIGHT_CACHE_MS = 60_000L;
-    private static final long SUPERVISION_DEFAULT_FREEZE_MS = 10 * 60_000L;
     private static final long SUPERVISION_CHECK_REQUEST_MIN_MS = 60_000L;
     private static final long SUPERVISION_CHECK_REQUEST_SAME_KEY_MS = 5 * 60_000L;
     private static final int SUPERVISION_DAILY_UNFREEZE_HOUR = 3;
-    private static final String SUPERVISION_ACK_PATH = "/api/supervision/ack";
-    private static final int MAX_PENDING_SUPERVISION_ACKS = 8;
+    private static final String DEVICE_COMMAND_EVENT_PATH = "/api/supervision/ack";
     
     // Static instance for global access
     private static MonikaXposedModule instance;
@@ -211,7 +211,6 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String browserTitleNonce = "";
     private volatile long lastDirectUploadAt = 0L;
     private volatile String pendingDirectBody = "";
-    private final ConcurrentLinkedQueue<String> pendingSupervisionAcks = new ConcurrentLinkedQueue<>();
     private volatile LspWebSocketClient wsClient = null;
     private volatile boolean wsReconnectPending = false;
     private volatile long lastSupervisionCheckRequestAt = 0L;
@@ -240,7 +239,6 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String recentForegroundBrowser = "";
     private volatile long recentForegroundBrowserAt = 0L;
     private volatile long lastScreenOffCheckAt = 0L;
-    private volatile SupervisionFreezeAlert activeFreezeAlert = null;
     private final ConcurrentHashMap<String, FrozenPackageRecord> frozenPackages = new ConcurrentHashMap<>();
     private static final long SCREEN_OFF_DEBOUNCE_MS = 30_000L; // 30s debounce for sleep detection
     private static final long TOP_ACTIVITY_FALLBACK_MS = 120_000L;
@@ -251,6 +249,8 @@ public final class MonikaXposedModule extends XposedModule {
     private final ConcurrentHashMap<String, Object> classCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> methodLookupCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> fieldLookupCache = new ConcurrentHashMap<>();
+    private final LspDeviceCommandController deviceCommandController =
+            new LspDeviceCommandController(newDeviceCommandHost());
 
     private static final class MediaControllerRegistration {
         final MediaController controller;
@@ -264,6 +264,116 @@ public final class MonikaXposedModule extends XposedModule {
         void unregister() {
             try { controller.unregisterCallback(callback); } catch (Throwable ignored) {}
         }
+    }
+
+    private LspDeviceCommandHost newDeviceCommandHost() {
+        return new LspDeviceCommandHost() {
+            @Override
+            public Handler uploadHandler() {
+                return getUploadHandler();
+            }
+
+            @Override
+            public String directServerUrl() {
+                return directServerUrl;
+            }
+
+            @Override
+            public String directToken() {
+                return directToken;
+            }
+
+            @Override
+            public void ensureWsConnected(String serverUrl, String token) {
+                MonikaXposedModule.this.ensureWsConnected(serverUrl, token);
+            }
+
+            @Override
+            public boolean sendWsText(String text) {
+                LspWebSocketClient client = wsClient;
+                return client != null && client.isConnected() && client.sendText(text);
+            }
+
+            @Override
+            public boolean postAckHttp(String serverUrl, String token, String body) {
+                return postDeviceCommandEvent(serverUrl, token, body);
+            }
+
+            @Override
+            public void logDebug(String message) {
+                MonikaXposedModule.this.logDebug(message);
+            }
+
+            @Override
+            public String isoTime(long millis) {
+                return MonikaXposedModule.this.isoTime(millis);
+            }
+
+            @Override
+            public long nextDailyUnfreezeAt(long now) {
+                return MonikaXposedModule.this.nextDailyUnfreezeAt(now);
+            }
+
+            @Override
+            public JSONObject frozenState(long now) {
+                return buildDeviceCommandFrozenState(now);
+            }
+
+            @Override
+            public String foregroundPackage() {
+                return foregroundPackage;
+            }
+
+            @Override
+            public String foregroundApp() {
+                return foregroundApp;
+            }
+
+            @Override
+            public String foregroundTitle() {
+                return foregroundTitle;
+            }
+
+            @Override
+            public boolean isInstalledPackage(String packageName) {
+                return isInstalledPackageForDeviceCommand(packageName);
+            }
+
+            @Override
+            public List<LspInstalledApp> installedApps() {
+                return installedAppsForDeviceCommand();
+            }
+
+            @Override
+            public List<LspFrozenPackage> frozenPackages() {
+                return frozenPackagesForDeviceCommand();
+            }
+
+            @Override
+            public boolean unfreezePackage(String packageName) {
+                return unfreezePackageForDeviceCommand(packageName);
+            }
+
+            @Override
+            public LspFreezeResult freezePackage(String packageName, String reason, long now, long until) {
+                return freezePackageForDeviceCommand(packageName, reason, now, until);
+            }
+
+            @Override
+            public boolean postSayNotification(String commandId, String text) {
+                return postDeviceCommandSayNotification(commandId, text);
+            }
+
+            @Override
+            public boolean vibrate(long durationMs) {
+                return vibrateForDeviceCommand(durationMs);
+            }
+
+            @Override
+            public void requestDirectUpload() {
+                maybeDirectUpload(true);
+            }
+        };
     }
 
     @Override
@@ -682,7 +792,6 @@ public final class MonikaXposedModule extends XposedModule {
 
                     applyForegroundTitle(cleanTitle != null ? cleanTitle : "", source);
                     logDebug("browser title received: " + pkg + " title=" + foregroundTitle + " source=" + source);
-                    maybeApplySupervisionFreeze(foregroundPackage, foregroundApp, foregroundTitle);
                     maybeDirectUpload(true);
                 }
             };
@@ -1901,8 +2010,6 @@ public final class MonikaXposedModule extends XposedModule {
                 // else: keep previous title if browser package and no new description
             }
 
-            maybeApplySupervisionFreeze(foregroundPackage, foregroundApp, foregroundTitle);
-
             Intent intent = new Intent(ACTION_STATUS);
             intent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
             if (idleCandidate) {
@@ -2398,7 +2505,7 @@ public final class MonikaXposedModule extends XposedModule {
             return;
         }
         handler.post(() -> {
-            flushSupervisionAcks(url, tok);
+            flushDeviceCommandEvents(url, tok);
             final String body = buildDirectReportBody(sampleAt, forceRequested);
             if (body == null) return;
 
@@ -2454,6 +2561,18 @@ public final class MonikaXposedModule extends XposedModule {
         return Math.max(MIN_DIRECT_UPLOAD_MS, Math.min(MAX_DIRECT_UPLOAD_MS, intervalMs));
     }
 
+    private JSONObject lspDeviceCapabilitiesJson() {
+        JSONObject capabilities = new JSONObject();
+        try {
+            capabilities.put("freeze", true);
+            capabilities.put("unfreeze", true);
+            capabilities.put("vibrate", true);
+            capabilities.put("screen_off", false);
+            capabilities.put("say", true);
+        } catch (Throwable ignored) {}
+        return capabilities;
+    }
+
     private String buildDirectReportBody(long now, boolean forceRequested) {
         try {
             validateMediaStateIfNeeded(now);
@@ -2473,8 +2592,8 @@ public final class MonikaXposedModule extends XposedModule {
             fillBatteryExtras(extra);
             JSONObject device = new JSONObject();
             boolean sleeping = "sleeping".equals(foregroundPackage);
-            device.put("capability_mode", "lsposed");
-            device.put("uploader", "lsposed");
+            device.put("profile", "android_lsp");
+            device.put("capabilities", lspDeviceCapabilitiesJson());
             device.put("last_sample_at", isoTime(now));
             device.put("energy_policy", "system_server_direct");
             device.put("min_interval_ms", Math.max(MIN_DIRECT_UPLOAD_MS, directIntervalMs));
@@ -2919,66 +3038,15 @@ public final class MonikaXposedModule extends XposedModule {
         return false;
     }
 
-    private void enqueueSupervisionAck(JSONObject ack) {
-        try {
-            if (ack == null) return;
-            pendingSupervisionAcks.offer(ack.toString());
-            while (pendingSupervisionAcks.size() > MAX_PENDING_SUPERVISION_ACKS) {
-                pendingSupervisionAcks.poll();
-            }
-            final String url = directServerUrl;
-            final String tok = directToken;
-            Handler handler = getUploadHandler();
-            if (handler != null && url.length() > 0 && tok.length() > 0) {
-                handler.post(() -> flushSupervisionAcks(url, tok));
-            }
-        } catch (Throwable t) {
-            logDebug("supervision ack enqueue failed: " + t.getClass().getSimpleName());
-        }
-    }
-
-    private void flushSupervisionAcks(String url, String tok) {
+    private void flushDeviceCommandEvents(String url, String tok) {
         if (url == null || url.length() == 0 || tok == null || tok.length() == 0) return;
-        if (sendSupervisionAcksOverWs(url, tok)) return;
-        int sent = 0;
-        while (sent < MAX_PENDING_SUPERVISION_ACKS) {
-            String body = pendingSupervisionAcks.peek();
-            if (body == null || body.length() == 0) return;
-            if (!postSupervisionAck(url, tok, body)) return;
-            pendingSupervisionAcks.poll();
-            sent++;
-        }
+        deviceCommandController.flush(url, tok);
     }
 
-    private boolean sendSupervisionAcksOverWs(String url, String tok) {
-        ensureWsConnected(url, tok);
-        final LspWebSocketClient client = wsClient;
-        if (client == null || !client.isConnected()) return false;
-        boolean sentAny = false;
-        int sent = 0;
-        for (String body : pendingSupervisionAcks) {
-            if (body == null || body.length() == 0) continue;
-            if (sent >= MAX_PENDING_SUPERVISION_ACKS) break;
-            try {
-                String msg = new JSONObject()
-                        .put("type", "supervision_ack")
-                        .put("payload", new JSONObject(body))
-                        .toString();
-                if (!client.sendText(msg)) return sentAny;
-                sentAny = true;
-                sent++;
-            } catch (Throwable t) {
-                logDebug("supervision ack WS send failed: " + t.getClass().getSimpleName());
-                return sentAny;
-            }
-        }
-        return sentAny;
-    }
-
-    private boolean postSupervisionAck(String baseUrl, String tok, String body) {
+    private boolean postDeviceCommandEvent(String baseUrl, String tok, String body) {
         HttpURLConnection connection = null;
         try {
-            URL url = new URL(baseUrl + SUPERVISION_ACK_PATH);
+            URL url = new URL(baseUrl + DEVICE_COMMAND_EVENT_PATH);
             connection = (HttpURLConnection) url.openConnection();
             connection.setConnectTimeout(8000);
             connection.setReadTimeout(8000);
@@ -2991,57 +3059,138 @@ public final class MonikaXposedModule extends XposedModule {
             connection.getOutputStream().write(bytes);
             int code = connection.getResponseCode();
             if (code < 200 || code >= 300) {
-                logDebug("supervision ack HTTP " + code);
+                logDebug("device command event HTTP " + code);
                 return false;
             }
             String response = readUtf8(connection.getInputStream());
             JSONObject json = new JSONObject(response);
             boolean received = strictBoolean(json, "received", false) || strictBoolean(json, "ok", false);
-            if (!received) logDebug("supervision ack not confirmed");
+            if (!received) logDebug("device command event not confirmed");
             return received;
         } catch (Throwable t) {
-            logDebug("supervision ack failed: " + t.getClass().getSimpleName());
+            logDebug("device command event failed: " + t.getClass().getSimpleName());
             return false;
         } finally {
             if (connection != null) connection.disconnect();
         }
     }
 
-    private void handleWsTextMessage(String payloadText) {
-        if (handleSupervisionAckReceived(payloadText)) return;
-        forwardViewerMessageToApp(payloadText);
+    private JSONObject buildDeviceCommandFrozenState(long now) {
+        JSONArray frozen = frozenPackagesJson(now);
+        JSONArray packages = new JSONArray();
+        try {
+            for (int i = 0; i < frozen.length(); i++) {
+                JSONObject item = frozen.optJSONObject(i);
+                if (item != null) packages.put(item.optString("package_name", ""));
+            }
+        } catch (Throwable ignored) {}
+        JSONObject state = new JSONObject();
+        try {
+            state.put("frozen_apps", frozen);
+            state.put("frozen_packages", packages);
+        } catch (Throwable ignored) {}
+        return state;
     }
 
-    private boolean handleSupervisionAckReceived(String payloadText) {
+    private java.util.List<LspFrozenPackage> frozenPackagesForDeviceCommand() {
+        java.util.ArrayList<LspFrozenPackage> out = new java.util.ArrayList<>();
         try {
-            JSONObject data = new JSONObject(payloadText);
-            String type = data.optString("type", "");
-            if (!"supervision_ack_received".equals(type)) return false;
-            boolean received = strictBoolean(data, "received", false) || strictBoolean(data, "ok", false);
-            String ackId = safeString(data.optString("ack_id", ""));
-            if (!received || ackId.length() == 0) return true;
-            if (removePendingSupervisionAck(ackId)) {
-                logDebug("supervision ack confirmed: " + ackId);
+            long now = System.currentTimeMillis();
+            cleanupFrozenPackages(now);
+            for (FrozenPackageRecord record : frozenPackages.values()) {
+                if (record == null || record.until <= now) continue;
+                out.add(new LspFrozenPackage(record.packageName, record.appName, record.mode, record.reason));
+                if (out.size() >= 16) break;
             }
+        } catch (Throwable t) {
+            logDebug("device command frozen snapshot failed: " + t.getClass().getSimpleName());
+        }
+        return out;
+    }
+
+    private boolean unfreezePackageForDeviceCommand(String packageName) {
+        String pkg = safeString(packageName);
+        if (pkg.length() == 0) return false;
+        try {
+            FrozenPackageRecord record = frozenPackages.get(pkg);
+            if (record == null) return false;
+            if ("suspended".equals(record.mode) && !setPackageSuspended(record.packageName, false)) {
+                return false;
+            }
+            frozenPackages.remove(pkg);
+            cancelSupervisionFreezeNotification(record.packageName);
+            return true;
+        } catch (Throwable t) {
+            logDebug("device command unfreeze failed: " + t.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    private LspFreezeResult freezePackageForDeviceCommand(String packageName, String reason, long now, long until) {
+        String pkg = safeString(packageName);
+        String appName = safeString(resolveAppLabel(pkg));
+        if (pkg.length() == 0 || isProtectedFreezePackage(pkg)) {
+            return new LspFreezeResult(pkg, appName, "", "ignored", "protected_or_empty_package", 0L);
+        }
+        FrozenPackageRecord existing = frozenPackages.get(pkg);
+        if (existing != null && existing.until > now) {
+            return new LspFreezeResult(
+                    existing.packageName,
+                    existing.appName,
+                    existing.mode,
+                    "applied",
+                    "already_frozen",
+                    existing.until);
+        }
+        boolean suspended = setPackageSuspended(pkg, true);
+        boolean stopped = forceStopPackage(pkg);
+        if (!suspended && !stopped) {
+            return new LspFreezeResult(pkg, appName, "", "failed", "freeze_api_failed", 0L);
+        }
+        String mode = suspended ? "suspended" : "force_stopped";
+        frozenPackages.put(pkg, new FrozenPackageRecord(pkg, appName, now, until, reason, mode));
+        postSupervisionFreezeNotification(pkg, appName, reason, until);
+        return new LspFreezeResult(pkg, appName, mode, "applied", reason, until);
+    }
+
+    private boolean isInstalledPackageForDeviceCommand(String packageName) {
+        String pkg = safeString(packageName);
+        if (pkg.length() == 0 || pkg.indexOf('.') <= 0) return false;
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return false;
+            ctx.getPackageManager().getApplicationInfo(pkg, 0);
             return true;
         } catch (Throwable ignored) {
             return false;
         }
     }
 
-    private boolean removePendingSupervisionAck(String ackId) {
+    private java.util.List<LspInstalledApp> installedAppsForDeviceCommand() {
+        java.util.ArrayList<LspInstalledApp> out = new java.util.ArrayList<>();
         try {
-            for (String body : pendingSupervisionAcks) {
-                if (body == null || body.length() == 0) continue;
-                JSONObject ack = new JSONObject(body);
-                if (ackId.equals(ack.optString("ack_id", ""))) {
-                    return pendingSupervisionAcks.remove(body);
-                }
+            Context ctx = getSystemContext();
+            if (ctx == null) return out;
+            PackageManager pm = ctx.getPackageManager();
+            if (pm == null) return out;
+            java.util.List<ApplicationInfo> apps = pm.getInstalledApplications(0);
+            for (ApplicationInfo app : apps) {
+                if (app == null || app.packageName == null || isProtectedFreezePackage(app.packageName)) continue;
+                String label = "";
+                try { label = safeString(pm.getApplicationLabel(app).toString()); } catch (Throwable ignored) {}
+                out.add(new LspInstalledApp(app.packageName, label));
+                if (out.size() >= 512) break;
             }
         } catch (Throwable t) {
-            logDebug("remove supervision ack failed: " + t.getClass().getSimpleName());
+            logDebug("device command installed apps snapshot failed: " + t.getClass().getSimpleName());
         }
-        return false;
+        return out;
+    }
+
+    private void handleWsTextMessage(String payloadText) {
+        if (deviceCommandController.handleServerAck(payloadText)) return;
+        if (deviceCommandController.handleIncomingText(payloadText, "ws")) return;
+        forwardViewerMessageToApp(payloadText);
     }
 
     private void fetchQueuedMessagesFallback() {
@@ -3077,6 +3226,11 @@ public final class MonikaXposedModule extends XposedModule {
                     data.put("payload", payload);
                 } else if (payload instanceof String && ((String) payload).length() > 0) {
                     try { data.put("payload", new JSONObject((String) payload)); } catch (Throwable ignored) {}
+                }
+                JSONObject payloadObject = data.optJSONObject("payload");
+                if (payloadObject != null && "device_command".equals(payloadObject.optString("type"))) {
+                    deviceCommandController.handleCommand(payloadObject, "message_poll");
+                    continue;
                 }
                 forwardViewerMessageToApp(data.toString());
             }
@@ -3175,6 +3329,11 @@ public final class MonikaXposedModule extends XposedModule {
             String viewerId = data.optString("viewer_id", "");
             String text = data.optString("text", "");
             if (viewerId.length() == 0 || text.length() == 0) return;
+            JSONObject payload = data.optJSONObject("payload");
+            if (payload != null && "device_command".equals(payload.optString("type"))) {
+                deviceCommandController.handleCommand(payload, "viewer_payload");
+                return;
+            }
 
             Intent intent = new Intent(ACTION_MESSAGE);
             intent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_RECEIVER));
@@ -3183,19 +3342,13 @@ public final class MonikaXposedModule extends XposedModule {
             intent.putExtra("viewer_name", data.optString("viewer_name", ""));
             intent.putExtra("kind", data.optString("kind", "private"));
             intent.putExtra("text", text);
-            JSONObject payload = data.optJSONObject("payload");
             if (payload != null) intent.putExtra("payload", payload.toString());
-            handleSupervisionPayload(payload, text);
             Context ctx = getSystemContext();
             if (ctx != null) {
                 long token = Binder.clearCallingIdentity();
                 try {
                     ctx.sendBroadcast(intent, CONFIG_PERMISSION);
-                    if (isSupervisionPayload(data)) {
-                        postSupervisionAlertNotification(ctx, data, text);
-                    } else {
-                        postViewerMessageNotification(ctx, data, text, viewerId);
-                    }
+                    postViewerMessageNotification(ctx, data, text, viewerId);
                 } finally {
                     Binder.restoreCallingIdentity(token);
                 }
@@ -3206,208 +3359,8 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
-    private boolean isSupervisionPayload(JSONObject data) {
-        try {
-            JSONObject payload = data.optJSONObject("payload");
-            return payload != null && "supervision_alert".equals(payload.optString("type"));
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
-    private void handleSupervisionPayload(JSONObject payload, String text) {
-        try {
-            if (payload == null || !"supervision_alert".equals(payload.optString("type"))) return;
-            JSONArray unfreezeCommands = payload.optJSONArray("unfreeze_commands");
-            if (unfreezeCommands != null && unfreezeCommands.length() > 0) {
-                handleSupervisionUnfreezePayload(payload, text);
-                return;
-            }
-            JSONArray freezeCommands = payload.optJSONArray("freeze_commands");
-            if (freezeCommands == null || freezeCommands.length() == 0) {
-                activeFreezeAlert = null;
-                return;
-            }
-            long now = System.currentTimeMillis();
-            long activeUntil = parseIsoMillis(payload.optString("active_until"), now + SUPERVISION_DEFAULT_FREEZE_MS);
-            long payloadFreezeUntil = parseIsoMillis(payload.optString("freeze_until"), now + SUPERVISION_DEFAULT_FREEZE_MS);
-            if (activeUntil <= now || payloadFreezeUntil <= now) {
-                activeFreezeAlert = null;
-                return;
-            }
-            long freezeUntil = nextDailyUnfreezeAt(now);
-            java.util.List<java.util.regex.Pattern> patterns = compileSafePatterns(freezeCommands);
-            if (patterns.isEmpty()) {
-                activeFreezeAlert = null;
-                return;
-            }
-            activeFreezeAlert = new SupervisionFreezeAlert(
-                    payload.optString("alert_id", "supervision"),
-                    patterns,
-                    activeUntil,
-                    freezeUntil,
-                    supervisionReason(payload, text));
-            log(Log.INFO, TAG, "supervision freeze armed until " + isoTime(freezeUntil));
-            forceForegroundSnapshot();
-            maybeApplySupervisionFreeze(foregroundPackage, foregroundApp, foregroundTitle);
-        } catch (Throwable t) {
-            logDebug("supervision payload ignored: " + t.getClass().getSimpleName());
-        }
-    }
-
-    private void handleSupervisionUnfreezePayload(JSONObject payload, String text) {
-        try {
-            String alertId = safeString(payload.optString("alert_id", "supervision"));
-            String reason = supervisionReason(payload, text);
-            JSONArray unfreezeCommands = payload.optJSONArray("unfreeze_commands");
-            java.util.List<java.util.regex.Pattern> patterns = compileSafePatterns(unfreezeCommands);
-            boolean unfreezeAll = containsAllSupervisionCommand(unfreezeCommands)
-                    || patterns.isEmpty();
-            int count = unfreezeFrozenPackages(
-                    unfreezeAll ? null : patterns,
-                    "AI unfreeze: " + reason,
-                    alertId);
-            if (count > 0) {
-                log(Log.WARN, TAG, "supervision unfroze " + count + " package(s) by AI command");
-                maybeDirectUpload(true);
-            } else {
-                enqueueSupervisionAck(buildSupervisionAck(
-                        alertId,
-                        "unfreeze",
-                        "ignored",
-                        "",
-                        "",
-                        "",
-                        reason,
-                        0L));
-            }
-        } catch (Throwable t) {
-            logDebug("supervision unfreeze ignored: " + t.getClass().getSimpleName());
-        }
-    }
-
-    private void maybeApplySupervisionFreeze(String packageName, String appName, String title) {
-        try {
-            SupervisionFreezeAlert alert = activeFreezeAlert;
-            if (alert == null) return;
-            long now = System.currentTimeMillis();
-            if (now > alert.activeUntil || now > alert.freezeUntil) {
-                activeFreezeAlert = null;
-                cleanupFrozenPackages(now);
-                return;
-            }
-            String pkg = safeString(packageName);
-            if (pkg.length() == 0 || isProtectedFreezePackage(pkg)) return;
-            String matchText = pkg + " " + safeString(appName) + " " + safeString(title);
-            FrozenPackageRecord existing = frozenPackages.get(pkg);
-            if (existing != null && existing.until > now) return;
-            if (!matchesAny(alert.violationPatterns, matchText)) return;
-            long until = nextDailyUnfreezeAt(now);
-            boolean suspended = setPackageSuspended(pkg, true);
-            boolean stopped = forceStopPackage(pkg);
-            if (!suspended && !stopped) return;
-            frozenPackages.put(pkg, new FrozenPackageRecord(
-                    pkg,
-                    safeString(appName),
-                    now,
-                    until,
-                    alert.reason,
-                    suspended ? "suspended" : "force_stopped"));
-            log(Log.WARN, TAG, "supervision froze " + pkg + " mode=" + (suspended ? "suspended" : "force_stopped") + " until " + isoTime(until));
-            postSupervisionFreezeNotification(pkg, safeString(appName), alert.reason, until);
-            enqueueSupervisionAck(buildSupervisionAck(
-                    alert.id,
-                    "freeze",
-                    "applied",
-                    pkg,
-                    safeString(appName),
-                    suspended ? "suspended" : "force_stopped",
-                    alert.reason,
-                    until));
-            maybeDirectUpload(true);
-        } catch (Throwable t) {
-            logDebug("supervision freeze skipped: " + t.getClass().getSimpleName());
-        }
-    }
-
-    private boolean matchesAny(java.util.List<java.util.regex.Pattern> patterns, String text) {
-        if (patterns == null || patterns.isEmpty()) return false;
-        String value = safeString(text);
-        if (value.length() == 0) return false;
-        for (java.util.regex.Pattern pattern : patterns) {
-            try {
-                if (pattern.matcher(value).find()) return true;
-            } catch (Throwable ignored) {}
-        }
-        return false;
-    }
-
-    private int unfreezeFrozenPackages(java.util.List<java.util.regex.Pattern> patterns, String reason, String alertId) {
-        int count = 0;
-        try {
-            for (String pkg : frozenPackages.keySet()) {
-                FrozenPackageRecord record = frozenPackages.get(pkg);
-                if (record == null) continue;
-                if (patterns != null && !patterns.isEmpty() && !matchesFrozenRecord(record, patterns)) continue;
-                if ("suspended".equals(record.mode)) setPackageSuspended(record.packageName, false);
-                frozenPackages.remove(pkg);
-                cancelSupervisionFreezeNotification(record.packageName);
-                enqueueSupervisionAck(buildSupervisionAck(
-                        alertId,
-                        "unfreeze",
-                        "applied",
-                        record.packageName,
-                        record.appName,
-                        record.mode,
-                        reason,
-                        0L));
-                count++;
-            }
-            if (frozenPackages.isEmpty()) activeFreezeAlert = null;
-            if (count > 0) log(Log.WARN, TAG, safeString(reason));
-        } catch (Throwable t) {
-            logDebug("supervision unfreeze failed: " + t.getClass().getSimpleName());
-        }
-        return count;
-    }
-
-    private boolean matchesFrozenRecord(FrozenPackageRecord record, java.util.List<java.util.regex.Pattern> patterns) {
-        if (record == null) return false;
-        String text = safeString(record.packageName) + " " + safeString(record.appName) + " " + safeString(record.reason);
-        return matchesAny(patterns, text);
-    }
-
-    private JSONObject buildSupervisionAck(
-            String alertId,
-            String action,
-            String status,
-            String packageName,
-            String appName,
-            String mode,
-            String reason,
-            long until) {
-        JSONObject ack = new JSONObject();
-        try {
-            ack.put("type", "supervision_ack");
-            ack.put("v", 1);
-            ack.put("ack_id", java.util.UUID.randomUUID().toString());
-            ack.put("alert_id", safeString(alertId));
-            ack.put("action", safeString(action));
-            ack.put("status", safeString(status));
-            ack.put("source", "lsposed");
-            ack.put("at", isoTime(System.currentTimeMillis()));
-            if (packageName != null && packageName.length() > 0) ack.put("package_name", safeString(packageName));
-            if (appName != null && appName.length() > 0) ack.put("app_name", safeString(appName));
-            if (mode != null && mode.length() > 0) ack.put("mode", safeString(mode));
-            if (reason != null && reason.length() > 0) ack.put("reason", safeString(reason));
-            if (until > 0L) ack.put("until", isoTime(until));
-        } catch (Throwable ignored) {}
-        return ack;
-    }
-
     private void clearSupervisionFreeze(String reason) {
         try {
-            activeFreezeAlert = null;
             for (FrozenPackageRecord record : frozenPackages.values()) {
                 if ("suspended".equals(record.mode)) setPackageSuspended(record.packageName, false);
                 cancelSupervisionFreezeNotification(record.packageName);
@@ -3565,67 +3518,6 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable ignored) {}
     }
 
-    private java.util.List<java.util.regex.Pattern> compileSafePatterns(JSONArray arr) {
-        java.util.ArrayList<java.util.regex.Pattern> out = new java.util.ArrayList<>();
-        if (arr == null) return out;
-        for (int i = 0; i < arr.length(); i++) {
-            String pattern = safeString(arr.optString(i));
-            if (isAllSupervisionCommand(pattern)) continue;
-            if (!isSafeSupervisionPattern(pattern)) continue;
-            try {
-                out.add(java.util.regex.Pattern.compile(pattern, java.util.regex.Pattern.CASE_INSENSITIVE));
-            } catch (Throwable ignored) {}
-            if (out.size() >= 12) break;
-        }
-        return out;
-    }
-
-    private boolean containsAllSupervisionCommand(JSONArray arr) {
-        if (arr == null) return false;
-        for (int i = 0; i < arr.length(); i++) {
-            if (isAllSupervisionCommand(arr.optString(i))) return true;
-        }
-        return false;
-    }
-
-    private boolean isAllSupervisionCommand(String value) {
-        String clean = safeString(value).replaceAll("\\s+", "").toLowerCase(java.util.Locale.ROOT);
-        return "全部".equals(clean)
-                || "全量".equals(clean)
-                || "所有".equals(clean)
-                || "all".equals(clean)
-                || "*".equals(clean)
-                || ".*".equals(clean);
-    }
-
-    private String supervisionReason(JSONObject payload, String fallback) {
-        String reason = safeString(payload.optString("reason", ""));
-        if (reason.length() == 0) reason = safeString(payload.optString("say", ""));
-        if (reason.length() == 0) reason = safeString(fallback);
-        return reason;
-    }
-
-    private boolean isSafeSupervisionPattern(String pattern) {
-        if (pattern == null || pattern.length() == 0 || pattern.length() > 120) return false;
-        String compact = pattern.replaceAll("\\s+", "");
-        if (".*".equals(compact) || ".+".equals(compact) || "[\\s\\S]*".equals(compact) || "[\\S\\s]*".equals(compact)) return false;
-        if (pattern.matches(".*\\\\[1-9].*")) return false;
-        if (pattern.contains("(?<=") || pattern.contains("(?<!")) return false;
-        if (pattern.matches(".*\\([^)]*[+*][^)]*\\)[+*{].*")) return false;
-        if (pattern.matches(".*(?:\\.\\*){3,}.*")) return false;
-        if (pattern.matches(".*\\{\\d{3,}(?:,|\\}).*")) return false;
-        return true;
-    }
-
-    private long parseIsoMillis(String value, long fallback) {
-        try {
-            if (value == null || value.length() == 0) return fallback;
-            return java.time.Instant.parse(value).toEpochMilli();
-        } catch (Throwable ignored) {
-            return fallback;
-        }
-    }
-
     private boolean strictBoolean(JSONObject object, String key, boolean defaultWhenMissing) {
         if (object == null || !object.has(key) || object.isNull(key)) return defaultWhenMissing;
         Object value = object.opt(key);
@@ -3720,10 +3612,12 @@ public final class MonikaXposedModule extends XposedModule {
         }
     }
 
-    private void postSupervisionAlertNotification(Context ctx, JSONObject data, String text) {
+    private boolean postDeviceCommandSayNotification(String commandId, String text) {
         try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return false;
             NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm == null) return;
+            if (nm == null) return false;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 NotificationChannel channel = new NotificationChannel(
                         SUPERVISION_CHANNEL_ID,
@@ -3732,27 +3626,55 @@ public final class MonikaXposedModule extends XposedModule {
                 channel.setDescription("监督模式提醒和冻结状态");
                 nm.createNotificationChannel(channel);
             }
-
+            JSONObject data = new JSONObject();
+            data.put("message_id", safeString(commandId));
             PendingIntent pendingIntent = buildLaunchPendingIntent(ctx, data, "__supervisor__");
-            String body = text.length() > 120 ? text.substring(0, 120) : text;
+            String body = safeString(text);
             Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                     ? new Notification.Builder(ctx, SUPERVISION_CHANNEL_ID)
                     : new Notification.Builder(ctx);
             builder.setSmallIcon(android.R.drawable.stat_sys_warning)
                     .setContentTitle("监督模式")
-                    .setContentText(body)
-                    .setStyle(new Notification.BigTextStyle().bigText(text.length() > 500 ? text.substring(0, 500) : text))
+                    .setContentText(body.length() > 120 ? body.substring(0, 120) : body)
+                    .setStyle(new Notification.BigTextStyle().bigText(body.length() > 500 ? body.substring(0, 500) : body))
                     .setContentIntent(pendingIntent)
                     .setAutoCancel(true)
                     .setShowWhen(true)
                     .setWhen(System.currentTimeMillis())
                     .setCategory(Notification.CATEGORY_STATUS)
                     .setPriority(Notification.PRIORITY_HIGH)
-                    .setDefaults(Notification.DEFAULT_VIBRATE)
                     .setVisibility(Notification.VISIBILITY_PUBLIC);
-            nm.notify(notificationId("supervision:" + data.optString("message_id", ""), SUPERVISION_ALERT_NOTIFICATION_ID), builder.build());
+            nm.notify(notificationId("device-command:" + safeString(commandId), SUPERVISION_ALERT_NOTIFICATION_ID), builder.build());
+            return true;
         } catch (Throwable t) {
-            logDebug("supervision alert notification skipped: " + t.getClass().getSimpleName());
+            logDebug("device command say notification skipped: " + t.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private boolean vibrateForDeviceCommand(long durationMs) {
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return false;
+            Vibrator vibrator;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                VibratorManager manager = (VibratorManager) ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+                vibrator = manager != null ? manager.getDefaultVibrator() : null;
+            } else {
+                vibrator = (Vibrator) ctx.getSystemService(Context.VIBRATOR_SERVICE);
+            }
+            if (vibrator == null || !vibrator.hasVibrator()) return false;
+            long safeDuration = Math.max(100L, Math.min(2000L, durationMs));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(safeDuration, VibrationEffect.DEFAULT_AMPLITUDE));
+            } else {
+                vibrator.vibrate(safeDuration);
+            }
+            return true;
+        } catch (Throwable t) {
+            logDebug("device command vibrate failed: " + t.getClass().getSimpleName());
+            return false;
         }
     }
 
@@ -4270,27 +4192,6 @@ public final class MonikaXposedModule extends XposedModule {
     //  Minimal WebSocket client for LSPosed data upload
     //  Uses javax.net.ssl.SSLSocket — no external dependencies
     // ──────────────────────────────────────────────
-    private static final class SupervisionFreezeAlert {
-        final String id;
-        final java.util.List<java.util.regex.Pattern> violationPatterns;
-        final long activeUntil;
-        final long freezeUntil;
-        final String reason;
-
-        SupervisionFreezeAlert(
-                String id,
-                java.util.List<java.util.regex.Pattern> violationPatterns,
-                long activeUntil,
-                long freezeUntil,
-                String reason) {
-            this.id = id;
-            this.violationPatterns = violationPatterns;
-            this.activeUntil = activeUntil;
-            this.freezeUntil = freezeUntil;
-            this.reason = reason;
-        }
-    }
-
     private static final class FrozenPackageRecord {
         final String packageName;
         final String appName;

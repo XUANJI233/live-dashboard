@@ -156,7 +156,7 @@
 LSP direct body：
 
 - top-level：`app_id`、`window_title`、`timestamp`、`extra`
-- `extra.device`：`capability_mode=lsposed`、`uploader=lsposed`、`last_sample_at`、`energy_policy=system_server_direct`、`min_interval_ms`、`device_kind`、可选 `window_mode`、网络/VPN 字段
+- `extra.device`：`profile=android_lsp`、`capabilities={freeze:true,unfreeze:true,vibrate:true,screen_off:false,say:true}`、`frozen_packages`、`last_sample_at`、`energy_policy=system_server_direct`、`min_interval_ms`、`device_kind`、可选 `window_mode`、网络/VPN 字段。`capability_mode` 只保留为 App 本地采集模式设置，不作为服务端上报契约。
 - `extra.foreground`：`package_name`、`app_name`、`activity`、`title`、`source`、`confidence`
 - `extra.media`：`playing`、`title`、`artist`、`app`、`package_name`、`state`、`source`
 - `extra.input`：`input_active`、`is_typing`、`source`

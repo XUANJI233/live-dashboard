@@ -56,6 +56,9 @@ object MessageSocketManager {
     @Volatile
     private var connected = false
 
+    @Volatile
+    private var stopped = false
+
     fun isConnected(): Boolean = connected
 
     // OkHttp pingInterval=25s handles keepalive; connected implies healthy
@@ -85,6 +88,16 @@ object MessageSocketManager {
         }
     }
 
+    fun sendDeviceCommandEvent(event: JSONObject): Boolean {
+        val ws = socket
+        if (ws == null || !connected) return false
+        return try {
+            ws.send(event.toString())
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun ensureStarted(context: Context) {
         if (socket != null || connecting) return
         val appContext = context.applicationContext
@@ -99,6 +112,7 @@ object MessageSocketManager {
                     connecting = false
                     return@launch
                 }
+                stopped = false
                 val wsUrl = buildWsUrl(url)
                 val request = Request.Builder()
                     .url(wsUrl)
@@ -113,10 +127,12 @@ object MessageSocketManager {
     }
 
     fun stop() {
+        stopped = true
         socket?.close(1000, "disabled")
         socket = null
         connecting = false
         connected = false
+        reconnectAttempts = 0
     }
 
     fun isViewerBlocked(context: Context, viewerId: String): Boolean {
@@ -156,7 +172,9 @@ object MessageSocketManager {
         kind: String = "private",
         payloadText: String? = null,
     ) {
-        SupervisionAlertController.handleIncoming(context.applicationContext, messageId, payloadText)
+        if (DeviceCommandController.handlePayloadText(context.applicationContext, payloadText, source = "message_payload")) {
+            return
+        }
         if (!viewerId.isNullOrBlank() && kind != "public") {
             MessageInboxStore.add(
                 context = context,
@@ -249,23 +267,28 @@ object MessageSocketManager {
             connected = true
             reconnectAttempts = 0 // Reset backoff on successful connection
             DebugLog.log("消息", "WebSocket已连接")
+            DeviceCommandController.flushPending(context)
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             // Ignore ack pings at app level — keepalive is handled by WS protocol ping/pong
             val data = runCatching { JSONObject(text) }.getOrNull() ?: return
             if (data.optString("type") == "ack") return
+            if (DeviceCommandController.handleServerAck(context, data)) return
+            if (DeviceCommandController.handleIncoming(context, data, source = "ws")) return
             if (data.optString("type") != "viewer_message") return
             val message = data.optString("text").take(500)
             val messageId = data.optString("message_id")
             val viewerId = data.optString("viewer_id")
             val viewerName = data.optString("viewer_name")
             val kind = data.optString("kind", "private")
+            val payload = data.optJSONObject("payload")
+            if (DeviceCommandController.handleIncoming(context, payload ?: JSONObject(), source = "ws_payload")) return
             if (viewerId != "__supervisor__" && isViewerBlocked(context, viewerId)) {
                 DebugLog.log("消息", "已忽略拉黑访客消息: $viewerId")
                 return
             }
-            notifyIncoming(context, message, viewerId, messageId, viewerName, kind, data.optJSONObject("payload")?.toString())
+            notifyIncoming(context, message, viewerId, messageId, viewerName, kind, payload?.toString())
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -285,12 +308,13 @@ object MessageSocketManager {
         }
 
         private fun scheduleReconnect() {
+            if (stopped) return
             scope.launch {
                 val exponent = reconnectAttempts.coerceAtMost(5)
                 val delayMs = (BASE_RECONNECT_DELAY_MS * (1L shl exponent)).coerceAtMost(MAX_RECONNECT_DELAY_MS)
                 reconnectAttempts = (reconnectAttempts + 1).coerceAtMost(30)
                 delay(delayMs)
-                if (socket != null || connecting) return@launch
+                if (stopped || socket != null || connecting) return@launch
                 DebugLog.log("消息", "WebSocket尝试重连... (attempt $reconnectAttempts, delay ${delayMs}ms)")
                 connecting = true
                 runCatching {

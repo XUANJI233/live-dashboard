@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import com.monika.dashboard.data.DebugLog
 import com.monika.dashboard.realtime.MessageSocketManager
-import com.monika.dashboard.realtime.SupervisionAlertController
 
 class LsposedBridgeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -44,7 +43,6 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
             media = media.takeIf { it.playing != null || it.title != null || it.app != null },
         )
         SystemSnapshotStore.updateFromLsposed(snapshot)
-        SupervisionAlertController.onSnapshot(context.applicationContext, snapshot)
         DebugLog.log("LSPosed", "收到系统状态事件")
     }
 

@@ -91,7 +91,7 @@
 | `health_sync_interval` | Int | `15` | 健康同步间隔，分钟（15-60） |
 | `enabled_health_types` | Set\<String\> | `emptySet()` | 启用的健康数据类型 |
 | `monitoring_enabled` | Boolean | `false` | 心跳是否开启 |
-| `capability_mode` | String | `"normal"` | 采集模式：normal / root / lsposed |
+| `capability_mode` | String | `"normal"` | 本地采集模式：normal / root / lsposed；服务端上报使用 `extra.device.profile` 和 `extra.device.capabilities` |
 | `upload_location` | Boolean | `false` | 是否上传最近已知位置 |
 | `upload_vpn_status` | Boolean | `false` | 是否上传 VPN 连接状态 |
 | `upload_input_state` | Boolean | `false` | 是否上传输入状态布尔值 |

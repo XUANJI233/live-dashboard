@@ -120,8 +120,8 @@ class ReportClient(
                 vpn.name?.let { device.put("vpn_name", it.take(64)) }
             }
             putEnvironmentExtras(device, telemetry.environment)
+            putNormalAndroidCapabilities(device)
             telemetry.snapshot?.let {
-                device.put("capability_mode", it.capabilityMode)
                 device.put("last_sample_at", Instant.ofEpochMilli(it.sampledAt).toString())
                 device.put(
                     "energy_policy",
@@ -727,6 +727,28 @@ class ReportClient(
     private fun post(url: String, body: JSONObject): Result<Unit> =
         postRaw(url, body.toString())
 
+    fun postDeviceCommandEvent(event: JSONObject): Result<Unit> {
+        val request = Request.Builder()
+            .url("${serverUrl.trimEnd('/')}/api/supervision/ack")
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Content-Type", "application/json")
+            .post(event.toString().toRequestBody(jsonMediaType))
+            .build()
+
+        return try {
+            val response = client.newCall(request).execute()
+            response.use {
+                val raw = it.body?.string().orEmpty()
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(raw)}"))
+                val json = JSONObject(raw)
+                val received = json.opt("received") as? Boolean ?: (json.opt("ok") as? Boolean ?: false)
+                if (received) Result.success(Unit) else Result.failure(IOException("command event not confirmed"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     private fun postRaw(url: String, body: String): Result<Unit> {
         val request = Request.Builder()
             .url(url)
@@ -1061,6 +1083,20 @@ private fun putEnvironmentExtras(device: JSONObject, environment: DeviceEnvironm
     if (lux != null && lux.isFinite()) {
         device.put("ambient_lux", (lux.coerceIn(0f, 200_000f) * 10f).toInt() / 10.0)
     }
+}
+
+internal fun putNormalAndroidCapabilities(device: JSONObject) {
+    device.put("profile", "android_normal")
+    device.put(
+        "capabilities",
+        JSONObject().apply {
+            put("freeze", false)
+            put("unfreeze", false)
+            put("vibrate", true)
+            put("screen_off", false)
+            put("say", true)
+        },
+    )
 }
 
 private fun base64UrlEncode(bytes: ByteArray): String =

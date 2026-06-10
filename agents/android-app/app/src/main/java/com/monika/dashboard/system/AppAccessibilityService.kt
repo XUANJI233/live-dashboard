@@ -4,7 +4,6 @@ import android.accessibilityservice.AccessibilityService
 import android.content.pm.PackageManager
 import android.view.accessibility.AccessibilityEvent
 import com.monika.dashboard.data.DebugLog
-import com.monika.dashboard.realtime.SupervisionAlertController
 
 class AppAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -27,7 +26,6 @@ class AppAccessibilityService : AccessibilityService() {
             confidence = 0.65,
         )
         SystemSnapshotStore.updateFromAccessibility(foreground)
-        SupervisionAlertController.onSnapshot(applicationContext, SystemSnapshot(foreground = foreground))
     }
 
     override fun onInterrupt() {

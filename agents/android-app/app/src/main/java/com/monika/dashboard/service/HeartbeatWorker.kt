@@ -22,8 +22,9 @@ import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.data.UploadItem
 import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.network.ReportClient
+import com.monika.dashboard.network.putNormalAndroidCapabilities
+import com.monika.dashboard.realtime.DeviceCommandController
 import com.monika.dashboard.realtime.MessageSocketManager
-import com.monika.dashboard.realtime.SupervisionAlertController
 import com.monika.dashboard.system.DeviceEnvironment
 import com.monika.dashboard.system.DeviceEnvironmentCollector
 import com.monika.dashboard.system.RootSystemCollector
@@ -136,7 +137,6 @@ class HeartbeatWorker(
 
             val battery = getBatteryInfo()
             val snapshot = collectSystemSnapshot(capabilityMode, uploadForeground, uploadMedia)
-            SupervisionAlertController.onSnapshot(applicationContext, snapshot)
             val mediaPackage = snapshot.media?.packageName?.takeIf { snapshot.media?.playing == true }
             val sleepingWithoutMedia = snapshot.isSleeping() && mediaPackage == null
             if (sleepingWithoutMedia) {
@@ -204,6 +204,7 @@ class HeartbeatWorker(
                 try {
                     client = ReportClient(url, token, applicationContext)
                     PendingReportWorker.flush(applicationContext, client)
+                    DeviceCommandController.flushPending(applicationContext)
                     syncBlockedViewers(client)
                     syncMessageHistory(client)
                     pollMessages(client)
@@ -219,6 +220,7 @@ class HeartbeatWorker(
                 try {
                     client = ReportClient(url, token, applicationContext)
                     PendingReportWorker.flush(applicationContext, client)
+                    DeviceCommandController.flushPending(applicationContext)
                     syncBlockedViewers(client)
                     val result = client.postReportBody(payload)
                     if (result.isSuccess) {
@@ -313,10 +315,10 @@ class HeartbeatWorker(
         telemetry.environment?.ambientLux?.takeIf { it.isFinite() }?.let { lux ->
             device.put("ambient_lux", (lux.coerceIn(0f, 200_000f) * 10f).toInt() / 10.0)
         }
+        putNormalAndroidCapabilities(device)
         if (input.heartbeatOnly) device.put("heartbeat_only", true)
         input.offlineTimeoutMinutes?.let { device.put(OFFLINE_TIMEOUT_FIELD, it) }
         telemetry.snapshot?.let {
-            device.put("capability_mode", it.capabilityMode)
             device.put("last_sample_at", Instant.ofEpochMilli(it.sampledAt).toString())
             device.put(
                 "energy_policy",
@@ -623,6 +625,14 @@ class HeartbeatWorker(
         val safeClient = client ?: return
         val messages = safeClient.fetchMessages().getOrNull().orEmpty()
         for (message in messages) {
+            if (DeviceCommandController.handlePayloadText(
+                    applicationContext,
+                    message.payload,
+                    source = "message_poll",
+                )
+            ) {
+                continue
+            }
             if (MessageSocketManager.isViewerBlocked(applicationContext, message.viewerId)) {
                 DebugLog.log("消息", "已忽略拉黑访客队列消息: ${message.viewerId}")
                 continue
