@@ -13,7 +13,7 @@
 ## 这个分支包含什么
 
 macOS Agent 是一个 Python 桌面程序，监控前台窗口并向 Live Dashboard 后端实时上报应用使用状态。启动后常驻菜单栏运行。
-它会作为 `desktop_message` 设备接入服务端统一 `device_command` v1，只执行桌面文本提醒 `say`，并对冻结、解冻、震动、息屏和 LSP 监督策略返回不支持。
+它会作为 `desktop_message` 设备接入服务端统一 `device_command` v1，显式声明完整桌面能力，只执行桌面文本提醒 `say`，并对冻结、解冻、震动、息屏和 LSP 监督策略返回不支持。
 
 ### 功能
 

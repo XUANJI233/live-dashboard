@@ -99,7 +99,9 @@ macOS 端会显式上报 `desktop_message` 能力：
     "unfreeze": false,
     "vibrate": false,
     "screen_off": false,
-    "say": true
+    "say": true,
+    "risk_app_monitor": false,
+    "app_time_limit": false
   }
 }
 ```

@@ -11,6 +11,8 @@ DESKTOP_CAPABILITIES = {
     "vibrate": False,
     "screen_off": False,
     "say": True,
+    "risk_app_monitor": False,
+    "app_time_limit": False,
 }
 
 

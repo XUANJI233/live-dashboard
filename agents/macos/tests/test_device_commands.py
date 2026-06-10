@@ -101,10 +101,15 @@ class DeviceCommandTests(unittest.TestCase):
             "command_id": "cmd_policy",
             "payload": {
                 "kind": "supervision_policy",
+                "freeze_commands": [],
+                "unfreeze_commands": [],
+                "vibrate": False,
+                "screen_off": False,
+                "say": "",
+                "notes": [],
                 "risk_app_regex": ["Video"],
                 "risk_trigger_minutes": 5,
                 "app_time_limits": [{"app_regex": "Game", "limit_minutes": 10, "reason": "limit"}],
-                "say": "",
             },
         }
 
@@ -131,6 +136,8 @@ class DeviceCommandTests(unittest.TestCase):
                 "vibrate": False,
                 "screen_off": False,
                 "say": True,
+                "risk_app_monitor": False,
+                "app_time_limit": False,
             },
         )
 
