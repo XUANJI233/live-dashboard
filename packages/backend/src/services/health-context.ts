@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { formatPromptMinute } from "./prompt-time";
 
 const SLEEP_TYPES = [
   "sleep",
@@ -100,23 +101,24 @@ interface SleepRow {
 
 type HealthRow = SleepRow;
 
-export function sleepContextLinesForRange(start: string, end: string, maxLines = 12): string[] {
+export function sleepContextLinesForRange(start: string, end: string, maxLines = 12, tzOffsetMinutes = new Date().getTimezoneOffset()): string[] {
   const rows = getSleepRows.all(...SLEEP_TYPES, end, start, start, end) as SleepRow[];
-  return rows.slice(0, maxLines).map(formatSleepRow);
+  return rows.slice(0, maxLines).map((row) => formatSleepRow(row, tzOffsetMinutes));
 }
 
-export function healthContextLinesForRange(start: string, end: string, maxLines = 16): string[] {
+export function healthContextLinesForRange(start: string, end: string, maxLines = 16, tzOffsetMinutes = new Date().getTimezoneOffset()): string[] {
   const rows = getHealthRows.all(...HEALTH_CONTEXT_TYPES, end, start, start, end) as HealthRow[];
   if (rows.length === 0) return [];
 
   const out: string[] = [];
   const sleepBudget = Math.min(8, Math.max(0, Math.floor(maxLines / 2)));
   const sleepRows = rows.filter((row) => SLEEP_TYPE_SET.has(row.type)).slice(0, sleepBudget);
-  out.push(...sleepRows.map(formatSleepRow));
+  out.push(...sleepRows.map((row) => formatSleepRow(row, tzOffsetMinutes)));
 
   const metricLines = summarizeMetricRows(
     rows.filter((row) => !SLEEP_TYPE_SET.has(row.type)),
     Math.max(0, maxLines - out.length),
+    tzOffsetMinutes,
   );
   out.push(...metricLines);
   return out.slice(0, maxLines);
@@ -131,18 +133,18 @@ export function trustedWatchSleepingAt(at: Date, freshnessMinutes = 20): boolean
   return Boolean(row && row.value > 0);
 }
 
-function formatSleepRow(row: SleepRow): string {
+function formatSleepRow(row: SleepRow, tzOffsetMinutes: number): string {
   const source = row.platform === "zepp" ? "手表" : "设备";
   const range = row.end_time
-    ? `${clock(row.recorded_at)}-${clock(row.end_time)}`
-    : clock(row.recorded_at);
+    ? `${clock(row.recorded_at, tzOffsetMinutes)}-${clock(row.end_time, tzOffsetMinutes)}`
+    : clock(row.recorded_at, tzOffsetMinutes);
   const value = row.type.includes("duration") || row.type === "sleep" || row.type === "nap_duration"
     ? `${Math.round(row.value)}分钟`
     : `${Number(row.value.toFixed(1))}${row.unit}`;
   return `- ${source}/${clean(row.device_name)} ${range} ${sleepLabel(row.type)} ${value}`;
 }
 
-function summarizeMetricRows(rows: HealthRow[], maxLines: number): string[] {
+function summarizeMetricRows(rows: HealthRow[], maxLines: number, tzOffsetMinutes: number): string[] {
   if (maxLines <= 0) return [];
   const groups = new Map<string, HealthRow[]>();
   for (const row of rows) {
@@ -156,10 +158,10 @@ function summarizeMetricRows(rows: HealthRow[], maxLines: number): string[] {
   return Array.from(groups.values())
     .sort((a, b) => healthTypePriority(a[0]?.type || "") - healthTypePriority(b[0]?.type || ""))
     .slice(0, maxLines)
-    .map(formatMetricGroup);
+    .map((group) => formatMetricGroup(group, tzOffsetMinutes));
 }
 
-function formatMetricGroup(rows: HealthRow[]): string {
+function formatMetricGroup(rows: HealthRow[], tzOffsetMinutes: number): string {
   const first = rows[0]!;
   const latest = rows[rows.length - 1]!;
   const values = rows.map((row) => row.value).filter(Number.isFinite);
@@ -168,10 +170,10 @@ function formatMetricGroup(rows: HealthRow[]): string {
   const device = clean(first.device_name);
   if (TOTAL_HEALTH_TYPES.has(first.type)) {
     const total = values.reduce((sum, value) => sum + value, 0);
-    return `- ${source}/${device} ${label} 合计${formatHealthValue(total, first.unit)}，末次${clock(latest.recorded_at)}`;
+    return `- ${source}/${device} ${label} 合计${formatHealthValue(total, first.unit)}，末次${clock(latest.recorded_at, tzOffsetMinutes)}`;
   }
   if (LATEST_HEALTH_TYPES.has(first.type) || values.length === 1) {
-    return `- ${source}/${device} ${label} 最新${formatHealthValue(latest.value, latest.unit)}，${clock(latest.recorded_at)}`;
+    return `- ${source}/${device} ${label} 最新${formatHealthValue(latest.value, latest.unit)}，${clock(latest.recorded_at, tzOffsetMinutes)}`;
   }
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -228,10 +230,8 @@ function formatHealthValue(value: number, unit: string): string {
   return `${rounded}${unit}`;
 }
 
-function clock(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value.slice(0, 16);
-  return date.toISOString().replace("T", " ").slice(0, 16);
+function clock(value: string, tzOffsetMinutes: number): string {
+  return formatPromptMinute(value, tzOffsetMinutes);
 }
 
 function clean(value: string): string {

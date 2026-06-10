@@ -13,6 +13,7 @@ import { getAiRuntimeConfig, requestAiChatCompletion, requestAiChatCompletionWit
 import { logAiDebug } from "./ai-debug";
 import { safeTimezoneOffset, utcRangeForLocalDate } from "./cdn";
 import { healthContextLinesForRange } from "./health-context";
+import { formatPromptDateTime, formatPromptMinute } from "./prompt-time";
 import { timelineJsonBlockForPrompt } from "./timeline-prompt";
 
 /**
@@ -271,9 +272,9 @@ export async function generateDailySummary(options: {
     settings,
     contextDays,
     tzOffsetMinutes,
-    sleepLines: healthContextLinesForRange(range.start, range.end, 16),
+    sleepLines: healthContextLinesForRange(range.start, range.end, 16, tzOffsetMinutes),
     supervisionLines: baseSettings.supervision_enabled
-      ? supervisionHistoryLinesForRange(range.start, range.end, 12)
+      ? supervisionHistoryLinesForRange(range.start, range.end, 12, tzOffsetMinutes)
       : [],
   });
 
@@ -322,9 +323,9 @@ export async function generateWeeklySummary(options: {
     settings,
     contextDays,
     tzOffsetMinutes,
-    sleepLines: healthContextLinesForRange(startRange.start, endRange.start, 24),
+    sleepLines: healthContextLinesForRange(startRange.start, endRange.start, 24, tzOffsetMinutes),
     supervisionLines: baseSettings.supervision_enabled
-      ? supervisionHistoryLinesForRange(startRange.start, endRange.start, 40)
+      ? supervisionHistoryLinesForRange(startRange.start, endRange.start, 40, tzOffsetMinutes)
       : [],
   });
 
@@ -598,7 +599,7 @@ function getDailyContextDays(date: string, tzOffsetMinutes: number, days: number
       segments: getTimelineSegmentsForRange(range.start, range.end),
       target: effective.target,
       planned_rest: effective.planned_rest,
-      sleep_lines: healthContextLinesForRange(range.start, range.end, 10),
+      sleep_lines: healthContextLinesForRange(range.start, range.end, 10, tzOffsetMinutes),
     });
   }
   return out;
@@ -620,7 +621,7 @@ function getWeekContextDays(weekStart: string, tzOffsetMinutes: number, settings
       segments: [],
       target: plan?.target || settings.target,
       planned_rest: false,
-      sleep_lines: range ? healthContextLinesForRange(range.start, range.end, 10) : [],
+      sleep_lines: range ? healthContextLinesForRange(range.start, range.end, 10, tzOffsetMinutes) : [],
     });
   }
   return out;
@@ -651,6 +652,7 @@ async function generateSummaryText(input: {
   }
 
   try {
+    const tzOffsetMinutes = input.tzOffsetMinutes ?? new Date().getTimezoneOffset();
     const contextMessages = [
       { role: "system" as const, content: buildSystemPrompt(input.kind, input.settings) },
       {
@@ -661,14 +663,14 @@ async function generateSummaryText(input: {
           usefulSegments,
           input.settings,
           input.contextDays ?? [],
-          input.tzOffsetMinutes ?? new Date().getTimezoneOffset(),
+          tzOffsetMinutes,
           input.sleepLines ?? [],
           input.supervisionLines ?? [],
         ),
       },
     ];
     const finalInstruction = [
-      `当前生成时间: ${new Date().toISOString()}（必须按这个真实时间理解“现在”，不要使用模型训练时间）`,
+      `当前生成时间: ${formatPromptDateTime(new Date(), tzOffsetMinutes)}（必须按这个真实时间理解“现在”，不要使用模型训练时间）`,
       `现在基于以上全部上下文生成中文${input.kind === "weekly" ? "周总结" : "日总结"}。只输出总结正文。`,
     ].join("\n");
     const messages = [...contextMessages, { role: "user" as const, content: finalInstruction }];
@@ -917,7 +919,7 @@ function sanitizeAiSummary(value: string, kind: SummaryKind): string {
     .slice(0, maxLength);
 }
 
-function supervisionHistoryLinesForRange(start: string, end: string, maxLines: number): string[] {
+function supervisionHistoryLinesForRange(start: string, end: string, maxLines: number, tzOffsetMinutes: number): string[] {
   const startMs = Date.parse(start);
   const endMs = Date.parse(end);
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return [];
@@ -934,7 +936,7 @@ function supervisionHistoryLinesForRange(start: string, end: string, maxLines: n
       const message = sanitizeContextText(item.message);
       const freeze = item.freezeCommands?.length ? `；冻结: ${item.freezeCommands.map((value) => sanitizeContextText(value).slice(0, 40)).join("、")}` : "";
       const unfreeze = item.unfreezeCommands?.length ? `；解冻: ${item.unfreezeCommands.map((value) => sanitizeContextText(value).slice(0, 40)).join("、")}` : "";
-      return `- ${formatIsoMinute(item.at)} 监督回复: ${message || reason}${reason && message ? `；原因: ${reason}` : ""}${freeze}${unfreeze}`;
+      return `- ${formatPromptMinute(item.at, tzOffsetMinutes)} 监督回复: ${message || reason}${reason && message ? `；原因: ${reason}` : ""}${freeze}${unfreeze}`;
     });
 }
 
@@ -970,12 +972,6 @@ function sanitizeContextArray(value: unknown): string[] {
     .map((item) => sanitizeContextText(item).slice(0, 80))
     .filter(Boolean)
     .slice(0, 12);
-}
-
-function formatIsoMinute(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return sanitizeContextText(value).slice(0, 16);
-  return date.toISOString().replace("T", " ").slice(0, 16);
 }
 
 function sanitizeContextText(value: string | null | undefined): string {

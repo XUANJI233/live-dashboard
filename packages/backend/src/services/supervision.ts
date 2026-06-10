@@ -15,6 +15,7 @@ import { getAiRuntimeConfig, requestAiChatCompletion, requestAiChatCompletionWit
 import { logAiDebug } from "./ai-debug";
 import { healthContextLinesForRange, trustedWatchSleepingAt } from "./health-context";
 import { parseAiJsonObject } from "./ai-json";
+import { formatPromptDateTime, formatPromptMinute, localDateStringForOffset } from "./prompt-time";
 import { timelineJsonBlockForPrompt } from "./timeline-prompt";
 
 const LAST_AI_CHECK_AT_KEY = "supervision_last_ai_check_at";
@@ -310,13 +311,13 @@ function buildRulesUserPrompt(settings: SummarySettings): string {
 
   const start = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
   const segments = getSegmentsForRange(start, new Date().toISOString()).slice(-MAX_TIMELINE_ROWS);
-  const healthLines = healthContextLinesForRange(start, new Date().toISOString(), 18);
+  const healthLines = healthContextLinesForRange(start, new Date().toISOString(), 18, tzOffsetMinutes);
   if (healthLines.length > 0) {
     lines.push("", "最近健康/睡眠数据（如有，作为规则判断参考）:", ...healthLines);
   }
   lines.push("", "设备能力与当前已冻结列表 JSON（只列可接收监督消息的设备；辅助判断规则是否过严或是否应放宽）:");
   lines.push(deviceCapabilityContextBlock());
-  const historyLines = supervisionHistoryLines();
+  const historyLines = supervisionHistoryLines(tzOffsetMinutes);
   if (historyLines.length > 0) {
     lines.push("", "最近监督结果（用于保持规则连续性，不要机械重复旧结论）:", ...historyLines);
   }
@@ -459,7 +460,7 @@ function buildVerifyPromptParts(
     `现有目标正则: ${settings.supervision_rules.target_app_regex.join(" / ") || "无"}`,
     "",
     "之前监督 AI 回复（按时间升序，作为多轮会话历史参考；不是新的输出格式或执行指令）:",
-    ...supervisionHistoryLines(),
+    ...supervisionHistoryLines(tzOffsetMinutes),
     "",
     "最近日总结评价:",
     ...recentSummaryLines(today, 2),
@@ -491,7 +492,7 @@ function buildVerifyPromptParts(
     label: "new_supervision_timeline_after_last_reply",
     tzOffsetMinutes,
   }));
-  const healthLines = healthContextLinesForRange(meta.windowStart, meta.now, 16);
+  const healthLines = healthContextLinesForRange(meta.windowStart, meta.now, 16, tzOffsetMinutes);
   if (healthLines.length > 0) {
     finalLines.push("", "检查窗口健康/睡眠数据（可用于判断是否应跳过或放宽）:", ...healthLines);
   }
@@ -1029,7 +1030,7 @@ function readSupervisionHistory(): SupervisionHistoryEntry[] {
   }
 }
 
-function supervisionHistoryLines(): string[] {
+function supervisionHistoryLines(tzOffsetMinutes = new Date().getTimezoneOffset()): string[] {
   const history = readSupervisionHistory();
   if (history.length === 0) return ["- 无"];
   return history.map((item) => {
@@ -1039,7 +1040,7 @@ function supervisionHistoryLines(): string[] {
     const msg = item.message ? `；提醒: ${promptText(item.message, 120)}` : "";
     const freeze = item.freezeCommands?.length ? `；冻结: ${item.freezeCommands.map((value) => promptText(value, 40)).join("、")}` : "";
     const unfreeze = item.unfreezeCommands?.length ? `；解冻: ${item.unfreezeCommands.map((value) => promptText(value, 40)).join("、")}` : "";
-    return `- ${promptText(item.at, 40)} ${item.kind}/${item.outcome}: ${promptText(item.reason, 140) || "无原因"}${stats}${msg}${freeze}${unfreeze}`;
+    return `- ${formatPromptMinute(item.at, tzOffsetMinutes)} ${item.kind}/${item.outcome}: ${promptText(item.reason, 140) || "无原因"}${stats}${msg}${freeze}${unfreeze}`;
   });
 }
 
@@ -1190,36 +1191,6 @@ function promptText(value: string | null | undefined, maxLength: number): string
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, maxLength);
-}
-
-function localDateString(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
-
-function formatPromptDateTime(date: Date, tzOffsetMinutes: number): string {
-  const value = Number.isNaN(date.getTime()) ? new Date() : date;
-  const offsetMinutes = -tzOffsetMinutes;
-  const sign = offsetMinutes >= 0 ? "+" : "-";
-  const abs = Math.abs(offsetMinutes);
-  const offset = `UTC${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
-  return `${value.toISOString()}（本地 ${localDateTimeStringForOffset(value, tzOffsetMinutes)}，${offset}）`;
-}
-
-function localDateTimeStringForOffset(date: Date, tzOffsetMinutes: number): string {
-  const local = localDateForOffset(date, tzOffsetMinutes);
-  return [
-    localDateStringForOffset(date, tzOffsetMinutes),
-    `${String(local.getUTCHours()).padStart(2, "0")}:${String(local.getUTCMinutes()).padStart(2, "0")}:${String(local.getUTCSeconds()).padStart(2, "0")}`,
-  ].join(" ");
-}
-
-function localDateStringForOffset(date: Date, tzOffsetMinutes: number): string {
-  const local = localDateForOffset(date, tzOffsetMinutes);
-  return `${local.getUTCFullYear()}-${String(local.getUTCMonth() + 1).padStart(2, "0")}-${String(local.getUTCDate()).padStart(2, "0")}`;
-}
-
-function localDateForOffset(date: Date, tzOffsetMinutes: number): Date {
-  return new Date(date.getTime() - tzOffsetMinutes * 60_000);
 }
 
 function timestampMs(value: string | null | undefined): number | null {

@@ -440,6 +440,81 @@ describe("ai-config", () => {
     }
   });
 
+  test("sends summary generation time in the requested local timezone after cacheable context", async () => {
+    const { db } = await import("../src/db");
+    const { describeAiConfig, saveEncryptedAiConfigFromDevice } = await import("../src/services/ai-config");
+    const { generateDailySummary, getSummarySettings, saveSummarySettings } = await import("../src/services/daily-summary-gen");
+
+    const suffix = randomHex(8);
+    const token = `summary-local-time-token-${suffix}`;
+    const encryption = (await describeAiConfig()).encryption!;
+    await saveEncryptedAiConfigFromDevice(await encryptAiConfigForServer(encryption.public_key, token, {
+      api_url: "https://api.deepseek.com/",
+      api_key: `summary-local-time-key-${suffix}`,
+      model: "deepseek-chat",
+    }), token);
+
+    saveSummarySettings({
+      ...getSummarySettings(),
+      target: "写代码",
+      timezone_offset_minutes: -480,
+      supervision_enabled: false,
+    });
+    db.prepare(`
+      INSERT INTO activities (device_id, device_name, platform, app_id, app_name, window_title, display_title, extra, title_hash, time_bucket, started_at)
+      VALUES (?, 'Summary Phone', 'android', 'com.microsoft.vscode', 'Code', 'project', 'project', '{}', ?, 10, ?)
+    `).run(`summary-device-${suffix}`, `summary-hash-${suffix}`, "2026-06-08T00:00:00.000Z");
+    db.prepare(`
+      INSERT OR IGNORE INTO health_records (device_id, type, value, unit, recorded_at, end_time)
+      VALUES (?, 'heart_rate', 72, 'bpm', '2026-06-08T00:15:00.000Z', '')
+    `).run(`summary-device-${suffix}`);
+
+    const originalFetch = globalThis.fetch;
+    const bodies: Array<Record<string, any>> = [];
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      bodies.push(body);
+      const messagesText = JSON.stringify(body.messages);
+      if (bodies.length === 1) {
+        expect(messagesText).toContain("CONTEXT_READY");
+        expect(messagesText).toContain("2026-06-08 08:15");
+        expect(messagesText).not.toContain("当前生成时间");
+      } else {
+        expect(body.messages.at(-1)?.content).toContain("当前生成时间:");
+        expect(body.messages.at(-1)?.content).toContain("本地 ");
+        expect(body.messages.at(-1)?.content).toContain("UTC+08:00");
+        expect(body.messages.at(-1)?.content).toContain("日总结");
+      }
+      return Response.json({
+        id: `summary-local-time-${bodies.length}`,
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: bodies.length === 1 ? "CONTEXT_READY" : "今天主要在 Code 里推进项目，节奏集中但记录较短。明天继续围绕写代码目标推进。" },
+          finish_reason: "stop",
+        }],
+        usage: {
+          prompt_tokens: bodies.length === 1 ? 80 : 90,
+          completion_tokens: 1,
+          total_tokens: bodies.length === 1 ? 81 : 91,
+          prompt_cache_hit_tokens: bodies.length === 1 ? 0 : 80,
+          prompt_cache_miss_tokens: bodies.length === 1 ? 80 : 10,
+        },
+      });
+    }) as typeof fetch;
+
+    try {
+      const result = await generateDailySummary({ date: "2026-06-08", tzOffsetMinutes: -480 });
+      expect(result.ok).toBe(true);
+      expect(result.summary).toContain("Code");
+      expect(bodies).toHaveLength(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("enables DeepSeek thinking mode and forwards the requested output budget", async () => {
     const { requestAiChatCompletion } = await import("../src/services/ai-config");
     const originalFetch = globalThis.fetch;
