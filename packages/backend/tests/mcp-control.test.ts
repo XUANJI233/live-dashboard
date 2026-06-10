@@ -153,6 +153,82 @@ describe("mcp control plane", () => {
     expect((sent.commands[0] as { created_by?: string } | undefined)?.created_by).toBe("supervision");
   });
 
+  test("sets supervision policy through MCP only for Android LSP devices", async () => {
+    const { db } = await import("../src/db");
+    const { getSummarySettings } = await import("../src/services/daily-summary-gen");
+    const { handleMcpRequest } = await import("../src/routes/mcp");
+    const suffix = crypto.randomUUID();
+    const lspId = `android-policy-${suffix}`;
+    const desktopId = `desktop-policy-${suffix}`;
+    insertDeviceState(db, {
+      device_id: lspId,
+      device_name: "Policy Phone",
+      platform: "android",
+      extra: JSON.stringify({ device: { profile: "android_lsp" } }),
+    });
+    insertDeviceState(db, {
+      device_id: desktopId,
+      device_name: "Policy Desktop",
+      platform: "windows",
+      extra: JSON.stringify({ device: { profile: "desktop_message" } }),
+    });
+
+    const response = await handleMcpRequest(mcpRequest({
+      method: "tools/call",
+      params: {
+        name: "live_dashboard.set_supervision_policy",
+        arguments: {
+          risk_app_regex: ["RegExp(\"Short Video\", \"i\")"],
+          risk_trigger_minutes: 4,
+          app_time_limits: [{
+            app_regex: "Game",
+            limit_minutes: 8,
+            reason: "游戏限时",
+          }],
+          device_ids: [lspId, desktopId],
+          expires_in_seconds: 60,
+        },
+      },
+    }), { remoteAddress: "127.0.0.1" });
+    const body = await response.json() as {
+      result?: { structuredContent?: { commands?: Array<{ target_device_id: string; delivery: { status: string }; result: { status: string } }>; policy?: { risk_app_regex?: string[] } } };
+      error?: unknown;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.error).toBeUndefined();
+    expect(body.result?.structuredContent?.policy?.risk_app_regex).toEqual(["Short Video"]);
+    const settings = getSummarySettings();
+    expect(settings.supervision_rules.risk_app_regex).toEqual(["Short Video"]);
+    expect(settings.supervision_risk_trigger_minutes).toBe(4);
+    expect(settings.supervision_app_time_limits[0]).toMatchObject({
+      app_regex: "Game",
+      limit_minutes: 8,
+      reason: "游戏限时",
+    });
+
+    const commands = body.result?.structuredContent?.commands ?? [];
+    const lspCommand = commands.find((item) => item.target_device_id === lspId);
+    const desktopCommand = commands.find((item) => item.target_device_id === desktopId);
+    expect(lspCommand?.delivery.status).toBe("queued");
+    expect(desktopCommand?.delivery.status).toBe("skipped");
+    expect(desktopCommand?.result.status).toBe("unsupported");
+
+    const queued = db.prepare("SELECT payload FROM device_messages WHERE device_id = ? ORDER BY created_at DESC LIMIT 1")
+      .get(lspId) as { payload: string } | null;
+    expect(JSON.parse(queued!.payload)).toMatchObject({
+      type: "device_command",
+      payload: {
+        kind: "supervision_policy",
+        risk_app_regex: ["Short Video"],
+        risk_trigger_minutes: 4,
+      },
+    });
+    const desktopQueued = db.prepare("SELECT COUNT(*) AS count FROM device_messages WHERE device_id = ?")
+      .get(desktopId) as { count: number };
+    expect(desktopQueued.count).toBe(0);
+  });
+
   test("sends device commands through the ledger and records receipt/results", async () => {
     const { db } = await import("../src/db");
     const { sendDeviceCommands } = await import("../src/services/device-control");

@@ -21,8 +21,14 @@ export type ReceiptStatus = typeof RECEIPT_STATUSES[number];
 export type ResultStatus = typeof RESULT_STATUSES[number];
 
 export type DeviceCapabilityProfile = "android_lsp" | "android_normal" | "desktop_message" | "unsupported";
-export type DeviceCommandKind = "supervision";
+export type DeviceCommandKind = "supervision" | "supervision_policy";
 export type DeviceCommandCreatedBy = "mcp" | "supervision";
+
+export interface SupervisionAppTimeLimitPayload {
+  app_regex: string;
+  limit_minutes: number;
+  reason: string;
+}
 
 export interface DeviceCommandPayload {
   kind: DeviceCommandKind;
@@ -32,6 +38,9 @@ export interface DeviceCommandPayload {
   screen_off: boolean;
   say: string;
   notes: string[];
+  risk_app_regex?: string[];
+  risk_trigger_minutes?: number;
+  app_time_limits?: SupervisionAppTimeLimitPayload[];
 }
 
 export interface DeviceCommandEnvelope {
