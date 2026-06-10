@@ -21,7 +21,9 @@ from pathlib import Path
 import psutil
 import requests
 
-from settings_dialog import SettingsDialogController
+from device_commands import execute_desktop_command, extract_device_command, receipt_frame
+from device_profile import with_device_capabilities
+from ui_app import DashboardUiController
 from win_control import (
     ActivationEventServer,
     SingleInstanceGuard,
@@ -573,6 +575,10 @@ class WsClient:
             frame["message_id"] = message_id
         return self._send(frame)
 
+    def send_device_command_ack(self, frame: dict) -> bool:
+        """Send a device command receipt/result frame over WebSocket."""
+        return self._send(frame)
+
     # -- internals -----------------------------------------------------------
 
     def _build_ws_url(self) -> str:
@@ -631,6 +637,8 @@ class WsClient:
         msg_type = data.get("type")
         if msg_type == "ack":
             log.info("WebSocket 握手确认: device_id=%s", data.get("device_id"))
+        elif msg_type == "device_command" and self._on_viewer_message:
+            self._on_viewer_message(data)
         elif msg_type == "viewer_message" and self._on_viewer_message:
             self._on_viewer_message(data)
 
@@ -720,6 +728,8 @@ class MessageClient:
 
     def on_ws_message(self, data: dict):
         """Handle viewer_message from WS relay."""
+        if self.handle_device_command(data):
+            return
         msg = self._normalize_message(data)
         if not msg:
             return
@@ -744,10 +754,15 @@ class MessageClient:
         except Exception as exc:
             log.debug("获取待处理留言失败: %s", exc)
             return []
+        plain_messages = []
+        for m in msgs:
+            if not self.handle_device_command(m):
+                plain_messages.append(m)
+
         new_messages = []
         with self._lock:
             existing_ids = {m.get("message_id") for m in self._cache}
-            for m in msgs:
+            for m in plain_messages:
                 mid = m.get("message_id", "")
                 if mid and mid not in existing_ids:
                     self._cache.insert(0, m)
@@ -756,6 +771,43 @@ class MessageClient:
         for m in new_messages:
             self._notify(m)
         return msgs
+
+    def handle_device_command(self, message: object) -> bool:
+        """Handle device_command envelopes from WS or queued message payloads."""
+        envelope = extract_device_command(message)
+        if not envelope:
+            return False
+        command_id = envelope.get("command_id")
+        if not isinstance(command_id, str) or not command_id:
+            return True
+
+        self._send_command_ack(receipt_frame(envelope))
+        result, synthetic_message = execute_desktop_command(envelope)
+        notify_message = None
+        if synthetic_message:
+            with self._lock:
+                if not any(m.get("message_id") == synthetic_message["message_id"] for m in self._cache):
+                    self._cache.insert(0, synthetic_message)
+                    self._cache = self._cache[:self.MAX_CACHED]
+                    notify_message = synthetic_message
+        if notify_message:
+            self._notify(notify_message)
+        self._send_command_ack(result)
+        return True
+
+    def _send_command_ack(self, frame: dict) -> bool:
+        if self._ws and self._ws.send_device_command_ack(frame):
+            return True
+        try:
+            r = self._session.post(
+                f"{self._server_url}/api/supervision/ack",
+                json=frame,
+                timeout=10,
+            )
+            return r.status_code == 200
+        except Exception as exc:
+            log.debug("设备命令回执失败: %s", exc)
+            return False
 
     def fetch_history(self, since: str = "") -> list[dict]:
         """GET /api/messages/history?since=ISO — up to 500 messages."""
@@ -873,6 +925,19 @@ def control_wait(timeout: float) -> bool:
     return True
 
 
+def update_runtime_status(
+    tray: "TrayAgent | None",
+    ui: DashboardUiController | None,
+    status: str,
+    current_target: str | None = None,
+) -> None:
+    """Fan out runtime status updates to every visible UI surface."""
+    if tray:
+        tray.update_status(status, current_target)
+    if ui:
+        ui.update_status(status, current_target)
+
+
 def _make_tray_icon(color: str = "green"):
     """Generate a colored circle icon for the system tray."""
     from PIL import Image, ImageDraw
@@ -886,16 +951,16 @@ def _make_tray_icon(color: str = "green"):
 
 
 class TrayAgent:
-    """System tray with Chinese UI, hover tooltip, and integrated settings."""
+    """System tray with Chinese UI, hover tooltip, and integrated main window."""
 
-    def __init__(self, settings_controller: SettingsDialogController | None = None):
+    def __init__(self, ui_controller: DashboardUiController | None = None):
         import pystray
         self._pystray = pystray
         self._lock = threading.Lock()
         self._status = "初始化中"
         self._current_target = ""
         self._icon: pystray.Icon | None = None
-        self._settings_controller = settings_controller
+        self._ui_controller = ui_controller
         self._msg_client: MessageClient | None = None
         self._unread_count = 0
         self._icons = {
@@ -926,11 +991,11 @@ class TrayAgent:
     def _build_menu(self):
         p = self._pystray
         items = [
-            p.MenuItem("打开主界面", self._open_settings, default=True, visible=False),
+            p.MenuItem("打开主界面", self._open_main, default=True),
             p.MenuItem(lambda _: f"状态: {self._get_status()}", None, enabled=False),
             p.MenuItem(lambda _: f"当前: {self._get_current() or '无'}", None, enabled=False),
             p.Menu.SEPARATOR,
-            p.MenuItem("打开主界面", self._open_settings),
+            p.MenuItem("设置", self._open_settings),
             p.MenuItem("日志文件", self._toggle_log,
                        checked=lambda _: _file_handler is not None),
             p.MenuItem("开机自启", self._toggle_autostart,
@@ -992,7 +1057,7 @@ class TrayAgent:
             if registry_ok and legacy_ok:
                 log.info("Autostart disabled")
             else:
-                show_message(
+                self._notify_user(
                     "Live Dashboard",
                     "关闭开机自启时未能清理全部启动项。\n请检查任务计划程序中的 LiveDashboardAgent。",
                     error=True,
@@ -1002,7 +1067,7 @@ class TrayAgent:
             if set_registry_autostart(True):
                 log.info("Autostart enabled")
             else:
-                show_message(
+                self._notify_user(
                     "Live Dashboard",
                     "无法开启开机自启，请检查当前账户是否有写入启动项的权限。",
                     error=True,
@@ -1010,9 +1075,19 @@ class TrayAgent:
         if self._icon:
             self._icon.update_menu()
 
+    def _notify_user(self, title: str, message: str, error: bool = False) -> None:
+        if self._ui_controller:
+            self._ui_controller.show_notice(title, message, error)
+        else:
+            show_message(title, message, error)
+
+    def _open_main(self, _icon=None, _item=None):
+        if self._ui_controller:
+            self._ui_controller.open("overview")
+
     def _open_settings(self, _icon=None, _item=None):
-        if self._settings_controller:
-            self._settings_controller.open(load_config())
+        if self._ui_controller:
+            self._ui_controller.open("settings")
 
     def _show_messages(self, _icon=None, _item=None):
         """Show recent messages in a dialog."""
@@ -1020,29 +1095,21 @@ class TrayAgent:
             return
         with self._lock:
             self._unread_count = 0
-        msgs = self._msg_client.get_recent(10)
-        if not msgs:
+        if self._ui_controller:
+            self._ui_controller.open("messages")
+        elif not self._msg_client.get_recent(10):
             show_message("Live Dashboard", "暂无留言")
-            if self._icon:
-                self._icon.update_menu()
-            return
-        lines = []
-        for m in msgs:
-            name = m.get("viewer_name", "未知")
-            text = m.get("text", "")[:80]
-            t = m.get("created_at", "")[:16]
-            lines.append(f"[{t}] {name}: {text}")
-        show_message("Live Dashboard — 最近留言", "\n".join(lines))
         if self._icon:
             self._icon.update_menu()
 
     def _quit(self, _icon=None, _item=None):
         shutdown_event.set()
+        if self._ui_controller:
+            self._ui_controller.stop()
         if self._icon:
             self._icon.stop()
 
-    def run(self):
-        """Run the tray icon (blocking — call from main thread)."""
+    def _create_icon(self):
         icon_path = base_dir / "icon.ico"
         if icon_path.exists():
             from PIL import Image
@@ -1056,13 +1123,27 @@ class TrayAgent:
             "Live Dashboard",
             menu=self._build_menu(),
         )
+
+    def run(self):
+        """Run the tray icon, blocking until it is stopped."""
+        self._create_icon()
         self._icon.run()
+
+    def run_detached(self):
+        """Run the tray icon without blocking the tkinter main loop."""
+        self._create_icon()
+        self._icon.run_detached()
+
+    def stop(self):
+        if self._icon:
+            self._icon.stop()
 
 
 # ---------------------------------------------------------------------------
 # Monitor loop
 # ---------------------------------------------------------------------------
 def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
+                  ui: DashboardUiController | None = None,
                   ws_client: WsClient | None = None,
                   msg_client: MessageClient | None = None) -> None:
     interval = cfg["interval_seconds"]
@@ -1115,8 +1196,7 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
             if is_idle and not was_idle:
                 log.info("User idle (%.0fs)", idle_secs)
                 was_idle = True
-                if tray:
-                    tray.update_status("AFK")
+                update_runtime_status(tray, ui, "AFK")
             elif not is_idle and was_idle:
                 log.info("User returned")
                 was_idle = False
@@ -1124,14 +1204,13 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
             if is_idle:
                 heartbeat_due = (now - last_report_time) >= heartbeat_interval
                 if heartbeat_due:
-                    extra = get_battery_extra()
+                    extra = with_device_capabilities(get_battery_extra())
                     idle_target = format_report_target("idle", "User is away")
                     if _send_report("idle", "User is away", extra):
                         prev_app = "idle"
                         prev_title = "User is away"
                         last_report_time = now
-                        if tray:
-                            tray.update_status("AFK", idle_target)
+                        update_runtime_status(tray, ui, "AFK", idle_target)
                     elif reporter.retry_delay > 0:
                         control_wait(reporter.retry_delay)
                         continue
@@ -1146,14 +1225,13 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
             app_id, title = info
 
             # Keep tray status responsive; current item is updated only after a successful report.
-            if tray:
-                tray.update_status("在线")
+            update_runtime_status(tray, ui, "在线")
 
             changed = app_id != prev_app or title != prev_title
             heartbeat_due = (now - last_report_time) >= heartbeat_interval
 
             if changed or heartbeat_due:
-                extra = get_battery_extra()
+                extra = with_device_capabilities(get_battery_extra())
                 music = get_music_info()
                 if music:
                     extra["music"] = music
@@ -1163,8 +1241,7 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
                     prev_app = app_id
                     prev_title = title
                     last_report_time = now
-                    if tray:
-                        tray.update_status("在线", reported_target)
+                    update_runtime_status(tray, ui, "在线", reported_target)
                     if changed:
                         log.info("Reported: %s", reported_target)
                 elif reporter.retry_delay > 0:
@@ -1186,8 +1263,9 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
 class RuntimeSupervisor:
     """Owns the active reporter, websocket, message client, and monitor loop."""
 
-    def __init__(self, tray: TrayAgent | None):
+    def __init__(self, tray: TrayAgent | None, ui: DashboardUiController | None = None):
         self._tray = tray
+        self._ui = ui
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -1208,8 +1286,7 @@ class RuntimeSupervisor:
             err = validate_config(cfg)
             if err:
                 log.warning("Invalid config: %s", err)
-                if self._tray:
-                    self._tray.update_status("配置错误")
+                update_runtime_status(self._tray, self._ui, "配置错误")
                 control_wait(5)
                 continue
 
@@ -1234,8 +1311,10 @@ class RuntimeSupervisor:
 
                 if self._tray and msg_client:
                     self._tray.set_message_client(msg_client)
+                if self._ui and msg_client:
+                    self._ui.set_message_client(msg_client)
 
-                _monitor_loop(cfg, reporter, self._tray, ws_client, msg_client)
+                _monitor_loop(cfg, reporter, self._tray, self._ui, ws_client, msg_client)
             finally:
                 if ws_client:
                     ws_client.stop()
@@ -1259,48 +1338,51 @@ def main() -> None:
         guard.close()
         return
 
-    settings_controller = SettingsDialogController(
-        load_config=load_config,
-        validate_config=validate_config,
-        save_config=save_config,
-        on_saved=reload_event.set,
+    ui: DashboardUiController | None = None
+    try:
+        ui = DashboardUiController(
+            load_config=load_config,
+            validate_config=validate_config,
+            save_config=save_config,
+            on_saved=reload_event.set,
+            on_quit=shutdown_event.set,
+            should_exit=shutdown_event.is_set,
+            log_path=LOG_FILE,
+        )
+    except ImportError:
+        log.warning("tkinter 不可用，主界面禁用")
+    except Exception as exc:
+        log.warning("主界面初始化失败: %s", exc)
+
+    activation_server = ActivationEventServer(
+        lambda: ui.open("overview") if ui else show_message("Live Dashboard", "Windows Agent 已在后台运行。")
     )
-    activation_server = ActivationEventServer(lambda: settings_controller.open(load_config()))
     supervisor: RuntimeSupervisor | None = None
+    tray: TrayAgent | None = None
 
     try:
         activation_server.start()
         cfg = load_config()
-
-        while not cfg.get("server_url") or not cfg.get("token") or cfg.get("token") == "YOUR_TOKEN_HERE":
-            cfg = settings_controller.open(cfg, blocking=True)
-            if cfg is None:
-                return
-            cfg = load_config()
-
-        err = validate_config(cfg)
-        while err:
-            log.warning("Invalid config: %s", err)
-            cfg = settings_controller.open(cfg, blocking=True)
-            if cfg is None:
-                return
-            cfg = load_config()
-            err = validate_config(cfg)
-
-        tray: TrayAgent | None = None
         try:
-            tray = TrayAgent(settings_controller)
+            tray = TrayAgent(ui)
         except ImportError:
             log.warning("pystray/Pillow not installed, running without tray")
         except Exception as e:
             log.warning("Tray init failed: %s", e)
 
         reload_event.clear()
-        supervisor = RuntimeSupervisor(tray)
+        supervisor = RuntimeSupervisor(tray, ui)
         supervisor.start()
 
         if tray:
-            tray.run()
+            tray.run_detached()
+        if ui and validate_config(cfg):
+            ui.open("settings")
+        elif ui:
+            ui.open("overview")
+
+        if ui:
+            ui.run_forever()
         else:
             while not shutdown_event.is_set():
                 shutdown_event.wait(1)
@@ -1309,6 +1391,10 @@ def main() -> None:
     finally:
         shutdown_event.set()
         activation_server.stop()
+        if ui:
+            ui.stop()
+        if tray:
+            tray.stop()
         if supervisor:
             supervisor.join(timeout=10)
         guard.close()

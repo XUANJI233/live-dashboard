@@ -60,11 +60,21 @@
 
 右键菜单：
 - 查看当前状态和正在使用的应用
-- 单击/双击托盘图标打开设置主界面
+- 单击/双击托盘图标打开主界面
 - 开关日志文件
 - 开关开机自启
-- 设置对话框（编辑服务器地址、Token、上报间隔等）
+- 打开 Settings（编辑服务器地址、Token、上报间隔等）
 - 安全退出
+
+### 主界面
+
+Windows Agent 使用单一主窗口，信息架构与手机端管理工具保持一致：
+
+- `Overview`：显示后台状态、当前上报目标、服务器和自启动状态。
+- `Messages`：查看服务器消息、AI 监督提醒和桌面设备命令文本。
+- `Settings`：修改服务器地址、Token、上报间隔、心跳间隔、AFK 判定和日志开关。
+
+主界面由一个 tkinter UI 控制器统一管理，托盘、二次启动唤醒和消息提醒都会回到同一个窗口，避免多套弹窗互相抢焦点或无法关闭。
 
 ### 前台应用检测
 
@@ -92,10 +102,30 @@
 
 运行日志自动写入 `agent.log`，按天轮转保留 2 天。
 
+### 服务端设备命令
+
+Windows 端会显式上报 `desktop_message` 能力：
+
+```json
+{
+  "profile": "desktop_message",
+  "capabilities": {
+    "freeze": false,
+    "unfreeze": false,
+    "vibrate": false,
+    "screen_off": false,
+    "say": true
+  }
+}
+```
+
+服务端下发统一 `device_command` 时，Windows Agent 只执行桌面文本提醒 `say`，并通过 WebSocket 或 `/api/supervision/ack` 回传 `device_command_receipt` / `device_command_result`。冻结、解冻、震动、息屏等控制动作会被标记为不支持，不会在 Windows 上执行。
+
 ## 技术栈
 
 - **Win32 API**: 前台窗口检测、空闲时间、全屏检测
 - **pystray + Pillow**: 系统托盘图标和菜单
 - **pycaw**: Windows Core Audio API，检测活跃音频会话
 - **psutil**: 电池信息
-- **tkinter**: 设置对话框（Python 内置）
+- **tkinter**: 主界面、设置和消息窗口（Python 内置）
+- **websocket-client**: 设备 WebSocket、留言和设备命令回执
