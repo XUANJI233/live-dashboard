@@ -75,26 +75,83 @@ function Invoke-Checked {
     }
 }
 
+function New-TemporarySelfSignedPfx {
+    $subject = [Environment]::GetEnvironmentVariable("WINDOWS_SELF_SIGN_SUBJECT")
+    if ([string]::IsNullOrWhiteSpace($subject)) {
+        $subject = "CN=Live Dashboard Windows Agent Self-Signed"
+    }
+
+    $rsa = [System.Security.Cryptography.RSA]::Create(3072)
+    try {
+        $distinguishedName = [System.Security.Cryptography.X509Certificates.X500DistinguishedName]::new($subject)
+        $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+            $distinguishedName,
+            $rsa,
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+            [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+        )
+        $request.CertificateExtensions.Add(
+            [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+                [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature,
+                $true
+            )
+        )
+        $oids = [System.Security.Cryptography.OidCollection]::new()
+        [void]$oids.Add([System.Security.Cryptography.Oid]::new("1.3.6.1.5.5.7.3.3", "Code Signing"))
+        $request.CertificateExtensions.Add(
+            [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($oids, $false)
+        )
+        $notBefore = [System.DateTimeOffset]::Now.AddMinutes(-10)
+        $notAfter = [System.DateTimeOffset]::Now.AddYears(1)
+        $cert = $request.CreateSelfSigned($notBefore, $notAfter)
+        try {
+            $password = [guid]::NewGuid().ToString("N")
+            $path = Join-Path ([System.IO.Path]::GetTempPath()) ("live-dashboard-selfsign-" + [guid]::NewGuid().ToString("N") + ".pfx")
+            $bytes = $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $password)
+            [System.IO.File]::WriteAllBytes($path, $bytes)
+            return @{
+                Path = $path
+                Password = $password
+            }
+        } finally {
+            $cert.Dispose()
+        }
+    } finally {
+        $rsa.Dispose()
+    }
+}
+
 $resolvedFile = (Resolve-Path -LiteralPath $FilePath).Path
 $skipSigning = Get-EnvBool -Name "WINDOWS_SKIP_SIGNING" -Default $false
 if ($skipSigning) {
     Write-Warning "WINDOWS_SKIP_SIGNING=true, leaving $resolvedFile unsigned."
     exit 0
 }
+$selfSign = Get-EnvBool -Name "WINDOWS_SELF_SIGN" -Default $false
 
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_CODESIGN_CERT_BASE64")
 $certPath = [Environment]::GetEnvironmentVariable("WINDOWS_CODESIGN_CERT_PATH")
 $certThumbprint = [Environment]::GetEnvironmentVariable("WINDOWS_CODESIGN_CERT_THUMBPRINT")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_CODESIGN_CERT_PASSWORD")
+$hasConfiguredCertificate = -not [string]::IsNullOrWhiteSpace($certBase64) -or
+    -not [string]::IsNullOrWhiteSpace($certPath) -or
+    -not [string]::IsNullOrWhiteSpace($certThumbprint)
+$selfSignedPfxPath = $null
 
-if ([string]::IsNullOrWhiteSpace($certBase64) -and
-    [string]::IsNullOrWhiteSpace($certPath) -and
-    [string]::IsNullOrWhiteSpace($certThumbprint)) {
-    if ($RequireSigning) {
-        throw "Windows signing is required. Set WINDOWS_CODESIGN_CERT_BASE64, WINDOWS_CODESIGN_CERT_PATH, or WINDOWS_CODESIGN_CERT_THUMBPRINT. For local debug builds only, set WINDOWS_SKIP_SIGNING=true."
+if (-not $hasConfiguredCertificate) {
+    if ($selfSign) {
+        $selfSignedPfx = New-TemporarySelfSignedPfx
+        $selfSignedPfxPath = $selfSignedPfx.Path
+        $certPath = $selfSignedPfx.Path
+        $certPassword = $selfSignedPfx.Password
+        Write-Warning "Using a temporary self-signed code signing certificate. This reduces unsigned-binary friction but does not create a trusted publisher."
+    } else {
+        if ($RequireSigning) {
+            throw "Windows signing is required. Set WINDOWS_CODESIGN_CERT_BASE64, WINDOWS_CODESIGN_CERT_PATH, WINDOWS_CODESIGN_CERT_THUMBPRINT, or set WINDOWS_SELF_SIGN=true / WINDOWS_SKIP_SIGNING=true."
+        }
+        Write-Warning "No Windows signing certificate configured; $resolvedFile was not signed."
+        exit 0
     }
-    Write-Warning "No Windows signing certificate configured; $resolvedFile was not signed."
-    exit 0
 }
 
 $signTool = Find-SignTool
@@ -105,7 +162,10 @@ if ([string]::IsNullOrWhiteSpace($timestampUrl)) {
 
 $tempCertPath = $null
 try {
-    $signArgs = @("sign", "/fd", "SHA256", "/tr", $timestampUrl, "/td", "SHA256")
+    $signArgs = @("sign", "/fd", "SHA256")
+    if ($hasConfiguredCertificate) {
+        $signArgs += @("/tr", $timestampUrl, "/td", "SHA256")
+    }
 
     if (-not [string]::IsNullOrWhiteSpace($certBase64)) {
         $tempCertPath = Join-Path ([System.IO.Path]::GetTempPath()) ("live-dashboard-codesign-" + [guid]::NewGuid().ToString("N") + ".pfx")
@@ -134,10 +194,18 @@ try {
 
     $signArgs += $resolvedFile
     Invoke-Checked -FileName $signTool -Arguments $signArgs
-    Invoke-Checked -FileName $signTool -Arguments @("verify", "/pa", "/v", $resolvedFile)
-    Write-Host "Signed and verified: $resolvedFile"
+    if ($hasConfiguredCertificate) {
+        Invoke-Checked -FileName $signTool -Arguments @("verify", "/pa", "/v", $resolvedFile)
+        Write-Host "Signed and verified: $resolvedFile"
+    } else {
+        Write-Warning "Self-signed Authenticode signature embedded. This is not trusted by Windows unless the certificate is installed as trusted."
+        Write-Host "Self-signed: $resolvedFile"
+    }
 } finally {
     if ($tempCertPath -and (Test-Path -LiteralPath $tempCertPath)) {
         Remove-Item -LiteralPath $tempCertPath -Force
+    }
+    if ($selfSignedPfxPath -and (Test-Path -LiteralPath $selfSignedPfxPath)) {
+        Remove-Item -LiteralPath $selfSignedPfxPath -Force
     }
 }

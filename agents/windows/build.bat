@@ -25,6 +25,9 @@ if errorlevel 1 exit /b %errorlevel%
 echo.
 if /I "%WINDOWS_SKIP_SIGNING%"=="true" (
     echo Done! Unsigned debug output: dist\live-dashboard-agent.exe
+) else if /I "%WINDOWS_SELF_SIGN%"=="true" (
+    echo Done! Authenticode output: dist\live-dashboard-agent.exe
+    echo Note: if no trusted certificate was configured, this build uses a self-signed certificate.
 ) else (
     echo Done! Signed output: dist\live-dashboard-agent.exe
 )

@@ -14,6 +14,10 @@ on:
         description: "Build an unsigned debug artifact"
         type: boolean
         default: false
+      self_sign:
+        description: "Use a temporary self-signed certificate when no trusted certificate secret is configured"
+        type: boolean
+        default: true
 
 jobs:
   build:
@@ -26,6 +30,7 @@ jobs:
       WINDOWS_CODESIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_CERT_PASSWORD }}
       WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
       WINDOWS_SKIP_SIGNING: ${{ ((github.event_name == 'push' && github.ref_type == 'branch') || (github.event_name == 'workflow_dispatch' && inputs.skip_signing)) && 'true' || 'false' }}
+      WINDOWS_SELF_SIGN: ${{ ((github.event_name == 'push' && github.ref_type == 'tag') || (github.event_name == 'workflow_dispatch' && !inputs.skip_signing && inputs.self_sign)) && 'true' || 'false' }}
 
     steps:
       - name: Check out repository
@@ -51,23 +56,31 @@ jobs:
         shell: cmd
         run: build.bat
 
-      - name: Verify Authenticode policy
+      - name: Check Windows artifact policy
         shell: powershell
         run: |
+          $artifact = ".\dist\live-dashboard-agent.exe"
+          if (-not (Test-Path -LiteralPath $artifact)) {
+            throw "Expected Windows artifact was not created: $artifact"
+          }
           if ($env:WINDOWS_SKIP_SIGNING -eq "true") {
             Write-Host "Unsigned debug artifact built for branch/manual smoke."
             exit 0
           }
-          $signature = Get-AuthenticodeSignature .\dist\live-dashboard-agent.exe
-          if ($signature.Status -ne "Valid") {
-            throw "Expected a valid Authenticode signature, got $($signature.Status)."
+          $hasTrustedCert = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_CERT_BASE64)
+          if ($hasTrustedCert) {
+            Write-Host "Trusted Authenticode signing was enforced by sign-windows.ps1."
+            exit 0
           }
-          Write-Host "Authenticode signature is valid."
+          if ($env:WINDOWS_SELF_SIGN -ne "true") {
+            throw "Expected WINDOWS_SELF_SIGN=true or a trusted signing certificate for signed builds."
+          }
+          Write-Warning "Self-signed Authenticode artifact built. It is not a trusted publisher for Windows users."
 
       - name: Upload Windows agent
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.WINDOWS_SKIP_SIGNING == 'true' && 'live-dashboard-agent-windows-debug' || 'live-dashboard-agent-windows-signed' }}
+          name: ${{ env.WINDOWS_SKIP_SIGNING == 'true' && 'live-dashboard-agent-windows-unsigned-debug' || 'live-dashboard-agent-windows-authenticode' }}
           path: agents/windows/dist/live-dashboard-agent.exe
           if-no-files-found: error
           retention-days: 7
