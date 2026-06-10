@@ -4,7 +4,7 @@
 
 ## 快速开始
 
-从 [GitHub Releases](https://github.com/Monika-Dream/live-dashboard/releases) 下载 `live-dashboard-agent.exe`，将 `config.json` 放在同目录下，双击运行即可。Agent 已在后台运行时，再次双击同目录下的 exe 会唤起设置窗口，不会静默启动第二个后台实例。
+从 [GitHub Releases](https://github.com/Monika-Dream/live-dashboard/releases) 下载 `live-dashboard-agent.exe`，将 `config.json` 放在同目录下，双击运行即可。
 
 ## 从源码运行
 
@@ -65,8 +65,6 @@
 - 开关开机自启
 - 设置对话框（编辑服务器地址、Token、上报间隔等）
 - 安全退出
-
-如果托盘已在后台运行，也可以直接再次双击 `live-dashboard-agent.exe` 打开设置窗口；保存设置后 Agent 会自动重载配置。
 
 ### 前台应用检测
 
