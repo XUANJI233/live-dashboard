@@ -86,14 +86,14 @@ def activate_window(hwnd: int | None) -> bool:
 
 
 class SingleInstanceGuard:
-    """Named mutex guard; secondary launches ask the primary to show settings."""
+    """Named mutex guard; secondary launches ask the primary to show its UI."""
 
     def __init__(self, name: str = SINGLE_INSTANCE_MUTEX_NAME):
         self._handle = CreateMutexW(None, False, name)
         self.already_running = bool(self._handle and GetLastError() == ERROR_ALREADY_EXISTS)
 
     def notify_existing(self) -> bool:
-        """Ask the already-running instance to show its main settings window."""
+        """Ask the already-running instance to show its main window."""
         handle = OpenEventW(EVENT_MODIFY_STATE, False, ACTIVATION_EVENT_NAME)
         if not handle:
             return False

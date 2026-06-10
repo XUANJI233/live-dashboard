@@ -86,9 +86,13 @@ class DeviceCommandTests(unittest.TestCase):
         self.assertIsNone(message)
 
     def test_report_extra_uses_desktop_message_capabilities(self):
-        extra = with_device_capabilities({"battery": {"percent": 80}})
+        extra = with_device_capabilities({
+            "battery": {"percent": 80},
+            "device": {"offline_timeout_minutes": 5},
+        })
 
         self.assertEqual(extra["battery"]["percent"], 80)
+        self.assertEqual(extra["device"]["offline_timeout_minutes"], 5)
         self.assertEqual(extra["device"]["profile"], "desktop_message")
         self.assertEqual(
             extra["device"]["capabilities"],

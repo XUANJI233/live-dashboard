@@ -23,6 +23,7 @@ import requests
 
 from device_commands import execute_desktop_command, extract_device_command, receipt_frame
 from device_profile import with_device_capabilities
+from probe_cache import TimedProbe
 from ui_app import DashboardUiController
 from win_control import (
     ActivationEventServer,
@@ -1156,6 +1157,9 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
     last_msg_fetch: float = 0
     MSG_FETCH_INTERVAL = 30  # seconds
     was_idle = False
+    audio_probe = TimedProbe(is_audio_playing, ttl_seconds=10, fallback=False)
+    fullscreen_probe = TimedProbe(is_foreground_fullscreen, ttl_seconds=2, fallback=False)
+    music_probe = TimedProbe(get_music_info, ttl_seconds=15, fallback=None)
 
     log.info(
         "Monitoring — interval=%ds, heartbeat=%ds, idle=%ds, ws=%s",
@@ -1190,8 +1194,8 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
 
             idle_secs = get_idle_seconds()
             is_idle = (idle_secs >= idle_threshold
-                       and not is_audio_playing()
-                       and not is_foreground_fullscreen())
+                       and not audio_probe.get()
+                       and not fullscreen_probe.get())
 
             if is_idle and not was_idle:
                 log.info("User idle (%.0fs)", idle_secs)
@@ -1232,7 +1236,7 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None,
 
             if changed or heartbeat_due:
                 extra = with_device_capabilities(get_battery_extra())
-                music = get_music_info()
+                music = music_probe.get(force=changed)
                 if music:
                     extra["music"] = music
                 reported_target = format_report_target(app_id, title)

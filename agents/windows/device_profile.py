@@ -17,8 +17,13 @@ DESKTOP_CAPABILITIES = {
 def with_device_capabilities(extra: dict | None = None) -> dict:
     """Attach explicit desktop message capabilities to a report extra payload."""
     payload = dict(extra or {})
-    payload["device"] = {
+    device = payload.get("device")
+    device_payload = dict(device) if isinstance(device, dict) else {}
+    device_payload.update({
         "profile": DESKTOP_DEVICE_PROFILE,
         "capabilities": dict(DESKTOP_CAPABILITIES),
+    })
+    payload["device"] = {
+        **device_payload,
     }
     return payload
