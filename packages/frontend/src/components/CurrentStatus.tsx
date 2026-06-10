@@ -1,4 +1,5 @@
 import type { DeviceState } from "@/lib/api";
+import { isLspDevice } from "@/lib/device-profile";
 import { getAppDescription } from "@/lib/app-descriptions";
 import { useConfig } from "@/hooks/useConfig";
 
@@ -101,7 +102,7 @@ export default function CurrentStatus({ devices }: Props) {
 function DeviceMetaLine({ device }: { device: DeviceState }) {
   const parts: string[] = [];
   const extra = device.extra;
-  if (extra?.device?.capability_mode === "lsposed" || extra?.device?.uploader === "lsposed") {
+  if (isLspDevice(device)) {
     parts.push("LSP");
   }
   if (typeof extra?.battery_percent === "number") {

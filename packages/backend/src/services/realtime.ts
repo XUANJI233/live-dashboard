@@ -4,7 +4,8 @@ import { currentHourWindow, currentMessageSlot, noStore, withCdnHeaders } from "
 import { verifyViewerToken, viewerTokenFromRequest, viewerTokenRateLimit, edgeViewerIdentity } from "./viewer-auth";
 import { processReportPayload, ReportPayloadError } from "./device-status-handler";
 import { requestSupervisionCheckFromReportPayload } from "./supervision-report-trigger";
-import { supervisionAckWsResponse } from "./supervision-ack";
+import { deviceCommandReceiptWsResponse, deviceCommandResultWsResponse } from "./supervision-ack";
+import type { DeviceCommandEnvelope, DeliveryStatus } from "./mcp-contracts";
 import type { DeviceInfo } from "../types";
 import type { ServerWebSocket } from "bun";
 
@@ -17,7 +18,7 @@ export interface WsData {
 }
 
 const MAX_TEXT_LENGTH = 500;
-const MAX_MESSAGE_JSON_BYTES = 4096;
+const MAX_MESSAGE_JSON_BYTES = 32 * 1024;
 const MAX_MESSAGE_PAYLOAD_BYTES = 4096;
 const PUBLIC_MESSAGE_RECENT_HOURS = 24 * 365;
 const PUBLIC_MESSAGE_RECENT_MAX_HOURS = 24 * 365;
@@ -582,53 +583,35 @@ function deliverViewerMessage(
   return "queued";
 }
 
-export function sendSupervisorMessageToDevices(
-  text: string,
-  payload: Record<string, unknown> | null = null,
-): { sent: number; queued: number; targets: number } {
-  const clean = cleanText(text);
-  if (!clean) return { sent: 0, queued: 0, targets: 0 };
-
-  const messageId = `supervision_${crypto.randomUUID()}`;
-  const createdAt = new Date().toISOString();
-  const targets = messageTargets();
-  recordMessage(messageId, "__broadcast__", "__supervisor__", "监督模式", "private", "viewer", clean, createdAt);
-
-  let sent = 0;
-  let queued = 0;
-  for (const deviceId of targets) {
-    const status = deliverViewerMessage(deviceId, "__supervisor__", "监督模式", "private", clean, messageId, createdAt, payload);
-    if (status === "sent") sent += 1;
-    else queued += 1;
-  }
-  console.log(`[supervision] alert delivery targets=${targets.length} sent=${sent} queued=${queued}`);
-  return { sent, queued, targets: targets.length };
-}
-
-export function sendSupervisorMessagesToDevices(messages: Array<{
+export function deliverDeviceCommandMessage(input: {
   deviceId: string;
+  commandId: string;
+  requestId: string;
   text: string;
-  payload: Record<string, unknown> | null;
-}>): { sent: number; queued: number; targets: number } {
-  let sent = 0;
-  let queued = 0;
-  let targets = 0;
-  const createdAt = new Date().toISOString();
+  envelope: DeviceCommandEnvelope;
+}): { status: DeliveryStatus; reason: string } {
+  const payloadText = serializedMessagePayload(input.envelope);
+  if (!payloadText) return { status: "failed", reason: "payload_too_large" };
 
-  for (const item of messages) {
-    const targetDeviceId = cleanDeviceId(item.deviceId);
-    if (!targetDeviceId || !supportsDeviceMessages(targetDeviceId)) continue;
-    const clean = cleanText(item.text) || "监督模式更新";
-    const messageId = `supervision_${crypto.randomUUID()}`;
-    recordMessage(messageId, targetDeviceId, "__supervisor__", "监督模式", "private", "viewer", clean, createdAt);
-    const status = deliverViewerMessage(targetDeviceId, "__supervisor__", "监督模式", "private", clean, messageId, createdAt, item.payload);
-    targets += 1;
-    if (status === "sent") sent += 1;
-    else queued += 1;
+  const deviceWs = deviceSockets.get(input.deviceId);
+  if (deviceWs) {
+    try {
+      send(deviceWs, input.envelope);
+      return { status: "sent", reason: "" };
+    } catch {
+      deviceSockets.delete(input.deviceId);
+      devicePongTimes.delete(input.deviceId);
+    }
   }
 
-  console.log(`[supervision] per-device delivery targets=${targets} sent=${sent} queued=${queued}`);
-  return { sent, queued, targets };
+  queueMessage(
+    input.deviceId,
+    "__mcp__",
+    cleanText(input.text) || "设备命令",
+    input.commandId,
+    payloadText,
+  );
+  return { status: "queued", reason: "device_socket_unavailable" };
 }
 
 function deliverQueuedMessages(deviceId: string, ws: ServerWebSocket<WsData>) {
@@ -805,8 +788,13 @@ export const realtimeWebSocket = {
       return;
     }
 
-    if (ws.data.role === "device" && data.type === "supervision_ack") {
-      send(ws, supervisionAckWsResponse(data, ws.data.device));
+    if (ws.data.role === "device" && data.type === "device_command_receipt") {
+      send(ws, deviceCommandReceiptWsResponse(data, ws.data.device));
+      return;
+    }
+
+    if (ws.data.role === "device" && data.type === "device_command_result") {
+      send(ws, deviceCommandResultWsResponse(data, ws.data.device));
       return;
     }
 

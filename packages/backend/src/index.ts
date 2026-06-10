@@ -48,6 +48,7 @@ import { normalizeClientIp } from "./services/visitors";
 import { getVapidKeys, saveSubscription, removeSubscription } from "./services/push";
 import { verifyViewerToken, viewerTokenFromRequest } from "./services/viewer-auth";
 import { injectSiteConfig } from "./services/site-config";
+import { startLocalMcpServer } from "./services/mcp-local-server";
 
 // Start scheduled cleanup tasks (import triggers setInterval registration)
 import "./services/cleanup";
@@ -393,6 +394,8 @@ const server = Bun.serve<WsData>({
   },
   websocket: realtimeWebSocket,
 });
+
+const localMcpServer = startLocalMcpServer();
 
 function isPushSubscriptionBody(value: unknown): value is { endpoint: string; keys: { p256dh: string; auth: string } } {
   if (!value || typeof value !== "object") return false;

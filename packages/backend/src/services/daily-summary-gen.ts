@@ -111,8 +111,8 @@ interface SupervisionHistoryPromptEntry {
   outcome?: string;
   reason?: string;
   message?: string;
-  freezeCommands?: string[];
-  unfreezeCommands?: string[];
+  freeze_commands?: string[];
+  unfreeze_commands?: string[];
 }
 
 const MODE_LABELS: Record<SummaryMode, string> = {
@@ -934,8 +934,8 @@ function supervisionHistoryLinesForRange(start: string, end: string, maxLines: n
     .map((item) => {
       const reason = sanitizeContextText(item.reason);
       const message = sanitizeContextText(item.message);
-      const freeze = item.freezeCommands?.length ? `；冻结: ${item.freezeCommands.map((value) => sanitizeContextText(value).slice(0, 40)).join("、")}` : "";
-      const unfreeze = item.unfreezeCommands?.length ? `；解冻: ${item.unfreezeCommands.map((value) => sanitizeContextText(value).slice(0, 40)).join("、")}` : "";
+      const freeze = item.freeze_commands?.length ? `；冻结: ${item.freeze_commands.map((value) => sanitizeContextText(value).slice(0, 40)).join("、")}` : "";
+      const unfreeze = item.unfreeze_commands?.length ? `；解冻: ${item.unfreeze_commands.map((value) => sanitizeContextText(value).slice(0, 40)).join("、")}` : "";
       return `- ${formatPromptMinute(item.at, tzOffsetMinutes)} 监督回复: ${message || reason}${reason && message ? `；原因: ${reason}` : ""}${freeze}${unfreeze}`;
     });
 }
@@ -956,8 +956,8 @@ function readSupervisionHistory(): SupervisionHistoryPromptEntry[] {
           outcome: sanitizeContextText(typeof row.outcome === "string" ? row.outcome : ""),
           reason: sanitizeContextText(typeof row.reason === "string" ? row.reason : ""),
           message: sanitizeContextText(typeof row.message === "string" ? row.message : ""),
-          freezeCommands: sanitizeContextArray(row.freezeCommands),
-          unfreezeCommands: sanitizeContextArray(row.unfreezeCommands),
+          freeze_commands: sanitizeContextArray(row.freeze_commands),
+          unfreeze_commands: sanitizeContextArray(row.unfreeze_commands),
         };
       });
   } catch {

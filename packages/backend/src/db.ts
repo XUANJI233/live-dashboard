@@ -94,7 +94,15 @@ db.run(`
 
 // ── Schema migration: add display_title + extra columns ──
 
-const KNOWN_TABLES = new Set(["activities", "device_states", "device_messages", "daily_summaries", "weekly_summaries"]);
+const KNOWN_TABLES = new Set([
+  "activities",
+  "device_states",
+  "device_messages",
+  "device_commands",
+  "device_command_results",
+  "daily_summaries",
+  "weekly_summaries",
+]);
 
 function columnExists(table: string, column: string): boolean {
   if (!KNOWN_TABLES.has(table)) {
@@ -102,6 +110,15 @@ function columnExists(table: string, column: string): boolean {
   }
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
   return rows.some((r) => r.name === column);
+}
+
+function addColumnIfMissing(table: string, column: string, definition: string): void {
+  if (!KNOWN_TABLES.has(table)) {
+    throw new Error(`addColumnIfMissing: unknown table "${table}"`);
+  }
+  if (!columnExists(table, column)) {
+    db.run(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+  }
 }
 
 // activities.display_title
@@ -303,6 +320,78 @@ db.run(`
   ON visitor_messages(kind, created_at)
 `);
 
+// ── Device command ledger (MCP/server-side control plane) ──
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS device_commands (
+    command_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    target_device_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    delivery_status TEXT NOT NULL DEFAULT 'queued',
+    delivery_reason TEXT NOT NULL DEFAULT '',
+    delivered_at TEXT NOT NULL DEFAULT '',
+    receipt_status TEXT NOT NULL DEFAULT 'missing',
+    receipt_at TEXT NOT NULL DEFAULT '',
+    result_status TEXT NOT NULL DEFAULT 'unknown',
+    result_id TEXT NOT NULL DEFAULT '',
+    result_at TEXT NOT NULL DEFAULT '',
+    result_payload TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT 'mcp',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+addColumnIfMissing("device_commands", "message_id", "message_id TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("device_commands", "delivery_status", "delivery_status TEXT NOT NULL DEFAULT 'queued'");
+addColumnIfMissing("device_commands", "delivery_reason", "delivery_reason TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("device_commands", "delivered_at", "delivered_at TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("device_commands", "receipt_status", "receipt_status TEXT NOT NULL DEFAULT 'missing'");
+addColumnIfMissing("device_commands", "receipt_at", "receipt_at TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("device_commands", "result_status", "result_status TEXT NOT NULL DEFAULT 'unknown'");
+addColumnIfMissing("device_commands", "result_id", "result_id TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("device_commands", "result_at", "result_at TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("device_commands", "result_payload", "result_payload TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("device_commands", "created_by", "created_by TEXT NOT NULL DEFAULT 'mcp'");
+addColumnIfMissing("device_commands", "updated_at", "updated_at TEXT NOT NULL DEFAULT ''");
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_device_commands_request
+  ON device_commands(request_id, issued_at)
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_device_commands_device
+  ON device_commands(target_device_id, issued_at)
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_device_commands_expires
+  ON device_commands(expires_at)
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS device_command_results (
+    result_id TEXT PRIMARY KEY,
+    command_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT ''
+  )
+`);
+
+addColumnIfMissing("device_command_results", "payload", "payload TEXT NOT NULL DEFAULT ''");
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_device_command_results_command
+  ON device_command_results(command_id, received_at)
+`);
+
 // Daily summaries table (AI-generated)
 db.run(`
   CREATE TABLE IF NOT EXISTS daily_summaries (
@@ -414,6 +503,14 @@ export const cleanupOldActivities = db.prepare(`
 
 export const cleanupExpiredMessages = db.prepare(`
   DELETE FROM device_messages WHERE datetime(expires_at) < datetime('now')
+`);
+
+export const cleanupOldDeviceCommandResults = db.prepare(`
+  DELETE FROM device_command_results WHERE datetime(received_at) < datetime('now', '-14 days')
+`);
+
+export const cleanupOldDeviceCommands = db.prepare(`
+  DELETE FROM device_commands WHERE datetime(issued_at) < datetime('now', '-14 days')
 `);
 
 export const insertLocationRecord = db.prepare(`

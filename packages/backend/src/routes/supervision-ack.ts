@@ -1,7 +1,10 @@
 import { authenticateToken } from "../middleware/auth";
-import { receiveSupervisionAck } from "../services/supervision-ack";
+import {
+  receiveDeviceCommandReceipt,
+  receiveDeviceCommandResult,
+} from "../services/supervision-ack";
 
-const MAX_ACK_REQUEST_BYTES = 4096;
+const MAX_ACK_REQUEST_BYTES = 32 * 1024;
 
 export async function handleSupervisionAck(req: Request): Promise<Response> {
   const device = authenticateToken(req.headers.get("authorization"));
@@ -19,11 +22,36 @@ export async function handleSupervisionAck(req: Request): Promise<Response> {
     return Response.json({ error: "Invalid JSON", received: false }, { status: 400 });
   }
 
-  const receipt = receiveSupervisionAck(body, device);
+  const bodyType = body && typeof body === "object" && !Array.isArray(body)
+    ? (body as Record<string, unknown>).type
+    : "";
+  if (bodyType === "device_command_receipt") {
+    const receipt = receiveDeviceCommandReceipt(body, device);
+    return Response.json(
+      receipt.received
+        ? { received: true, command_id: receipt.command_id, request_id: receipt.request_id }
+        : { received: false, command_id: receipt.command_id, error: receipt.error ?? "invalid_receipt" },
+      { status: receipt.received ? 200 : 400 },
+    );
+  }
+  if (bodyType === "device_command_result") {
+    const receipt = receiveDeviceCommandResult(body, device);
+    return Response.json(
+      receipt.received
+        ? {
+            received: true,
+            command_id: receipt.command_id,
+            request_id: receipt.request_id,
+            result_id: receipt.result_id,
+            duplicate: receipt.duplicate === true,
+          }
+        : { received: false, command_id: receipt.command_id, error: receipt.error ?? "invalid_result" },
+      { status: receipt.received ? 200 : 400 },
+    );
+  }
+
   return Response.json(
-    receipt.received
-      ? { received: true, ack_id: receipt.ack_id }
-      : { received: false, ack_id: receipt.ack_id, error: receipt.error ?? "invalid_ack" },
-    { status: receipt.received ? 200 : 400 },
+    { received: false, error: "unsupported_ack_type" },
+    { status: 400 },
   );
 }

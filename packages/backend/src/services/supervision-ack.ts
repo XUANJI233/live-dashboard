@@ -1,40 +1,76 @@
 import type { DeviceInfo } from "../types";
+import {
+  recordCommandReceipt,
+  recordCommandResult,
+  type CommandWriteReceipt,
+} from "./device-command-ledger";
+import {
+  cleanIdentifier,
+  cleanText,
+  normalizeReceiptStatus,
+  normalizeResultStatus,
+} from "./mcp-contracts";
 
-const MAX_ACK_ID_LENGTH = 120;
-const MAX_ACK_FIELD_LENGTH = 240;
-
-export interface SupervisionAckReceipt {
-  ack_id: string;
-  received: boolean;
-  error?: string;
-}
-
-export function supervisionAckWsResponse(message: unknown, device?: DeviceInfo): Record<string, unknown> {
-  const receipt = receiveSupervisionAck(message, device);
+export function deviceCommandReceiptWsResponse(message: unknown, device?: DeviceInfo): Record<string, unknown> {
+  const receipt = receiveDeviceCommandReceipt(message, device);
   return {
-    type: "supervision_ack_received",
-    ack_id: receipt.ack_id,
+    type: "device_command_receipt_received",
+    command_id: receipt.command_id,
+    request_id: receipt.request_id,
     received: receipt.received,
     ...(receipt.error ? { error: receipt.error } : {}),
   };
 }
 
-export function receiveSupervisionAck(message: unknown, device?: DeviceInfo): SupervisionAckReceipt {
-  const ack = extractAckObject(message);
-  if (!ack) return { ack_id: "", received: false, error: "invalid_ack" };
+export function deviceCommandResultWsResponse(message: unknown, device?: DeviceInfo): Record<string, unknown> {
+  const receipt = receiveDeviceCommandResult(message, device);
+  return {
+    type: "device_command_result_received",
+    command_id: receipt.command_id,
+    request_id: receipt.request_id,
+    result_id: receipt.result_id,
+    received: receipt.received,
+    duplicate: receipt.duplicate === true,
+    ...(receipt.error ? { error: receipt.error } : {}),
+  };
+}
 
-  const ackId = cleanAckId(ack.ack_id);
-  if (!ackId) return { ack_id: "", received: false, error: "ack_id_required" };
-
-  console.log("[supervision] ack received", {
-    device_id: device?.device_id ?? "",
-    ack_id: ackId,
-    alert_id: cleanField(ack.alert_id),
-    action: cleanField(ack.action),
-    status: cleanField(ack.status),
-    source: cleanField(ack.source),
+export function receiveDeviceCommandReceipt(message: unknown, device?: DeviceInfo): CommandWriteReceipt {
+  const body = extractAckObject(message);
+  if (!body) return { received: false, command_id: "", error: "invalid_receipt" };
+  const commandId = cleanIdentifier(body.command_id);
+  if (!commandId) return { received: false, command_id: "", error: "command_id_required" };
+  return recordCommandReceipt({
+    commandId,
+    requestId: cleanIdentifier(body.request_id),
+    device,
+    status: normalizeReceiptStatus(body.status),
+    receivedAt: typeof body.received_at === "string" ? body.received_at : undefined,
   });
-  return { ack_id: ackId, received: true };
+}
+
+export function receiveDeviceCommandResult(message: unknown, device?: DeviceInfo): CommandWriteReceipt {
+  const body = extractAckObject(message);
+  if (!body) return { received: false, command_id: "", error: "invalid_result" };
+  const commandId = cleanIdentifier(body.command_id);
+  if (!commandId) return { received: false, command_id: "", error: "command_id_required" };
+  const resultId = cleanIdentifier(body.result_id);
+  if (!resultId) return { received: false, command_id: commandId, error: "result_id_required" };
+  return recordCommandResult({
+    commandId,
+    requestId: cleanIdentifier(body.request_id),
+    resultId,
+    device,
+    status: normalizeResultStatus(body.status),
+    receivedAt: typeof body.executed_at === "string"
+      ? body.executed_at
+      : typeof body.received_at === "string"
+        ? body.received_at
+        : undefined,
+    actions: Array.isArray(body.actions) ? body.actions : [],
+    stateAfter: body.state_after && typeof body.state_after === "object" ? body.state_after : null,
+    reason: cleanText(body.reason, 240),
+  });
 }
 
 function extractAckObject(message: unknown): Record<string, unknown> | null {
@@ -45,15 +81,4 @@ function extractAckObject(message: unknown): Record<string, unknown> | null {
     return payload as Record<string, unknown>;
   }
   return body;
-}
-
-function cleanAckId(value: unknown): string {
-  if (typeof value !== "string") return "";
-  const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, MAX_ACK_ID_LENGTH);
-  return /^[a-zA-Z0-9_.:-]{1,120}$/.test(cleaned) ? cleaned : "";
-}
-
-function cleanField(value: unknown): string {
-  if (typeof value !== "string") return "";
-  return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_ACK_FIELD_LENGTH);
 }

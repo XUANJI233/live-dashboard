@@ -22,8 +22,22 @@ export interface DeviceState {
       cellular_generation?: string;
       vpn_active?: boolean;
       vpn_name?: string;
-      capability_mode?: "normal" | "root" | "lsposed";
-      uploader?: "normal" | "root" | "lsposed";
+      profile?: "android_lsp" | "android_normal" | "desktop_message" | "unsupported";
+      capabilities?: {
+        freeze?: boolean;
+        unfreeze?: boolean;
+        vibrate?: boolean;
+        screen_off?: boolean;
+        say?: boolean;
+      };
+      frozen_packages?: Array<{
+        package_name?: string;
+        app_name?: string;
+        mode?: string;
+        reason?: string;
+        since?: string;
+        until?: string;
+      }>;
       device_kind?: string;
       window_mode?: string;
       last_sample_at?: string;

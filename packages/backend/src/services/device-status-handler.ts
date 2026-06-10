@@ -11,6 +11,8 @@ const MAX_TITLE_LENGTH = 256;
 const MAX_SHORT_LENGTH = 64;
 const MAX_MEDIUM_LENGTH = 256;
 const VALID_SOURCES = new Set(["normal", "root", "lsposed", "accessibility", "notification"]);
+const VALID_DEVICE_PROFILES = new Set(["android_lsp", "android_normal", "desktop_message"]);
+const DEVICE_CAPABILITY_KEYS = ["freeze", "unfreeze", "vibrate", "screen_off", "say"] as const;
 const getPreviousDeviceExtra = db.prepare("SELECT extra FROM device_states WHERE device_id = ?");
 
 export interface PublicDeviceUpdate {
@@ -41,6 +43,22 @@ function cleanSource(value: unknown): string | undefined {
   return typeof value === "string" && VALID_SOURCES.has(value)
     ? value
     : undefined;
+}
+
+function cleanDeviceProfile(value: unknown): string | undefined {
+  return typeof value === "string" && VALID_DEVICE_PROFILES.has(value)
+    ? value
+    : undefined;
+}
+
+function cleanDeviceCapabilities(value: unknown): Record<string, boolean> | undefined {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const body = value as Record<string, unknown>;
+  const out: Record<string, boolean> = {};
+  for (const key of DEVICE_CAPABILITY_KEYS) {
+    if (typeof body[key] === "boolean") out[key] = body[key];
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function cleanTimestamp(value: unknown): string | undefined {
@@ -135,10 +153,10 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (typeof deviceBody.vpn_active === "boolean") deviceExtra.vpn_active = deviceBody.vpn_active;
       const vpnName = cleanString(deviceBody.vpn_name, MAX_SHORT_LENGTH);
       if (vpnName) deviceExtra.vpn_name = vpnName;
-      const capabilityMode = cleanSource(deviceBody.capability_mode);
-      if (capabilityMode) deviceExtra.capability_mode = capabilityMode;
-      const uploader = cleanSource(deviceBody.uploader);
-      if (uploader) deviceExtra.uploader = uploader;
+      const profile = cleanDeviceProfile(deviceBody.profile);
+      if (profile) deviceExtra.profile = profile;
+      const capabilities = cleanDeviceCapabilities(deviceBody.capabilities);
+      if (capabilities) deviceExtra.capabilities = capabilities;
       const lastSampleAt = cleanTimestamp(deviceBody.last_sample_at);
       if (lastSampleAt) deviceExtra.last_sample_at = lastSampleAt;
       const relayMode = cleanString(deviceBody.relay_mode, MAX_SHORT_LENGTH);
@@ -351,8 +369,7 @@ function activityExtraSnapshot(extra: Record<string, unknown>): TimelineSegmentE
   const device = plainObject(extra.device);
   if (device) {
     const out: NonNullable<TimelineSegmentExtra["device"]> = {};
-    copyString(device, out, "capability_mode");
-    copyString(device, out, "uploader");
+    copyString(device, out, "profile");
     copyString(device, out, "window_mode");
     if (typeof device.heartbeat_only === "boolean") out.heartbeat_only = device.heartbeat_only;
     if (typeof device.audio_output_connected === "boolean") out.audio_output_connected = device.audio_output_connected;

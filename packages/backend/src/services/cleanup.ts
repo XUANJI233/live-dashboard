@@ -1,4 +1,4 @@
-import { cleanupExpiredMessages, cleanupOldActivities, cleanupOldLocations, cleanupOldSummaries, cleanupOldWeeklySummaries, markOfflineDevices, optimizeDatabase } from "../db";
+import { cleanupExpiredMessages, cleanupOldActivities, cleanupOldDeviceCommandResults, cleanupOldDeviceCommands, cleanupOldLocations, cleanupOldSummaries, cleanupOldWeeklySummaries, markOfflineDevices, optimizeDatabase } from "../db";
 import { generateDailySummary, generateWeeklySummary, getSummarySettings, isoWeekday } from "./daily-summary-gen";
 import { runSupervisionTick } from "./supervision";
 
@@ -29,6 +29,16 @@ const hourlyCleanupTimer = setInterval(() => {
     }
   } catch (e) {
     console.error("[cleanup] Messages cleanup failed:", e);
+  }
+
+  try {
+    const commandEventResult = cleanupOldDeviceCommandResults.run();
+    const commandResult = cleanupOldDeviceCommands.run();
+    if (commandResult.changes > 0 || commandEventResult.changes > 0) {
+      console.log(`[cleanup] Deleted ${commandResult.changes} old device commands and ${commandEventResult.changes} command results`);
+    }
+  } catch (e) {
+    console.error("[cleanup] Device command cleanup failed:", e);
   }
 
   try {

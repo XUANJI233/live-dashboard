@@ -1,4 +1,5 @@
 import type { DeviceState } from "@/lib/api";
+import { isLspDevice } from "@/lib/device-profile";
 
 const platformIcons: Record<string, string> = {
   windows: "\u{1F5A5}",
@@ -74,7 +75,7 @@ export default function DeviceCard({ device, selected = false, onSelect }: Props
 function deviceMeta(device: DeviceState): string {
   const parts: string[] = [];
   const extra = device.extra;
-  if (extra?.device?.capability_mode === "lsposed" || extra?.device?.uploader === "lsposed") parts.push("LSP");
+  if (isLspDevice(device)) parts.push("LSP");
   if (extra?.device?.network_type) parts.push(extra.device.network_type);
   if (extra?.device?.vpn_active) parts.push("VPN");
   const audio = audioOutputLabel(device);

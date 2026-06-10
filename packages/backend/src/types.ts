@@ -18,8 +18,14 @@ export interface ReportPayload {
       cellular_generation?: string;
       vpn_active?: boolean;
       vpn_name?: string;
-      capability_mode?: "normal" | "root" | "lsposed";
-      uploader?: "normal" | "root" | "lsposed";
+      profile?: "android_lsp" | "android_normal" | "desktop_message";
+      capabilities?: {
+        freeze?: boolean;
+        unfreeze?: boolean;
+        vibrate?: boolean;
+        screen_off?: boolean;
+        say?: boolean;
+      };
       last_sample_at?: string;
       relay_mode?: string;
       energy_policy?: string;
@@ -128,8 +134,7 @@ export interface TimelineSegmentExtra {
     app?: string;
   };
   device?: {
-    capability_mode?: string;
-    uploader?: string;
+    profile?: string;
     window_mode?: string;
     heartbeat_only?: boolean;
     audio_output_connected?: boolean;

@@ -14,8 +14,10 @@ import {
 import { getAiRuntimeConfig, requestAiChatCompletion, requestAiChatCompletionWithCachePriming, type AiChatMessage, type AiRuntimeConfig } from "./ai-config";
 import { logAiDebug } from "./ai-debug";
 import { healthContextLinesForRange, trustedWatchSleepingAt } from "./health-context";
-import { parseAiJsonObject } from "./ai-json";
+import { listDeviceContexts } from "./device-context";
 import { formatPromptDateTime, formatPromptMinute, localDateStringForOffset } from "./prompt-time";
+import { parseDecisionResponse, parseRulesResponse, type SupervisionCommandDecision, type SupervisionDecision } from "./supervision-ai-response";
+import { isSafeSupervisionPattern, normalizeSupervisionPatternList } from "./supervision-patterns";
 import { timelineJsonBlockForPrompt } from "./timeline-prompt";
 
 const LAST_AI_CHECK_AT_KEY = "supervision_last_ai_check_at";
@@ -25,8 +27,6 @@ const SUPERVISION_HISTORY_KEY = "supervision_recent_history";
 const MAX_REGEX_COUNT = 12;
 const MAX_TIMELINE_ROWS = 48;
 const MAX_HISTORY_ROWS = 40;
-const ALERT_ACTIVE_MINUTES = 45;
-const LOCAL_RESTART_COOLDOWN_SECONDS = 120;
 const SUPERVISION_RULES_MAX_TOKENS = 8192;
 const SUPERVISION_VERIFY_MAX_TOKENS = 8192;
 const REPORT_TRIGGER_MIN_INTERVAL_MS = 60_000;
@@ -51,13 +51,6 @@ const getActivityRows = db.prepare(`
   FROM activities
   WHERE started_at >= ? AND started_at < ?
   ORDER BY started_at ASC
-`);
-
-const getDeviceExtras = db.prepare(`
-  SELECT device_id, device_name, platform, extra
-  FROM device_states
-  ORDER BY last_seen_at DESC
-  LIMIT 20
 `);
 
 export async function refreshSupervisionRules(settings = getSummarySettings()): Promise<SummarySettings> {
@@ -167,8 +160,8 @@ export async function runSupervisionTick(now = new Date(), options: { force?: bo
       outcome: decision.deviated ? "deviated" : "ok",
       reason: decision.reason,
       message: decision.message,
-      freezeCommands: decision.freeze_commands,
-      unfreezeCommands: decision.unfreeze_commands,
+      freeze_commands: decision.freeze_commands,
+      unfreeze_commands: decision.unfreeze_commands,
       stats,
     });
     const deviceCapabilities = supervisionDeviceCapabilityMap();
@@ -183,13 +176,9 @@ export async function runSupervisionTick(now = new Date(), options: { force?: bo
     if (dueDecisions.length === 0) return;
 
     const repliedAt = new Date();
-    const { sendSupervisorMessagesToDevices } = await import("./realtime");
-    const delivery = sendSupervisorMessagesToDevices(dueDecisions.map((item) => ({
-      deviceId: item.device_id,
-      text: item.message || item.reason,
-      payload: buildSupervisorPayload(settings, item, now, repliedAt),
-    })));
-    if (delivery.targets > 0) metaSet(LAST_ALERT_AT_KEY, repliedAt.toISOString());
+    const { sendSupervisionDeviceCommands } = await import("./supervision-device-commands");
+    const delivery = await sendSupervisionDeviceCommands(settings, dueDecisions);
+    if (delivery.commands.length > 0) metaSet(LAST_ALERT_AT_KEY, repliedAt.toISOString());
   } finally {
     supervisionInFlight = false;
   }
@@ -350,7 +339,6 @@ async function verifyDeviationWithAi(
       vibrate: false,
       freeze: false,
       freeze_commands: [],
-      freeze_minutes: 10,
       screen_off: false,
       unfreeze: false,
       unfreeze_commands: [],
@@ -525,24 +513,6 @@ interface SupervisionStats {
   targetApps: string[];
 }
 
-interface SupervisionCommandDecision {
-  device_id: string;
-  deviated: boolean;
-  message: string;
-  reason: string;
-  vibrate: boolean;
-  freeze: boolean;
-  freeze_commands: string[];
-  freeze_minutes: number;
-  screen_off: boolean;
-  unfreeze: boolean;
-  unfreeze_commands: string[];
-}
-
-interface SupervisionDecision extends Omit<SupervisionCommandDecision, "device_id"> {
-  device_decisions: SupervisionCommandDecision[];
-}
-
 type SupervisionDeviceCapability = "android_lsp" | "android_normal" | "desktop_message";
 
 interface SupervisionDeviceContext {
@@ -550,7 +520,7 @@ interface SupervisionDeviceContext {
   device_name: string;
   platform: string;
   capability: SupervisionDeviceCapability;
-  commands: string[];
+  capabilities: SupervisionDeviceCapabilities;
   frozen_packages: Array<{
     package_name: string;
     app_name: string;
@@ -560,10 +530,18 @@ interface SupervisionDeviceContext {
   }>;
 }
 
+interface SupervisionDeviceCapabilities {
+  freeze: boolean;
+  unfreeze: boolean;
+  vibrate: boolean;
+  screen_off: boolean;
+  say: boolean;
+}
+
 function compileRules(rules: SupervisionRules): CompiledRules {
-  const whitelistPatterns = normalizePatternList(rules.whitelist_app_regex);
-  const blacklistPatterns = normalizePatternList(rules.blacklist_app_regex);
-  const targetPatterns = normalizePatternList(rules.target_app_regex);
+  const whitelistPatterns = normalizeSupervisionPatternList(rules.whitelist_app_regex);
+  const blacklistPatterns = normalizeSupervisionPatternList(rules.blacklist_app_regex);
+  const targetPatterns = normalizeSupervisionPatternList(rules.target_app_regex);
   return {
     whitelist: compileRegexList(whitelistPatterns),
     blacklist: compileRegexList(blacklistPatterns),
@@ -577,7 +555,7 @@ function compileRules(rules: SupervisionRules): CompiledRules {
 function compileRegexList(patterns: string[]): RegExp[] {
   const out: RegExp[] = [];
   for (const pattern of patterns.slice(0, MAX_REGEX_COUNT)) {
-    if (!isSafeRegexPattern(pattern)) continue;
+    if (!isSafeSupervisionPattern(pattern)) continue;
     try {
       out.push(new RegExp(pattern, "i"));
     } catch {
@@ -585,18 +563,6 @@ function compileRegexList(patterns: string[]): RegExp[] {
     }
   }
   return out;
-}
-
-function isSafeRegexPattern(pattern: string): boolean {
-  if (!pattern || pattern.length > 120) return false;
-  const compact = pattern.replace(/\s+/g, "");
-  if (compact === ".*" || compact === ".+" || compact === "[\\s\\S]*" || compact === "[\\S\\s]*") return false;
-  if (/\\[1-9]/.test(pattern)) return false;
-  if (/\(\?<[!=]/.test(pattern)) return false;
-  if (/\([^)]*[+*][^)]*\)[+*{]/.test(pattern)) return false;
-  if (/(?:\.\*){3,}/.test(pattern)) return false;
-  if (/\{\d{3,}(?:,|\})/.test(pattern)) return false;
-  return true;
 }
 
 function scoreSegments(segments: TimelineSegment[], rules: CompiledRules): SupervisionStats {
@@ -632,87 +598,6 @@ function scoreSegments(segments: TimelineSegment[], rules: CompiledRules): Super
     totalMinutes: Math.round(totalSeconds / 60),
     blacklistApps: Array.from(blacklistApps).slice(0, 8),
     targetApps: Array.from(targetApps).slice(0, 8),
-  };
-}
-
-function parseRulesResponse(raw: string): SupervisionRules {
-  const parsed = parseJsonObject(raw);
-  const whitelist = pickJsonField(parsed, "whitelist_app_regex", "whitelistAppRegex");
-  const blacklist = pickJsonField(parsed, "blacklist_app_regex", "blacklistAppRegex");
-  const target = pickJsonField(parsed, "target_app_regex", "targetAppRegex");
-  if (!Array.isArray(whitelist) || !Array.isArray(blacklist) || !Array.isArray(target)) {
-    throw new Error("AI rules response missing required regex arrays");
-  }
-  return {
-    whitelist_app_regex: normalizePatternList(whitelist),
-    blacklist_app_regex: normalizePatternList(blacklist),
-    target_app_regex: normalizePatternList(target),
-    reason: promptText(String(parsed.reason || ""), 180),
-  };
-}
-
-function parseDecisionResponse(raw: string): SupervisionDecision {
-  const parsed = parseJsonObject(raw);
-  const rawDeviceCommands = pickJsonField(parsed, "设备命令", "device_commands", "deviceCommands");
-  if (!Array.isArray(rawDeviceCommands)) {
-    throw new Error("AI supervision response missing 设备命令 array");
-  }
-  const deviceDecisions = rawDeviceCommands
-    .filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item))
-    .map(parseDeviceDecision)
-    .filter((item) => item.device_id);
-  return aggregateDeviceDecisions(deviceDecisions);
-}
-
-function parseDeviceDecision(parsed: Record<string, unknown>): SupervisionCommandDecision {
-  const deviceId = cleanDecisionDeviceId(pickJsonField(parsed, "device_id", "deviceId", "设备ID"));
-  const freezeCommands = normalizePatternList(pickJsonField(parsed, "冻结命令", "freeze_commands", "freezeCommands"));
-  const rawUnfreezeCommands = arrayItems(pickJsonField(parsed, "解冻命令", "unfreeze_commands", "unfreezeCommands"));
-  const unfreezeAll = rawUnfreezeCommands.some(isAllCommand);
-  const unfreezeCommands = normalizePatternList(rawUnfreezeCommands.filter((item) => !isAllCommand(item)));
-  const vibrateValue = pickJsonField(parsed, "是否震动", "vibrate");
-  const screenOffValue = pickJsonField(parsed, "是否息屏", "screen_off", "screenOff");
-  if (typeof vibrateValue !== "boolean") {
-    throw new Error("AI supervision response missing 是否震动 boolean");
-  }
-  if (typeof screenOffValue !== "boolean") {
-    throw new Error("AI supervision response missing 是否息屏 boolean");
-  }
-  const unfreeze = unfreezeAll || unfreezeCommands.length > 0;
-  const reason = promptText(String(pickJsonField(parsed, "原因", "reason") || ""), 180) || (unfreeze ? "已回到目标任务" : "");
-  const message = promptText(String(pickJsonField(parsed, "要说的话", "say", "message") || ""), 180);
-  const explicitDeviated = pickJsonField(parsed, "是否偏离", "deviated");
-  const deviated = explicitDeviated === true || freezeCommands.length > 0 || (!unfreeze && vibrateValue === true && !!message);
-  return {
-    device_id: deviceId,
-    deviated,
-    message: message || (deviated || unfreeze ? reason : ""),
-    reason,
-    vibrate: !unfreeze && vibrateValue === true,
-    freeze: !unfreeze && freezeCommands.length > 0,
-    freeze_commands: freezeCommands,
-    freeze_minutes: normalizeFreezeMinutes(parsed.freeze_minutes ?? parsed.freezeMinutes),
-    screen_off: !unfreeze && screenOffValue === true,
-    unfreeze,
-    unfreeze_commands: unfreezeAll ? ["全部"] : unfreezeCommands,
-  };
-}
-
-function aggregateDeviceDecisions(deviceDecisions: SupervisionCommandDecision[]): SupervisionDecision {
-  return {
-    deviated: deviceDecisions.some((item) => item.deviated),
-    message: promptText(deviceDecisions.map((item) => item.message).filter(Boolean).join(" / "), 180),
-    reason: promptText(deviceDecisions.map((item) => item.reason).filter(Boolean).join(" / "), 180),
-    vibrate: deviceDecisions.some((item) => item.vibrate),
-    freeze: deviceDecisions.some((item) => item.freeze),
-    freeze_commands: uniquePatterns(deviceDecisions.flatMap((item) => item.freeze_commands)),
-    freeze_minutes: deviceDecisions.length > 0
-      ? Math.max(5, Math.min(60, ...deviceDecisions.map((item) => item.freeze_minutes)))
-      : 10,
-    screen_off: deviceDecisions.some((item) => item.screen_off),
-    unfreeze: deviceDecisions.some((item) => item.unfreeze),
-    unfreeze_commands: uniquePatterns(deviceDecisions.flatMap((item) => item.unfreeze_commands)),
-    device_decisions: deviceDecisions,
   };
 }
 
@@ -755,6 +640,10 @@ async function requestParsedSupervisionJson<T>(
     const retryMessages = [
       ...options.messages,
       {
+        role: "user" as const,
+        content: options.finalInstruction,
+      },
+      {
         role: "assistant" as const,
         content: raw.slice(0, 1000),
       },
@@ -791,186 +680,31 @@ async function requestParsedSupervisionJson<T>(
   }
 }
 
-function pickJsonField(source: Record<string, unknown>, ...keys: string[]): unknown {
-  for (const key of keys) {
-    if (source[key] !== undefined) return source[key];
-  }
-  return undefined;
-}
-
-function cleanDecisionDeviceId(value: unknown): string {
-  if (typeof value !== "string") return "";
-  return value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 120);
-}
-
-function parseJsonObject(raw: string): Record<string, unknown> {
-  return parseAiJsonObject(raw);
-}
-
-function normalizePatternList(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const out: string[] = [];
-  for (const item of value) {
-    if (typeof item !== "string") continue;
-    const pattern = normalizeRegexPattern(promptText(item, 120));
-    if (!pattern || !isSafeRegexPattern(pattern)) continue;
-    if (!out.includes(pattern)) out.push(pattern);
-    if (out.length >= MAX_REGEX_COUNT) break;
-  }
-  return out;
-}
-
-function arrayItems(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((item): item is string => typeof item === "string")
-    .map((item) => promptText(item, 120))
-    .filter(Boolean);
-}
-
-function isAllCommand(value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  const normalized = value.replace(/\s+/g, "").trim().toLowerCase();
-  return normalized === "全部" ||
-    normalized === "全量" ||
-    normalized === "所有" ||
-    normalized === "all" ||
-    normalized === "*" ||
-    normalized === ".*";
-}
-
-function normalizeRegexPattern(pattern: string): string {
-  const unwrappedPattern = unwrapRegExpConstructorPattern(pattern) ?? pattern;
-  const withoutInlineFlag = unwrappedPattern.replace(/^\(\?i\)/i, "").trim();
-  const scopedInlineFlag = withoutInlineFlag.match(/^\(\?i:(.*)\)$/i);
-  if (scopedInlineFlag) return `(?:${scopedInlineFlag[1]})`;
-  return withoutInlineFlag;
-}
-
-function unwrapRegExpConstructorPattern(pattern: string): string | null {
-  const match = pattern.match(/^(?:new\s+)?RegExp\s*\(([\s\S]*)\)\s*;?$/);
-  if (!match) return null;
-  const args = match[1]?.trim() || "";
-  const firstArg = parseQuotedArgument(args);
-  if (!firstArg) return null;
-  const rest = args.slice(firstArg.end).trim();
-  if (rest && !/^,\s*["'`][a-z]*["'`]\s*$/i.test(rest)) return null;
-  return firstArg.value.trim();
-}
-
-function parseQuotedArgument(value: string): { value: string; end: number } | null {
-  const quote = value[0];
-  if (quote !== "\"" && quote !== "'" && quote !== "`") return null;
-  let escaped = false;
-  let raw = "";
-  for (let index = 1; index < value.length; index += 1) {
-    const char = value[index]!;
-    if (escaped) {
-      raw += `\\${char}`;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (char === quote) {
-      return { value: decodeQuotedArgument(raw, quote), end: index + 1 };
-    }
-    raw += char;
-  }
-  return null;
-}
-
-function decodeQuotedArgument(raw: string, quote: string): string {
-  if (quote === "\"") {
-    try {
-      return JSON.parse(`"${raw}"`) as string;
-    } catch {
-      // Fall through to conservative unescaping.
-    }
-  }
-  return raw
-    .replace(/\\\\/g, "\\")
-    .replace(/\\(["'`])/g, "$1")
-    .replace(/\\n/g, "\n")
-    .replace(/\\r/g, "\r")
-    .replace(/\\t/g, "\t");
-}
-
-function buildSupervisorPayload(
-  settings: SummarySettings,
-  decision: SupervisionCommandDecision,
-  checkedAt: Date,
-  repliedAt: Date,
-): Record<string, unknown> {
-  const freezeCommands = settings.supervision_lsp_freeze && decision.freeze
-    ? decision.freeze_commands.slice(0, MAX_REGEX_COUNT)
-    : [];
-  const unfreezeCommands = decision.unfreeze
-    ? decision.unfreeze_commands.slice(0, MAX_REGEX_COUNT)
-    : [];
-  return {
-    type: "supervision_alert",
-    v: 2,
-    alert_id: `supervision_${repliedAt.toISOString()}`,
-    device_id: decision.device_id,
-    target_device_id: decision.device_id,
-    reason: decision.reason,
-    checked_at: checkedAt.toISOString(),
-    ai_replied_at: repliedAt.toISOString(),
-    say: decision.message,
-    freeze_commands: freezeCommands,
-    unfreeze_commands: unfreezeCommands,
-    vibrate: !decision.unfreeze && settings.supervision_vibrate && decision.vibrate,
-    screen_off: false,
-    freeze_until: new Date(repliedAt.getTime() + decision.freeze_minutes * 60_000).toISOString(),
-    daily_unfreeze_hour: 3,
-    active_until: new Date(repliedAt.getTime() + ALERT_ACTIVE_MINUTES * 60_000).toISOString(),
-    restart_cooldown_seconds: LOCAL_RESTART_COOLDOWN_SECONDS,
-  };
-}
-
 function constrainDecisionForCapability(
   decision: SupervisionCommandDecision,
   device: SupervisionDeviceContext | undefined,
   settings: SummarySettings,
 ): SupervisionCommandDecision | null {
   if (!device) return null;
-  if (device.capability === "android_lsp") {
-    return {
-      ...decision,
-      freeze: settings.supervision_lsp_freeze && decision.freeze,
-      freeze_commands: settings.supervision_lsp_freeze ? decision.freeze_commands : [],
-      unfreeze: decision.unfreeze,
-      unfreeze_commands: decision.unfreeze_commands,
-      screen_off: false,
-    };
-  }
-  if (device.capability === "android_normal") {
-    return {
-      ...decision,
-      freeze: false,
-      freeze_commands: [],
-      unfreeze: false,
-      unfreeze_commands: [],
-      screen_off: false,
-    };
-  }
+  const capabilities = device.capabilities;
+  const freeze = settings.supervision_lsp_freeze && capabilities.freeze && decision.freeze;
+  const unfreeze = capabilities.unfreeze && decision.unfreeze;
   return {
     ...decision,
-    freeze: false,
-    freeze_commands: [],
-    unfreeze: false,
-    unfreeze_commands: [],
-    vibrate: false,
+    freeze,
+    freeze_commands: freeze ? decision.freeze_commands : [],
+    unfreeze,
+    unfreeze_commands: unfreeze ? decision.unfreeze_commands : [],
+    vibrate: capabilities.vibrate && decision.vibrate,
+    message: capabilities.say ? decision.message : "",
     screen_off: false,
   };
 }
 
 function shouldDeliverDeviceDecision(decision: SupervisionCommandDecision): boolean {
   if (decision.unfreeze) return true;
-  return decision.deviated && !!decision.message;
+  if (decision.freeze && decision.freeze_commands.length > 0) return true;
+  return decision.deviated && (!!decision.message || decision.vibrate);
 }
 
 interface SupervisionHistoryEntry {
@@ -979,8 +713,8 @@ interface SupervisionHistoryEntry {
   outcome: "updated" | "error" | "deviated" | "ok";
   reason: string;
   message?: string;
-  freezeCommands?: string[];
-  unfreezeCommands?: string[];
+  freeze_commands?: string[];
+  unfreeze_commands?: string[];
   stats?: SupervisionStats;
 }
 
@@ -994,11 +728,11 @@ function appendSupervisionHistory(entry: SupervisionHistoryEntry): void {
       outcome: entry.outcome,
       reason: promptText(entry.reason, 180),
       ...(entry.message ? { message: promptText(entry.message, 180) } : {}),
-      ...(entry.freezeCommands && entry.freezeCommands.length > 0 ? {
-        freezeCommands: entry.freezeCommands.slice(0, MAX_REGEX_COUNT),
+      ...(entry.freeze_commands && entry.freeze_commands.length > 0 ? {
+        freeze_commands: entry.freeze_commands.slice(0, MAX_REGEX_COUNT),
       } : {}),
-      ...(entry.unfreezeCommands && entry.unfreezeCommands.length > 0 ? {
-        unfreezeCommands: entry.unfreezeCommands.slice(0, MAX_REGEX_COUNT),
+      ...(entry.unfreeze_commands && entry.unfreeze_commands.length > 0 ? {
+        unfreeze_commands: entry.unfreeze_commands.slice(0, MAX_REGEX_COUNT),
       } : {}),
       ...(entry.stats ? {
         stats: {
@@ -1038,8 +772,8 @@ function supervisionHistoryLines(tzOffsetMinutes = new Date().getTimezoneOffset(
       ? `；统计 黑${item.stats.blacklistMinutes} 目标${item.stats.targetMinutes} 白${item.stats.whitelistMinutes} 总${item.stats.totalMinutes}分钟`
       : "";
     const msg = item.message ? `；提醒: ${promptText(item.message, 120)}` : "";
-    const freeze = item.freezeCommands?.length ? `；冻结: ${item.freezeCommands.map((value) => promptText(value, 40)).join("、")}` : "";
-    const unfreeze = item.unfreezeCommands?.length ? `；解冻: ${item.unfreezeCommands.map((value) => promptText(value, 40)).join("、")}` : "";
+    const freeze = item.freeze_commands?.length ? `；冻结: ${item.freeze_commands.map((value) => promptText(value, 40)).join("、")}` : "";
+    const unfreeze = item.unfreeze_commands?.length ? `；解冻: ${item.unfreeze_commands.map((value) => promptText(value, 40)).join("、")}` : "";
     return `- ${formatPromptMinute(item.at, tzOffsetMinutes)} ${item.kind}/${item.outcome}: ${promptText(item.reason, 140) || "无原因"}${stats}${msg}${freeze}${unfreeze}`;
   });
 }
@@ -1052,13 +786,6 @@ function recentSummaryLines(today: string, daysBack: number): string[] {
     lines.push(`- ${day} ${weekdayLabel(isoWeekday(day))}: ${promptText(row?.summary || "", 220) || "未生成"}`);
   }
   return lines;
-}
-
-interface DeviceExtraRow {
-  device_id: string;
-  device_name: string;
-  platform: string;
-  extra: string;
 }
 
 function splitSegmentsByLastSupervisorReply(segments: TimelineSegment[]): { previous: TimelineSegment[]; current: TimelineSegment[] } {
@@ -1094,49 +821,22 @@ function supervisionDeviceCapabilityMap(): Map<string, SupervisionDeviceContext>
 }
 
 function supervisionDeviceContexts(): SupervisionDeviceContext[] {
-  const rows = getDeviceExtras.all() as DeviceExtraRow[];
   const out: SupervisionDeviceContext[] = [];
-  for (const row of rows) {
-    let extra: Record<string, unknown> = {};
-    try {
-      extra = JSON.parse(row.extra) as Record<string, unknown>;
-    } catch {
-      extra = {};
-    }
-    const device = extra.device && typeof extra.device === "object" && !Array.isArray(extra.device)
-      ? extra.device as Record<string, unknown>
-      : null;
-    const capability = supervisionCapability(row.platform, device);
-    if (!capability) continue;
-    const frozen = Array.isArray(device?.frozen_packages) ? device.frozen_packages : [];
+  for (const row of listDeviceContexts()) {
+    if (row.capability.profile === "unsupported") continue;
     const deviceId = promptText(row.device_id, 80);
     if (!deviceId) continue;
     out.push({
       device_id: deviceId,
       device_name: promptText(row.device_name || row.device_id, 80),
       platform: promptText(row.platform, 40),
-      capability,
-      commands: supervisionCapabilityCommands(capability),
-      frozen_packages: frozenPackageItems(frozen),
+      capability: row.capability.profile,
+      capabilities: row.capability.capabilities,
+      frozen_packages: frozenPackageItems(row.frozen_packages),
     });
+    if (out.length >= 20) break;
   }
   return out;
-}
-
-function supervisionCapability(platform: string, device: Record<string, unknown> | null): SupervisionDeviceCapability | null {
-  if (platform === "android") {
-    return device?.capability_mode === "lsposed" || device?.uploader === "lsposed"
-      ? "android_lsp"
-      : "android_normal";
-  }
-  if (platform === "windows" || platform === "macos") return "desktop_message";
-  return null;
-}
-
-function supervisionCapabilityCommands(capability: SupervisionDeviceCapability): string[] {
-  if (capability === "android_lsp") return ["freeze", "unfreeze", "vibrate", "say"];
-  if (capability === "android_normal") return ["vibrate", "say"];
-  return ["say"];
 }
 
 function frozenPackageItems(items: unknown[]): Array<{
@@ -1170,15 +870,6 @@ function frozenPackageItems(items: unknown[]): Array<{
   return out;
 }
 
-function uniquePatterns(patterns: string[]): string[] {
-  const out: string[] = [];
-  for (const pattern of patterns) {
-    if (!out.includes(pattern)) out.push(pattern);
-    if (out.length >= MAX_REGEX_COUNT) break;
-  }
-  return out;
-}
-
 function getSegmentsForRange(start: string, end: string): TimelineSegment[] {
   const rows = getActivityRows.all(start, end) as ActivityRecord[];
   return buildTimelineSegments(rows, { openLast: false }).filter((segment) => segment.duration_seconds > 0);
@@ -1197,12 +888,6 @@ function timestampMs(value: string | null | undefined): number | null {
   if (!value) return null;
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? ms : null;
-}
-
-function normalizeFreezeMinutes(value: unknown): number {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  if (!Number.isFinite(parsed)) return 10;
-  return Math.min(60, Math.max(5, parsed));
 }
 
 function safeErrorMessage(value: unknown, fallback: string): string {

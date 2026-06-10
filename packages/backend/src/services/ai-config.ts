@@ -20,6 +20,7 @@ const SEALED_JSON_VERSION = 2;
 const STORE_SEALING_SALT = "live-dashboard-ai-config-store-v2";
 const AI_CONFIG_TEST_MAX_TOKENS = 8192;
 const AI_CHAT_TIMEOUT_MS = 5 * 60_000;
+const AI_CHAT_MIN_TIMEOUT_MS = 1_000;
 const AI_CHAT_MAX_RETRIES = 3;
 
 export interface AiRuntimeConfig {
@@ -236,7 +237,7 @@ export async function requestAiChatCompletion(
     middleware?: LanguageModelMiddleware | LanguageModelMiddleware[];
   },
 ): Promise<string> {
-  const timeoutMs = Math.max(options.timeoutMs ?? AI_CHAT_TIMEOUT_MS, AI_CHAT_TIMEOUT_MS);
+  const timeoutMs = normalizeAiChatTimeoutMs(options.timeoutMs);
   const system = options.messages
     .filter((message) => message.role === "system")
     .map((message) => message.content)
@@ -400,6 +401,13 @@ function aiProviderOptions(config: Pick<AiRuntimeConfig, "apiUrl" | "model">) {
       thinking: { type: "enabled" },
     },
   };
+}
+
+function normalizeAiChatTimeoutMs(value: unknown): number {
+  if (value === undefined || value === null) return AI_CHAT_TIMEOUT_MS;
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) return AI_CHAT_TIMEOUT_MS;
+  return Math.min(AI_CHAT_TIMEOUT_MS, Math.max(AI_CHAT_MIN_TIMEOUT_MS, Math.trunc(parsed)));
 }
 
 function logAiCacheUsage(model: string, usage: unknown, providerMetadata: unknown): void {

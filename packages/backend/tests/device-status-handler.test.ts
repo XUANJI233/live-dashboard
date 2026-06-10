@@ -24,7 +24,7 @@ describe("device-status-handler", () => {
       extra: {
         input: { input_active: true, is_typing: true, source: "lsposed" },
         device: {
-          capability_mode: "lsposed",
+          profile: "android_lsp",
           audio_output_connected: true,
           audio_output_type: "bluetooth_headset",
           audio_output_name: "Buds",
@@ -39,7 +39,7 @@ describe("device-status-handler", () => {
 
     expect(JSON.stringify(result?.extra)).not.toContain("input_active");
     expect(result?.extra.device).toMatchObject({
-      capability_mode: "lsposed",
+      profile: "android_lsp",
       audio_output_connected: true,
       audio_output_type: "bluetooth_headset",
       audio_output_name: "Buds",
@@ -141,7 +141,7 @@ describe("device-status-handler", () => {
       extra: {
         sleeping: true,
         device: {
-          capability_mode: "normal",
+          profile: "android_normal",
           energy_policy: "zepp_sleep_30m_alarm",
           offline_timeout_minutes: 35,
         },

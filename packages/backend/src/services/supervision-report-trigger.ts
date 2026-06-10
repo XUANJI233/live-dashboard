@@ -30,8 +30,15 @@ function supervisionCandidateFromReport(
     appId,
     appName: cleanText(foreground?.app_name),
     title: cleanText(body.window_title) || cleanText(foreground?.title),
-    source: cleanText(deviceExtra?.uploader) || cleanText(foreground?.source),
+    source: sourceFromProfile(deviceExtra?.profile) || cleanText(foreground?.source),
   };
+}
+
+function sourceFromProfile(value: unknown): string {
+  if (value === "android_lsp") return "lsposed";
+  if (value === "android_normal") return "normal";
+  if (value === "desktop_message") return "desktop";
+  return "";
 }
 
 function plainObject(value: unknown): Record<string, unknown> | null {

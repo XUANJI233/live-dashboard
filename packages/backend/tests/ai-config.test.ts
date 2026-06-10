@@ -257,7 +257,7 @@ describe("ai-config", () => {
       window_title: "reading",
       extra: {
         device: {
-          capability_mode: "lsposed",
+          profile: "android_lsp",
           frozen_packages: [
             {
               package_name: "com.example.shortvideo",
@@ -273,7 +273,7 @@ describe("ai-config", () => {
     }, device);
 
     expect(result?.extra.device).toEqual({
-      capability_mode: "lsposed",
+      profile: "android_lsp",
       frozen_packages: [{
         package_name: "com.example.shortvideo",
         app_name: "Short Video",
@@ -380,6 +380,51 @@ describe("ai-config", () => {
       expect(requested).toEqual(["https://ai-gateway.vercel.sh/v3/ai/language-model"]);
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("honors caller-provided AI chat timeouts", async () => {
+    const { requestAiChatCompletion } = await import("../src/services/ai-config");
+    const originalFetch = globalThis.fetch;
+    const originalSetTimeout = globalThis.setTimeout;
+    const delays: number[] = [];
+    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      const [, timeout] = args;
+      delays.push(Number(timeout ?? 0));
+      return originalSetTimeout(...args);
+    }) as typeof setTimeout;
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      return Response.json({
+        id: "timeout-test",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: "OK" },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+    }) as typeof fetch;
+    try {
+      const text = await requestAiChatCompletion({
+        apiUrl: "https://ai-timeout.example/v1/chat/completions",
+        apiKey: `timeout-key-${randomHex(8)}`,
+        model: "gpt-4o-mini",
+      }, {
+        messages: [{ role: "user", content: "ping" }],
+        maxTokens: 8,
+        temperature: 0,
+        timeoutMs: 20_000,
+      });
+      expect(text).toBe("OK");
+      expect(delays).toContain(20_000);
+      expect(delays).not.toContain(5 * 60_000);
+    } finally {
+      globalThis.fetch = originalFetch;
+      globalThis.setTimeout = originalSetTimeout;
     }
   });
 
@@ -710,6 +755,66 @@ describe("ai-config", () => {
     }
   });
 
+  test("keeps supervision final instruction when retrying invalid JSON", async () => {
+    const { describeAiConfig, saveEncryptedAiConfigFromDevice } = await import("../src/services/ai-config");
+    const { getSummarySettings } = await import("../src/services/daily-summary-gen");
+    const { refreshSupervisionRules } = await import("../src/services/supervision");
+    const token = `retry-json-token-${randomHex(16)}`;
+    const encryption = (await describeAiConfig()).encryption!;
+    await saveEncryptedAiConfigFromDevice(await encryptAiConfigForServer(encryption.public_key, token, {
+      api_url: "https://ai-retry.example/v1/chat/completions",
+      api_key: `ai-retry-key-${randomHex(8)}`,
+      model: "gpt-4o-mini",
+    }), token);
+
+    const originalFetch = globalThis.fetch;
+    const bodies: Array<Record<string, any>> = [];
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      bodies.push(body);
+      const isRetry = bodies.length === 2;
+      if (isRetry) {
+        const messagesText = JSON.stringify(body.messages);
+        expect(messagesText).toContain("现在根据以上全部上下文生成监督规则 JSON");
+        expect(messagesText).toContain("上一次响应不是合法的监督规则 JSON");
+      }
+      return Response.json({
+        id: isRetry ? "supervision-retry-valid" : "supervision-retry-invalid",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: isRetry
+              ? JSON.stringify({
+                  whitelist_app_regex: ["Code"],
+                  blacklist_app_regex: ["TikTok"],
+                  target_app_regex: ["Code"],
+                  reason: "retry ok",
+                })
+              : "not json",
+          },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+      });
+    }) as typeof fetch;
+    try {
+      const result = await refreshSupervisionRules({
+        ...getSummarySettings(),
+        target: "写代码",
+        supervision_enabled: true,
+      });
+      expect(result.supervision_rules_error).toBeNull();
+      expect(result.supervision_rules.blacklist_app_regex).toEqual(["TikTok"]);
+      expect(bodies).toHaveLength(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("keeps older public messages visible in the default recent window", async () => {
     const { db } = await import("../src/db");
     const { handlePublicMessages } = await import("../src/services/realtime");
@@ -725,91 +830,77 @@ describe("ai-config", () => {
     expect(body.messages?.some((message) => message.id === id)).toBe(true);
   });
 
-  test("queues supervisor alerts for all message-capable devices", async () => {
+  test("confirms device command receipt and result over HTTP fallback", async () => {
     const { db } = await import("../src/db");
-    const { sendSupervisorMessageToDevices } = await import("../src/services/realtime");
-    const suffix = randomHex(8);
-    const androidId = `android-${suffix}`;
-    const desktopId = `desktop-${suffix}`;
-    const zeppId = `zepp-${suffix}`;
-    const now = new Date().toISOString();
-    const insertDevice = db.prepare(`
-      INSERT INTO device_states (device_id, device_name, platform, app_id, app_name, window_title, display_title, last_seen_at, extra, is_online)
-      VALUES (?, ?, ?, 'idle', 'Idle', '', 'Idle', ?, '{}', 1)
-    `);
-    insertDevice.run(androidId, "Android phone", "android", now);
-    insertDevice.run(desktopId, "Desktop", "windows", now);
-    insertDevice.run(zeppId, "Zepp watch", "zepp", now);
-
-    const delivery = sendSupervisorMessageToDevices("回到目标", {
-      type: "supervision_alert",
-      v: 2,
-      vibrate: true,
-      screen_off: false,
-      freeze_commands: [],
-      unfreeze_commands: [],
-    });
-
-    expect(delivery.targets).toBeGreaterThanOrEqual(2);
-    const queuedRows = db.prepare(`
-      SELECT device_id, payload
-      FROM device_messages
-      WHERE id LIKE 'supervision_%'
-        AND viewer_id = '__supervisor__'
-        AND device_id IN (?, ?, ?)
-      ORDER BY device_id ASC
-    `).all(androidId, desktopId, zeppId) as { device_id: string; payload?: string }[];
-    expect(queuedRows.map((row) => row.device_id)).toEqual([androidId, desktopId].sort());
-    expect(queuedRows.every((row) => row.payload?.includes("supervision_alert"))).toBe(true);
-  });
-
-  test("confirms supervision acks over HTTP and WebSocket payloads", async () => {
     const { handleSupervisionAck } = await import("../src/routes/supervision-ack");
-    const { supervisionAckWsResponse } = await import("../src/services/supervision-ack");
+    const { sendDeviceCommands } = await import("../src/services/device-control");
+    const requestId = `req_http_ack_${randomHex(8)}`;
+    db.prepare(`
+      INSERT OR REPLACE INTO device_states (
+        device_id, device_name, platform, app_id, app_name, window_title, display_title, last_seen_at, extra, is_online
+      )
+      VALUES ('ack-device', 'Ack Android', 'android', 'idle', 'Idle', '', 'Idle', ?, ?, 1)
+    `).run(
+      new Date().toISOString(),
+      JSON.stringify({ device: { profile: "android_lsp" } }),
+    );
+    const sent = sendDeviceCommands({
+      request_id: requestId,
+      commands: [{ device_id: "ack-device", say: "同步状态" }],
+    });
+    const command = sent.commands[0]!;
 
-    const response = await handleSupervisionAck(new Request("https://example.test/api/supervision/ack", {
+    const receiptResponse = await handleSupervisionAck(new Request("https://example.test/api/supervision/ack", {
       method: "POST",
       headers: {
         Authorization: "Bearer supervision-ack-token",
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        type: "supervision_ack",
-        ack_id: "ack-http-1",
-        alert_id: "supervision_test",
-        action: "freeze",
-        status: "applied",
-        source: "lsposed",
+        type: "device_command_receipt",
+        request_id: requestId,
+        command_id: command.command_id,
+        status: "received",
+        received_at: "2026-06-10T10:00:00.000Z",
       }),
     }));
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
+    expect(receiptResponse.status).toBe(200);
+    await expect(receiptResponse.json()).resolves.toEqual({
       received: true,
-      ack_id: "ack-http-1",
+      command_id: command.command_id,
+      request_id: requestId,
     });
 
-    expect(supervisionAckWsResponse({
-      type: "supervision_ack",
-      payload: {
-        type: "supervision_ack",
-        ack_id: "ack-ws-1",
-        action: "unfreeze",
-        status: "applied",
+    const resultResponse = await handleSupervisionAck(new Request("https://example.test/api/supervision/ack", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer supervision-ack-token",
+        "Content-Type": "application/json",
       },
-    }, { device_id: "ack-device", device_name: "Ack Android", platform: "android" })).toEqual({
-      type: "supervision_ack_received",
-      ack_id: "ack-ws-1",
+      body: JSON.stringify({
+        type: "device_command_result",
+        request_id: requestId,
+        command_id: command.command_id,
+        result_id: `res_http_ack_${randomHex(8)}`,
+        status: "applied",
+        executed_at: "2026-06-10T10:00:01.000Z",
+        actions: [{ action: "say", status: "applied" }],
+        state_after: {},
+      }),
+    }));
+    expect(resultResponse.status).toBe(200);
+    const resultBody = await resultResponse.json() as Record<string, unknown>;
+    expect(resultBody).toMatchObject({
       received: true,
+      command_id: command.command_id,
+      request_id: requestId,
+      duplicate: false,
     });
+    expect(typeof resultBody.result_id).toBe("string");
 
-    const invalidAck = supervisionAckWsResponse({
-      type: "supervision_ack",
-      payload: { type: "supervision_ack", action: "freeze" },
-    }) as { received?: unknown };
-    expect(invalidAck.received).toBe(false);
   });
 
-  test("delivers AI unfreeze supervisor commands with reply timestamps", async () => {
+  test("delivers AI unfreeze device commands", async () => {
     const { db } = await import("../src/db");
     const {
       describeAiConfig,
@@ -852,8 +943,7 @@ describe("ai-config", () => {
       VALUES (?, 'Android phone', 'android', 'com.example.shortvideo', 'Short Video', '', 'Short Video', ?, ?, 1)
     `).run(deviceId, checkedAt.toISOString(), JSON.stringify({
       device: {
-        capability_mode: "lsposed",
-        uploader: "lsposed",
+        profile: "android_lsp",
         frozen_packages: [{
           package_name: "com.example.shortvideo",
           app_name: "Short Video",
@@ -907,24 +997,25 @@ describe("ai-config", () => {
 
     const row = db.prepare(`
       SELECT payload
-      FROM device_messages
-      WHERE viewer_id = '__supervisor__' AND device_id = ?
-      ORDER BY created_at DESC
+      FROM device_commands
+      WHERE target_device_id = ?
+      ORDER BY issued_at DESC
       LIMIT 1
     `).get(deviceId) as { payload?: string } | null;
-    const payload = JSON.parse(row?.payload || "{}") as Record<string, unknown>;
-    expect(payload.type).toBe("supervision_alert");
-    expect(payload.v).toBe(2);
-    expect(payload.unfreeze_commands).toEqual(["全部"]);
-    expect(payload.freeze_commands).toEqual([]);
-    expect("unfreeze" in payload).toBe(false);
-    expect("unfreeze_all" in payload).toBe(false);
-    expect("unfreeze_regex" in payload).toBe(false);
-    expect(payload.checked_at).toBe(checkedAt.toISOString());
-    expect(Date.parse(String(payload.ai_replied_at))).toBeGreaterThanOrEqual(checkedAt.getTime());
+    const envelope = JSON.parse(row?.payload || "{}") as Record<string, any>;
+    expect(envelope.type).toBe("device_command");
+    expect(envelope.target_device_id).toBe(deviceId);
+    expect(envelope.payload.kind).toBe("supervision");
+    expect(envelope.payload.unfreeze_commands).toEqual(["全部"]);
+    expect(envelope.payload.freeze_commands).toEqual([]);
+    expect(envelope.payload.screen_off).toBe(false);
+    expect("unfreeze" in envelope.payload).toBe(false);
+    expect("unfreeze_all" in envelope.payload).toBe(false);
+    expect("unfreeze_regex" in envelope.payload).toBe(false);
+    expect(Date.parse(String(envelope.issued_at))).toBeGreaterThanOrEqual(checkedAt.getTime());
   });
 
-  test("translates AI freeze command arrays into supervisor payload commands", async () => {
+  test("translates AI freeze command arrays into device command payloads", async () => {
     const { db } = await import("../src/db");
     const {
       describeAiConfig,
@@ -970,8 +1061,7 @@ describe("ai-config", () => {
       VALUES (?, 'Android phone', 'android', 'com.zhiliaoapp.musically', 'TikTok', '', 'TikTok', ?, ?, 1)
     `).run(deviceId, checkedAt.toISOString(), JSON.stringify({
       device: {
-        capability_mode: "lsposed",
-        uploader: "lsposed",
+        profile: "android_lsp",
         frozen_packages: [],
       },
     }));
@@ -1020,21 +1110,20 @@ describe("ai-config", () => {
 
     const row = db.prepare(`
       SELECT payload
-      FROM device_messages
-      WHERE viewer_id = '__supervisor__' AND device_id = ?
-      ORDER BY created_at DESC
+      FROM device_commands
+      WHERE target_device_id = ?
+      ORDER BY issued_at DESC
       LIMIT 1
     `).get(deviceId) as { payload?: string } | null;
-    const payload = JSON.parse(row?.payload || "{}") as Record<string, unknown>;
-    expect(payload.type).toBe("supervision_alert");
-    expect(payload.v).toBe(2);
-    expect(payload.vibrate).toBe(false);
-    expect(payload.screen_off).toBe(false);
-    expect(payload.freeze_commands).toEqual(["com\\.zhiliaoapp\\.musically", "Clash|VPN"]);
-    expect(payload.unfreeze_commands).toEqual([]);
-    expect("freeze" in payload).toBe(false);
-    expect("violation_regex" in payload).toBe(false);
-    expect(payload.checked_at).toBe(checkedAt.toISOString());
+    const envelope = JSON.parse(row?.payload || "{}") as Record<string, any>;
+    expect(envelope.type).toBe("device_command");
+    expect(envelope.target_device_id).toBe(deviceId);
+    expect(envelope.payload.vibrate).toBe(false);
+    expect(envelope.payload.screen_off).toBe(false);
+    expect(envelope.payload.freeze_commands).toEqual(["com\\.zhiliaoapp\\.musically", "Clash|VPN"]);
+    expect(envelope.payload.unfreeze_commands).toEqual([]);
+    expect("freeze" in envelope.payload).toBe(false);
+    expect("violation_regex" in envelope.payload).toBe(false);
   });
 
   test("routes supervision commands by device capability", async () => {
@@ -1085,10 +1174,10 @@ describe("ai-config", () => {
       VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 1)
     `);
     insertDevice.run(lspId, "LSP Android", "android", "com.zhiliaoapp.musically", "TikTok", "TikTok", checkedAt.toISOString(), JSON.stringify({
-      device: { capability_mode: "lsposed", uploader: "lsposed", frozen_packages: [] },
+      device: { profile: "android_lsp", frozen_packages: [] },
     }));
     insertDevice.run(normalId, "Normal Android", "android", "com.example.game", "Game", "Game", checkedAt.toISOString(), JSON.stringify({
-      device: { capability_mode: "normal", frozen_packages: [] },
+      device: { profile: "android_normal", frozen_packages: [] },
     }));
     insertDevice.run(desktopId, "Desktop", "windows", "steam", "Game", "Game", checkedAt.toISOString(), "{}");
 
@@ -1162,22 +1251,23 @@ describe("ai-config", () => {
     }
 
     const rows = db.prepare(`
-      SELECT device_id, payload
-      FROM device_messages
-      WHERE viewer_id = '__supervisor__' AND device_id IN (?, ?, ?)
-      ORDER BY device_id ASC
-    `).all(lspId, normalId, desktopId) as { device_id: string; payload?: string }[];
-    const payloadByDevice = new Map(rows.map((row) => [row.device_id, JSON.parse(row.payload || "{}") as Record<string, unknown>]));
+      SELECT target_device_id, payload
+      FROM device_commands
+      WHERE target_device_id IN (?, ?, ?)
+      ORDER BY target_device_id ASC
+    `).all(lspId, normalId, desktopId) as { target_device_id: string; payload?: string }[];
+    const payloadByDevice = new Map(rows.map((row) => {
+      const envelope = JSON.parse(row.payload || "{}") as Record<string, any>;
+      return [row.target_device_id, envelope.payload as Record<string, unknown>];
+    }));
 
     const lspPayload = payloadByDevice.get(lspId)!;
-    expect(lspPayload.v).toBe(2);
     expect(lspPayload.vibrate).toBe(true);
     expect(lspPayload.screen_off).toBe(false);
     expect(lspPayload.freeze_commands).toEqual(["com\\.zhiliaoapp\\.musically", "VPN"]);
     expect(lspPayload.unfreeze_commands).toEqual([]);
     expect("freeze" in lspPayload).toBe(false);
     expect("violation_regex" in lspPayload).toBe(false);
-    expect(lspPayload.target_device_id).toBe(lspId);
 
     const normalPayload = payloadByDevice.get(normalId)!;
     expect(normalPayload.vibrate).toBe(true);
@@ -1186,7 +1276,6 @@ describe("ai-config", () => {
     expect(normalPayload.unfreeze_commands).toEqual([]);
     expect("freeze" in normalPayload).toBe(false);
     expect("violation_regex" in normalPayload).toBe(false);
-    expect(normalPayload.target_device_id).toBe(normalId);
 
     const desktopPayload = payloadByDevice.get(desktopId)!;
     expect(desktopPayload.vibrate).toBe(false);
@@ -1196,7 +1285,6 @@ describe("ai-config", () => {
     expect("unfreeze" in desktopPayload).toBe(false);
     expect("unfreeze_all" in desktopPayload).toBe(false);
     expect("unfreeze_regex" in desktopPayload).toBe(false);
-    expect(desktopPayload.target_device_id).toBe(desktopId);
   });
 
   test("reuses the stored AI key when the app leaves the key field blank", async () => {

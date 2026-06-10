@@ -20,7 +20,9 @@
   },
   "dependencies": {
     "@ai-sdk/deepseek": "^2.0.35",
+    "@ai-sdk/mcp": "^1.0.46",
     "@ai-sdk/openai-compatible": "^2.0.48",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
     "ai": "^6.0.197",
