@@ -1,12 +1,19 @@
-name: Windows Agent CI
+name: Windows Agent
 
 on:
   push:
     branches: ["windows-source"]
+    tags:
+      - "windows-agent-*"
     paths:
       - "agents/windows/**"
       - ".github/workflows/windows-agent.yml"
   workflow_dispatch:
+    inputs:
+      skip_signing:
+        description: "Build an unsigned debug artifact"
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -14,10 +21,17 @@ jobs:
     defaults:
       run:
         working-directory: agents/windows
-    steps:
-      - uses: actions/checkout@v6
+    env:
+      WINDOWS_CODESIGN_CERT_BASE64: ${{ secrets.WINDOWS_CODESIGN_CERT_BASE64 }}
+      WINDOWS_CODESIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_CERT_PASSWORD }}
+      WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+      WINDOWS_SKIP_SIGNING: ${{ ((github.event_name == 'push' && github.ref_type == 'branch') || (github.event_name == 'workflow_dispatch' && inputs.skip_signing)) && 'true' || 'false' }}
 
-      - name: Setup Python
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -27,21 +41,33 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Lint (flake8)
-        run: |
-          pip install flake8
-          flake8 agent.py --max-line-length=120 --extend-ignore=E501,E402,W503
+      - name: Check Python sources
+        run: python -m py_compile agent.py ui_app.py win_control.py device_commands.py device_profile.py probe_cache.py
 
-      - name: Verify build script (PyInstaller --dry-run)
-        run: |
-          pip install pyinstaller
-          python -c "import PyInstaller; print('PyInstaller OK')"
-          pyinstaller --onefile --noconsole --name live-dashboard-agent agent.py -- --check 2>&1 || echo "Dry-run complete"
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
 
-      - name: Upload agent EXE
-        uses: actions/upload-artifact@v6
+      - name: Build and sign Windows agent
+        shell: cmd
+        run: build.bat
+
+      - name: Verify Authenticode policy
+        shell: powershell
+        run: |
+          if ($env:WINDOWS_SKIP_SIGNING -eq "true") {
+            Write-Host "Unsigned debug artifact built for branch/manual smoke."
+            exit 0
+          }
+          $signature = Get-AuthenticodeSignature .\dist\live-dashboard-agent.exe
+          if ($signature.Status -ne "Valid") {
+            throw "Expected a valid Authenticode signature, got $($signature.Status)."
+          }
+          Write-Host "Authenticode signature is valid."
+
+      - name: Upload Windows agent
+        uses: actions/upload-artifact@v4
         with:
-          name: windows-agent
+          name: ${{ env.WINDOWS_SKIP_SIGNING == 'true' && 'live-dashboard-agent-windows-debug' || 'live-dashboard-agent-windows-signed' }}
           path: agents/windows/dist/live-dashboard-agent.exe
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 7

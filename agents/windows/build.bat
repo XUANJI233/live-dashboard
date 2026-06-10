@@ -1,6 +1,8 @@
 @echo off
+setlocal
 REM Build the Windows agent into a single .exe using PyInstaller
 REM Run this from the agents/windows/ directory
+cd /d "%~dp0"
 
 echo Installing dependencies...
 pip install -r requirements.txt pyinstaller
@@ -13,8 +15,18 @@ if exist icon.ico (
 ) else (
     pyinstaller --onefile --noconsole %HIDDEN% --name live-dashboard-agent agent.py
 )
+if errorlevel 1 exit /b %errorlevel%
 
 echo.
-echo Done! Output: dist\live-dashboard-agent.exe
+echo Signing live-dashboard-agent.exe...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0sign-windows.ps1" -FilePath "%~dp0dist\live-dashboard-agent.exe" -RequireSigning
+if errorlevel 1 exit /b %errorlevel%
+
+echo.
+if /I "%WINDOWS_SKIP_SIGNING%"=="true" (
+    echo Done! Unsigned debug output: dist\live-dashboard-agent.exe
+) else (
+    echo Done! Signed output: dist\live-dashboard-agent.exe
+)
 echo Copy config.json next to the .exe before running.
-pause
+if /I "%WINDOWS_BUILD_PAUSE%"=="true" pause

@@ -32,9 +32,42 @@
 
 ## 打包为 .exe
 
-运行 `build.bat`，会用 PyInstaller 打包为单文件 `dist/live-dashboard-agent.exe`。
+运行 `build.bat`，会用 PyInstaller 打包为单文件 `dist/live-dashboard-agent.exe`，随后用 Authenticode 签名并验证签名。
 
 将 `config.json` 放在 `.exe` 同目录下即可运行。
+
+### Windows 代码签名
+
+Release 版必须签名，避免 PyInstaller 单文件程序被 SmartScreen 或杀毒软件更容易误判。`build.bat` 默认要求签名证书；没有证书会失败，不会静默产出未签名 release。
+
+可用的签名配置：
+
+- `WINDOWS_CODESIGN_CERT_BASE64`：PFX 证书的 base64 内容，适合 GitHub Actions secrets。
+- `WINDOWS_CODESIGN_CERT_PATH`：本机 PFX 文件路径，适合本地发布机。
+- `WINDOWS_CODESIGN_CERT_THUMBPRINT`：已安装到证书存储的代码签名证书指纹。
+- `WINDOWS_CODESIGN_CERT_PASSWORD`：PFX 密码。
+- `WINDOWS_SIGNTOOL_PATH`：可选，手动指定 `signtool.exe`。
+- `WINDOWS_TIMESTAMP_URL`：可选，默认 `http://timestamp.digicert.com`。
+
+本地临时调试如果确实要跳过签名，必须显式设置：
+
+```powershell
+$env:WINDOWS_SKIP_SIGNING = "true"
+.\build.bat
+```
+
+只允许使用字符串 `true` / `false`，不要用 `1` / `0`。
+
+GitHub Actions 使用 `.github/workflows/windows-agent.yml` 构建 Windows artifact。发布用仓库 secret：
+
+- `WINDOWS_CODESIGN_CERT_BASE64`
+- `WINDOWS_CODESIGN_CERT_PASSWORD`
+
+可选仓库 variable：
+
+- `WINDOWS_TIMESTAMP_URL`
+
+手动 workflow 里可以选择 `skip_signing=true` 生成 unsigned debug artifact；正式 tag 构建会要求签名。`build.bat` 默认不暂停，只有本地需要保留窗口时才设置 `WINDOWS_BUILD_PAUSE=true`。
 
 ## 开机自启
 
