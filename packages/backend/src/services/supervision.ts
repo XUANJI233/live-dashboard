@@ -85,12 +85,14 @@ export async function refreshSupervisionRules(settings = getSummarySettings()): 
       outcome: "updated",
       reason: rules.reason,
     });
-    return saveSummarySettings({
+    const saved = saveSummarySettings({
       ...settings,
       supervision_rules: rules,
       supervision_rules_updated_at: new Date().toISOString(),
       supervision_rules_error: null,
     });
+    await syncSupervisionPolicy(saved);
+    return saved;
   } catch (e) {
     const message = e instanceof Error ? e.message : "supervision rule generation failed";
     appendSupervisionHistory({
@@ -772,6 +774,20 @@ async function releasePendingRiskFreezes(settings: SummarySettings, reason: stri
   if (decisions.length === 0) return;
   const { sendSupervisionDeviceCommands } = await import("./supervision-device-commands");
   await sendSupervisionDeviceCommands(settings, decisions);
+}
+
+async function syncSupervisionPolicy(settings: SummarySettings): Promise<void> {
+  try {
+    const { setAndSendSupervisionPolicy } = await import("./supervision-policy-control");
+    setAndSendSupervisionPolicy({
+      risk_app_regex: settings.supervision_rules.risk_app_regex,
+      risk_trigger_minutes: settings.supervision_risk_trigger_minutes,
+      app_time_limits: settings.supervision_app_time_limits,
+      created_by: "supervision",
+    });
+  } catch (e) {
+    console.error("[supervision] policy sync failed:", safeErrorMessage(e, "policy sync failed"));
+  }
 }
 
 function hasPendingRiskFreeze(device: SupervisionDeviceContext): boolean {
