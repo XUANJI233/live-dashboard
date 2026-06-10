@@ -1,0 +1,48 @@
+name: macOS Agent CI
+
+on:
+  push:
+    branches:
+      - macos-source
+  pull_request:
+    branches:
+      - macos-source
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: agents/macos
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Compile
+        run: python -m py_compile agent.py device_commands.py device_profile.py realtime.py
+
+      - name: Test
+        run: python -m unittest discover -s tests -v
+
+      - name: Build
+        run: |
+          pyinstaller --onefile --windowed --name live-dashboard-agent agent.py
+          ditto -c -k --sequesterRsrc --keepParent dist/live-dashboard-agent live-dashboard-agent-macos.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-dashboard-agent-macos
+          path: agents/macos/live-dashboard-agent-macos.zip
+          if-no-files-found: error

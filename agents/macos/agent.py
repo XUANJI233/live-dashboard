@@ -28,6 +28,9 @@ from pathlib import Path
 import psutil
 import requests
 
+from device_profile import with_device_capabilities
+from realtime import DeviceCommandClient, HAS_WEBSOCKET, WsClient
+
 if getattr(sys, "frozen", False):
     base_dir = Path(sys.executable).parent
 else:
@@ -291,6 +294,13 @@ def load_config() -> dict:
     if not isinstance(cfg, dict):
         return dict(_DEFAULT_CFG)
 
+    for key in ("server_url", "token"):
+        value = cfg.get(key, _DEFAULT_CFG[key])
+        cfg[key] = value.strip() if isinstance(value, str) else _DEFAULT_CFG[key]
+
+    enable_log = cfg.get("enable_log", _DEFAULT_CFG["enable_log"])
+    cfg["enable_log"] = enable_log if isinstance(enable_log, bool) else _DEFAULT_CFG["enable_log"]
+
     for key, default, lo, hi in [
         ("interval_seconds", 5, 1, 300),
         ("heartbeat_seconds", 60, 10, 600),
@@ -355,6 +365,29 @@ def validate_config(cfg: dict) -> str | None:
             if ip.is_global:
                 return "HTTP 仅允许内网地址, 公网请使用 HTTPS"
     return None
+
+
+def _applescript_string(value: str) -> str:
+    safe = value.replace("\\", "\\\\").replace('"', '\\"')
+    safe = safe.replace("\r", " ").replace("\n", " ")
+    return f'"{safe[:500]}"'
+
+
+def show_desktop_notification(message: dict) -> None:
+    text = message.get("text") if isinstance(message.get("text"), str) else ""
+    if not text:
+        return
+    sender = message.get("viewer_name") if isinstance(message.get("viewer_name"), str) else ""
+    script = (
+        f"display notification {_applescript_string(text)} "
+        f"with title {_applescript_string('Live Dashboard')} "
+        f"subtitle {_applescript_string(sender or '设备提醒')}"
+    )
+    try:
+        subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=5)
+    except Exception as exc:
+        log.debug("Notification failed: %s", exc)
+    log.info("Device command message: %s", text[:120])
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +499,7 @@ class Reporter:
 
     def __init__(self, server_url: str, token: str):
         self.endpoint = server_url.rstrip("/") + "/api/report"
+        self.token = token
         self.session = requests.Session()
         self.session.headers.update({
             "Content-Type": "application/json",
@@ -473,8 +507,12 @@ class Reporter:
         })
         self._consecutive_failures = 0
         self._current_backoff = 0
+        self._pause_until = 0.0
 
     def send(self, app_id: str, window_title: str, extra: dict | None = None) -> bool:
+        if self.pause_remaining > 0:
+            return False
+
         payload = {
             "app_id": app_id,
             "window_title": window_title[:256],
@@ -487,6 +525,7 @@ class Reporter:
             if resp.status_code in (200, 201, 409):
                 self._consecutive_failures = 0
                 self._current_backoff = 0
+                self._pause_until = 0.0
                 return True
             log.warning("Server %d: %s", resp.status_code, resp.text[:200])
         except requests.RequestException as e:
@@ -499,7 +538,7 @@ class Reporter:
         )
         if self._consecutive_failures >= self.PAUSE_AFTER_FAILURES:
             log.warning("Failed %d times, pausing %ds", self._consecutive_failures, self.PAUSE_DURATION)
-            time.sleep(self.PAUSE_DURATION)
+            self._pause_until = time.monotonic() + self.PAUSE_DURATION
             self._consecutive_failures = 0
             self._current_backoff = 0
         return False
@@ -507,6 +546,21 @@ class Reporter:
     @property
     def backoff(self) -> float:
         return self._current_backoff
+
+    @property
+    def pause_remaining(self) -> float:
+        remaining = self._pause_until - time.monotonic()
+        if remaining <= 0:
+            self._pause_until = 0.0
+            return 0.0
+        return remaining
+
+    @property
+    def retry_delay(self) -> float:
+        return self.pause_remaining or self.backoff
+
+    def close(self) -> None:
+        self.session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -622,7 +676,13 @@ class TrayAgent:
 # ---------------------------------------------------------------------------
 # Monitor loop
 # ---------------------------------------------------------------------------
-def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None) -> None:
+def _monitor_loop(
+    cfg: dict,
+    reporter: Reporter,
+    tray: TrayAgent | None,
+    ws_client: WsClient | None = None,
+    command_client: DeviceCommandClient | None = None,
+) -> None:
     interval = cfg["interval_seconds"]
     heartbeat_interval = cfg["heartbeat_seconds"]
     idle_threshold = cfg["idle_threshold_seconds"]
@@ -630,19 +690,38 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None) -> None
     prev_app: str | None = None
     prev_title: str | None = None
     last_report_time: float = 0
+    last_command_fetch: float = 0
+    command_fetch_interval = 30
     was_idle = False
 
     log.info(
-        "Monitoring — interval=%ds, heartbeat=%ds, idle=%ds",
+        "Monitoring — interval=%ds, heartbeat=%ds, idle=%ds, ws=%s",
         interval, heartbeat_interval, idle_threshold,
+        "enabled" if ws_client else "disabled",
     )
 
     if tray:
         tray.update_status("在线")
 
+    def _send_report(app_id: str, title: str, extra: dict) -> bool:
+        if ws_client and ws_client.connected:
+            payload = {
+                "app_id": app_id,
+                "window_title": title,
+                "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                "extra": extra,
+            }
+            if ws_client.send_status(payload):
+                return True
+        return reporter.send(app_id, title, extra)
+
     while not shutdown_event.is_set():
         try:
             now = time.time()
+
+            if command_client and (now - last_command_fetch) >= command_fetch_interval:
+                command_client.fetch_pending()
+                last_command_fetch = now
 
             idle_secs = get_idle_seconds()
             is_idle = (idle_secs >= idle_threshold
@@ -661,8 +740,8 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None) -> None
             if is_idle:
                 heartbeat_due = (now - last_report_time) >= heartbeat_interval
                 if heartbeat_due:
-                    extra = get_battery_extra()
-                    if reporter.send("idle", "User is away", extra):
+                    extra = with_device_capabilities(get_battery_extra())
+                    if _send_report("idle", "User is away", extra):
                         last_report_time = now
                 shutdown_event.wait(interval)
                 continue
@@ -682,19 +761,19 @@ def _monitor_loop(cfg: dict, reporter: Reporter, tray: TrayAgent | None) -> None
             heartbeat_due = (now - last_report_time) >= heartbeat_interval
 
             if changed or heartbeat_due:
-                extra = get_battery_extra()
+                extra = with_device_capabilities(get_battery_extra())
                 music = get_music_info()
                 if music:
                     extra["music"] = music
-                success = reporter.send(app_id, title, extra)
+                success = _send_report(app_id, title, extra)
                 if success:
                     prev_app = app_id
                     prev_title = title
                     last_report_time = now
                     if changed:
                         log.info("Reported: %s — %s", app_id, title[:80])
-                elif reporter.backoff > 0:
-                    shutdown_event.wait(reporter.backoff)
+                elif reporter.retry_delay > 0:
+                    shutdown_event.wait(reporter.retry_delay)
                     continue
 
             shutdown_event.wait(interval)
@@ -737,6 +816,21 @@ def main() -> None:
         set_file_logging(cfg.get("enable_log", False))
 
         reporter = Reporter(cfg["server_url"], cfg["token"])
+        ws_client: WsClient | None = None
+        command_client: DeviceCommandClient | None = None
+        if HAS_WEBSOCKET:
+            ws_client = WsClient(cfg["server_url"], cfg["token"])
+        else:
+            log.info("websocket-client not installed; using HTTP report and message polling only")
+        command_client = DeviceCommandClient(
+            cfg["server_url"],
+            cfg["token"],
+            ws_client,
+            on_desktop_message=show_desktop_notification,
+        )
+        if ws_client:
+            ws_client.set_message_handler(command_client.on_ws_message)
+            ws_client.start()
 
         tray: TrayAgent | None = None
         try:
@@ -746,28 +840,37 @@ def main() -> None:
         except Exception as e:
             log.warning("Tray init failed: %s", e)
 
-        if tray:
-            monitor = threading.Thread(
-                target=_monitor_loop, args=(cfg, reporter, tray), daemon=True
-            )
-            monitor.start()
-            tray.run()
-            shutdown_event.set()
-            monitor.join(timeout=5)
-
-            if tray.settings_requested:
-                shutdown_event.clear()
-                if not open_settings_in_subprocess():
-                    continue
-                continue
+        settings_requested = False
+        try:
+            if tray:
+                monitor = threading.Thread(
+                    target=_monitor_loop,
+                    args=(cfg, reporter, tray, ws_client, command_client),
+                    daemon=True,
+                )
+                monitor.start()
+                tray.run()
+                shutdown_event.set()
+                monitor.join(timeout=5)
+                settings_requested = tray.settings_requested
             else:
-                break
-        else:
-            try:
-                _monitor_loop(cfg, reporter, None)
-            except KeyboardInterrupt:
-                pass
-            break
+                try:
+                    _monitor_loop(cfg, reporter, None, ws_client, command_client)
+                except KeyboardInterrupt:
+                    shutdown_event.set()
+        finally:
+            if ws_client:
+                ws_client.stop()
+            if command_client:
+                command_client.close()
+            reporter.close()
+
+        if settings_requested:
+            shutdown_event.clear()
+            if not open_settings_in_subprocess():
+                continue
+            continue
+        break
 
     log.info("Agent stopped")
 

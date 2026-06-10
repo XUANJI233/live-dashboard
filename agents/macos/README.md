@@ -25,7 +25,8 @@
      "token": "你的设备密钥",
      "interval_seconds": 5,
      "heartbeat_seconds": 60,
-     "idle_threshold_seconds": 300
+     "idle_threshold_seconds": 300,
+     "enable_log": false
    }
    ```
 3. 运行：
@@ -72,6 +73,7 @@ launchctl load ~/Library/LaunchAgents/com.live-dashboard.agent.plist
 | `interval_seconds` | 上报间隔（秒） | `5` |
 | `heartbeat_seconds` | AFK 时心跳间隔（秒） | `60` |
 | `idle_threshold_seconds` | 无操作多久后进入 AFK 模式（秒） | `300` |
+| `enable_log` | 是否写入 `agent.log`（只接受 JSON 布尔值） | `false` |
 
 ## 功能
 
@@ -81,8 +83,28 @@ launchctl load ~/Library/LaunchAgents/com.live-dashboard.agent.plist
 
 右键菜单：
 - 查看当前状态和正在使用的应用
-- 打开配置文件 / 重载配置
+- 打开设置窗口
+- 开启或关闭日志文件
 - 安全退出
+
+### AI 监督与设备命令
+
+macOS 端会显式上报 `desktop_message` 能力：
+
+```json
+{
+  "profile": "desktop_message",
+  "capabilities": {
+    "freeze": false,
+    "unfreeze": false,
+    "vibrate": false,
+    "screen_off": false,
+    "say": true
+  }
+}
+```
+
+服务端下发统一 `device_command` 时，macOS Agent 只执行桌面文本提醒 `say`，并通过 WebSocket 或 `/api/supervision/ack` 回传 `device_command_receipt` / `device_command_result`。冻结、解冻、震动、息屏和 LSP 监督策略会被标记为不支持，不会在 macOS 上执行。
 
 ### 前台应用检测
 
@@ -112,3 +134,13 @@ launchctl load ~/Library/LaunchAgents/com.live-dashboard.agent.plist
 - **pystray + Pillow**: 系统托盘图标和菜单
 - **psutil**: 电池信息
 - **ioreg / pmset**: 空闲时间和音频状态检测
+- **websocket-client**: 设备 WebSocket、AI 提醒和设备命令回执
+
+## 验证
+
+```bash
+python3 -m py_compile agent.py device_commands.py device_profile.py realtime.py
+python3 -m unittest discover -s tests -v
+```
+
+GitHub Actions 的 `macOS Agent CI` 会在 macOS runner 上安装依赖、运行上述检查，并用 PyInstaller 生成 `live-dashboard-agent-macos.zip` artifact。
