@@ -13,9 +13,7 @@ import {
   DeviceTimelineSchema,
   FrozenListSchema,
   SendCommandsSchema,
-  SupervisionPolicySchema,
 } from "./mcp-tool-schemas";
-import { setAndSendSupervisionPolicy } from "./supervision-policy-control";
 
 export function createLiveDashboardMcpServer(): McpServer {
   const server = new McpServer({
@@ -76,13 +74,6 @@ export function createLiveDashboardMcpServer(): McpServer {
     inputSchema: SendCommandsSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   }, async (args) => stableToolResult(() => sendDeviceCommands(args)));
-
-  server.registerTool("live_dashboard.set_supervision_policy", {
-    title: "Set supervision policy",
-    description: "Persist and send risk-app AI trigger policy and independent app time-limit freeze policy to Android LSP devices.",
-    inputSchema: SupervisionPolicySchema,
-    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-  }, async (args) => stableToolResult(() => setAndSendSupervisionPolicy(args)));
 
   server.registerTool("live_dashboard.get_command_status", {
     title: "Get command status",

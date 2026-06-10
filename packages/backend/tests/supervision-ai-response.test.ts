@@ -39,20 +39,17 @@ describe("supervision AI response parsing", () => {
     const parsed = parseRulesResponse(JSON.stringify({
       whitelist_app_regex: ["RegExp(\"Code\", \"i\")"],
       blacklist_app_regex: ["(?i:TikTok)"],
-      risk_app_regex: ["YouTube"],
       target_app_regex: ["Docs"],
       reason: "test",
     }));
 
     expect(parsed.whitelist_app_regex).toEqual(["Code"]);
     expect(parsed.blacklist_app_regex).toEqual(["(?:TikTok)"]);
-    expect(parsed.risk_app_regex).toEqual(["YouTube"]);
     expect(parsed.target_app_regex).toEqual(["Docs"]);
 
     expect(() => parseRulesResponse(JSON.stringify({
       whitelistAppRegex: ["Code"],
       blacklistAppRegex: ["TikTok"],
-      riskAppRegex: ["YouTube"],
       targetAppRegex: ["Docs"],
       reason: "legacy",
     }))).toThrow("required regex arrays");

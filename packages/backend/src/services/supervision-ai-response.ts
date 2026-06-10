@@ -23,15 +23,13 @@ export function parseRulesResponse(raw: string): SupervisionRules {
   const parsed = parseAiJsonObject(raw);
   const whitelist = parsed.whitelist_app_regex;
   const blacklist = parsed.blacklist_app_regex;
-  const risk = parsed.risk_app_regex;
   const target = parsed.target_app_regex;
-  if (!Array.isArray(whitelist) || !Array.isArray(blacklist) || !Array.isArray(risk) || !Array.isArray(target)) {
+  if (!Array.isArray(whitelist) || !Array.isArray(blacklist) || !Array.isArray(target)) {
     throw new Error("AI rules response missing required regex arrays");
   }
   return {
     whitelist_app_regex: normalizeSupervisionPatternList(whitelist),
     blacklist_app_regex: normalizeSupervisionPatternList(blacklist),
-    risk_app_regex: normalizeSupervisionPatternList(risk),
     target_app_regex: normalizeSupervisionPatternList(target),
     reason: cleanText(String(parsed.reason || ""), 180),
   };

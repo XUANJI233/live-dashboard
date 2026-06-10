@@ -730,7 +730,6 @@ describe("ai-config", () => {
             content: JSON.stringify({
               whitelist_app_regex: ["(?i)^com\\.android\\.", "(?i:Live Dashboard)", "new RegExp(\"com\\\\.example\", \"i\")"],
               blacklist_app_regex: ["RegExp(\"(?:douyin|tiktok)\", \"i\")"],
-              risk_app_regex: ["RegExp(\"(?:youtube|game)\", \"i\")"],
               target_app_regex: ["new RegExp(\"Code\", \"i\")"],
               reason: "test",
             }),
@@ -750,7 +749,6 @@ describe("ai-config", () => {
       expect(result.supervision_rules_error).toBeNull();
       expect(result.supervision_rules.whitelist_app_regex).toEqual(["^com\\.android\\.", "(?:Live Dashboard)", "com\\.example"]);
       expect(result.supervision_rules.blacklist_app_regex).toEqual(["(?:douyin|tiktok)"]);
-      expect(result.supervision_rules.risk_app_regex).toEqual(["(?:youtube|game)"]);
       expect(result.supervision_rules.target_app_regex).toEqual(["Code"]);
     } finally {
       globalThis.fetch = originalFetch;
@@ -793,7 +791,6 @@ describe("ai-config", () => {
               ? JSON.stringify({
                   whitelist_app_regex: ["Code"],
                   blacklist_app_regex: ["TikTok"],
-                  risk_app_regex: ["TikTok"],
                   target_app_regex: ["Code"],
                   reason: "retry ok",
                 })
@@ -936,7 +933,6 @@ describe("ai-config", () => {
       supervision_rules: {
         whitelist_app_regex: ["Code"],
         blacklist_app_regex: ["Short Video"],
-        risk_app_regex: [],
         target_app_regex: ["Code"],
         reason: "test",
       },
@@ -1055,7 +1051,6 @@ describe("ai-config", () => {
       supervision_rules: {
         whitelist_app_regex: ["Code"],
         blacklist_app_regex: ["TikTok", "VPN"],
-        risk_app_regex: [],
         target_app_regex: ["Code"],
         reason: "test",
       },
@@ -1169,7 +1164,6 @@ describe("ai-config", () => {
       supervision_rules: {
         whitelist_app_regex: ["Code"],
         blacklist_app_regex: ["TikTok", "Game"],
-        risk_app_regex: [],
         target_app_regex: ["Code"],
         reason: "test",
       },

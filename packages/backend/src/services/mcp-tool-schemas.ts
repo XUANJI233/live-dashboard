@@ -29,22 +29,9 @@ export const SendCommandsSchema = z.object({
   })).min(1).max(20),
 });
 
-export const SupervisionPolicySchema = z.object({
-  risk_app_regex: z.array(z.string().max(120)).max(12).optional(),
-  risk_trigger_minutes: z.number().int().min(1).max(55).optional(),
-  app_time_limits: z.array(z.object({
-    app_regex: z.string().min(1).max(120),
-    limit_minutes: z.number().int().min(1).max(55),
-    reason: z.string().max(120).optional(),
-  })).max(12).optional(),
-  device_ids: z.array(z.string().min(1).max(160)).max(20).optional(),
-  expires_in_seconds: z.number().int().min(10).max(3600).optional(),
-});
-
 export const CommandStatusSchema = z.object({
   command_id: z.string().min(1).max(160).optional(),
   request_id: z.string().min(1).max(160).optional(),
 });
 
 export type SendCommandsArgs = z.infer<typeof SendCommandsSchema>;
-export type SupervisionPolicyArgs = z.infer<typeof SupervisionPolicySchema>;
