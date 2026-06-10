@@ -21,8 +21,8 @@ Windows Agent 是一个 Python 桌面程序，监控前台窗口并向 Live Dash
 | **电量上报** | 笔记本自动上报电池电量和充电状态 |
 | **AFK 检测** | 键鼠空闲超过阈值（默认 5 分钟）后进入 AFK 模式 |
 | **视频/音频免 AFK** | 有音频播放（pycaw）或前台全屏时，即使键鼠空闲也不进入 AFK |
-| **系统托盘** | pystray 托盘图标，右键查看状态、重载配置、打开设置、安全退出；后台运行时再次双击 exe 会唤起设置 |
-| **设置对话框** | tkinter GUI，编辑服务器地址、Token、上报间隔等 |
+| **系统托盘** | pystray 托盘图标，右键查看状态、重载配置、打开主界面、安全退出；后台运行时再次双击 exe 会唤起主界面 |
+| **主界面** | tkinter 单窗口管理台，包含 Overview、Messages、Settings 三个目的地 |
 | **日志** | 自动写入 `agent.log`，按天轮转保留 2 天 |
 
 ### 技术栈
@@ -32,13 +32,21 @@ Windows Agent 是一个 Python 桌面程序，监控前台窗口并向 Live Dash
 - pystray + Pillow — 系统托盘
 - pycaw — Windows Core Audio API，活跃音频会话检测
 - psutil — 电池信息
-- tkinter — 设置对话框（Python 内置）
+- tkinter — 单窗口主界面（Python 内置）
 
 ### 文件结构
 
 ```
 agents/windows/
 ├── agent.py              # 主程序
+├── autostart_actions.py  # 托盘和主界面共享的自启动动作
+├── device_commands.py    # 设备命令解析和桌面安全执行
+├── device_profile.py     # Windows 能力声明
+├── probe_cache.py        # 低开销采集探针缓存
+├── ui_app.py             # tkinter 主界面控制器
+├── ui_components.py      # 主界面设计系统 primitives
+├── ui_messages.py        # 消息显示格式化 helper
+├── ui_theme.py           # 共享主题和语义 tone
 ├── config.example.json   # 配置模板
 ├── requirements.txt      # Python 依赖
 ├── build.bat             # PyInstaller 打包脚本

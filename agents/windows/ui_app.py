@@ -10,19 +10,18 @@ import threading
 from typing import Callable
 
 from autostart_actions import toggle_autostart
+from ui_components import TAB_BY_KEY, TAB_SPECS, UiKit
+from ui_messages import merge_new_messages, message_detail, message_key, message_summary
 from ui_theme import (
     BG,
     BORDER,
-    BUTTON_ACTIVE_BG,
-    BUTTON_BG,
     MUTED,
-    PRIMARY_ACTIVE_BG,
-    PRIMARY_BG,
     SURFACE,
     SURFACE_MUTED,
     TEXT,
     notice_palette,
     status_color,
+    status_tone,
 )
 from win_control import is_autostart_enabled
 
@@ -51,6 +50,7 @@ class DashboardUiController:
 
         self.tk = tk
         self.ttk = ttk
+        self._ui = UiKit(tk, ttk)
         self._load_config = load_config
         self._validate_config = validate_config
         self._save_config = save_config
@@ -70,8 +70,8 @@ class DashboardUiController:
 
         self.root = tk.Tk()
         self.root.title("Live Dashboard")
-        self.root.geometry("820x600")
-        self.root.minsize(760, 540)
+        self.root.geometry("900x640")
+        self.root.minsize(820, 560)
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
         self._configure_style()
@@ -123,58 +123,68 @@ class DashboardUiController:
     # -- layout --------------------------------------------------------------
 
     def _configure_style(self) -> None:
-        style = self.ttk.Style(self.root)
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-        style.configure(".", font=("Segoe UI", 10), background=BG, foreground=TEXT)
-        style.configure("TFrame", background=BG)
-        style.configure("Surface.TFrame", background=SURFACE)
-        style.configure("Muted.TLabel", background=BG, foreground=MUTED)
-        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI Semibold", 18))
-        style.configure("Subtitle.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 10))
-        style.configure("CardTitle.TLabel", background=SURFACE, foreground=TEXT, font=("Segoe UI Semibold", 11))
-        style.configure("CardBody.TLabel", background=SURFACE, foreground=MUTED, font=("Segoe UI", 9))
-        style.configure("Value.TLabel", background=SURFACE, foreground=TEXT, font=("Segoe UI Semibold", 16))
-        style.configure("TEntry", fieldbackground="#FFFFFF")
-        style.configure("TSpinbox", fieldbackground="#FFFFFF")
+        self._ui.configure_style(self.root)
 
     def _build(self) -> None:
         tk = self.tk
-        shell = tk.Frame(self.root, bg=BG, padx=24, pady=22)
+        shell = tk.Frame(self.root, bg=BG)
         shell.pack(fill="both", expand=True)
+        shell.columnconfigure(1, weight=1)
+        shell.rowconfigure(0, weight=1)
 
-        header = tk.Frame(shell, bg=BG)
-        header.pack(fill="x")
-        self.ttk.Label(header, text="Live Dashboard", style="Title.TLabel").pack(anchor="w")
+        rail = tk.Frame(
+            shell,
+            bg=SURFACE,
+            width=190,
+            padx=16,
+            pady=18,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+        )
+        rail.grid(row=0, column=0, sticky="nsw")
+        rail.grid_propagate(False)
+        self.ttk.Label(rail, text="Live Dashboard", style="RailTitle.TLabel").pack(anchor="w")
         self.ttk.Label(
-            header,
-            text="Windows Agent 控制台，管理状态、留言和本机配置。",
-            style="Subtitle.TLabel",
+            rail,
+            text="Windows Agent",
+            style="RailMeta.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
-        self._nav = tk.Frame(shell, bg=BG)
-        self._nav.pack(fill="x", pady=(18, 14))
+        self._nav = tk.Frame(rail, bg=SURFACE)
+        self._nav.pack(fill="x", pady=(22, 0))
         self._nav_buttons: dict[str, tk.Button] = {}
-        for key, label in [("overview", "Overview"), ("messages", "Messages"), ("settings", "Settings")]:
-            btn = tk.Button(
+        for tab in TAB_SPECS:
+            btn = self._ui.nav_button(
                 self._nav,
-                text=label,
-                command=lambda tab=key: self._select_tab(tab),
-                relief="flat",
-                padx=18,
-                pady=8,
-                cursor="hand2",
-                font=("Segoe UI Semibold", 10),
+                tab.label,
+                command=lambda key=tab.key: self._select_tab(key),
             )
-            btn.pack(side="left", padx=(0, 8))
-            self._nav_buttons[key] = btn
+            btn.pack(fill="x", pady=(0, 6))
+            self._nav_buttons[tab.key] = btn
 
-        self._notice = self._build_notice(shell)
+        rail_footer = tk.Frame(rail, bg=SURFACE)
+        rail_footer.pack(side="bottom", fill="x")
+        self._rail_status = self._ui.status_pill(rail_footer, "初始化中", "neutral")
+        self._rail_status.pack(anchor="w")
 
-        self._content = tk.Frame(shell, bg=BG)
-        self._content.pack(fill="both", expand=True)
+        main = tk.Frame(shell, bg=BG, padx=24, pady=22)
+        main.grid(row=0, column=1, sticky="nsew")
+
+        self._header = tk.Frame(main, bg=BG)
+        self._header.pack(fill="x")
+        self._header_text = tk.Frame(self._header, bg=BG)
+        self._header_text.pack(side="left", fill="x", expand=True)
+        self._header_title = self.ttk.Label(self._header_text, text="", style="Title.TLabel")
+        self._header_title.pack(anchor="w")
+        self._header_subtitle = self.ttk.Label(self._header_text, text="", style="Subtitle.TLabel")
+        self._header_subtitle.pack(anchor="w", pady=(2, 0))
+        self._header_status = self._ui.status_pill(self._header, "初始化中", "neutral")
+        self._header_status.pack(side="right", anchor="ne", padx=(16, 0))
+
+        self._notice = self._build_notice(main)
+
+        self._content = tk.Frame(main, bg=BG)
+        self._content.pack(fill="both", expand=True, pady=(18, 0))
 
         self._tabs = {
             "overview": self._build_overview(self._content),
@@ -274,7 +284,7 @@ class DashboardUiController:
 
         toolbar = tk.Frame(card.body, bg=SURFACE)
         toolbar.pack(fill="x", pady=(8, 10))
-        self._button(toolbar, "刷新", self._refresh_messages).pack(side="left")
+        self._button(toolbar, "刷新", self._refresh_messages, primary=True).pack(side="left")
         self._messages_hint = self.ttk.Label(toolbar, text="暂无留言", style="CardBody.TLabel")
         self._messages_hint.pack(side="left", padx=(12, 0))
 
@@ -316,7 +326,7 @@ class DashboardUiController:
     def _build_settings(self, parent):
         tk = self.tk
         frame = tk.Frame(parent, bg=BG)
-        card = self._card(frame, "Settings", "服务器连接、采集间隔和本地日志")
+        card = self._card(frame, "配置", "服务器连接、采集间隔和本地日志")
         card.pack(fill="both", expand=True)
 
         form = tk.Frame(card.body, bg=SURFACE)
@@ -355,33 +365,13 @@ class DashboardUiController:
         return frame
 
     def _field(self, parent, row: int, label: str, widget) -> None:
-        self.ttk.Label(parent, text=label, style="CardTitle.TLabel").grid(row=row, column=0, sticky="w", pady=7, padx=(0, 14))
-        widget.grid(row=row, column=1, sticky="ew", pady=7)
+        self._ui.field(parent, row, label, widget)
 
     def _card(self, parent, title: str, subtitle: str):
-        tk = self.tk
-        outer = tk.Frame(parent, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER, padx=18, pady=16)
-        self.ttk.Label(outer, text=title, style="CardTitle.TLabel").pack(anchor="w")
-        self.ttk.Label(outer, text=subtitle, style="CardBody.TLabel").pack(anchor="w", pady=(2, 0))
-        outer.body = tk.Frame(outer, bg=SURFACE)  # type: ignore[attr-defined]
-        outer.body.pack(fill="both", expand=True)
-        return outer
+        return self._ui.card(parent, title, subtitle)
 
     def _button(self, parent, text: str, command: Callable[[], None], primary: bool = False):
-        return self.tk.Button(
-            parent,
-            text=text,
-            command=command,
-            relief="flat",
-            padx=16,
-            pady=8,
-            cursor="hand2",
-            bg=PRIMARY_BG if primary else BUTTON_BG,
-            fg="#FFFFFF" if primary else TEXT,
-            activebackground=PRIMARY_ACTIVE_BG if primary else BUTTON_ACTIVE_BG,
-            activeforeground="#FFFFFF" if primary else TEXT,
-            font=("Segoe UI Semibold", 10),
-        )
+        return self._ui.button(parent, text, command, primary)
 
     # -- actions -------------------------------------------------------------
 
@@ -395,14 +385,14 @@ class DashboardUiController:
             else:
                 frame.pack_forget()
         for key, btn in self._nav_buttons.items():
-            active = key == tab
-            btn.configure(
-                bg=PRIMARY_BG if active else BUTTON_BG,
-                fg="#FFFFFF" if active else TEXT,
-                activebackground=PRIMARY_ACTIVE_BG if active else BUTTON_ACTIVE_BG,
-                activeforeground="#FFFFFF" if active else TEXT,
-            )
+            self._ui.set_nav_active(btn, key == tab)
+        self._refresh_header()
         self._refresh_view()
+
+    def _refresh_header(self) -> None:
+        spec = TAB_BY_KEY.get(self._active_tab, TAB_BY_KEY["overview"])
+        self._header_title.configure(text=spec.title)
+        self._header_subtitle.configure(text=spec.subtitle)
 
     def _apply_config(self, cfg: dict) -> None:
         self._server_var.set(str(cfg.get("server_url", "")))
@@ -488,6 +478,8 @@ class DashboardUiController:
             current = self._current_target
         self._status_value.configure(text=status)
         self._status_value.configure(foreground=status_color(status))
+        self._ui.set_status_pill(self._header_status, status, status_tone(status))
+        self._ui.set_status_pill(self._rail_status, status, status_tone(status))
         self._current_value.configure(text=current or "暂无窗口")
         cfg = self._load_config()
         server = cfg.get("server_url") or "未配置"
@@ -498,9 +490,7 @@ class DashboardUiController:
     def _render_messages(self) -> None:
         self._message_list.delete(0, "end")
         for msg in self._messages[:30]:
-            name = str(msg.get("viewer_name") or msg.get("viewer_id") or "未知")
-            text = str(msg.get("text") or "").replace("\n", " ")
-            self._message_list.insert("end", f"{name}: {text[:48]}")
+            self._message_list.insert("end", message_summary(msg))
         self._messages_hint.configure(text=f"{len(self._messages)} 条已缓存" if self._messages else "暂无留言")
         if not self._messages:
             self._set_detail("暂无留言。")
@@ -512,19 +502,7 @@ class DashboardUiController:
         index = int(selection[0])
         if index >= len(self._messages):
             return
-        msg = self._messages[index]
-        created = str(msg.get("created_at") or "")
-        text = str(msg.get("text") or "")
-        name = str(msg.get("viewer_name") or msg.get("viewer_id") or "未知")
-        queued = "是" if msg.get("queued") is True else "否"
-        detail = "\n".join([
-            f"发送者: {name}",
-            f"时间: {created or '未知'}",
-            f"排队: {queued}",
-            "",
-            text or "无内容",
-        ])
-        self._set_detail(detail)
+        self._set_detail(message_detail(self._messages[index]))
 
     def _set_detail(self, text: str) -> None:
         self._message_detail.configure(state="normal")
@@ -570,8 +548,15 @@ class DashboardUiController:
         self.root.lift()
         self.root.focus_force()
         self.root.attributes("-topmost", True)
-        self.root.after(250, lambda: self.root.attributes("-topmost", False))
+        self.root.after(250, self._release_topmost)
         self._visible = True
+
+    def _release_topmost(self) -> None:
+        try:
+            if self.root.winfo_exists():
+                self.root.attributes("-topmost", False)
+        except Exception:
+            log.debug("topmost release skipped", exc_info=True)
 
     def _show_notice_now(self, title: str, message: str, error: bool = False) -> None:
         if self._notice_after_id:
@@ -605,10 +590,9 @@ class DashboardUiController:
         if not isinstance(payload, dict):
             return
         message_id = str(payload.get("message_id") or payload.get("id") or "")
-        if message_id and any(str(item.get("message_id") or item.get("id") or "") == message_id for item in self._messages):
+        if message_id and any(message_key(item) == message_id for item in self._messages):
             return
-        self._messages.insert(0, payload)
-        self._messages = self._messages[:30]
+        self._messages = merge_new_messages(self._messages, [payload])
         self._render_messages()
 
     def _merge_messages(self, payload: object) -> None:

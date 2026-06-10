@@ -43,6 +43,7 @@ def execute_desktop_command(envelope: dict) -> tuple[dict, dict | None]:
     assert isinstance(payload, dict)
 
     expired = is_expired(_text(envelope.get("expires_at")))
+    kind = _text(payload.get("kind"))
     say = _text(payload.get("say"))[:500]
     actions: list[dict] = []
     unsupported: list[str] = []
@@ -50,6 +51,12 @@ def execute_desktop_command(envelope: dict) -> tuple[dict, dict | None]:
     if expired:
         result_status = "expired"
         reason = "command_expired"
+    elif kind == "supervision_policy":
+        result_status = "unsupported"
+        reason = "policy_requires_android_lsp"
+    elif kind != "supervision":
+        result_status = "unsupported"
+        reason = "unsupported_command_kind:" + (kind or "missing")
     else:
         if say:
             actions.append({"action": "say", "status": "applied"})
@@ -83,12 +90,12 @@ def execute_desktop_command(envelope: dict) -> tuple[dict, dict | None]:
         "status": result_status,
         "executed_at": now_iso(),
         "actions": actions,
-        "state_after": {"desktop_message_visible": bool(say and not expired)},
+        "state_after": {"desktop_message_visible": _applied_say(actions)},
         "reason": reason,
     }
 
     message = None
-    if say and not expired:
+    if actions:
         message = {
             "id": cid,
             "message_id": cid,
@@ -132,3 +139,7 @@ def _text(value: object) -> str:
 
 def _has_items(value: object) -> bool:
     return isinstance(value, list) and any(isinstance(item, str) and item.strip() for item in value)
+
+
+def _applied_say(actions: list[dict]) -> bool:
+    return any(item.get("action") == "say" and item.get("status") == "applied" for item in actions)

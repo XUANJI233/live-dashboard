@@ -118,7 +118,7 @@ Windows Agent 使用单一主窗口，信息架构与手机端管理工具保持
 
 主界面由一个 tkinter UI 控制器统一管理，托盘、二次启动唤醒和消息提醒都会回到同一个窗口，避免多套弹窗互相抢焦点或无法关闭。
 
-后台或托盘动作产生的提示会显示为主窗口顶部的非模态提示条，不再依赖隐藏窗口上的阻塞式弹窗；配置表单里由用户当前点击触发的校验错误仍使用原生对话框。
+后台、托盘动作和配置表单校验产生的提示都会显示为主窗口顶部的非模态提示条，不依赖隐藏窗口上的阻塞式弹窗。
 
 ### 前台应用检测
 
@@ -158,12 +158,14 @@ Windows 端会显式上报 `desktop_message` 能力：
     "unfreeze": false,
     "vibrate": false,
     "screen_off": false,
-    "say": true
+    "say": true,
+    "risk_app_monitor": false,
+    "app_time_limit": false
   }
 }
 ```
 
-服务端下发统一 `device_command` 时，Windows Agent 只执行桌面文本提醒 `say`，并通过 WebSocket 或 `/api/supervision/ack` 回传 `device_command_receipt` / `device_command_result`。冻结、解冻、震动、息屏等控制动作会被标记为不支持，不会在 Windows 上执行。
+服务端下发统一 `device_command` 时，Windows Agent 只执行桌面文本提醒 `say`，并通过 WebSocket 或 `/api/supervision/ack` 回传 `device_command_receipt` / `device_command_result`。冻结、解冻、震动、息屏和 LSP 监督策略会被标记为不支持，不会在 Windows 上执行。
 
 ## 技术栈
 
@@ -171,5 +173,5 @@ Windows 端会显式上报 `desktop_message` 能力：
 - **pystray + Pillow**: 系统托盘图标和菜单
 - **pycaw**: Windows Core Audio API，检测活跃音频会话
 - **psutil**: 电池信息
-- **tkinter**: 主界面、设置和消息窗口（Python 内置）
+- **tkinter**: 单窗口主界面、设置和消息视图（Python 内置）
 - **websocket-client**: 设备 WebSocket、留言和设备命令回执

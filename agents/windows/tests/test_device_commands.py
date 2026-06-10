@@ -85,6 +85,48 @@ class DeviceCommandTests(unittest.TestCase):
         self.assertEqual(result["reason"], "command_expired")
         self.assertIsNone(message)
 
+    def test_supervision_policy_is_not_executed_on_desktop(self):
+        envelope = {
+            "type": "device_command",
+            "request_id": "req_policy",
+            "command_id": "cmd_policy",
+            "payload": {
+                "kind": "supervision_policy",
+                "freeze_commands": [],
+                "unfreeze_commands": [],
+                "vibrate": False,
+                "screen_off": False,
+                "say": "",
+                "notes": [],
+                "risk_app_regex": ["Video"],
+                "risk_trigger_minutes": 5,
+                "app_time_limits": [{"app_regex": "Game", "limit_minutes": 10, "reason": "limit"}],
+            },
+        }
+
+        result, message = execute_desktop_command(envelope)
+
+        self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(result["reason"], "policy_requires_android_lsp")
+        self.assertIsNone(message)
+
+    def test_unsupported_kind_does_not_mark_desktop_message_visible(self):
+        envelope = {
+            "type": "device_command",
+            "request_id": "req_unknown",
+            "command_id": "cmd_unknown",
+            "payload": {
+                "kind": "unknown",
+                "say": "不应显示",
+            },
+        }
+
+        result, message = execute_desktop_command(envelope)
+
+        self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(result["state_after"]["desktop_message_visible"], False)
+        self.assertIsNone(message)
+
     def test_report_extra_uses_desktop_message_capabilities(self):
         extra = with_device_capabilities({
             "battery": {"percent": 80},
@@ -102,6 +144,8 @@ class DeviceCommandTests(unittest.TestCase):
                 "vibrate": False,
                 "screen_off": False,
                 "say": True,
+                "risk_app_monitor": False,
+                "app_time_limit": False,
             },
         )
 

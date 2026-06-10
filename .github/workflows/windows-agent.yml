@@ -47,7 +47,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Check Python sources
-        run: python -m py_compile agent.py ui_app.py win_control.py device_commands.py device_profile.py probe_cache.py
+        run: python -m py_compile agent.py autostart_actions.py ui_app.py ui_components.py ui_messages.py ui_theme.py win_control.py device_commands.py device_profile.py probe_cache.py
 
       - name: Run tests
         run: python -m unittest discover -s tests -v
