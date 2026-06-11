@@ -26,6 +26,7 @@ from device_commands import execute_desktop_command, extract_device_command, rec
 from device_profile import with_device_capabilities
 from probe_cache import TimedProbe
 from ui_app import DashboardUiController
+from ui_messages import messages_from_response, normalize_message
 from win_control import (
     ActivationEventServer,
     SingleInstanceGuard,
@@ -684,53 +685,13 @@ class MessageClient:
             except Exception as exc:
                 log.debug("留言回调异常: %s", exc)
 
-    @staticmethod
-    def _text(value, default: str = "") -> str:
-        return value if isinstance(value, str) else default
-
-    @classmethod
-    def _normalize_message(cls, data: dict) -> dict | None:
-        message_id = cls._text(data.get("message_id")) or cls._text(data.get("id"))
-        if not message_id:
-            return None
-        msg = {
-            "id": message_id,
-            "message_id": message_id,
-            "viewer_id": cls._text(data.get("viewer_id")),
-            "viewer_name": cls._text(data.get("viewer_name")),
-            "kind": cls._text(data.get("kind"), "text"),
-            "text": cls._text(data.get("text")),
-            "created_at": cls._text(data.get("created_at")),
-            "queued": data.get("queued") is True,
-        }
-        payload = data.get("payload")
-        if isinstance(payload, dict):
-            msg["payload"] = payload
-        return msg
-
-    @classmethod
-    def _messages_from_response(cls, parsed) -> list[dict]:
-        if isinstance(parsed, list):
-            raw_messages = parsed
-        elif isinstance(parsed, dict) and isinstance(parsed.get("messages"), list):
-            raw_messages = parsed["messages"]
-        else:
-            return []
-        messages = []
-        for item in raw_messages:
-            if isinstance(item, dict):
-                msg = cls._normalize_message(item)
-                if msg:
-                    messages.append(msg)
-        return messages
-
     # -- WS relay ------------------------------------------------------------
 
     def on_ws_message(self, data: dict):
         """Handle viewer_message from WS relay."""
         if self.handle_device_command(data):
             return
-        msg = self._normalize_message(data)
+        msg = normalize_message(data)
         if not msg:
             return
         with self._lock:
@@ -750,7 +711,7 @@ class MessageClient:
             if r.status_code != 200:
                 return []
             parsed = r.json()
-            msgs = self._messages_from_response(parsed)
+            msgs = messages_from_response(parsed)
         except Exception as exc:
             log.debug("获取待处理留言失败: %s", exc)
             return []
@@ -770,7 +731,7 @@ class MessageClient:
             self._cache = self._cache[:self.MAX_CACHED]
         for m in new_messages:
             self._notify(m)
-        return msgs
+        return plain_messages
 
     def handle_device_command(self, message: object) -> bool:
         """Handle device_command envelopes from WS or queued message payloads."""
@@ -820,7 +781,7 @@ class MessageClient:
                 params=params, timeout=15,
             )
             if r.status_code == 200:
-                return self._messages_from_response(r.json())
+                return messages_from_response(r.json())
         except Exception as exc:
             log.debug("获取留言历史失败: %s", exc)
         return []
@@ -855,7 +816,7 @@ class MessageClient:
             if r.status_code == 200:
                 with self._lock:
                     self._cache = [m for m in self._cache
-                                   if m.get("message_id") != message_id and m.get("id") != message_id]
+                                   if m.get("message_id") != message_id]
                 return True
         except Exception as exc:
             log.debug("删除留言失败: %s", exc)

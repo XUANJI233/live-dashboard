@@ -5,7 +5,40 @@ from __future__ import annotations
 
 def message_key(message: dict) -> str:
     """Return the stable id used to deduplicate UI messages."""
-    return _text(message.get("message_id")) or _text(message.get("id"))
+    return _text(message.get("message_id"))
+
+
+def normalize_message(data: dict) -> dict | None:
+    """Normalize current REST/WS message rows into the internal message shape."""
+    message_id = _text(data.get("message_id")) or _text(data.get("id"))
+    if not message_id:
+        return None
+    msg = {
+        "message_id": message_id,
+        "viewer_id": _text(data.get("viewer_id")),
+        "viewer_name": _text(data.get("viewer_name")),
+        "kind": _text(data.get("kind"), "text"),
+        "text": _text(data.get("text")),
+        "created_at": _text(data.get("created_at")),
+        "queued": data.get("queued") is True,
+    }
+    payload = data.get("payload")
+    if isinstance(payload, dict):
+        msg["payload"] = payload
+    return msg
+
+
+def messages_from_response(parsed: object) -> list[dict]:
+    """Extract the current JSON object response: {"messages": [...]}."""
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("messages"), list):
+        return []
+    messages = []
+    for item in parsed["messages"]:
+        if isinstance(item, dict):
+            msg = normalize_message(item)
+            if msg:
+                messages.append(msg)
+    return messages
 
 
 def message_sender(message: dict) -> str:
@@ -50,5 +83,5 @@ def merge_new_messages(existing: list[dict], incoming: list[dict], limit: int = 
     return merged[:limit]
 
 
-def _text(value: object) -> str:
-    return value.strip() if isinstance(value, str) else ""
+def _text(value: object, default: str = "") -> str:
+    return value.strip() if isinstance(value, str) else default

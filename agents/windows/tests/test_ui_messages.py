@@ -4,13 +4,42 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ui_messages import merge_new_messages, message_detail, message_key, message_sender, message_summary
+from ui_messages import (
+    merge_new_messages,
+    message_detail,
+    message_key,
+    message_sender,
+    message_summary,
+    messages_from_response,
+    normalize_message,
+)
 
 
 class UiMessageTests(unittest.TestCase):
-    def test_message_key_accepts_message_id_or_id(self):
+    def test_message_key_uses_internal_message_id(self):
         self.assertEqual(message_key({"message_id": "msg_1"}), "msg_1")
-        self.assertEqual(message_key({"id": "msg_2"}), "msg_2")
+        self.assertEqual(message_key({"id": "msg_2"}), "")
+
+    def test_normalize_message_maps_rest_id_to_internal_message_id(self):
+        msg = normalize_message({
+            "id": "msg_rest",
+            "viewer_id": "viewer_1",
+            "kind": "private",
+            "text": "hello",
+            "payload": {"x": True},
+        })
+
+        self.assertIsNotNone(msg)
+        assert msg is not None
+        self.assertEqual(msg["message_id"], "msg_rest")
+        self.assertNotIn("id", msg)
+        self.assertEqual(msg["payload"], {"x": True})
+
+    def test_messages_from_response_uses_current_object_shape(self):
+        messages = messages_from_response({"messages": [{"id": "msg_1", "text": "hello"}]})
+
+        self.assertEqual([item["message_id"] for item in messages], ["msg_1"])
+        self.assertEqual(messages_from_response([{"id": "legacy"}]), [])
 
     def test_message_summary_uses_sender_and_single_line_preview(self):
         summary = message_summary({

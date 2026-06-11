@@ -97,7 +97,6 @@ def execute_desktop_command(envelope: dict) -> tuple[dict, dict | None]:
     message = None
     if actions:
         message = {
-            "id": cid,
             "message_id": cid,
             "viewer_id": "__mcp__",
             "viewer_name": command_sender_name(envelope.get("created_by")),
