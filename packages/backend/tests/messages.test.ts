@@ -68,6 +68,60 @@ describe("visitor messages", () => {
     expect(rowCount(db, "visitor_messages", "id = 'msg_unsupported_target'")).toBe(0);
   });
 
+  test("flushes queued device commands through the message payload contract", async () => {
+    const { db } = await import("../src/db");
+    const { sendDeviceCommands } = await import("../src/services/device-control");
+    const { deliverQueuedMessages } = await import("../src/services/realtime-message-delivery");
+    const deviceId = "android-lsp-queued-command";
+    insertDeviceState(db, {
+      device_id: deviceId,
+      device_name: "Queued Command Phone",
+      platform: "android",
+      extra: JSON.stringify({ device: { profile: "android_lsp" } }),
+    });
+
+    const sent = sendDeviceCommands({
+      request_id: "req_queued_command_flush",
+      commands: [{
+        device_id: deviceId,
+        freeze_commands: ["com.video"],
+        say: "focus",
+      }],
+    });
+    const command = sent.commands[0]!;
+    const frames: Array<Record<string, any>> = [];
+
+    deliverQueuedMessages(deviceId, {
+      data: { role: "device", id: deviceId },
+      send(payload: string) {
+        frames.push(JSON.parse(payload));
+      },
+    } as any);
+
+    expect(command.delivery.status).toBe("queued");
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toMatchObject({
+      type: "viewer_message",
+      message_id: command.command_id,
+      viewer_id: "__mcp__",
+      queued: true,
+      payload: {
+        type: "device_command",
+        request_id: "req_queued_command_flush",
+        command_id: command.command_id,
+        payload: {
+          kind: "supervision",
+          freeze_commands: ["com.video"],
+          say: "focus",
+        },
+      },
+    });
+
+    const queued = db.prepare("SELECT delivered_at FROM device_messages WHERE id = ? AND device_id = ?")
+      .get(command.command_id, deviceId) as { delivered_at: string } | null;
+    expect(queued?.delivered_at).not.toBe("");
+  });
+
   test("keeps viewer websocket rate-limit errors correlated by message_id", async () => {
     const { realtimeWebSocket } = await import("../src/services/realtime");
     const frames: Array<{ type?: string; message_id?: string; error?: string }> = [];
@@ -154,6 +208,7 @@ function insertDeviceState(db: typeof import("../src/db").db, row: {
   device_id: string;
   device_name: string;
   platform: string;
+  extra?: string;
 }): void {
   db.prepare(`
     INSERT OR REPLACE INTO device_states (
@@ -168,8 +223,8 @@ function insertDeviceState(db: typeof import("../src/db").db, row: {
       extra,
       is_online
     )
-    VALUES (?, ?, ?, 'idle', 'Idle', '', '', ?, '{}', 1)
-  `).run(row.device_id, row.device_name, row.platform, new Date().toISOString());
+    VALUES (?, ?, ?, 'idle', 'Idle', '', '', ?, ?, 1)
+  `).run(row.device_id, row.device_name, row.platform, new Date().toISOString(), row.extra ?? "{}");
 }
 
 function rowCount(db: typeof import("../src/db").db, table: "device_messages" | "visitor_messages", where: string): number {
