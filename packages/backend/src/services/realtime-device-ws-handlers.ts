@@ -3,7 +3,7 @@ import { processReportPayload, ReportPayloadError } from "./device-status-handle
 import { requestSupervisionCheckFromReportPayload } from "./supervision-report-trigger";
 import { deviceCommandReceiptWsResponse, deviceCommandResultWsResponse } from "./supervision-ack";
 import { aiJobInputErrorResponse, submitAiJobFromClient } from "./ai-jobs";
-import { postDeviceReply } from "./realtime-message-actions";
+import { postDeviceReply } from "./realtime-device-reply-actions";
 import { realtimeSocketHub, sendJson } from "./realtime-socket-hub";
 import {
   cleanMessageId,

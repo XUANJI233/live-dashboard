@@ -1,6 +1,6 @@
 import { authenticateToken } from "../middleware/auth";
+import { postDeviceReply } from "./realtime-device-reply-actions";
 import {
-  postDeviceReply,
   postPrivateViewerMessage,
   postPublicViewerMessage,
 } from "./realtime-message-actions";

@@ -242,6 +242,63 @@ describe("visitor messages", () => {
     expect(rowCount(db, "visitor_messages", "id = 'reply_retry_once'")).toBe(1);
   });
 
+  test("keeps public device replies independent from private viewer targets", async () => {
+    const { db } = await import("../src/db");
+    const { realtimeWebSocket } = await import("../src/services/realtime");
+    const { handleDeviceMessageReply } = await import("../src/services/realtime-message-handlers");
+    insertDeviceState(db, {
+      device_id: "android-message-target",
+      device_name: "Android Message Target",
+      platform: "android",
+    });
+    insertVisitorMessage(db, {
+      id: "msg_original_public",
+      device_id: "__public__",
+      viewer_id: "viewer-public-reply",
+      kind: "public",
+      direction: "viewer",
+    });
+    const frames: Array<Record<string, any>> = [];
+    const viewerWs = {
+      data: { role: "viewer", id: "viewer-public-reply-observer" },
+      send(payload: string) {
+        frames.push(JSON.parse(payload));
+      },
+    };
+    realtimeWebSocket.open(viewerWs as any);
+
+    const response = await handleDeviceMessageReply(deviceMessageReplyRequest({
+      message_id: "msg_original_public",
+      reply_id: "reply_public_once",
+      text: "public reply",
+    }));
+    realtimeWebSocket.close(viewerWs as any);
+    const body = await response.json() as {
+      public?: boolean;
+      message_id?: string;
+      reply_id?: string;
+      in_reply_to?: string;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      public: true,
+      message_id: "pub_reply_public_once",
+      reply_id: "pub_reply_public_once",
+      in_reply_to: "msg_original_public",
+    });
+    expect(rowCount(db, "visitor_messages", "id = 'pub_reply_public_once' AND kind = 'public_reply'")).toBe(1);
+    expect(frames).toContainEqual(expect.objectContaining({
+      type: "public_message",
+      message_id: "pub_reply_public_once",
+      message: expect.objectContaining({
+        id: "pub_reply_public_once",
+        kind: "public_reply",
+        text: "public reply",
+      }),
+    }));
+  });
+
   test("keeps message management handlers wired to store and viewer notifications", async () => {
     const { db } = await import("../src/db");
     const { realtimeWebSocket } = await import("../src/services/realtime");
