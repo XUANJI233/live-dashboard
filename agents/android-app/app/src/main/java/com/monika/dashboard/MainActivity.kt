@@ -97,11 +97,15 @@ private fun MainContent(
     val useNavigationRail = configuration.screenWidthDp > configuration.screenHeightDp
 
     LaunchedEffect(navigationRequest) {
-        if (navigationRequest?.destination == MessageSocketManager.DESTINATION_MESSAGES) {
+        val request = navigationRequest
+        if (request?.destination == MessageSocketManager.DESTINATION_MESSAGES) {
             selectedTab = 1
-            selectedMessagesTab = when (navigationRequest.messagesSection) {
+            selectedMessagesTab = when (request.messagesSection) {
                 "public" -> 1
                 else -> 0
+            }
+            if (selectedMessagesTab != 0 || request.viewerId.isBlank()) {
+                onNavigationRequestConsumed(request.requestId)
             }
         }
     }
