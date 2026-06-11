@@ -1,10 +1,9 @@
 import type { ServerWebSocket } from "bun";
-import { processReportPayload, ReportPayloadError } from "./device-status-handler";
-import { requestSupervisionCheckFromReportPayload } from "./supervision-report-trigger";
 import { deviceCommandReceiptWsResponse, deviceCommandResultWsResponse } from "./supervision-ack";
 import { aiJobInputErrorResponse, submitAiJobFromClient } from "./ai-jobs";
 import { postDeviceReply } from "./realtime-device-reply-actions";
-import { realtimeSocketHub, sendJson } from "./realtime-socket-hub";
+import { handleDeviceStatusWsMessage } from "./realtime-device-status-ws-handler";
+import { sendJson } from "./realtime-socket-hub";
 import {
   cleanMessageId,
   cleanText,
@@ -33,7 +32,7 @@ export function handleDeviceWsMessage(ws: ServerWebSocket<WsData>, data: Record<
   }
 
   if (data.type === "device_status") {
-    handleDeviceStatus(ws, data);
+    handleDeviceStatusWsMessage(ws, data);
     return;
   }
 
@@ -101,58 +100,4 @@ function handleDeviceReply(ws: ServerWebSocket<WsData>, data: Record<string, unk
     in_reply_to: result.inReplyTo,
     status: "reply_sent",
   });
-}
-
-function handleDeviceStatus(ws: ServerWebSocket<WsData>, data: Record<string, unknown>): void {
-  const statusId = cleanMessageId(data.status_id);
-  realtimeSocketHub.markDevicePong(ws);
-
-  const payload = objectRecordOrNull(data.payload);
-  if (payload && ws.data.device) {
-    const receivedAt = new Date().toISOString();
-    let publicPayload: ReturnType<typeof processReportPayload> = null;
-    try {
-      publicPayload = processReportPayload(payload, ws.data.device);
-      requestSupervisionCheckFromReportPayload(payload, ws.data.device);
-      syncSupervisionPolicyForReportedDevice(ws.data.id);
-    } catch (e) {
-      if (e instanceof ReportPayloadError) {
-        sendJson(ws, { type: "error", error: e.code, message: e.message });
-        return;
-      }
-      console.error("[ws] device_status processing error:", e instanceof Error ? e.message : "status processing failed");
-      sendJson(ws, { type: "error", error: "status_processing_failed" });
-      return;
-    }
-    if (publicPayload) {
-      realtimeSocketHub.broadcastViewerPayload({
-        type: "device_update",
-        device_id: ws.data.device.device_id,
-        payload: publicPayload,
-        timestamp: receivedAt,
-      });
-    }
-  }
-
-  sendJson(ws, {
-    type: "ack",
-    status: "status_received",
-    ...(statusId ? { status_id: statusId } : {}),
-  });
-}
-
-function syncSupervisionPolicyForReportedDevice(deviceId: string): void {
-  void import("./supervision-policy-control")
-    .then(({ syncCurrentSupervisionPolicyForDevice }) => {
-      syncCurrentSupervisionPolicyForDevice(deviceId);
-    })
-    .catch((e) => {
-      console.error("[ws] supervision policy sync failed:", e instanceof Error ? e.message : "sync failed");
-    });
-}
-
-function objectRecordOrNull(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
 }

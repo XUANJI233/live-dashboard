@@ -100,6 +100,61 @@ describe("device-status-handler", () => {
     expect(state?.extra).not.toContain("heartbeat_only");
   });
 
+  test("websocket device_status returns ack and broadcasts public device update", async () => {
+    const { db } = await import("../src/db");
+    const { realtimeWebSocket } = await import("../src/services/realtime");
+    const deviceId = "ws-status-phone";
+    const deviceFrames: Array<Record<string, any>> = [];
+    const viewerFrames: Array<Record<string, any>> = [];
+    const deviceWs = {
+      data: {
+        role: "device",
+        id: deviceId,
+        device: { device_id: deviceId, device_name: "WS Status Phone", platform: "android" },
+      },
+      send(payload: string) {
+        deviceFrames.push(JSON.parse(payload));
+      },
+    };
+    const viewerWs = {
+      data: { role: "viewer", id: "viewer-ws-status" },
+      send(payload: string) {
+        viewerFrames.push(JSON.parse(payload));
+      },
+    };
+
+    realtimeWebSocket.open(viewerWs as any);
+    realtimeWebSocket.open(deviceWs as any);
+    realtimeWebSocket.message(deviceWs as any, JSON.stringify({
+      type: "device_status",
+      status_id: "status_ws_1",
+      payload: {
+        app_id: "com.reader",
+        app_name: "Reader",
+        window_title: "Reading",
+        extra: { device: { network_type: "Wi-Fi" } },
+      },
+    }));
+    realtimeWebSocket.close(deviceWs as any);
+    realtimeWebSocket.close(viewerWs as any);
+
+    expect(deviceFrames.at(-1)).toMatchObject({
+      type: "ack",
+      status: "status_received",
+      status_id: "status_ws_1",
+    });
+    expect(viewerFrames).toContainEqual(expect.objectContaining({
+      type: "device_update",
+      device_id: deviceId,
+      payload: expect.objectContaining({
+        app_id: "com.reader",
+      }),
+    }));
+    const state = db.prepare("SELECT app_id FROM device_states WHERE device_id = ?")
+      .get(deviceId) as { app_id: string } | undefined;
+    expect(state?.app_id).toBe("com.reader");
+  });
+
   test("sleeping Android devices use the extended offline threshold", async () => {
     const { processReportPayload } = await import("../src/services/device-status-handler");
     const { db, markOfflineDevices } = await import("../src/db");
