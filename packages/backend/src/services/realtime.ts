@@ -16,6 +16,28 @@ import {
   viewerWsRateLimit,
 } from "./realtime-rate-limit";
 import {
+  blockViewer,
+  deleteMessageForDevice,
+  deleteViewerMessagesForDevice,
+  deviceMessageHistory,
+  hasMessageTargetDevice,
+  isPublicMessageThread,
+  isViewerBlocked,
+  markMessageDelivered,
+  markMessageReplied,
+  markMessagesDelivered,
+  messageTargetDevices,
+  pendingMessages,
+  publicMessagesByWindow,
+  queueMessage,
+  queuedMessageWasDelivered,
+  recentPublicMessages,
+  recordMessage,
+  setViewerRemark,
+  unblockViewer,
+  viewerMessageHistory,
+} from "./realtime-message-store";
+import {
   cleanDeviceId,
   cleanKind,
   cleanMessageId,
@@ -27,184 +49,16 @@ import {
   publicRecentHours,
   readMessageJson,
   serializedMessagePayload,
-  type MessageDirection,
-  type StoredMessageKind,
 } from "./message-protocol";
 import type { WsData } from "./realtime-types";
 import type { ServerWebSocket } from "bun";
 
 export type { WsData } from "./realtime-types";
 
-const MESSAGE_TTL_MINUTES = 30;
-
 // ── Prepared statement: mark a single device offline immediately ──
 const markDeviceOffline = db.prepare(`
   UPDATE device_states SET is_online = 0
   WHERE device_id = ? AND is_online = 1
-`);
-
-const insertQueuedMessage = db.prepare(`
-  INSERT INTO device_messages (id, device_id, viewer_id, text, payload, expires_at)
-  VALUES (?, ?, ?, ?, ?, datetime('now', ?))
-`);
-
-const getPendingMessages = db.prepare(`
-  SELECT dm.id, dm.viewer_id, dm.text, dm.payload, dm.created_at,
-    COALESCE(vm.viewer_name, '') AS viewer_name,
-    COALESCE(vm.kind, 'private') AS kind
-  FROM device_messages dm
-  LEFT JOIN visitor_messages vm ON vm.id = dm.id
-  WHERE dm.device_id = ?
-    AND dm.delivered_at = ''
-    AND datetime(dm.expires_at) >= datetime('now')
-  ORDER BY dm.created_at ASC
-  LIMIT 20
-`);
-
-const markMessageDelivered = db.prepare(`
-  UPDATE device_messages
-  SET delivered_at = datetime('now')
-  WHERE id = ? AND device_id = ?
-`);
-
-const getQueuedMessageDelivery = db.prepare(`
-  SELECT delivered_at
-  FROM device_messages
-  WHERE id = ? AND device_id = ?
-  LIMIT 1
-`);
-
-const markMessagesDelivered = db.transaction((deviceId: string, ids: string[]) => {
-  for (const id of ids) markMessageDelivered.run(id, deviceId);
-});
-
-const markMessageReplied = db.prepare(`
-  UPDATE device_messages
-  SET replied_at = datetime('now')
-  WHERE id = ?
-`);
-
-const isViewerBlockedStmt = db.prepare(`
-  SELECT 1
-  FROM blocked_viewers
-  WHERE device_id = ? AND viewer_id = ?
-  LIMIT 1
-`);
-
-const blockViewerStmt = db.prepare(`
-  INSERT INTO blocked_viewers (device_id, viewer_id)
-  VALUES (?, ?)
-  ON CONFLICT(device_id, viewer_id) DO UPDATE SET blocked_at = datetime('now')
-`);
-
-const unblockViewerStmt = db.prepare(`
-  DELETE FROM blocked_viewers
-  WHERE device_id = ? AND viewer_id = ?
-`);
-
-const insertVisitorMessage = db.prepare(`
-  INSERT INTO visitor_messages (id, device_id, viewer_id, viewer_name, kind, direction, text, created_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT(id) DO NOTHING
-`);
-
-const deleteVisitorMessage = db.prepare(`
-  DELETE FROM visitor_messages
-  WHERE id = ?
-    AND (device_id = ? OR kind IN ('public', 'public_reply'))
-`);
-
-const deleteVisitorMessagesByViewer = db.prepare(`
-  DELETE FROM visitor_messages
-  WHERE device_id = ? AND viewer_id = ? AND kind IN ('private', 'reply')
-`);
-
-const getVisitorMessageForDelete = db.prepare(`
-  SELECT id, device_id, viewer_id, kind
-  FROM visitor_messages
-  WHERE id = ?
-  LIMIT 1
-`);
-
-const deleteDeviceMessage = db.prepare(`
-  DELETE FROM device_messages
-  WHERE id = ?
-`);
-
-const deleteDeviceMessagesByViewer = db.prepare(`
-  DELETE FROM device_messages
-  WHERE device_id = ? AND viewer_id = ?
-`);
-
-const upsertViewerRemark = db.prepare(`
-  INSERT INTO viewer_remarks (device_id, viewer_id, remark)
-  VALUES (?, ?, ?)
-  ON CONFLICT(device_id, viewer_id) DO UPDATE SET
-    remark = excluded.remark,
-    updated_at = datetime('now')
-`);
-
-const getDeviceMessageHistory = db.prepare(`
-  SELECT m.id, m.device_id, m.viewer_id, m.viewer_name, m.kind, m.direction, m.text, m.created_at,
-         COALESCE(r.remark, '') as viewer_remark
-  FROM visitor_messages m
-  LEFT JOIN viewer_remarks r ON m.device_id = r.device_id AND m.viewer_id = r.viewer_id
-  WHERE (m.device_id = ? OR m.device_id = '__broadcast__')
-    AND m.kind IN ('private', 'reply')
-    AND (? = '' OR datetime(m.created_at) > datetime(?))
-  ORDER BY m.created_at ASC
-  LIMIT 500
-`);
-
-const getViewerMessageHistory = db.prepare(`
-  SELECT id, device_id, viewer_id, viewer_name, kind, direction, text, created_at
-  FROM visitor_messages
-  WHERE viewer_id = ?
-    AND (
-      (direction = 'device' AND kind = 'reply')
-      OR (direction = 'viewer' AND kind = 'private')
-    )
-    AND (? = '' OR datetime(created_at) > datetime(?))
-  ORDER BY created_at ASC
-  LIMIT 100
-`);
-
-const getPublicMessagesByWindow = db.prepare(`
-  SELECT id, device_id, viewer_id, viewer_name, text, created_at, kind
-  FROM visitor_messages
-  WHERE (kind = 'public' OR kind = 'public_reply')
-    AND created_at >= ?
-    AND created_at < ?
-  ORDER BY created_at ASC
-  LIMIT 200
-`);
-
-const getRecentPublicMessages = db.prepare(`
-  SELECT id, device_id, viewer_id, viewer_name, text, created_at, kind
-  FROM (
-    SELECT id, device_id, viewer_id, viewer_name, text, created_at, kind
-    FROM visitor_messages
-    WHERE (kind = 'public' OR kind = 'public_reply')
-      AND datetime(created_at) >= datetime(?)
-    ORDER BY datetime(created_at) DESC
-    LIMIT 200
-  )
-  ORDER BY datetime(created_at) ASC
-`);
-
-const getMessageTargetDevices = db.prepare(`
-  SELECT device_id
-  FROM device_states
-  WHERE platform <> 'zepp'
-  ORDER BY last_seen_at DESC
-  LIMIT 20
-`);
-
-const getMessageTargetDevice = db.prepare(`
-  SELECT device_id
-  FROM device_states
-  WHERE device_id = ? AND platform <> 'zepp'
-  LIMIT 1
 `);
 
 setAiJobNotifier((job) => {
@@ -227,45 +81,10 @@ function broadcastPublicMessageDeleted(messageId: string) {
   realtimeSocketHub.broadcastViewerPayload({ type: "public_message_deleted", message_id: messageId });
 }
 
-function isViewerBlocked(deviceId: string, viewerId: string): boolean {
-  return Boolean(isViewerBlockedStmt.get(deviceId, viewerId));
-}
-
-function recordMessage(
-  id: string,
-  deviceId: string,
-  viewerId: string,
-  viewerName: string,
-  kind: StoredMessageKind,
-  direction: MessageDirection,
-  text: string,
-  createdAt = new Date().toISOString(),
-): boolean {
-  const result = insertVisitorMessage.run(id, deviceId, viewerId, viewerName, kind, direction, text, createdAt);
-  return result.changes > 0;
-}
-
-function queueMessage(deviceId: string, viewerId: string, text: string, messageId: string, payloadText = ""): boolean {
-  try {
-    const result = insertQueuedMessage.run(
-      messageId,
-      deviceId,
-      viewerId,
-      text,
-      payloadText,
-      `+${MESSAGE_TTL_MINUTES} minutes`
-    );
-    return result.changes > 0;
-  } catch {
-    // Duplicate client-supplied message ids are ignored; the sender still gets an ack.
-    return false;
-  }
-}
-
 function messageTargets(preferredDeviceId = ""): string[] {
   const ids = new Set<string>();
   if (preferredDeviceId && supportsDeviceMessages(preferredDeviceId)) ids.add(preferredDeviceId);
-  for (const row of getMessageTargetDevices.all() as { device_id: string }[]) {
+  for (const row of messageTargetDevices()) {
     if (row.device_id) ids.add(row.device_id);
   }
   for (const id of realtimeSocketHub.onlineMessageDeviceIds()) {
@@ -277,7 +96,7 @@ function messageTargets(preferredDeviceId = ""): string[] {
 function supportsDeviceMessages(deviceId: string): boolean {
   const online = realtimeSocketHub.onlineDeviceSupportsMessages(deviceId);
   if (online !== null) return online;
-  return !!getMessageTargetDevice.get(deviceId);
+  return hasMessageTargetDevice(deviceId);
 }
 
 function deliverViewerMessage(
@@ -293,8 +112,7 @@ function deliverViewerMessage(
   const payloadText = serializedMessagePayload(payload);
   const inserted = queueMessage(targetDeviceId, viewerId, text, messageId, payloadText);
   if (!inserted) {
-    const queued = getQueuedMessageDelivery.get(messageId, targetDeviceId) as { delivered_at?: string } | null;
-    if (queued?.delivered_at) return "sent";
+    if (queuedMessageWasDelivered(messageId, targetDeviceId)) return "sent";
   }
 
   const deviceWs = realtimeSocketHub.getDeviceSocket(targetDeviceId);
@@ -312,7 +130,7 @@ function deliverViewerMessage(
     if (parsedPayload) message.payload = parsedPayload;
     try {
       sendJson(deviceWs, message);
-      markMessageDelivered.run(messageId, targetDeviceId);
+      markMessageDelivered(messageId, targetDeviceId);
       return "sent";
     } catch {
       realtimeSocketHub.removeDeviceById(targetDeviceId);
@@ -352,15 +170,7 @@ export function deliverDeviceCommandMessage(input: {
 }
 
 function deliverQueuedMessages(deviceId: string, ws: ServerWebSocket<WsData>) {
-  const rows = getPendingMessages.all(deviceId) as {
-    id: string;
-    viewer_id: string;
-    viewer_name: string;
-    kind: string;
-    text: string;
-    payload: string;
-    created_at: string;
-  }[];
+  const rows = pendingMessages(deviceId);
   if (rows.length === 0) return;
 
   // Mark messages as delivered BEFORE sending to avoid race condition.
@@ -563,15 +373,12 @@ export const realtimeWebSocket = {
       const messageId = cleanMessageId(data.message_id);
       const replyId = cleanMessageId(data.reply_id) || crypto.randomUUID();
       const createdAt = new Date().toISOString();
-      const original = messageId
-        ? db.prepare("SELECT kind FROM visitor_messages WHERE id = ?").get(messageId) as { kind: string } | null
-        : null;
-      const isPublicThread = original?.kind === "public" || original?.kind === "public_reply";
+      const isPublicThread = messageId ? isPublicMessageThread(messageId) : false;
       if (!text || (!isPublicThread && !targetViewerId)) {
         sendJson(ws, { type: "error", message_id: messageId, error: "target_viewer_id and text required" });
         return;
       }
-      if (messageId) markMessageReplied.run(messageId);
+      if (messageId) markMessageReplied(messageId);
 
       if (isPublicThread) {
         const publicReplyId = "pub_" + replyId;
@@ -697,15 +504,7 @@ export function handleDeviceMessages(req: Request): Response {
   const device = authenticateToken(req.headers.get("authorization"));
   if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
-  const rows = getPendingMessages.all(device.device_id) as {
-    id: string;
-    viewer_id: string;
-    viewer_name: string;
-    kind: string;
-    text: string;
-    payload: string;
-    created_at: string;
-  }[];
+  const rows = pendingMessages(device.device_id);
   if (rows.length > 0) {
     markMessagesDelivered(device.device_id, rows.map((r) => r.id));
   }
@@ -733,7 +532,7 @@ export function handleDeviceMessageHistory(req: Request): Response {
   const url = new URL(req.url);
   const since = url.searchParams.get("since") || "";
   const safeSince = since && !isNaN(new Date(since).getTime()) ? new Date(since).toISOString() : "";
-  const rows = getDeviceMessageHistory.all(device.device_id, safeSince, safeSince);
+  const rows = deviceMessageHistory(device.device_id, safeSince);
   return Response.json({ messages: rows });
 }
 
@@ -747,7 +546,7 @@ export function handleViewerMessageHistory(req: Request): Response {
   const since = sinceParam && !isNaN(new Date(sinceParam).getTime())
     ? new Date(sinceParam).toISOString()
     : new Date(Date.now() - 86400000).toISOString();
-  const rows = getViewerMessageHistory.all(viewer.viewerId, since, since);
+  const rows = viewerMessageHistory(viewer.viewerId, since);
   return noStore(Response.json({ messages: rows, since }), ["viewer-history", `viewer-${viewer.viewerId}`]);
 }
 
@@ -762,15 +561,12 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
   const viewerId = typeof body.target_viewer_id === "string" ? body.target_viewer_id : "";
   const messageId = cleanMessageId(body.message_id);
   const text = cleanText(body.text);
-  const original = messageId
-    ? db.prepare("SELECT kind FROM visitor_messages WHERE id = ?").get(messageId) as { kind: string } | null
-    : null;
-  const isPublicThread = original?.kind === "public" || original?.kind === "public_reply";
+  const isPublicThread = messageId ? isPublicMessageThread(messageId) : false;
   if (!text || (!isPublicThread && !viewerId)) {
     return Response.json({ error: "target_viewer_id and text required" }, { status: 400 });
   }
 
-  if (messageId) markMessageReplied.run(messageId);
+  if (messageId) markMessageReplied(messageId);
   const replyId = cleanMessageId(body.reply_id) || crypto.randomUUID();
   const createdAt = new Date().toISOString();
 
@@ -938,7 +734,7 @@ export function handlePublicMessages(req: Request): Response {
   if (recentParam === "1" || recentParam === "true") {
     const hours = publicRecentHours(url.searchParams.get("hours"));
     const since = new Date(Date.now() - hours * 60 * 60_000).toISOString();
-    const rows = getRecentPublicMessages.all(since);
+    const rows = recentPublicMessages(since);
     return noStore(Response.json({ recent: true, hours, messages: rows }), ["public-messages", "public-messages-recent"]);
   }
 
@@ -955,7 +751,7 @@ export function handlePublicMessages(req: Request): Response {
     const start = new Date(Date.UTC(year, month, day, hour, minute));
     if (isNaN(start.getTime())) return Response.json({ error: "invalid slot" }, { status: 400 });
     const end = new Date(start.getTime() + 10 * 60_000);
-    const rows = getPublicMessagesByWindow.all(start.toISOString(), end.toISOString());
+    const rows = publicMessagesByWindow(start.toISOString(), end.toISOString());
     const currentSlot = slotParam === currentMessageSlot();
     const response = Response.json({ slot: slotParam, messages: rows });
     if (currentSlot) return noStore(response, ["public-messages", `public-messages-slot-${slotParam}`]);
@@ -978,7 +774,7 @@ export function handlePublicMessages(req: Request): Response {
   const start = new Date(Date.UTC(year, month, day, hour));
   if (isNaN(start.getTime())) return Response.json({ error: "invalid window" }, { status: 400 });
   const end = new Date(start.getTime() + 60 * 60_000);
-  const rows = getPublicMessagesByWindow.all(start.toISOString(), end.toISOString());
+  const rows = publicMessagesByWindow(start.toISOString(), end.toISOString());
   const currentWindow = windowParam === currentHourWindow();
   const response = Response.json({ window: windowParam, messages: rows });
   if (currentWindow) return noStore(response, ["public-messages", `public-messages-${windowParam}`]);
@@ -1002,7 +798,7 @@ export async function handleBlockViewer(req: Request): Promise<Response> {
     return Response.json({ error: "viewer_id required" }, { status: 400 });
   }
 
-  blockViewerStmt.run(device.device_id, viewerId);
+  blockViewer(device.device_id, viewerId);
   return Response.json({ ok: true });
 }
 
@@ -1019,7 +815,7 @@ export async function handleUnblockViewer(req: Request): Promise<Response> {
     return Response.json({ error: "viewer_id required" }, { status: 400 });
   }
 
-  unblockViewerStmt.run(device.device_id, viewerId);
+  unblockViewer(device.device_id, viewerId);
   return Response.json({ ok: true });
 }
 
@@ -1036,17 +832,10 @@ export async function handleDeleteMessage(req: Request): Promise<Response> {
     return Response.json({ error: "message_id required" }, { status: 400 });
   }
 
-  const existing = getVisitorMessageForDelete.get(messageId) as {
-    id: string;
-    device_id: string;
-    viewer_id: string;
-    kind: string;
-  } | null;
+  const { existing, deleted } = deleteMessageForDevice(messageId, device.device_id);
   if (!existing) return Response.json({ ok: true, deleted: false });
 
-  const result = deleteVisitorMessage.run(messageId, device.device_id);
-  if (result.changes > 0) {
-    deleteDeviceMessage.run(messageId);
+  if (deleted) {
     if (existing.kind === "public" || existing.kind === "public_reply") {
       broadcastPublicMessageDeleted(messageId);
     } else if (existing.viewer_id) {
@@ -1057,7 +846,7 @@ export async function handleDeleteMessage(req: Request): Promise<Response> {
       });
     }
   }
-  return Response.json({ ok: true, deleted: result.changes > 0 });
+  return Response.json({ ok: true, deleted });
 }
 
 export async function handleDeleteViewerMessages(req: Request): Promise<Response> {
@@ -1073,15 +862,14 @@ export async function handleDeleteViewerMessages(req: Request): Promise<Response
     return Response.json({ error: "viewer_id required" }, { status: 400 });
   }
 
-  const result = deleteVisitorMessagesByViewer.run(device.device_id, viewerId);
-  deleteDeviceMessagesByViewer.run(device.device_id, viewerId);
-  if (result.changes > 0) {
+  const deleted = deleteViewerMessagesForDevice(device.device_id, viewerId);
+  if (deleted > 0) {
     realtimeSocketHub.sendToViewer(viewerId, {
       type: "viewer_messages_deleted",
       device_id: device.device_id,
     });
   }
-  return Response.json({ ok: true, deleted: result.changes });
+  return Response.json({ ok: true, deleted });
 }
 
 export async function handleSetRemark(req: Request): Promise<Response> {
@@ -1099,7 +887,7 @@ export async function handleSetRemark(req: Request): Promise<Response> {
     return Response.json({ error: "viewer_id required" }, { status: 400 });
   }
 
-  upsertViewerRemark.run(device.device_id, viewerId, remark);
+  setViewerRemark(device.device_id, viewerId, remark);
   return Response.json({ ok: true });
 }
 
