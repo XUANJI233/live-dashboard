@@ -66,6 +66,8 @@
 
 ## API 接口
 
+共享 ID、Header、WebSocket 帧、设备命令和 AI job 字段以 `main` 分支 `docs/API_PROTOCOL_CONTRACTS.md` 为准；Android 侧不要新增同义字段或 camelCase 兼容字段。
+
 | 方法 | 路径 | 用途 | 调用者 |
 |------|------|------|--------|
 | POST | `/api/report` | 心跳上报（电量 + 在线状态） | HeartbeatWorker |
