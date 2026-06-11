@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="LiveDashboardAgent.Pages.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer>
+        <Grid Padding="{StaticResource PagePadding}" RowSpacing="18">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Spacing="6">
+                <TextBlock Text="设置" Style="{StaticResource PageTitleTextStyle}" />
+                <TextBlock x:Name="RegistryPathText" Style="{StaticResource PageSubtitleTextStyle}" />
+            </StackPanel>
+
+            <InfoBar
+                x:Name="StatusBar"
+                Grid.Row="1"
+                IsOpen="False"
+                IsClosable="True" />
+
+            <Border Grid.Row="2" Style="{StaticResource CardBorderStyle}">
+                <StackPanel Spacing="18">
+                    <TextBlock Text="服务器" Style="{StaticResource CardTitleTextStyle}" />
+                    <TextBox
+                        x:Name="ServerUrlBox"
+                        Header="后端地址"
+                        PlaceholderText="https://your-domain.com" />
+                    <PasswordBox
+                        x:Name="TokenBox"
+                        Header="设备密钥"
+                        PasswordRevealMode="Peek" />
+                </StackPanel>
+            </Border>
+
+            <Grid Grid.Row="3" ColumnSpacing="16" RowSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Border Style="{StaticResource CardBorderStyle}">
+                    <StackPanel Spacing="14">
+                        <TextBlock Text="采集" Style="{StaticResource CardTitleTextStyle}" />
+                        <NumberBox
+                            x:Name="IntervalBox"
+                            Header="上报间隔"
+                            Minimum="1"
+                            Maximum="300"
+                            SmallChange="1"
+                            SpinButtonPlacementMode="Inline" />
+                        <NumberBox
+                            x:Name="HeartbeatBox"
+                            Header="心跳间隔"
+                            Minimum="10"
+                            Maximum="600"
+                            SmallChange="5"
+                            SpinButtonPlacementMode="Inline" />
+                        <NumberBox
+                            x:Name="IdleBox"
+                            Header="AFK 判定"
+                            Minimum="30"
+                            Maximum="3600"
+                            SmallChange="30"
+                            SpinButtonPlacementMode="Inline" />
+                        <ToggleSwitch x:Name="EnableLogSwitch" Header="输出日志" />
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="1" Style="{StaticResource CardBorderStyle}">
+                    <StackPanel Spacing="14">
+                        <TextBlock Text="启动" Style="{StaticResource CardTitleTextStyle}" />
+                        <TextBlock x:Name="ModeText" FontSize="18" />
+                        <TextBlock x:Name="AutostartStatusText" Style="{StaticResource MutedTextStyle}" />
+                        <Grid ColumnSpacing="10" RowSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Button Content="保存配置" Click="Save_Click" Style="{StaticResource AccentButtonStyle}" HorizontalAlignment="Stretch" />
+                            <Button x:Name="InstallButton" Grid.Column="1" Content="安装到当前用户" Click="Install_Click" HorizontalAlignment="Stretch" />
+                            <Button Grid.Row="1" Content="切换自启动" Click="ToggleAutostart_Click" HorizontalAlignment="Stretch" />
+                            <Button Grid.Row="1" Grid.Column="1" Content="重新载入" Click="Reload_Click" HorizontalAlignment="Stretch" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Grid>
+    </ScrollViewer>
+</Page>

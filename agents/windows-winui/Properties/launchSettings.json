@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "LiveDashboardAgent (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "LiveDashboardAgent (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

@@ -9,6 +9,9 @@ dist/
 .env
 .env.local
 agents/windows/config.json
+agents/windows-winui/bin/
+agents/windows-winui/obj/
+agents/windows-winui/dist/
 agents/android/config.sh
 agents/macos/config.json
 agents/macos/agent.log

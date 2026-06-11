@@ -36,6 +36,8 @@
 
 将 `config.json` 放在 `.exe` 同目录下即可运行。
 
+WinUI 3 迁移工作位于 `agents/windows-winui`。该目录先承载新的原生 Windows UI、注册表配置、自启动清理和便携/当前用户安装双模式构建；当前 Python Agent 仍保留在本目录，直到采集和 API 运行时逐步迁移完成。
+
 ### Windows 代码签名
 
 Release 版优先使用可信 Authenticode 证书签名，避免 PyInstaller 单文件程序被 SmartScreen 或杀毒软件更容易误判。没有付费/可信证书时，可以显式选择自签名或跳过签名；这两种方式都不等于可信发布者。

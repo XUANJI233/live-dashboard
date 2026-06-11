@@ -7,6 +7,7 @@ on:
       - "windows-agent-*"
     paths:
       - "agents/windows/**"
+      - "agents/windows-winui/**"
       - ".github/workflows/windows-agent.yml"
   workflow_dispatch:
     inputs:
@@ -51,6 +52,10 @@ jobs:
 
       - name: Run tests
         run: python -m unittest discover -s tests -v
+
+      - name: Build WinUI shell
+        working-directory: agents/windows-winui
+        run: dotnet build LiveDashboardAgent.csproj -c Debug -p:Platform=x64
 
       - name: Build and sign Windows agent
         shell: cmd
