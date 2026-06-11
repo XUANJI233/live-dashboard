@@ -66,7 +66,7 @@ const STATIC_ROOT = resolve(process.env.STATIC_DIR || "./public");
 
 import { hmacTitle } from "./db";
 
-const REQUIRE_EDGE = /^(1|true|yes)$/i.test(process.env.REQUIRE_EDGE || "");
+const REQUIRE_EDGE = /^true$/i.test(process.env.REQUIRE_EDGE || "");
 
 // Cache realpath of static root at startup (avoids per-request sync IO)
 let REAL_STATIC_ROOT = "";
@@ -414,7 +414,7 @@ function isPushSubscriptionBody(value: unknown): value is { endpoint: string; ke
 }
 
 // ── 启动信息 ──
-const cdnMode = /^(1|true|yes)$/i.test(process.env.CDN_MODE || "");
+const edgeMode = /^true$/i.test(process.env.EDGE_MODE || "");
 const nsfwDisabled = process.env.NSFW_FILTER_DISABLED === "true";
 const messageBoard = process.env.MESSAGE_BOARD_ENABLED !== "false";
 const privateChat = process.env.PRIVATE_CHAT_ENABLED !== "false";
@@ -461,7 +461,8 @@ console.log("  │" + padR("  Live Dashboard 启动", W + 2) + "│");
 console.log("  ├" + "─".repeat(W + 2) + "┤");
 console.log(line("地址:     ", `http://localhost:${server.port}`));
 if (siteTitle) console.log(line("站点:     ", siteTitle));
-console.log(line("模式:     ", cdnMode ? `${G}CDN 加速${R}` : "直连"));
+console.log(line("边缘函数: ", edgeMode ? `${G}信任签名请求${R}` : "关闭"));
+console.log(line("强制边缘: ", REQUIRE_EDGE ? `${G}开启${R}` : "关闭"));
 console.log(line("数据库:   ", dbPath));
 console.log(line("静态文件: ", staticEnabled ? "已加载" : `${Y}未找到${R}`));
 console.log("  ├" + "─".repeat(W + 2) + "┤");
@@ -516,7 +517,7 @@ if (hashSecretLen === 0) tips.push("HASH_SECRET 未设置，服务无法启动")
 if (hashSecretLen > 0 && hashSecretLen < 64) tips.push("HASH_SECRET 较短，建议使用 openssl rand -hex 32 生成");
 if (!displayName) tips.push("设置 DISPLAY_NAME 自定义显示名称");
 if (nsfwDisabled) tips.push("NSFW 过滤已关闭，敏感内容将直接显示");
-if (!cdnMode) tips.push("设置 CDN_MODE=true 启用 CDN 加速");
+if (REQUIRE_EDGE && !edgeMode) tips.push("REQUIRE_EDGE 已开启，建议同时设置 EDGE_MODE=true 信任边缘已验证请求");
 if (invalidCount > 0) tips.push("检查 DEVICE_TOKEN 格式: 密钥:设备ID:显示名:平台");
 if (powDisabled) tips.push("PoW 验证已关闭，任何人都可以获取访客令牌");
 if (tlsCheckDisabled) tips.push("TLS 检查已关闭，机器人请求不会被拦截");

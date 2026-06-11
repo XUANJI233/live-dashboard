@@ -1,6 +1,6 @@
 const POW_DISABLED = /^(true|yes)$/i.test(process.env.POW_DISABLED || "");
 const TLS_CHECK_DISABLED = /^(true|yes)$/i.test(process.env.TLS_CHECK_DISABLED || "");
-const EDGE_MODE = /^(true|yes)$/i.test(process.env.EDGE_MODE || "");
+const EDGE_MODE = /^true$/i.test(process.env.EDGE_MODE || "");
 
 import { issueViewerToken, issuePowChallenge, verifyPowSolution, getTlsFingerprint, isLocalIp, edgeViewerIdentity } from "../services/viewer-auth";
 import { noStore } from "../services/cdn";

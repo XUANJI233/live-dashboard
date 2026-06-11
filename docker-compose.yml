@@ -1,9 +1,3 @@
-  # Optional: CORS allowed origins (comma-separated), empty = deny all cross-origin for write endpoints
-  - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
-  # Optional: AI daily summary
-  - AI_API_URL=${AI_API_URL:-}
-  - AI_API_KEY=${AI_API_KEY:-}
-  - AI_MODEL=${AI_MODEL:-gpt-4o-mini}
 services:
   dashboard:
     build: .
@@ -20,13 +14,17 @@ services:
       - SITE_TITLE=${SITE_TITLE}
       - SITE_DESC=${SITE_DESC}
       - SITE_FAVICON=${SITE_FAVICON}
-      - CDN_MODE=${CDN_MODE:-true}
+      - EDGE_MODE=${EDGE_MODE:-false}
+      - REQUIRE_EDGE=${REQUIRE_EDGE:-false}
       - NSFW_FILTER_DISABLED=${NSFW_FILTER_DISABLED:-false}
       - POW_DISABLED=${POW_DISABLED:-false}
       - TLS_CHECK_DISABLED=${TLS_CHECK_DISABLED:-false}
-        - REQUIRE_EDGE=${REQUIRE_EDGE:-false}
       - MESSAGE_BOARD_ENABLED=${MESSAGE_BOARD_ENABLED:-true}
       - PRIVATE_CHAT_ENABLED=${PRIVATE_CHAT_ENABLED:-true}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
+      - AI_API_URL=${AI_API_URL:-}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_MODEL=${AI_MODEL:-gpt-4o-mini}
     volumes:
       - dashboard_data:/data
     networks:

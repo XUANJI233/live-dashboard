@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { currentHourWindow } from "../src/services/cdn";
+import { currentHourWindow, withCdnHeaders } from "../src/services/cdn";
 
 describe("cdn", () => {
   test("currentHourWindow returns 10-char UTC hour", () => {
@@ -25,5 +25,13 @@ describe("cdn", () => {
     const result = currentHourWindow();
     expect(result).toMatch(/^\d{10}$/);
     expect(result.length).toBe(10);
+  });
+
+  test("cache headers always include shared-cache directives and tags", () => {
+    const response = withCdnHeaders(new Response("ok"), ["config"], 60);
+
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=60, s-maxage=60, stale-while-revalidate=30");
+    expect(response.headers.get("Cache-Tag")).toBe("config");
+    expect(response.headers.get("ESA-Cache-Tag")).toBe("config");
   });
 });

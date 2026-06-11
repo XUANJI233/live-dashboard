@@ -1,9 +1,3 @@
-const CDN_MODE = /^(1|true|yes)$/i.test(process.env.CDN_MODE || "");
-
-export function isCdnMode(): boolean {
-  return CDN_MODE;
-}
-
 function applyCacheTags(headers: Headers, tags: string[]) {
   if (tags.length > 0) {
     const joined = tags.join(",");
@@ -15,13 +9,9 @@ function applyCacheTags(headers: Headers, tags: string[]) {
 export function withCdnHeaders(response: Response, tags: string[], maxAgeSeconds: number): Response {
   const headers = new Headers(response.headers);
   applyCacheTags(headers, tags);
-  // Browser cache always applies
-  headers.set("Cache-Control", `public, max-age=${maxAgeSeconds}, stale-while-revalidate=30`);
+  // Browser and shared-cache directives are safe for direct origin traffic; browsers ignore s-maxage.
+  headers.set("Cache-Control", `public, max-age=${maxAgeSeconds}, s-maxage=${maxAgeSeconds}, stale-while-revalidate=30`);
   headers.set("Expires", new Date(Date.now() + maxAgeSeconds * 1000).toUTCString());
-  // CDN-specific headers only in CDN mode
-  if (CDN_MODE) {
-    headers.set("Cache-Control", `public, max-age=${maxAgeSeconds}, s-maxage=${maxAgeSeconds}, stale-while-revalidate=30`);
-  }
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
