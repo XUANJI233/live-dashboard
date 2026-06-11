@@ -1,25 +1,22 @@
 import { authenticateToken } from "../middleware/auth";
 import { currentHourWindow, currentMessageSlot, noStore, withCdnHeaders } from "./cdn";
 import {
-  broadcastPublicMessage,
+  postDeviceReply,
+  postPrivateViewerMessage,
+  postPublicViewerMessage,
+} from "./realtime-message-actions";
+import {
   broadcastPublicMessageDeleted,
-  deliverViewerMessage,
-  messageTargets,
-  supportsDeviceMessages,
 } from "./realtime-message-delivery";
 import {
   blockViewer,
   deleteMessageForDevice,
   deleteViewerMessagesForDevice,
   deviceMessageHistory,
-  isPublicMessageThread,
-  isViewerBlocked,
-  markMessageReplied,
   markMessagesDelivered,
   pendingMessages,
   publicMessagesByWindow,
   recentPublicMessages,
-  recordMessage,
   setViewerRemark,
   unblockViewer,
   viewerMessageHistory,
@@ -99,70 +96,37 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
   const viewerId = typeof body.target_viewer_id === "string" ? body.target_viewer_id : "";
   const messageId = cleanMessageId(body.message_id);
   const text = cleanText(body.text);
-  const isPublicThread = messageId ? isPublicMessageThread(messageId) : false;
-  if (!text || (!isPublicThread && !viewerId)) {
+  const replyId = cleanMessageId(body.reply_id) || crypto.randomUUID();
+  const result = postDeviceReply({
+    deviceId: device.device_id,
+    targetViewerId: viewerId,
+    messageId,
+    replyId,
+    text,
+  });
+  if (!result.ok) {
     return Response.json({ error: "target_viewer_id and text required" }, { status: 400 });
   }
 
-  if (messageId) markMessageReplied(messageId);
-  const replyId = cleanMessageId(body.reply_id) || crypto.randomUUID();
-  const createdAt = new Date().toISOString();
-
-  if (isPublicThread) {
-    const publicReplyId = "pub_" + replyId;
-    const inserted = recordMessage(publicReplyId, device.device_id, "__public__", "up", "public_reply", "device", text, createdAt);
-    if (inserted) {
-      broadcastPublicMessage({
-        id: publicReplyId,
-        device_id: device.device_id,
-        viewer_id: "__public__",
-        viewer_name: "up",
-        kind: "public_reply",
-        text,
-        created_at: createdAt,
-      });
-    }
+  if (result.kind === "public") {
     return Response.json({
       ok: true,
       public: true,
-      message_id: publicReplyId,
-      reply_id: publicReplyId,
-      in_reply_to: messageId,
-      duplicate: !inserted,
-    });
-  }
-
-  const inserted = recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text, createdAt);
-  const delivered = inserted
-    ? realtimeSocketHub.sendToViewer(viewerId, {
-      type: "device_reply",
-      message_id: replyId,
-      in_reply_to: messageId,
-      device_id: device.device_id,
-      text,
-      created_at: createdAt,
-    })
-    : 0;
-
-  if (inserted) {
-    import("./push").then(({ sendPush }) => {
-      sendPush(viewerId, {
-        title: "Monika 回复了",
-        body: text.slice(0, 120),
-        icon: "/icon-192.png",
-        url: "/",
-      }).catch(() => {});
+      message_id: result.storedMessageId,
+      reply_id: result.replyId,
+      in_reply_to: result.inReplyTo,
+      duplicate: result.duplicate,
     });
   }
 
   return Response.json({
     ok: true,
-    message_id: replyId,
-    reply_id: replyId,
-    in_reply_to: messageId,
-    duplicate: !inserted,
-    delivered: delivered > 0,
-    delivered_sockets: delivered,
+    message_id: result.storedMessageId,
+    reply_id: result.replyId,
+    in_reply_to: result.inReplyTo,
+    duplicate: result.duplicate,
+    delivered: result.deliveredSockets > 0,
+    delivered_sockets: result.deliveredSockets,
   });
 }
 
@@ -182,30 +146,15 @@ export async function handlePublicMessagePost(req: Request): Promise<Response> {
   const preferredDeviceId = cleanDeviceId(body.target_device_id);
   const viewerName = cleanViewerName(body.viewer_name);
   const messageId = cleanMessageId(body.message_id) || crypto.randomUUID();
-  const createdAt = new Date().toISOString();
-  const targets = messageTargets(preferredDeviceId)
-    .filter((deviceId) => !isViewerBlocked(deviceId, viewer.viewerId));
-
-  recordMessage(messageId, "__public__", viewer.viewerId, viewerName, "public", "viewer", text, createdAt);
-  let sent = 0;
-  let queued = 0;
-  for (const deviceId of targets) {
-    const status = deliverViewerMessage(deviceId, viewer.viewerId, viewerName, "public", text, messageId, createdAt);
-    if (status === "sent") sent += 1;
-    else queued += 1;
-  }
-
-  broadcastPublicMessage({
-    id: messageId,
-    device_id: "__public__",
-    viewer_id: viewer.viewerId,
-    viewer_name: viewerName,
-    kind: "public",
+  const result = postPublicViewerMessage({
+    preferredDeviceId,
+    viewerId: viewer.viewerId,
+    viewerName,
+    messageId,
     text,
-    created_at: createdAt,
   });
 
-  return Response.json({ ok: true, message_id: messageId, sent, queued });
+  return Response.json({ ok: true, message_id: result.message.id, sent: result.sent, queued: result.queued });
 }
 
 export async function handlePrivateMessagePost(req: Request): Promise<Response> {
@@ -226,31 +175,19 @@ export async function handlePrivateMessagePost(req: Request): Promise<Response> 
   if (!targetDeviceId || !text) {
     return Response.json({ error: "target_device_id and text required", message_id: messageId }, { status: 400 });
   }
-  if (!supportsDeviceMessages(targetDeviceId)) {
-    return Response.json({ error: "unsupported_target_device", message_id: messageId }, { status: 404 });
-  }
-  if (isViewerBlocked(targetDeviceId, viewer.viewerId)) {
-    return Response.json({ error: "blocked_by_device", message_id: messageId }, { status: 403 });
+  const result = postPrivateViewerMessage({
+    targetDeviceId,
+    viewerId: viewer.viewerId,
+    viewerName,
+    messageId,
+    text,
+  });
+  if (!result.ok) {
+    const status = result.error === "unsupported_target_device" ? 404 : 403;
+    return Response.json({ error: result.error, message_id: messageId }, { status });
   }
 
-  const createdAt = new Date().toISOString();
-  recordMessage(messageId, targetDeviceId, viewer.viewerId, viewerName, "private", "viewer", text, createdAt);
-  const status = deliverViewerMessage(targetDeviceId, viewer.viewerId, viewerName, "private", text, messageId, createdAt);
-  realtimeSocketHub.sendToViewer(viewer.viewerId, {
-    type: "viewer_message_sent",
-    message_id: messageId,
-    message: {
-      id: messageId,
-      device_id: targetDeviceId,
-      viewer_id: viewer.viewerId,
-      viewer_name: viewerName,
-      kind: "private",
-      text,
-      created_at: createdAt,
-    },
-    status,
-  });
-  return Response.json({ ok: true, message_id: messageId, status });
+  return Response.json({ ok: true, message_id: result.message.id, status: result.status });
 }
 
 export function handlePublicMessages(req: Request): Response {

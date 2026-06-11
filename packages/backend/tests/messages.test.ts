@@ -122,6 +122,74 @@ describe("visitor messages", () => {
     expect(queued?.delivered_at).not.toBe("");
   });
 
+  test("delivers private viewer websocket messages through the shared action", async () => {
+    const { db } = await import("../src/db");
+    const { realtimeWebSocket } = await import("../src/services/realtime");
+    const deviceId = "android-ws-private-target";
+    const viewerId = "viewer-ws-private";
+    const messageId = "msg_ws_private_shared";
+    insertDeviceState(db, {
+      device_id: deviceId,
+      device_name: "WS Private Phone",
+      platform: "android",
+    });
+    const deviceFrames: Array<Record<string, any>> = [];
+    const viewerFrames: Array<Record<string, any>> = [];
+    const deviceWs = {
+      data: {
+        role: "device",
+        id: deviceId,
+        device: { device_id: deviceId, device_name: "WS Private Phone", platform: "android" },
+      },
+      send(payload: string) {
+        deviceFrames.push(JSON.parse(payload));
+      },
+    };
+    const viewerWs = {
+      data: { role: "viewer", id: viewerId },
+      send(payload: string) {
+        viewerFrames.push(JSON.parse(payload));
+      },
+    };
+
+    realtimeWebSocket.open(deviceWs as any);
+    realtimeWebSocket.open(viewerWs as any);
+    realtimeWebSocket.message(viewerWs as any, JSON.stringify({
+      type: "viewer_message",
+      kind: "private",
+      message_id: messageId,
+      target_device_id: deviceId,
+      viewer_name: "tester",
+      text: "hello over ws",
+    }));
+    realtimeWebSocket.close(deviceWs as any);
+    realtimeWebSocket.close(viewerWs as any);
+
+    expect(deviceFrames.at(-1)).toMatchObject({
+      type: "viewer_message",
+      message_id: messageId,
+      viewer_id: viewerId,
+      viewer_name: "tester",
+      kind: "private",
+      text: "hello over ws",
+    });
+    expect(viewerFrames).toContainEqual(expect.objectContaining({
+      type: "viewer_message_sent",
+      message_id: messageId,
+      status: "sent",
+    }));
+    expect(viewerFrames.at(-1)).toMatchObject({
+      type: "ack",
+      message_id: messageId,
+      status: "sent",
+      sent: 1,
+      queued: 0,
+    });
+    const delivered = db.prepare("SELECT delivered_at FROM device_messages WHERE id = ? AND device_id = ?")
+      .get(messageId, deviceId) as { delivered_at: string } | null;
+    expect(delivered?.delivered_at).not.toBe("");
+  });
+
   test("keeps viewer websocket rate-limit errors correlated by message_id", async () => {
     const { realtimeWebSocket } = await import("../src/services/realtime");
     const frames: Array<{ type?: string; message_id?: string; error?: string }> = [];

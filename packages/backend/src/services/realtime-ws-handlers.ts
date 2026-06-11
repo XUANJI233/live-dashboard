@@ -3,20 +3,13 @@ import { processReportPayload, ReportPayloadError } from "./device-status-handle
 import { requestSupervisionCheckFromReportPayload } from "./supervision-report-trigger";
 import { deviceCommandReceiptWsResponse, deviceCommandResultWsResponse } from "./supervision-ack";
 import { aiJobInputErrorResponse, submitAiJobFromClient } from "./ai-jobs";
+import {
+  postDeviceReply,
+  postPrivateViewerMessage,
+  postPublicViewerMessage,
+} from "./realtime-message-actions";
 import { realtimeSocketHub, sendJson } from "./realtime-socket-hub";
-import {
-  broadcastPublicMessage,
-  deliverViewerMessage,
-  messageTargets,
-  supportsDeviceMessages,
-} from "./realtime-message-delivery";
 import { viewerMessageRateLimit } from "./realtime-rate-limit";
-import {
-  isPublicMessageThread,
-  isViewerBlocked,
-  markMessageReplied,
-  recordMessage,
-} from "./realtime-message-store";
 import {
   cleanDeviceId,
   cleanKind,
@@ -90,42 +83,19 @@ function handlePublicViewerMessage(
   ws: ServerWebSocket<WsData>,
   input: { messageId: string; targetDeviceId: string; viewerName: string; text: string },
 ): void {
-  const createdAt = new Date().toISOString();
-  const targets = messageTargets(input.targetDeviceId)
-    .filter((deviceId) => !isViewerBlocked(deviceId, ws.data.id));
-  recordMessage(input.messageId, "__public__", ws.data.id, input.viewerName, "public", "viewer", input.text, createdAt);
-
-  let sent = 0;
-  let queued = 0;
-  for (const deviceId of targets) {
-    const status = deliverViewerMessage(
-      deviceId,
-      ws.data.id,
-      input.viewerName,
-      "public",
-      input.text,
-      input.messageId,
-      createdAt,
-    );
-    if (status === "sent") sent += 1;
-    else queued += 1;
-  }
-
-  broadcastPublicMessage({
-    id: input.messageId,
-    device_id: "__public__",
-    viewer_id: ws.data.id,
-    viewer_name: input.viewerName,
-    kind: "public",
+  const result = postPublicViewerMessage({
+    preferredDeviceId: input.targetDeviceId,
+    viewerId: ws.data.id,
+    viewerName: input.viewerName,
+    messageId: input.messageId,
     text: input.text,
-    created_at: createdAt,
   });
   sendJson(ws, {
     type: "ack",
-    message_id: input.messageId,
-    status: sent > 0 ? "sent" : queued > 0 ? "queued" : "recorded",
-    sent,
-    queued,
+    message_id: result.message.id,
+    status: result.status,
+    sent: result.sent,
+    queued: result.queued,
   });
 }
 
@@ -133,43 +103,25 @@ function handlePrivateViewerMessage(
   ws: ServerWebSocket<WsData>,
   input: { messageId: string; targetDeviceId: string; viewerName: string; text: string },
 ): void {
-  if (!supportsDeviceMessages(input.targetDeviceId)) {
-    sendJson(ws, { type: "error", message_id: input.messageId, error: "unsupported_target_device" });
-    return;
-  }
-  if (isViewerBlocked(input.targetDeviceId, ws.data.id)) {
-    sendJson(ws, { type: "error", message_id: input.messageId, error: "blocked_by_device" });
+  const result = postPrivateViewerMessage({
+    targetDeviceId: input.targetDeviceId,
+    viewerId: ws.data.id,
+    viewerName: input.viewerName,
+    messageId: input.messageId,
+    text: input.text,
+  });
+  if (!result.ok) {
+    sendJson(ws, { type: "error", message_id: input.messageId, error: result.error });
     return;
   }
 
-  const createdAt = new Date().toISOString();
-  recordMessage(input.messageId, input.targetDeviceId, ws.data.id, input.viewerName, "private", "viewer", input.text, createdAt);
-  const status = deliverViewerMessage(
-    input.targetDeviceId,
-    ws.data.id,
-    input.viewerName,
-    "private",
-    input.text,
-    input.messageId,
-    createdAt,
-  );
-  const sent = status === "sent" ? 1 : 0;
-  const queued = status === "queued" ? 1 : 0;
-  realtimeSocketHub.sendToViewer(ws.data.id, {
-    type: "viewer_message_sent",
-    message_id: input.messageId,
-    message: {
-      id: input.messageId,
-      device_id: input.targetDeviceId,
-      viewer_id: ws.data.id,
-      viewer_name: input.viewerName,
-      kind: "private",
-      text: input.text,
-      created_at: createdAt,
-    },
-    status,
+  sendJson(ws, {
+    type: "ack",
+    message_id: result.message.id,
+    status: result.status,
+    sent: result.sent,
+    queued: result.queued,
   });
-  sendJson(ws, { type: "ack", message_id: input.messageId, status, sent, queued });
 }
 
 function handleDeviceWsMessage(ws: ServerWebSocket<WsData>, data: Record<string, unknown>): void {
@@ -232,66 +184,35 @@ function handleDeviceReply(ws: ServerWebSocket<WsData>, data: Record<string, unk
   const text = cleanText(data.text);
   const messageId = cleanMessageId(data.message_id);
   const replyId = cleanMessageId(data.reply_id) || crypto.randomUUID();
-  const createdAt = new Date().toISOString();
-  const isPublicThread = messageId ? isPublicMessageThread(messageId) : false;
-  if (!text || (!isPublicThread && !targetViewerId)) {
+  const result = postDeviceReply({
+    deviceId: ws.data.id,
+    targetViewerId,
+    messageId,
+    replyId,
+    text,
+  });
+  if (!result.ok) {
     sendJson(ws, { type: "error", message_id: messageId, error: "target_viewer_id and text required" });
     return;
   }
-  if (messageId) markMessageReplied(messageId);
 
-  if (isPublicThread) {
-    handlePublicDeviceReply(ws, { messageId, replyId, text, createdAt });
+  if (result.kind === "public") {
+    sendJson(ws, {
+      type: "ack",
+      message_id: result.inReplyTo,
+      reply_id: result.replyId,
+      in_reply_to: result.inReplyTo,
+      status: "public_reply_sent",
+    });
     return;
   }
 
-  const inserted = recordMessage(replyId, ws.data.id, targetViewerId, "", "reply", "device", text, createdAt);
-  if (inserted) {
-    realtimeSocketHub.sendToViewer(targetViewerId, {
-      type: "device_reply",
-      message_id: replyId,
-      in_reply_to: messageId,
-      device_id: ws.data.id,
-      text,
-      created_at: createdAt,
-    });
-  }
   sendJson(ws, {
     type: "ack",
-    message_id: messageId,
-    reply_id: replyId,
-    in_reply_to: messageId,
+    message_id: result.inReplyTo,
+    reply_id: result.replyId,
+    in_reply_to: result.inReplyTo,
     status: "reply_sent",
-  });
-
-  if (inserted) {
-    sendReplyPush(targetViewerId, text);
-  }
-}
-
-function handlePublicDeviceReply(
-  ws: ServerWebSocket<WsData>,
-  input: { messageId: string; replyId: string; text: string; createdAt: string },
-): void {
-  const publicReplyId = "pub_" + input.replyId;
-  const inserted = recordMessage(publicReplyId, ws.data.id, "__public__", "up", "public_reply", "device", input.text, input.createdAt);
-  if (inserted) {
-    broadcastPublicMessage({
-      id: publicReplyId,
-      device_id: ws.data.id,
-      viewer_id: "__public__",
-      viewer_name: "up",
-      kind: "public_reply",
-      text: input.text,
-      created_at: input.createdAt,
-    });
-  }
-  sendJson(ws, {
-    type: "ack",
-    message_id: input.messageId,
-    reply_id: publicReplyId,
-    in_reply_to: input.messageId,
-    status: "public_reply_sent",
   });
 }
 
@@ -330,17 +251,6 @@ function handleDeviceStatus(ws: ServerWebSocket<WsData>, data: Record<string, un
     type: "ack",
     status: "status_received",
     ...(statusId ? { status_id: statusId } : {}),
-  });
-}
-
-function sendReplyPush(targetViewerId: string, text: string): void {
-  import("./push").then(({ sendPush }) => {
-    sendPush(targetViewerId, {
-      title: "Monika 回复了",
-      body: text.slice(0, 120),
-      icon: "/icon-192.png",
-      url: "/",
-    }).catch(() => {});
   });
 }
 
