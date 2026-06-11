@@ -34,17 +34,19 @@ import {
 import {
   handleBlockViewer,
   handleUnblockViewer,
-  handleDeviceMessageHistory,
-  handleViewerMessageHistory,
-  handleDeviceMessages,
   handleDeviceMessageReply,
   handleDeleteMessage,
   handleDeleteViewerMessages,
   handleSetRemark,
-  handlePublicMessages,
   handlePublicMessagePost,
   handlePrivateMessagePost,
 } from "./services/realtime-message-handlers";
+import {
+  handleDeviceMessageHistory,
+  handleDeviceMessages,
+  handlePublicMessages,
+  handleViewerMessageHistory,
+} from "./services/realtime-message-read-handlers";
 import { globalIpRateLimit } from "./services/realtime-rate-limit";
 import { noStore, withCdnHeaders } from "./services/cdn";
 import { normalizeClientIp } from "./services/visitors";
