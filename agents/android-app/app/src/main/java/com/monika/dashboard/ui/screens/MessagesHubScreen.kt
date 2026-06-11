@@ -24,6 +24,7 @@ fun MessagesHubScreen(
     onSelectedIndexChange: ((Int) -> Unit)? = null,
     initialPrivateViewerId: String? = null,
     initialPrivateSelectionNonce: Long = 0L,
+    onInitialPrivateViewerConsumed: (Long) -> Unit = {},
 ) {
     var localSelected by rememberSaveable { mutableIntStateOf(0) }
     val selected = selectedIndex ?: localSelected
@@ -60,6 +61,7 @@ fun MessagesHubScreen(
                     showHeader = false,
                     initialViewerId = initialPrivateViewerId,
                     initialSelectionNonce = initialPrivateSelectionNonce,
+                    onInitialViewerConsumed = onInitialPrivateViewerConsumed,
                 )
             } else {
                 BoardScreen(settings = settings, showHeader = false)

@@ -77,6 +77,7 @@ fun StatusScreen(showHeader: Boolean = true, showUploadStatus: Boolean = true) {
     val hcManager = remember(context) { HealthConnectManager(context.applicationContext) }
     val settings = remember(context) { SettingsStore(context.applicationContext) }
     val debugMode by settings.debugMode.collectAsState(initial = false)
+    val logVersion by DebugLog.version.collectAsState()
 
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -328,7 +329,7 @@ fun StatusScreen(showHeader: Boolean = true, showUploadStatus: Boolean = true) {
                 DebugPayloadCard(remember(tick) { UploadStatusStore.getLastPayload(context) })
             }
             item {
-                DebugLogCard(remember(tick) { DebugLog.lines })
+                DebugLogCard(remember(tick, logVersion) { DebugLog.lines })
             }
         } else {
             item {

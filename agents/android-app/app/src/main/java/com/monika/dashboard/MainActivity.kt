@@ -45,7 +45,15 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             DashboardTheme {
-                MainContent(settings = settings, navigationRequest = navigationRequest)
+                MainContent(
+                    settings = settings,
+                    navigationRequest = navigationRequest,
+                    onNavigationRequestConsumed = { requestId ->
+                        if (navigationRequest?.requestId == requestId) {
+                            navigationRequest = null
+                        }
+                    },
+                )
             }
         }
     }
@@ -73,6 +81,7 @@ class MainActivity : ComponentActivity() {
 private fun MainContent(
     settings: SettingsStore,
     navigationRequest: DashboardNavigationRequest?,
+    onNavigationRequestConsumed: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
@@ -122,13 +131,18 @@ private fun MainContent(
             )
             Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                 DashboardDestinationContent(
-                    selectedTab = selectedTab,
                     settings = settings,
-                    selectedMessagesTab = selectedMessagesTab,
-                    onSelectMessagesTab = { selectedMessagesTab = it },
-                    navigationRequest = navigationRequest,
-                    selectedSettingsTab = selectedSettingsTab,
-                    onSelectSettingsTab = { selectedSettingsTab = it },
+                    state = DashboardDestinationState(
+                        selectedTab = selectedTab,
+                        selectedMessagesTab = selectedMessagesTab,
+                        selectedSettingsTab = selectedSettingsTab,
+                        navigationRequest = navigationRequest,
+                    ),
+                    actions = DashboardDestinationActions(
+                        onSelectMessagesTab = { selectedMessagesTab = it },
+                        onSelectSettingsTab = { selectedSettingsTab = it },
+                        onNavigationRequestConsumed = onNavigationRequestConsumed,
+                    ),
                 )
             }
         }
@@ -149,13 +163,18 @@ private fun MainContent(
     ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             DashboardDestinationContent(
-                selectedTab = selectedTab,
                 settings = settings,
-                selectedMessagesTab = selectedMessagesTab,
-                onSelectMessagesTab = { selectedMessagesTab = it },
-                navigationRequest = navigationRequest,
-                selectedSettingsTab = selectedSettingsTab,
-                onSelectSettingsTab = { selectedSettingsTab = it },
+                state = DashboardDestinationState(
+                    selectedTab = selectedTab,
+                    selectedMessagesTab = selectedMessagesTab,
+                    selectedSettingsTab = selectedSettingsTab,
+                    navigationRequest = navigationRequest,
+                ),
+                actions = DashboardDestinationActions(
+                    onSelectMessagesTab = { selectedMessagesTab = it },
+                    onSelectSettingsTab = { selectedSettingsTab = it },
+                    onNavigationRequestConsumed = onNavigationRequestConsumed,
+                ),
             )
         }
     }
@@ -237,30 +256,40 @@ private fun DashboardNavIcon(item: NavItem, selected: Boolean) {
 
 @Composable
 private fun DashboardDestinationContent(
-    selectedTab: Int,
     settings: SettingsStore,
-    selectedMessagesTab: Int,
-    onSelectMessagesTab: (Int) -> Unit,
-    navigationRequest: DashboardNavigationRequest?,
-    selectedSettingsTab: Int,
-    onSelectSettingsTab: (Int) -> Unit,
+    state: DashboardDestinationState,
+    actions: DashboardDestinationActions,
 ) {
-    when (selectedTab) {
+    when (state.selectedTab) {
         0 -> OverviewScreen(settings)
         1 -> MessagesHubScreen(
             settings = settings,
-            selectedIndex = selectedMessagesTab,
-            onSelectedIndexChange = onSelectMessagesTab,
-            initialPrivateViewerId = navigationRequest?.viewerId,
-            initialPrivateSelectionNonce = navigationRequest?.requestId ?: 0L,
+            selectedIndex = state.selectedMessagesTab,
+            onSelectedIndexChange = actions.onSelectMessagesTab,
+            initialPrivateViewerId = state.navigationRequest?.viewerId,
+            initialPrivateSelectionNonce = state.navigationRequest?.requestId ?: 0L,
+            onInitialPrivateViewerConsumed = actions.onNavigationRequestConsumed,
         )
         2 -> SettingsHubScreen(
             settings = settings,
-            selectedIndex = selectedSettingsTab,
-            onSelectedIndexChange = onSelectSettingsTab,
+            selectedIndex = state.selectedSettingsTab,
+            onSelectedIndexChange = actions.onSelectSettingsTab,
         )
     }
 }
+
+private data class DashboardDestinationState(
+    val selectedTab: Int,
+    val selectedMessagesTab: Int,
+    val selectedSettingsTab: Int,
+    val navigationRequest: DashboardNavigationRequest?,
+)
+
+private data class DashboardDestinationActions(
+    val onSelectMessagesTab: (Int) -> Unit,
+    val onSelectSettingsTab: (Int) -> Unit,
+    val onNavigationRequestConsumed: (Long) -> Unit,
+)
 
 private data class NavItem(
     val title: String,
