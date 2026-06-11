@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 
 $project = Join-Path $PSScriptRoot "LiveDashboardAgent.csproj"
 $dist = Join-Path $PSScriptRoot "dist"
-$signScript = Resolve-Path (Join-Path $PSScriptRoot "..\windows\sign-windows.ps1")
+$signScript = Resolve-Path (Join-Path $PSScriptRoot "sign-windows.ps1")
 
 function Publish-Agent {
     param(

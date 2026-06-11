@@ -1,70 +1,52 @@
-# Live Dashboard — Windows Agent 源码
+# Live Dashboard — Windows Agent
 
-> `windows-source` 分支 — Windows 桌面端 Agent 源码
+> `windows-source` branch — native Windows desktop Agent source.
 >
-> 服务端部署、前端功能、API 参考等通用文档请参阅 [`main` 分支 README](https://github.com/Monika-Dream/live-dashboard/tree/main#readme)。
+> Server, Web, Android, and shared API documentation live in the main project branches.
 
-## 下载
+## Overview
 
-预编译 exe 可从 [GitHub Releases](https://github.com/Monika-Dream/live-dashboard/releases) 直接下载，无需安装 Python。
+The Windows Agent is now a WinUI 3 desktop app. It runs as a long-lived tray application, reports foreground activity to Live Dashboard, receives desktop-safe device messages, and provides a native settings/install experience.
 
-## 这个分支包含什么
+## Features
 
-Windows Agent 是一个 Python 桌面程序，监控前台窗口并向 Live Dashboard 后端实时上报应用使用状态。打包为单文件 exe，常驻系统托盘运行。
+| Feature | Status |
+| --- | --- |
+| Foreground app reporting | Win32 foreground process/title probing |
+| AFK detection | Keyboard/mouse idle threshold with heartbeat reports |
+| Fullscreen guard | Avoids AFK while the foreground window is fullscreen |
+| Battery metadata | Reports battery level and charging state when available |
+| Desktop messages | Displays message history and applies desktop-safe `say` commands |
+| Device command ack | Sends receipt/result frames to `/api/supervision/ack` |
+| Tray resident mode | Close hides to tray; relaunch wakes the existing window |
+| Startup cleanup | Uses the registry Run key and removes legacy duplicate startup entries |
+| Installer | Current-user/all-users install modes, custom path, desktop shortcut, uninstall entry |
+| Logs | Disabled by default; optional `logs\agent.log` beside the running app with in-app open-file/open-folder actions |
 
-### 功能
+## Source Layout
 
-| 功能 | 说明 |
-|------|------|
-| **前台应用检测** | Win32 API 实时获取前台窗口进程名和标题 |
-| **音乐检测** | 识别 Spotify、QQ音乐、网易云、foobar2000、酷狗、酷我、AIMP 等，从窗口标题解析歌曲信息 |
-| **电量上报** | 笔记本自动上报电池电量和充电状态 |
-| **AFK 检测** | 键鼠空闲超过阈值（默认 5 分钟）后进入 AFK 模式 |
-| **视频/音频免 AFK** | 有音频播放（pycaw）或前台全屏时，即使键鼠空闲也不进入 AFK |
-| **系统托盘** | pystray 托盘图标，右键查看状态、重载配置、打开主界面、安全退出；后台运行时再次双击 exe 会唤起主界面 |
-| **主界面** | tkinter 单窗口管理台，包含 Overview、Messages、Settings 三个目的地 |
-| **日志** | 自动写入 `agent.log`，按天轮转保留 2 天 |
-
-### 技术栈
-
-- Python 3.10+ / PyInstaller 打包
-- Win32 API (ctypes) — 窗口检测、空闲时间、全屏检测
-- pystray + Pillow — 系统托盘
-- pycaw — Windows Core Audio API，活跃音频会话检测
-- psutil — 电池信息
-- tkinter — 单窗口主界面（Python 内置）
-
-### 文件结构
-
-```
-agents/windows/
-├── agent.py              # 主程序
-├── autostart_actions.py  # 托盘和主界面共享的自启动动作
-├── device_commands.py    # 设备命令解析和桌面安全执行
-├── device_profile.py     # Windows 能力声明
-├── probe_cache.py        # 低开销采集探针缓存
-├── ui_app.py             # tkinter 主界面控制器
-├── ui_components.py      # 主界面设计系统 primitives
-├── ui_messages.py        # 消息显示格式化 helper
-├── ui_theme.py           # 共享主题和语义 tone
-├── config.example.json   # 配置模板
-├── requirements.txt      # Python 依赖
-├── build.bat             # PyInstaller 打包脚本
-├── install-task.bat      # Windows 任务计划自启动
-└── README.md             # 详细使用说明
+```text
+agents/windows-winui/
+├── Pages/        # WinUI pages
+├── Services/     # Runtime, API, install, tray, startup, Win32 helpers
+├── Styles/       # Shared XAML resources
+├── ViewModels/   # UI display snapshots
+└── build-winui.ps1
 ```
 
-## 构建
+The previous Python/tkinter UI and PyInstaller packaging path have been removed from this branch. Use the WinUI project for all Windows Agent changes.
 
-```bash
-pip install -r agents/windows/requirements.txt pyinstaller
-cd agents/windows
-pyinstaller --onefile --noconsole --name live-dashboard-agent agent.py
-# 产物: dist/live-dashboard-agent.exe
+## Build
+
+```powershell
+cd agents/windows-winui
+$env:WINDOWS_SKIP_SIGNING = "true"
+.\build-winui.ps1 -Mode Both -Configuration Release
 ```
 
-或直接运行 `build.bat`。
+Outputs:
 
-## 使用
+- `agents/windows-winui/dist/portable/LiveDashboardAgent.exe`
+- `agents/windows-winui/dist/install/LiveDashboardAgent.exe`
 
-详见 [`agents/windows/README.md`](agents/windows/README.md)。
+Use `WINDOWS_SKIP_SIGNING=true` only for local/debug smoke builds. Signed release builds use `agents/windows-winui/sign-windows.ps1`.

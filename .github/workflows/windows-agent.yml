@@ -6,7 +6,6 @@ on:
     tags:
       - "windows-agent-*"
     paths:
-      - "agents/windows/**"
       - "agents/windows-winui/**"
       - ".github/workflows/windows-agent.yml"
   workflow_dispatch:
@@ -23,9 +22,6 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: agents/windows
     env:
       WINDOWS_CODESIGN_CERT_BASE64: ${{ secrets.WINDOWS_CODESIGN_CERT_BASE64 }}
       WINDOWS_CODESIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_CERT_PASSWORD }}
@@ -37,36 +33,32 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
         with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: agents/windows/requirements.txt
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Check Python sources
-        run: python -m py_compile agent.py autostart_actions.py ui_app.py ui_components.py ui_layout.py ui_messages.py ui_theme.py win_control.py device_commands.py device_profile.py probe_cache.py
-
-      - name: Run tests
-        run: python -m unittest discover -s tests -v
+          dotnet-version: "8.0.x"
 
       - name: Build WinUI shell
         working-directory: agents/windows-winui
         run: dotnet build LiveDashboardAgent.csproj -c Debug -p:Platform=x64
 
       - name: Build and sign Windows agent
-        shell: cmd
-        run: build.bat
+        working-directory: agents/windows-winui
+        shell: powershell
+        run: .\build-winui.ps1 -Mode Both -Configuration Release
 
       - name: Check Windows artifact policy
+        working-directory: agents/windows-winui
         shell: powershell
         run: |
-          $artifact = ".\dist\live-dashboard-agent.exe"
-          if (-not (Test-Path -LiteralPath $artifact)) {
-            throw "Expected Windows artifact was not created: $artifact"
+          $artifacts = @(
+            ".\dist\portable\LiveDashboardAgent.exe",
+            ".\dist\install\LiveDashboardAgent.exe"
+          )
+          foreach ($artifact in $artifacts) {
+            if (-not (Test-Path -LiteralPath $artifact)) {
+              throw "Expected Windows artifact was not created: $artifact"
+            }
           }
           if ($env:WINDOWS_SKIP_SIGNING -eq "true") {
             Write-Host "Unsigned debug artifact built for branch/manual smoke."
@@ -86,6 +78,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.WINDOWS_SKIP_SIGNING == 'true' && 'live-dashboard-agent-windows-unsigned-debug' || 'live-dashboard-agent-windows-authenticode' }}
-          path: agents/windows/dist/live-dashboard-agent.exe
+          path: |
+            agents/windows-winui/dist/portable/LiveDashboardAgent.exe
+            agents/windows-winui/dist/install/LiveDashboardAgent.exe
           if-no-files-found: error
           retention-days: 7

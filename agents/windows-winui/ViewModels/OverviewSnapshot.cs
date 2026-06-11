@@ -11,7 +11,10 @@ public sealed record OverviewSnapshot(
     string RuntimeDirectory,
     string CommandLine)
 {
-    public static OverviewSnapshot Create(AppConfig config, StartupManager startup)
+    public static OverviewSnapshot Create(
+        AppConfig config,
+        StartupManager startup,
+        AgentRuntimeSnapshot runtime)
     {
         var server = string.IsNullOrWhiteSpace(config.ServerUrl) ? "未配置" : config.ServerUrl;
         var runningInstall = AppServices.UserInstallService.GetRunningInstall();
@@ -21,12 +24,31 @@ public sealed record OverviewSnapshot(
         var directory = runningInstall?.InstallDirectory ??
             AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         return new OverviewSnapshot(
-            RuntimeStatus: config.Validate() is null ? "已配置" : "配置未完成",
-            CurrentTarget: "暂无窗口",
+            RuntimeStatus: RuntimeStatusText(config, runtime),
+            CurrentTarget: runtime.CurrentTarget,
             Server: server,
             Autostart: startup.IsEnabled() ? "已开启" : "未开启",
             DistributionMode: mode,
             RuntimeDirectory: directory,
             CommandLine: startup.CurrentCommandLine());
+    }
+
+    private static string RuntimeStatusText(AppConfig config, AgentRuntimeSnapshot runtime)
+    {
+        var validation = config.Validate();
+        if (validation is not null)
+        {
+            return "配置未完成";
+        }
+
+        if (!string.IsNullOrWhiteSpace(runtime.LastError))
+        {
+            return $"{runtime.Status}: {runtime.LastError}";
+        }
+        if (runtime.LastReportAt is { } lastReport)
+        {
+            return $"{runtime.Status} · 上次上报 {lastReport.ToLocalTime():HH:mm:ss}";
+        }
+        return runtime.Status;
     }
 }

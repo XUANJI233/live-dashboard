@@ -6,6 +6,7 @@ namespace LiveDashboardAgent;
 public partial class App : Application
 {
     private Window? _window;
+    private SingleInstanceService? _singleInstance;
 
     public static Window? MainWindow { get; private set; }
 
@@ -23,7 +24,18 @@ public partial class App : Application
             return;
         }
 
-        _window = new MainWindow();
+        AppServices.LegacyAgentCleanup.Run();
+
+        _singleInstance = new SingleInstanceService();
+        if (_singleInstance.AlreadyRunning)
+        {
+            _singleInstance.NotifyExisting();
+            _singleInstance.Dispose();
+            Exit();
+            return;
+        }
+
+        _window = new MainWindow(_singleInstance);
         MainWindow = _window;
         _window.Activate();
     }

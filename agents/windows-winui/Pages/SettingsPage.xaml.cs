@@ -27,6 +27,7 @@ public sealed partial class SettingsPage : Page
         try
         {
             AppServices.ConfigStore.Save(config);
+            AppServices.AgentRuntime.Restart(config);
             LoadConfig();
             ShowStatus("Live Dashboard", "配置已保存。", InfoBarSeverity.Success);
         }
@@ -75,6 +76,30 @@ public sealed partial class SettingsPage : Page
     {
         LoadConfig();
         ShowStatus("Live Dashboard", "配置已重新载入。", InfoBarSeverity.Informational);
+    }
+
+    private void OpenLog_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            AgentLogService.OpenLogFile();
+        }
+        catch (Exception ex)
+        {
+            ShowStatus("打开失败", ex.Message, InfoBarSeverity.Error);
+        }
+    }
+
+    private void OpenLogFolder_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            AgentLogService.OpenLogFolder();
+        }
+        catch (Exception ex)
+        {
+            ShowStatus("打开失败", ex.Message, InfoBarSeverity.Error);
+        }
     }
 
     private void LoadConfig()

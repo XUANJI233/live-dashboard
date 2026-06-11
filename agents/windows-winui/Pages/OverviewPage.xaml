@@ -58,7 +58,11 @@
                             <TextBlock x:Name="InstallDirectoryText" Style="{StaticResource MutedTextStyle}" />
                             <TextBlock x:Name="CommandLineText" Style="{StaticResource MutedTextStyle}" />
                         </StackPanel>
-                        <Button Grid.Column="1" Content="刷新" Click="Refresh_Click" />
+                        <StackPanel Grid.Column="1" Spacing="10">
+                            <Button Content="刷新" Click="Refresh_Click" HorizontalAlignment="Stretch" />
+                            <Button Content="打开日志" Click="OpenLog_Click" HorizontalAlignment="Stretch" />
+                            <Button Content="打开日志文件夹" Click="OpenLogFolder_Click" HorizontalAlignment="Stretch" />
+                        </StackPanel>
                     </Grid>
                 </Border>
             </Grid>
