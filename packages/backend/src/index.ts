@@ -42,8 +42,8 @@ import {
   realtimeWebSocket,
   type WsData,
   handleDeleteDevice,
-  globalIpRateLimit,
 } from "./services/realtime";
+import { globalIpRateLimit } from "./services/realtime-rate-limit";
 import { noStore, withCdnHeaders } from "./services/cdn";
 import { normalizeClientIp } from "./services/visitors";
 import { getVapidKeys, saveSubscription, removeSubscription } from "./services/push";

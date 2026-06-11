@@ -9,6 +9,13 @@ import type { DeviceCommandEnvelope, DeliveryStatus } from "./mcp-contracts";
 import { aiJobInputErrorResponse, setAiJobNotifier, submitAiJobFromClient } from "./ai-jobs";
 import { realtimeSocketHub, sendJson } from "./realtime-socket-hub";
 import {
+  globalIpRateLimit,
+  realtimeApiRateLimit,
+  requestIp,
+  viewerMessageRateLimit,
+  viewerWsRateLimit,
+} from "./realtime-rate-limit";
+import {
   cleanDeviceId,
   cleanKind,
   cleanMessageId,
@@ -29,61 +36,12 @@ import type { ServerWebSocket } from "bun";
 export type { WsData } from "./realtime-types";
 
 const MESSAGE_TTL_MINUTES = 30;
-const VIEWER_RATE_LIMIT = 10;
-const VIEWER_API_RATE_LIMIT = 60;
-const VIEWER_WS_RATE_LIMIT = 30;
-const RATE_WINDOW_MS = 60_000;
-const GLOBAL_IP_RATE_LIMIT = 120; // 120 requests per minute per IP
-const MAX_GLOBAL_IP_RATE_KEYS = 20_000;
-
-const viewerRate = new Map<string, { count: number; resetAt: number }>();
-const viewerApiRate = new Map<string, { count: number; resetAt: number }>();
-const viewerWsRate = new Map<string, { count: number; resetAt: number }>();
-const globalIpRate = new Map<string, { count: number; resetAt: number }>();
-
-export function globalIpRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const current = globalIpRate.get(ip);
-  if (!current || current.resetAt <= now) {
-    if (!current && globalIpRate.size >= MAX_GLOBAL_IP_RATE_KEYS) {
-      cleanupGlobalIpRate(now);
-      if (globalIpRate.size >= MAX_GLOBAL_IP_RATE_KEYS) return false;
-    }
-    globalIpRate.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    return true;
-  }
-  if (current.count >= GLOBAL_IP_RATE_LIMIT) return false;
-  current.count++;
-  return true;
-}
-
-function cleanupGlobalIpRate(now: number): void {
-  for (const [key, val] of globalIpRate) {
-    if (val.resetAt < now) globalIpRate.delete(key);
-  }
-}
 
 // ── Prepared statement: mark a single device offline immediately ──
 const markDeviceOffline = db.prepare(`
   UPDATE device_states SET is_online = 0
   WHERE device_id = ? AND is_online = 1
 `);
-
-// ── Rate limit cleanup: evict expired entries to prevent memory leaks ──
-const rateCleanupTimer = setInterval(() => {
-  const now = Date.now();
-  for (const [key, val] of viewerRate) {
-    if (val.resetAt < now) viewerRate.delete(key);
-  }
-  for (const [key, val] of viewerApiRate) {
-    if (val.resetAt < now) viewerApiRate.delete(key);
-  }
-  for (const [key, val] of viewerWsRate) {
-    if (val.resetAt < now) viewerWsRate.delete(key);
-  }
-  cleanupGlobalIpRate(now);
-}, 300_000); // every 5 minutes
-rateCleanupTimer.unref();
 
 const insertQueuedMessage = db.prepare(`
   INSERT INTO device_messages (id, device_id, viewer_id, text, payload, expires_at)
@@ -269,39 +227,6 @@ function broadcastPublicMessageDeleted(messageId: string) {
   realtimeSocketHub.broadcastViewerPayload({ type: "public_message_deleted", message_id: messageId });
 }
 
-function requestIp(req: Request): string {
-  const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  return req.headers.get("ali-real-client-ip") ||
-    req.headers.get("x-real-ip") ||
-    req.headers.get("cf-connecting-ip") ||
-    forwarded ||
-    "unknown";
-}
-
-function rateLimit(viewerId: string): boolean {
-  const now = Date.now();
-  const current = viewerRate.get(viewerId);
-  if (!current || current.resetAt <= now) {
-    viewerRate.set(viewerId, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    return true;
-  }
-  if (current.count >= VIEWER_RATE_LIMIT) return false;
-  current.count += 1;
-  return true;
-}
-
-function apiRateLimit(viewerId: string): boolean {
-  const now = Date.now();
-  const current = viewerApiRate.get(viewerId);
-  if (!current || current.resetAt <= now) {
-    viewerApiRate.set(viewerId, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    return true;
-  }
-  if (current.count >= VIEWER_API_RATE_LIMIT) return false;
-  current.count += 1;
-  return true;
-}
-
 function isViewerBlocked(deviceId: string, viewerId: string): boolean {
   return Boolean(isViewerBlockedStmt.get(deviceId, viewerId));
 }
@@ -335,18 +260,6 @@ function queueMessage(deviceId: string, viewerId: string, text: string, messageI
     // Duplicate client-supplied message ids are ignored; the sender still gets an ack.
     return false;
   }
-}
-
-function wsRateLimit(viewerId: string): boolean {
-  const now = Date.now();
-  const current = viewerWsRate.get(viewerId);
-  if (!current || current.resetAt <= now) {
-    viewerWsRate.set(viewerId, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    return true;
-  }
-  if (current.count >= VIEWER_WS_RATE_LIMIT) return false;
-  current.count += 1;
-  return true;
 }
 
 function messageTargets(preferredDeviceId = ""): string[] {
@@ -490,7 +403,7 @@ export function getWsInfo(req: Request): WsData | Response {
   if (role === "viewer") {
     const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
     if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
-    if (!wsRateLimit(viewer.viewerId)) {
+    if (!viewerWsRateLimit(viewer.viewerId)) {
       return Response.json({ error: "Too many WebSocket reconnects" }, { status: 429 });
     }
     if (realtimeSocketHub.viewerSocketLimitReached()) {
@@ -534,7 +447,7 @@ export const realtimeWebSocket = {
 
     if (ws.data.role === "viewer" && data.type === "viewer_message") {
       const messageId = cleanMessageId(data.message_id) || crypto.randomUUID();
-      if (!rateLimit(ws.data.id)) {
+      if (!viewerMessageRateLimit(ws.data.id)) {
         sendJson(ws, { type: "error", message_id: messageId, error: "Rate limit exceeded" });
         return;
       }
@@ -923,7 +836,7 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
 export async function handlePublicMessagePost(req: Request): Promise<Response> {
   const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
   if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
-  if (!viewerTokenRateLimit(viewer.viewerId) || !apiRateLimit(viewer.viewerId)) {
+  if (!viewerTokenRateLimit(viewer.viewerId) || !realtimeApiRateLimit(viewer.viewerId)) {
     return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
@@ -965,7 +878,7 @@ export async function handlePublicMessagePost(req: Request): Promise<Response> {
 export async function handlePrivateMessagePost(req: Request): Promise<Response> {
   const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
   if (!viewer) return Response.json({ error: "Viewer token required" }, { status: 403 });
-  if (!viewerTokenRateLimit(viewer.viewerId) || !apiRateLimit(viewer.viewerId)) {
+  if (!viewerTokenRateLimit(viewer.viewerId) || !realtimeApiRateLimit(viewer.viewerId)) {
     return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
@@ -1011,13 +924,13 @@ export function handlePublicMessages(req: Request): Response {
   // 管理员设备 token 鉴权（抗 DoS/CC，边缘函数模式也生效）
   const device = authenticateToken(req.headers.get("authorization"));
   if (device) {
-    if (!apiRateLimit(device.device_id)) return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+    if (!realtimeApiRateLimit(device.device_id)) return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
   const viewer = edgeViewerIdentity(req) || verifyViewerToken(viewerTokenFromRequest(req));
   if (viewer) {
     if (!viewerTokenRateLimit(viewer.viewerId)) return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
-    if (!apiRateLimit(viewer.viewerId)) return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
+    if (!realtimeApiRateLimit(viewer.viewerId)) return Response.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
   const url = new URL(req.url);
