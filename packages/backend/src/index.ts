@@ -32,15 +32,17 @@ import {
   handleDeleteDevice,
 } from "./services/realtime";
 import {
-  handleBlockViewer,
-  handleUnblockViewer,
   handleDeviceMessageReply,
-  handleDeleteMessage,
-  handleDeleteViewerMessages,
-  handleSetRemark,
   handlePublicMessagePost,
   handlePrivateMessagePost,
 } from "./services/realtime-message-handlers";
+import {
+  handleBlockViewer,
+  handleUnblockViewer,
+  handleDeleteMessage,
+  handleDeleteViewerMessages,
+  handleSetRemark,
+} from "./services/realtime-message-management-handlers";
 import {
   handleDeviceMessageHistory,
   handleDeviceMessages,

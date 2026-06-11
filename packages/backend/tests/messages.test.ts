@@ -241,6 +241,77 @@ describe("visitor messages", () => {
     expect(duplicateBody.duplicate).toBe(true);
     expect(rowCount(db, "visitor_messages", "id = 'reply_retry_once'")).toBe(1);
   });
+
+  test("keeps message management handlers wired to store and viewer notifications", async () => {
+    const { db } = await import("../src/db");
+    const { realtimeWebSocket } = await import("../src/services/realtime");
+    const {
+      handleBlockViewer,
+      handleUnblockViewer,
+      handleDeleteMessage,
+      handleDeleteViewerMessages,
+      handleSetRemark,
+    } = await import("../src/services/realtime-message-management-handlers");
+    const deviceId = "android-message-target";
+    const viewerId = "fp_manage_messages";
+    const frames: Array<Record<string, any>> = [];
+    const viewerWs = {
+      data: { role: "viewer", id: viewerId },
+      send(payload: string) {
+        frames.push(JSON.parse(payload));
+      },
+    };
+    insertDeviceState(db, {
+      device_id: deviceId,
+      device_name: "Android Message Target",
+      platform: "android",
+    });
+    insertVisitorMessage(db, {
+      id: "msg_manage_single",
+      device_id: deviceId,
+      viewer_id: viewerId,
+      kind: "private",
+      direction: "viewer",
+    });
+    insertVisitorMessage(db, {
+      id: "msg_manage_bulk",
+      device_id: deviceId,
+      viewer_id: viewerId,
+      kind: "private",
+      direction: "viewer",
+    });
+    realtimeWebSocket.open(viewerWs as any);
+
+    const remark = await handleSetRemark(deviceManagementRequest({
+      viewer_id: viewerId,
+      remark: "focus buddy",
+    }));
+    const block = await handleBlockViewer(deviceManagementRequest({ viewer_id: viewerId }));
+    const unblock = await handleUnblockViewer(deviceManagementRequest({ viewer_id: viewerId }));
+    const singleDelete = await handleDeleteMessage(deviceManagementRequest({ message_id: "msg_manage_single" }));
+    const bulkDelete = await handleDeleteViewerMessages(deviceManagementRequest({ viewer_id: viewerId }));
+    realtimeWebSocket.close(viewerWs as any);
+
+    expect(remark.status).toBe(200);
+    expect(block.status).toBe(200);
+    expect(unblock.status).toBe(200);
+    expect(singleDelete.status).toBe(200);
+    expect(bulkDelete.status).toBe(200);
+    expect(db.prepare("SELECT remark FROM viewer_remarks WHERE device_id = ? AND viewer_id = ?")
+      .get(deviceId, viewerId)).toMatchObject({ remark: "focus buddy" });
+    expect(rowCount(db, "blocked_viewers", `device_id = '${deviceId}' AND viewer_id = '${viewerId}'`)).toBe(0);
+    expect(rowCount(db, "visitor_messages", "id = 'msg_manage_single'")).toBe(0);
+    expect(rowCount(db, "visitor_messages", "id = 'msg_manage_bulk'")).toBe(0);
+    expect(frames).toContainEqual(expect.objectContaining({
+      type: "message_deleted",
+      message_id: "msg_manage_single",
+      device_id: deviceId,
+    }));
+    expect(frames).toContainEqual(expect.objectContaining({
+      type: "viewer_messages_deleted",
+      device_id: deviceId,
+    }));
+  });
 });
 
 async function viewerToken(fingerprint = "0123456789abcdef0123456789abcdef"): Promise<string> {
@@ -263,6 +334,17 @@ function privateMessageRequest(body: Record<string, unknown>, token: string): Re
 
 function deviceMessageReplyRequest(body: Record<string, unknown>): Request {
   return new Request("http://localhost/api/messages/reply", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer message-device-token",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function deviceManagementRequest(body: Record<string, unknown>): Request {
+  return new Request("http://localhost/api/messages/manage", {
     method: "POST",
     headers: {
       Authorization: "Bearer message-device-token",
@@ -295,7 +377,33 @@ function insertDeviceState(db: typeof import("../src/db").db, row: {
   `).run(row.device_id, row.device_name, row.platform, new Date().toISOString(), row.extra ?? "{}");
 }
 
-function rowCount(db: typeof import("../src/db").db, table: "device_messages" | "visitor_messages", where: string): number {
+function insertVisitorMessage(db: typeof import("../src/db").db, row: {
+  id: string;
+  device_id: string;
+  viewer_id: string;
+  kind: "private" | "reply" | "public" | "public_reply";
+  direction: "viewer" | "device";
+}): void {
+  db.prepare(`
+    INSERT OR REPLACE INTO visitor_messages (
+      id,
+      device_id,
+      viewer_id,
+      viewer_name,
+      kind,
+      direction,
+      text,
+      created_at
+    )
+    VALUES (?, ?, ?, 'tester', ?, ?, 'hello', ?)
+  `).run(row.id, row.device_id, row.viewer_id, row.kind, row.direction, new Date().toISOString());
+}
+
+function rowCount(
+  db: typeof import("../src/db").db,
+  table: "blocked_viewers" | "device_messages" | "visitor_messages",
+  where: string,
+): number {
   const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`).get() as { count: number };
   return row.count;
 }
