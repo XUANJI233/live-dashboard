@@ -2,12 +2,14 @@ import { authenticateToken } from "../middleware/auth";
 import { currentHourWindow, currentMessageSlot, noStore, withCdnHeaders } from "./cdn";
 import {
   deviceMessageHistory,
-  markMessagesDelivered,
-  pendingMessages,
   publicMessagesByWindow,
   recentPublicMessages,
   viewerMessageHistory,
 } from "./realtime-message-store";
+import {
+  markMessagesDelivered,
+  pendingMessages,
+} from "./realtime-message-queue-store";
 import { realtimeApiRateLimit } from "./realtime-rate-limit";
 import { parseMessagePayload, publicRecentHours } from "./message-protocol";
 import { edgeViewerIdentity, verifyViewerToken, viewerTokenFromRequest, viewerTokenRateLimit } from "./viewer-auth";

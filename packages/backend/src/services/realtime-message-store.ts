@@ -1,17 +1,6 @@
 import { db } from "../db";
 import type { MessageDirection, StoredMessageKind } from "./message-protocol";
-
-const MESSAGE_TTL_MINUTES = 30;
-
-export interface PendingMessageRow {
-  id: string;
-  viewer_id: string;
-  viewer_name: string;
-  kind: string;
-  text: string;
-  payload: string;
-  created_at: string;
-}
+import { deleteQueuedMessage, deleteQueuedMessagesForViewer } from "./realtime-message-queue-store";
 
 export interface MessageTargetDeviceRow {
   device_id: string;
@@ -23,47 +12,6 @@ export interface VisitorMessageForDelete {
   viewer_id: string;
   kind: string;
 }
-
-const insertQueuedMessage = db.prepare(`
-  INSERT INTO device_messages (id, device_id, viewer_id, text, payload, expires_at)
-  VALUES (?, ?, ?, ?, ?, datetime('now', ?))
-`);
-
-const getPendingMessages = db.prepare(`
-  SELECT dm.id, dm.viewer_id, dm.text, dm.payload, dm.created_at,
-    COALESCE(vm.viewer_name, '') AS viewer_name,
-    COALESCE(vm.kind, 'private') AS kind
-  FROM device_messages dm
-  LEFT JOIN visitor_messages vm ON vm.id = dm.id
-  WHERE dm.device_id = ?
-    AND dm.delivered_at = ''
-    AND datetime(dm.expires_at) >= datetime('now')
-  ORDER BY dm.created_at ASC
-  LIMIT 20
-`);
-
-const markMessageDeliveredStmt = db.prepare(`
-  UPDATE device_messages
-  SET delivered_at = datetime('now')
-  WHERE id = ? AND device_id = ?
-`);
-
-const getQueuedMessageDelivery = db.prepare(`
-  SELECT delivered_at
-  FROM device_messages
-  WHERE id = ? AND device_id = ?
-  LIMIT 1
-`);
-
-const markMessagesDeliveredStmt = db.transaction((deviceId: string, ids: string[]) => {
-  for (const id of ids) markMessageDeliveredStmt.run(id, deviceId);
-});
-
-const markMessageRepliedStmt = db.prepare(`
-  UPDATE device_messages
-  SET replied_at = datetime('now')
-  WHERE id = ?
-`);
 
 const isViewerBlockedStmt = db.prepare(`
   SELECT 1
@@ -112,16 +60,6 @@ const getVisitorMessageKind = db.prepare(`
   FROM visitor_messages
   WHERE id = ?
   LIMIT 1
-`);
-
-const deleteDeviceMessage = db.prepare(`
-  DELETE FROM device_messages
-  WHERE id = ?
-`);
-
-const deleteDeviceMessagesByViewer = db.prepare(`
-  DELETE FROM device_messages
-  WHERE device_id = ? AND viewer_id = ?
 `);
 
 const upsertViewerRemark = db.prepare(`
@@ -221,47 +159,9 @@ export function recordMessage(
   return result.changes > 0;
 }
 
-export function queueMessage(deviceId: string, viewerId: string, text: string, messageId: string, payloadText = ""): boolean {
-  try {
-    const result = insertQueuedMessage.run(
-      messageId,
-      deviceId,
-      viewerId,
-      text,
-      payloadText,
-      `+${MESSAGE_TTL_MINUTES} minutes`,
-    );
-    return result.changes > 0;
-  } catch {
-    // Duplicate client-supplied message ids are ignored; the sender still gets an ack.
-    return false;
-  }
-}
-
-export function queuedMessageWasDelivered(messageId: string, deviceId: string): boolean {
-  const row = getQueuedMessageDelivery.get(messageId, deviceId) as { delivered_at?: string } | null;
-  return Boolean(row?.delivered_at);
-}
-
-export function markMessageDelivered(messageId: string, deviceId: string): void {
-  markMessageDeliveredStmt.run(messageId, deviceId);
-}
-
-export function markMessagesDelivered(deviceId: string, ids: string[]): void {
-  markMessagesDeliveredStmt(deviceId, ids);
-}
-
-export function markMessageReplied(messageId: string): void {
-  markMessageRepliedStmt.run(messageId);
-}
-
 export function isPublicMessageThread(messageId: string): boolean {
   const row = getVisitorMessageKind.get(messageId) as { kind: string } | null;
   return row?.kind === "public" || row?.kind === "public_reply";
-}
-
-export function pendingMessages(deviceId: string): PendingMessageRow[] {
-  return getPendingMessages.all(deviceId) as PendingMessageRow[];
 }
 
 export function messageTargetDevices(): MessageTargetDeviceRow[] {
@@ -297,13 +197,13 @@ export function deleteMessageForDevice(messageId: string, deviceId: string): {
 
   const result = deleteVisitorMessage.run(messageId, deviceId);
   const deleted = result.changes > 0;
-  if (deleted) deleteDeviceMessage.run(messageId);
+  if (deleted) deleteQueuedMessage(messageId);
   return { existing, deleted };
 }
 
 export function deleteViewerMessagesForDevice(deviceId: string, viewerId: string): number {
   const result = deleteVisitorMessagesByViewer.run(deviceId, viewerId);
-  deleteDeviceMessagesByViewer.run(deviceId, viewerId);
+  deleteQueuedMessagesForViewer(deviceId, viewerId);
   return Number(result.changes);
 }
 

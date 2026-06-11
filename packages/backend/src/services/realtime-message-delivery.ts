@@ -2,13 +2,15 @@ import type { ServerWebSocket } from "bun";
 import type { DeviceCommandEnvelope, DeliveryStatus } from "./mcp-contracts";
 import {
   hasMessageTargetDevice,
+  messageTargetDevices,
+} from "./realtime-message-store";
+import {
   markMessageDelivered,
   markMessagesDelivered,
-  messageTargetDevices,
   pendingMessages,
   queueMessage,
   queuedMessageWasDelivered,
-} from "./realtime-message-store";
+} from "./realtime-message-queue-store";
 import { cleanText, parseMessagePayload, serializedMessagePayload } from "./message-protocol";
 import { realtimeSocketHub, sendJson } from "./realtime-socket-hub";
 import type { WsData } from "./realtime-types";

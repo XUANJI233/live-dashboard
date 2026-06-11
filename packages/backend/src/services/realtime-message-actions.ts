@@ -9,9 +9,9 @@ import {
 import {
   isPublicMessageThread,
   isViewerBlocked,
-  markMessageReplied,
   recordMessage,
 } from "./realtime-message-store";
+import { markMessageReplied } from "./realtime-message-queue-store";
 import { realtimeSocketHub } from "./realtime-socket-hub";
 
 export interface PostedViewerMessage {
