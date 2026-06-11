@@ -40,6 +40,7 @@ import android.os.PowerManager;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
+import android.provider.Settings;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 
@@ -111,13 +112,12 @@ public final class MonikaXposedModule extends XposedModule {
     private static final long IDLE_DEBOUNCE_COUNT = 2; // 2 consecutive heartbeats before reporting idle
     private static final long WS_RETRY_BASE_MS = 30_000L;  // first retry delay
     private static final long WS_RETRY_MAX_MS = 300_000L;  // max retry delay (5 min)
+    private static final long WS_STATUS_ACK_TIMEOUT_MS = 4_000L;
     private static final long MEDIA_VALIDATE_MS = 60_000L; // low-frequency stale-session guard
     private static final long BROWSER_NONCE_RELOAD_MS = 60_000L;
     private static final long BROWSER_WEB_TITLE_FRESH_MS = 10_000L;
     private static final long DIRECT_FULL_STATE_INTERVAL_MS = 5 * 60_000L;
     private static final long AMBIENT_LIGHT_CACHE_MS = 60_000L;
-    private static final long SUPERVISION_CHECK_REQUEST_MIN_MS = 60_000L;
-    private static final long SUPERVISION_CHECK_REQUEST_SAME_KEY_MS = 5 * 60_000L;
     private static final int SUPERVISION_DAILY_UNFREEZE_HOUR = 3;
     private static final String DEVICE_COMMAND_EVENT_PATH = "/api/supervision/ack";
     
@@ -213,8 +213,6 @@ public final class MonikaXposedModule extends XposedModule {
     private volatile String pendingDirectBody = "";
     private volatile LspWebSocketClient wsClient = null;
     private volatile boolean wsReconnectPending = false;
-    private volatile long lastSupervisionCheckRequestAt = 0L;
-    private volatile String lastSupervisionCheckRequestKey = "";
     private volatile String foregroundPackage = "";
     private volatile String foregroundApp = "";
     private volatile String foregroundActivity = "";
@@ -249,6 +247,8 @@ public final class MonikaXposedModule extends XposedModule {
     private final ConcurrentHashMap<String, Object> classCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> methodLookupCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> fieldLookupCache = new ConcurrentHashMap<>();
+    private final LspSupervisionPolicy supervisionPolicy = new LspSupervisionPolicy();
+    private volatile long supervisionPolicyCheckDueAt = 0L;
     private final LspDeviceCommandController deviceCommandController =
             new LspDeviceCommandController(newDeviceCommandHost());
 
@@ -372,6 +372,18 @@ public final class MonikaXposedModule extends XposedModule {
             @Override
             public void requestDirectUpload() {
                 maybeDirectUpload(true);
+            }
+
+            @Override
+            public boolean applySupervisionPolicy(JSONObject payload) {
+                boolean applied = supervisionPolicy.applyPolicy(payload);
+                if (applied) evaluateSupervisionPolicy(System.currentTimeMillis());
+                return applied;
+            }
+
+            @Override
+            public void finishPendingSupervisionReview() {
+                supervisionPolicy.finishPendingReview();
             }
         };
     }
@@ -792,6 +804,7 @@ public final class MonikaXposedModule extends XposedModule {
 
                     applyForegroundTitle(cleanTitle != null ? cleanTitle : "", source);
                     logDebug("browser title received: " + pkg + " title=" + foregroundTitle + " source=" + source);
+                    evaluateSupervisionPolicy(System.currentTimeMillis());
                     maybeDirectUpload(true);
                 }
             };
@@ -1935,6 +1948,7 @@ public final class MonikaXposedModule extends XposedModule {
                     long token = Binder.clearCallingIdentity();
                     try { ctx.sendBroadcast(sleepIntent, CONFIG_PERMISSION); } finally { Binder.restoreCallingIdentity(token); }
                 }
+                evaluateSupervisionPolicy(now);
                 maybeDirectUpload(forceDirectUpload);
                 return;
             }
@@ -2030,6 +2044,7 @@ public final class MonikaXposedModule extends XposedModule {
                 long token = Binder.clearCallingIdentity();
                 try { context.sendBroadcast(intent, CONFIG_PERMISSION); } finally { Binder.restoreCallingIdentity(token); }
             }
+            evaluateSupervisionPolicy(now);
             maybeDirectUpload(forceDirectUpload);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "broadcast failed: " + t.getClass().getSimpleName());
@@ -2536,25 +2551,126 @@ public final class MonikaXposedModule extends XposedModule {
         final LspWebSocketClient client = wsClient;
         if (client != null && client.isConnected()) {
             try {
+                String statusId = "status_" + java.util.UUID.randomUUID();
                 String msg = new org.json.JSONObject()
                         .put("type", "device_status")
+                        .put("status_id", statusId)
                         .put("payload", new org.json.JSONObject(body))
                         .toString();
-                if (client.sendText(msg)) {
+                if (client.sendStatusTextAndWaitAck(msg, statusId, WS_STATUS_ACK_TIMEOUT_MS)) {
+                    markSupervisionReviewSentIfRequested(body);
                     logDebug("ws upload OK");
                     return true;
                 }
+                logDebug("ws upload ack timeout; falling back to HTTP");
             } catch (Throwable t) {
                 log(Log.WARN, TAG, "ws send failed: " + t.getClass().getSimpleName());
             }
         }
         boolean ok = postDirectReportFallback(body);
         if (ok) {
+            markSupervisionReviewSentIfRequested(body);
             logDebug("http fallback upload OK");
         } else {
             log(Log.WARN, TAG, "http fallback upload failed");
         }
         return ok;
+    }
+
+    private void markSupervisionReviewSentIfRequested(String body) {
+        try {
+            JSONObject json = new JSONObject(body);
+            JSONObject extra = json.optJSONObject("extra");
+            JSONObject device = extra != null ? extra.optJSONObject("device") : null;
+            if (device != null && strictBoolean(device, "supervision_check_requested", false)) {
+                supervisionPolicy.markReviewRequestSent();
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private void evaluateSupervisionPolicy(long now) {
+        try {
+            if (!directUploadEnabled || !directUploadForeground || !isSystemServerProcess()) return;
+            String pkg = safeString(foregroundPackage);
+            boolean protectedPackage = pkg.length() == 0 || isProtectedFreezePackage(pkg);
+            LspSupervisionPolicy.Decision decision = supervisionPolicy.evaluate(
+                    pkg,
+                    safeString(foregroundApp),
+                    primaryDisplayTitle(),
+                    now,
+                    protectedPackage);
+            if (decision.timeLimitFreezePackage.length() > 0) {
+                freezePackageForDeviceCommand(
+                        decision.timeLimitFreezePackage,
+                        decision.timeLimitReason,
+                        now,
+                        nextDailyUnfreezeAt(now));
+                maybeDirectUpload(true);
+            }
+            if (decision.riskReviewPackage.length() > 0) {
+                freezePackageForDeviceCommand(
+                        decision.riskReviewPackage,
+                        decision.riskReviewReason,
+                        now,
+                        nextDailyUnfreezeAt(now));
+                openNetworkSettingsIfOffline();
+                maybeDirectUpload(true);
+            }
+            scheduleSupervisionPolicyCheck(decision.nextCheckDelayMs);
+        } catch (Throwable t) {
+            logDebug("supervision policy evaluate skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void scheduleSupervisionPolicyCheck(long delayMs) {
+        if (delayMs <= 0L || !isSystemServerProcess()) return;
+        Handler handler = getUploadHandler();
+        if (handler == null) return;
+        long dueAt = System.currentTimeMillis() + delayMs;
+        long currentDue = supervisionPolicyCheckDueAt;
+        if (currentDue > 0L && currentDue <= dueAt) return;
+        supervisionPolicyCheckDueAt = dueAt;
+        handler.postDelayed(() -> {
+            long scheduledDue = supervisionPolicyCheckDueAt;
+            if (scheduledDue > 0L && System.currentTimeMillis() + 500L < scheduledDue) return;
+            supervisionPolicyCheckDueAt = 0L;
+            evaluateSupervisionPolicy(System.currentTimeMillis());
+        }, delayMs);
+    }
+
+    private void openNetworkSettingsIfOffline() {
+        try {
+            if (isNetworkConnected()) return;
+            Context ctx = getSystemContext();
+            if (ctx == null) return;
+            Intent intent = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                    ? new Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY)
+                    : new Intent(Settings.ACTION_WIRELESS_SETTINGS);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            long token = Binder.clearCallingIdentity();
+            try {
+                ctx.startActivity(intent);
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+        } catch (Throwable t) {
+            logDebug("open network settings skipped: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private boolean isNetworkConnected() {
+        try {
+            Context ctx = getSystemContext();
+            if (ctx == null) return false;
+            ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return false;
+            Network active = cm.getActiveNetwork();
+            if (active == null) return false;
+            NetworkCapabilities caps = cm.getNetworkCapabilities(active);
+            return caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private long clampDirectInterval(long intervalMs) {
@@ -2569,6 +2685,8 @@ public final class MonikaXposedModule extends XposedModule {
             capabilities.put("vibrate", true);
             capabilities.put("screen_off", false);
             capabilities.put("say", true);
+            capabilities.put("risk_app_monitor", true);
+            capabilities.put("app_time_limit", true);
         } catch (Throwable ignored) {}
         return capabilities;
     }
@@ -2600,7 +2718,7 @@ public final class MonikaXposedModule extends XposedModule {
             if (sleeping) {
                 device.put(OFFLINE_TIMEOUT_FIELD, directOfflineTimeoutMinutes());
             }
-            if (shouldRequestSupervisionCheck(now, windowTitle)) {
+            if (supervisionPolicy.shouldRequestReviewForReport()) {
                 device.put("supervision_check_requested", true);
             }
             // Multi-window / tablet detection
@@ -2649,29 +2767,6 @@ public final class MonikaXposedModule extends XposedModule {
         } catch (Throwable t) {
             log(Log.WARN, TAG, "build direct body failed: " + t.getClass().getSimpleName());
             return null;
-        }
-    }
-
-    private boolean shouldRequestSupervisionCheck(long now, String windowTitle) {
-        try {
-            if (!directUploadForeground) return false;
-            String pkg = safeString(foregroundPackage);
-            if (pkg.length() == 0 || "idle".equals(pkg) || "sleeping".equals(pkg)) return false;
-            if (isProtectedFreezePackage(pkg)) return false;
-
-            String key = pkg + "|" + safeString(foregroundApp) + "|" + safeString(windowTitle);
-            long elapsed = now - lastSupervisionCheckRequestAt;
-            if (elapsed >= 0 && elapsed < SUPERVISION_CHECK_REQUEST_MIN_MS) return false;
-            if (key.equals(lastSupervisionCheckRequestKey)
-                    && elapsed >= 0
-                    && elapsed < SUPERVISION_CHECK_REQUEST_SAME_KEY_MS) {
-                return false;
-            }
-            lastSupervisionCheckRequestAt = now;
-            lastSupervisionCheckRequestKey = key;
-            return true;
-        } catch (Throwable ignored) {
-            return false;
         }
     }
 
@@ -3692,7 +3787,7 @@ public final class MonikaXposedModule extends XposedModule {
 
             PendingIntent pendingIntent = buildLaunchPendingIntent(ctx, data, viewerId);
 
-            String title = "网页游客消息";
+            String title = "网页访客消息";
             String body = text.length() > 120 ? text.substring(0, 120) : text;
             Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                     ? new Notification.Builder(ctx, MESSAGE_CHANNEL_ID)
@@ -4234,6 +4329,9 @@ public final class MonikaXposedModule extends XposedModule {
         private volatile boolean connected;
         private volatile boolean running;
         private volatile boolean manualDisconnect;
+        private final Object statusAckLock = new Object();
+        private String awaitedStatusAckId = "";
+        private boolean awaitedStatusAckReceived = false;
 
         private void clearModuleClientIfCurrent() {
             if (MonikaXposedModule.this.wsClient == this) {
@@ -4409,6 +4507,48 @@ public final class MonikaXposedModule extends XposedModule {
             }
         }
 
+        boolean sendStatusTextAndWaitAck(String text, String statusId, long timeoutMs) {
+            String cleanStatusId = safeString(statusId);
+            if (cleanStatusId.length() == 0) return false;
+            synchronized (statusAckLock) {
+                awaitedStatusAckId = cleanStatusId;
+                awaitedStatusAckReceived = false;
+            }
+            if (!sendText(text)) {
+                clearAwaitedStatusAck(cleanStatusId);
+                return false;
+            }
+
+            long deadline = System.currentTimeMillis() + Math.max(250L, timeoutMs);
+            synchronized (statusAckLock) {
+                while (running && connected && !awaitedStatusAckReceived) {
+                    long remaining = deadline - System.currentTimeMillis();
+                    if (remaining <= 0L) break;
+                    try {
+                        statusAckLock.wait(Math.min(remaining, 1000L));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+                boolean acked = cleanStatusId.equals(awaitedStatusAckId) && awaitedStatusAckReceived;
+                if (cleanStatusId.equals(awaitedStatusAckId)) {
+                    awaitedStatusAckId = "";
+                    awaitedStatusAckReceived = false;
+                }
+                return acked;
+            }
+        }
+
+        private void clearAwaitedStatusAck(String statusId) {
+            synchronized (statusAckLock) {
+                if (statusId.equals(awaitedStatusAckId)) {
+                    awaitedStatusAckId = "";
+                    awaitedStatusAckReceived = false;
+                }
+            }
+        }
+
         private void sendCloseFrame(int code, String reason) {
             try {
                 byte[] reasonBytes = reason != null ? reason.getBytes(StandardCharsets.UTF_8) : new byte[0];
@@ -4486,7 +4626,10 @@ public final class MonikaXposedModule extends XposedModule {
 
                     switch (opcode) {
                         case OP_TEXT:
-                            handleWsTextMessage(new String(payload, StandardCharsets.UTF_8));
+                            String text = new String(payload, StandardCharsets.UTF_8);
+                            if (!handleStatusAckText(text)) {
+                                handleWsTextMessage(text);
+                            }
                             break;
                         case OP_PING:
                             // Respond with pong (echo the ping payload).
@@ -4537,6 +4680,26 @@ public final class MonikaXposedModule extends XposedModule {
                     recordWsDisconnectedForBackoff();
                     scheduleWsReconnect();
                 }
+            }
+        }
+
+        private boolean handleStatusAckText(String text) {
+            try {
+                JSONObject json = new JSONObject(text);
+                if (!"ack".equals(json.optString("type"))
+                        || !"status_received".equals(json.optString("status"))) {
+                    return false;
+                }
+                String statusId = safeString(json.optString("status_id", ""));
+                synchronized (statusAckLock) {
+                    if (statusId.length() > 0 && statusId.equals(awaitedStatusAckId)) {
+                        awaitedStatusAckReceived = true;
+                        statusAckLock.notifyAll();
+                    }
+                }
+                return true;
+            } catch (Throwable ignored) {
+                return false;
             }
         }
 

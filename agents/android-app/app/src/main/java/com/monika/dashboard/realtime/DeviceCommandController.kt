@@ -26,6 +26,7 @@ object DeviceCommandController {
     private const val TYPE_RECEIPT_ACK = "device_command_receipt_received"
     private const val TYPE_RESULT_ACK = "device_command_result_received"
     private const val KIND_SUPERVISION = "supervision"
+    private const val KIND_SUPERVISION_POLICY = "supervision_policy"
     private const val RESULT_APPLIED = "applied"
     private const val RESULT_PARTIAL = "partial"
     private const val RESULT_FAILED = "failed"
@@ -143,7 +144,14 @@ object DeviceCommandController {
         }
 
         val payload = command.optJSONObject("payload")
-        if (payload == null || payload.optString("kind") != KIND_SUPERVISION) {
+        val kind = payload?.optString("kind").orEmpty()
+        if (payload == null) {
+            return result(commandId, requestId, resultId, RESULT_UNSUPPORTED, actions, stateAfter, "unsupported_command_kind")
+        }
+        if (kind == KIND_SUPERVISION_POLICY) {
+            return result(commandId, requestId, resultId, RESULT_UNSUPPORTED, actions, stateAfter, "policy_requires_android_lsp")
+        }
+        if (kind != KIND_SUPERVISION) {
             return result(commandId, requestId, resultId, RESULT_UNSUPPORTED, actions, stateAfter, "unsupported_command_kind")
         }
 

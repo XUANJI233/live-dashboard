@@ -52,41 +52,51 @@ private val DashboardColorScheme = lightColorScheme(
 private val DashboardTypography = Typography(
     headlineLarge = TextStyle(
         fontWeight = FontWeight.SemiBold,
-        fontSize = 28.sp
+        fontSize = 28.sp,
+        lineHeight = 34.sp,
     ),
     headlineMedium = TextStyle(
         fontWeight = FontWeight.SemiBold,
-        fontSize = 22.sp
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
     ),
     titleLarge = TextStyle(
         fontWeight = FontWeight.SemiBold,
-        fontSize = 20.sp
+        fontSize = 20.sp,
+        lineHeight = 26.sp,
     ),
     titleMedium = TextStyle(
         fontWeight = FontWeight.SemiBold,
-        fontSize = 16.sp
+        fontSize = 16.sp,
+        lineHeight = 22.sp,
     ),
     titleSmall = TextStyle(
         fontWeight = FontWeight.SemiBold,
-        fontSize = 14.sp
+        fontSize = 14.sp,
+        lineHeight = 19.sp,
     ),
     bodyLarge = TextStyle(
-        fontSize = 16.sp
+        fontSize = 16.sp,
+        lineHeight = 24.sp,
     ),
     bodyMedium = TextStyle(
-        fontSize = 14.sp
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
     ),
     bodySmall = TextStyle(
-        fontSize = 12.sp
+        fontSize = 12.sp,
+        lineHeight = 17.sp,
     ),
     labelLarge = TextStyle(
         fontWeight = FontWeight.SemiBold,
         fontSize = 14.sp,
+        lineHeight = 18.sp,
         fontFamily = FontFamily.Monospace
     ),
     labelSmall = TextStyle(
         fontWeight = FontWeight.Medium,
         fontSize = 11.sp,
+        lineHeight = 15.sp,
         fontFamily = FontFamily.Monospace
     )
 )

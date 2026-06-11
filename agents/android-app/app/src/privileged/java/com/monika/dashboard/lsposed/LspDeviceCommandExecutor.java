@@ -25,7 +25,14 @@ final class LspDeviceCommandExecutor {
         }
 
         JSONObject payload = command.optJSONObject("payload");
-        if (payload == null || !LspDeviceCommandProtocol.KIND_SUPERVISION.equals(payload.optString("kind", ""))) {
+        if (payload == null) {
+            return result(commandId, requestId, resultId, "unsupported", actions, host.frozenState(System.currentTimeMillis()), "unsupported_command_kind");
+        }
+        String kind = payload.optString("kind", "");
+        if (LspDeviceCommandProtocol.KIND_SUPERVISION_POLICY.equals(kind)) {
+            return executePolicy(commandId, requestId, resultId, payload, actions);
+        }
+        if (!LspDeviceCommandProtocol.KIND_SUPERVISION.equals(kind)) {
             return result(commandId, requestId, resultId, "unsupported", actions, host.frozenState(System.currentTimeMillis()), "unsupported_command_kind");
         }
 
@@ -57,7 +64,11 @@ final class LspDeviceCommandExecutor {
             }
         }
 
-        counts.add(applyUnfreeze(payload.optJSONArray("unfreeze_commands"), reason, actions));
+        Counts unfreezeCounts = applyUnfreeze(payload.optJSONArray("unfreeze_commands"), reason, actions);
+        counts.add(unfreezeCounts);
+        if (unfreezeCounts.applied > 0 && commandsContainPendingReview(payload.optJSONArray("unfreeze_commands"))) {
+            host.finishPendingSupervisionReview();
+        }
         counts.add(applyFreeze(payload.optJSONArray("freeze_commands"), reason, actions));
 
         if (counts.isEmpty()) {
@@ -66,6 +77,16 @@ final class LspDeviceCommandExecutor {
         }
         if (counts.applied > 0) host.requestDirectUpload();
         return result(commandId, requestId, resultId, counts.status(), actions, host.frozenState(System.currentTimeMillis()), "");
+    }
+
+    private JSONObject executePolicy(String commandId, String requestId, String resultId, JSONObject payload, JSONArray actions) {
+        if (host.applySupervisionPolicy(payload)) {
+            actions.put(action("supervision_policy", "applied", "policy_updated"));
+            host.requestDirectUpload();
+            return result(commandId, requestId, resultId, "applied", actions, host.frozenState(System.currentTimeMillis()), "");
+        }
+        actions.put(action("supervision_policy", "failed", "policy_apply_failed"));
+        return result(commandId, requestId, resultId, "failed", actions, host.frozenState(System.currentTimeMillis()), "policy_apply_failed");
     }
 
     private Counts applyUnfreeze(JSONArray commands, String reason, JSONArray actions) {
@@ -171,6 +192,14 @@ final class LspDeviceCommandExecutor {
                 + LspDeviceCommandProtocol.safeString(frozen.appName) + " "
                 + LspDeviceCommandProtocol.safeString(frozen.reason);
         return LspDeviceCommandProtocol.matchesAny(patterns, text);
+    }
+
+    private boolean commandsContainPendingReview(JSONArray commands) {
+        if (commands == null) return false;
+        for (int i = 0; i < commands.length(); i++) {
+            if (LspSupervisionPolicy.PENDING_RISK_FREEZE_REASON.equals(commands.optString(i))) return true;
+        }
+        return false;
     }
 
     private JSONObject result(

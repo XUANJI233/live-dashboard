@@ -24,7 +24,11 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicLong
 
 object MessageSocketManager {
     private const val CHANNEL_ID = "visitor_messages"
@@ -32,6 +36,9 @@ object MessageSocketManager {
     private const val PREFS = "message_controls"
     private const val BASE_RECONNECT_DELAY_MS = 10_000L
     private const val MAX_RECONNECT_DELAY_MS = 300_000L // 5 minutes max
+    private const val TYPE_AI_REQUEST_ACK = "ai_request_ack"
+    private const val TYPE_AI_JOB_UPDATE = "ai_job_update"
+    private const val MAX_AI_JOB_CACHE = 40
     const val EXTRA_DESTINATION = "destination"
     const val EXTRA_MESSAGES_SECTION = "messages_section"
     const val DESTINATION_MESSAGES = "messages"
@@ -46,6 +53,9 @@ object MessageSocketManager {
         .pingInterval(25, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
         .build()
+    private val aiAckWaiters = ConcurrentHashMap<String, CompletableFuture<JSONObject>>()
+    private val aiJobWaiters = ConcurrentHashMap<String, CompletableFuture<JSONObject>>()
+    private val latestAiJobs = ConcurrentHashMap<String, JSONObject>()
 
     @Volatile
     private var socket: WebSocket? = null
@@ -58,6 +68,8 @@ object MessageSocketManager {
 
     @Volatile
     private var stopped = false
+
+    private val connectionGeneration = AtomicLong(0L)
 
     fun isConnected(): Boolean = connected
 
@@ -98,9 +110,55 @@ object MessageSocketManager {
         }
     }
 
+    fun sendAiRequest(request: JSONObject, ackTimeoutMs: Long): JSONObject? {
+        val requestId = cleanAiRequestId(request.optString("request_id"))
+        if (requestId.isBlank()) return null
+        val ws = socket
+        if (ws == null || !connected) return null
+        val future = CompletableFuture<JSONObject>()
+        aiAckWaiters[requestId] = future
+        return try {
+            if (!ws.send(request.toString())) return null
+            future.get(ackTimeoutMs.coerceAtLeast(250L), TimeUnit.MILLISECONDS)
+        } catch (_: TimeoutException) {
+            null
+        } catch (_: Exception) {
+            null
+        } finally {
+            aiAckWaiters.remove(requestId)
+        }
+    }
+
+    fun waitForAiJob(requestId: String, timeoutMs: Long): JSONObject? {
+        val cleanRequestId = cleanAiRequestId(requestId)
+        if (cleanRequestId.isBlank()) return null
+        latestAiJobs[cleanRequestId]?.let { latest ->
+            if (isTerminalAiJob(latest)) return latest
+        }
+        val future = CompletableFuture<JSONObject>()
+        aiJobWaiters[cleanRequestId] = future
+        latestAiJobs[cleanRequestId]?.let { latest ->
+            if (isTerminalAiJob(latest)) {
+                aiJobWaiters.remove(cleanRequestId)
+                return latest
+            }
+        }
+        return try {
+            future.get(timeoutMs.coerceAtLeast(250L), TimeUnit.MILLISECONDS)
+        } catch (_: TimeoutException) {
+            null
+        } catch (_: Exception) {
+            null
+        } finally {
+            aiJobWaiters.remove(cleanRequestId)
+        }
+    }
+
     fun ensureStarted(context: Context) {
         if (socket != null || connecting) return
         val appContext = context.applicationContext
+        val generation = connectionGeneration.incrementAndGet()
+        stopped = false
         connecting = true
         scope.launch {
             try {
@@ -108,17 +166,23 @@ object MessageSocketManager {
                 val enabled = settings.monitoringEnabled.first()
                 val url = settings.serverUrl.first()
                 val token = settings.getToken()
-                if (!enabled || url.isBlank() || token.isNullOrBlank()) {
+                if (!canOpenSocket(enabled, url, token, generation)) {
                     connecting = false
                     return@launch
                 }
-                stopped = false
+                val cleanToken = token.orEmpty()
                 val wsUrl = buildWsUrl(url)
                 val request = Request.Builder()
                     .url(wsUrl)
-                    .addHeader("Authorization", "Bearer $token")
+                    .addHeader("Authorization", "Bearer $cleanToken")
                     .build()
-                socket = client.newWebSocket(request, Listener(appContext, url, token))
+                val nextSocket = client.newWebSocket(request, Listener(appContext, url, cleanToken, generation))
+                socket = nextSocket
+                if (!isCurrentStart(generation)) {
+                    nextSocket.close(1000, "disabled")
+                    clearSocketIfCurrent(nextSocket)
+                    connecting = false
+                }
             } catch (e: Exception) {
                 connecting = false
                 DebugLog.log("消息", "WebSocket启动失败: ${e.message}")
@@ -127,12 +191,23 @@ object MessageSocketManager {
     }
 
     fun stop() {
+        connectionGeneration.incrementAndGet()
         stopped = true
         socket?.close(1000, "disabled")
         socket = null
         connecting = false
         connected = false
         reconnectAttempts = 0
+    }
+
+    private fun isCurrentStart(generation: Long): Boolean =
+        !stopped && connectionGeneration.get() == generation
+
+    private fun canOpenSocket(enabled: Boolean, url: String, token: String?, generation: Long): Boolean =
+        enabled && url.isNotBlank() && !token.isNullOrBlank() && isCurrentStart(generation)
+
+    private fun clearSocketIfCurrent(webSocket: WebSocket) {
+        if (socket === webSocket) socket = null
     }
 
     fun isViewerBlocked(context: Context, viewerId: String): Boolean {
@@ -201,7 +276,7 @@ object MessageSocketManager {
         )
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(if (viewerId == "__supervisor__") "监督模式" else "网页游客消息")
+            .setContentTitle(if (viewerId == "__supervisor__") "监督模式" else "网页访客消息")
             .setContentText(text.take(120))
             .setStyle(NotificationCompat.BigTextStyle().bigText(text.take(500)))
             .setContentIntent(pending)
@@ -251,18 +326,60 @@ object MessageSocketManager {
         nm.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
-                "网页游客消息",
+                "网页访客消息",
                 NotificationManager.IMPORTANCE_HIGH
             )
         )
     }
 
+    private fun handleAiRequestAck(data: JSONObject): Boolean {
+        if (data.optString("type") != TYPE_AI_REQUEST_ACK) return false
+        val requestId = cleanAiRequestId(data.optString("request_id"))
+        if (requestId.isNotBlank()) aiAckWaiters.remove(requestId)?.complete(JSONObject(data.toString()))
+        return true
+    }
+
+    private fun handleAiJobUpdate(data: JSONObject): Boolean {
+        if (data.optString("type") != TYPE_AI_JOB_UPDATE) return false
+        val job = data.optJSONObject("job") ?: return true
+        val requestId = cleanAiRequestId(job.optString("request_id"))
+        if (requestId.isBlank()) return true
+        val snapshot = JSONObject(job.toString())
+        latestAiJobs[requestId] = snapshot
+        trimAiJobCache()
+        if (isTerminalAiJob(snapshot)) aiJobWaiters.remove(requestId)?.complete(snapshot)
+        return true
+    }
+
+    private fun isTerminalAiJob(job: JSONObject): Boolean =
+        job.optString("status") == "succeeded" || job.optString("status") == "failed"
+
+    private fun trimAiJobCache() {
+        val overflow = latestAiJobs.size - MAX_AI_JOB_CACHE
+        if (overflow <= 0) return
+        latestAiJobs.keys.take(overflow).forEach { latestAiJobs.remove(it) }
+    }
+
+    private fun cleanAiRequestId(value: String): String =
+        value.replace(Regex("[\\u0000-\\u001f\\u007f]"), "")
+            .trim()
+            .take(160)
+            .takeIf { it.matches(Regex("[a-zA-Z0-9_.:-]{1,160}")) }
+            .orEmpty()
+
     private class Listener(
         private val context: Context,
         private val serverUrl: String,
         private val token: String,
+        private val generation: Long,
     ) : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            if (!isCurrentStart(generation)) {
+                webSocket.close(1000, "disabled")
+                clearSocketIfCurrent(webSocket)
+                connecting = false
+                return
+            }
             connecting = false
             connected = true
             reconnectAttempts = 0 // Reset backoff on successful connection
@@ -271,9 +388,12 @@ object MessageSocketManager {
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            if (!isCurrentStart(generation)) return
             // Ignore ack pings at app level — keepalive is handled by WS protocol ping/pong
             val data = runCatching { JSONObject(text) }.getOrNull() ?: return
             if (data.optString("type") == "ack") return
+            if (handleAiRequestAck(data)) return
+            if (handleAiJobUpdate(data)) return
             if (DeviceCommandController.handleServerAck(context, data)) return
             if (DeviceCommandController.handleIncoming(context, data, source = "ws")) return
             if (data.optString("type") != "viewer_message") return
@@ -292,7 +412,8 @@ object MessageSocketManager {
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            socket = null
+            if (connectionGeneration.get() != generation) return
+            clearSocketIfCurrent(webSocket)
             connecting = false
             connected = false
             DebugLog.log("消息", "WebSocket已断开 (code=$code)")
@@ -300,7 +421,8 @@ object MessageSocketManager {
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            socket = null
+            if (connectionGeneration.get() != generation) return
+            clearSocketIfCurrent(webSocket)
             connecting = false
             connected = false
             DebugLog.log("消息", "WebSocket失败: ${t.message}")
@@ -308,13 +430,13 @@ object MessageSocketManager {
         }
 
         private fun scheduleReconnect() {
-            if (stopped) return
+            if (!isCurrentStart(generation)) return
             scope.launch {
                 val exponent = reconnectAttempts.coerceAtMost(5)
                 val delayMs = (BASE_RECONNECT_DELAY_MS * (1L shl exponent)).coerceAtMost(MAX_RECONNECT_DELAY_MS)
                 reconnectAttempts = (reconnectAttempts + 1).coerceAtMost(30)
                 delay(delayMs)
-                if (stopped || socket != null || connecting) return@launch
+                if (!isCurrentStart(generation) || socket != null || connecting) return@launch
                 DebugLog.log("消息", "WebSocket尝试重连... (attempt $reconnectAttempts, delay ${delayMs}ms)")
                 connecting = true
                 runCatching {
@@ -323,7 +445,13 @@ object MessageSocketManager {
                         .url(wsUrl)
                         .addHeader("Authorization", "Bearer $token")
                         .build()
-                    socket = client.newWebSocket(request, this@Listener)
+                    val nextSocket = client.newWebSocket(request, this@Listener)
+                    socket = nextSocket
+                    if (!isCurrentStart(generation)) {
+                        nextSocket.close(1000, "disabled")
+                        clearSocketIfCurrent(nextSocket)
+                        connecting = false
+                    }
                 }.onFailure {
                     connecting = false
                     DebugLog.log("消息", "WebSocket重连失败: ${it.message}")

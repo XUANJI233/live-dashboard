@@ -28,6 +28,8 @@ interface LspDeviceCommandHost {
     boolean postSayNotification(String commandId, String text);
     boolean vibrate(long durationMs);
     void requestDirectUpload();
+    boolean applySupervisionPolicy(JSONObject payload);
+    void finishPendingSupervisionReview();
 }
 
 final class LspInstalledApp {

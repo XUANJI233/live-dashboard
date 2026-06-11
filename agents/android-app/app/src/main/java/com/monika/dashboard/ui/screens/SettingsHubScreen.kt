@@ -20,7 +20,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -443,30 +442,16 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 maxLines = 5,
                 supportingText = { Text("${target.length}/240") },
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "默认按休息日评价",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Text(
-                        text = "开启后，日总结会按恢复、睡眠和娱乐边界评价；周总结仍按每天目标判断节奏。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextMuted,
-                    )
-                }
-                Switch(
-                    checked = plannedRest,
-                    onCheckedChange = {
-                        markSummaryEdited()
-                        plannedRest = it
-                    },
-                    enabled = !loading,
-                )
-            }
+            com.monika.dashboard.ui.components.PreferenceSwitchRow(
+                checked = plannedRest,
+                title = "默认按休息日评价",
+                body = "日总结按恢复、睡眠和娱乐边界评价；周总结仍按每天目标判断节奏。",
+                enabled = !loading,
+                onChange = {
+                    markSummaryEdited()
+                    plannedRest = it
+                },
+            )
             SectionTitle("每周计划")
             Text(
                 text = "只填写需要覆盖默认目标的日期；空白会复用上面的默认目标。",
@@ -522,30 +507,16 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 },
             )
             SectionTitle("监督模式")
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "偏离目标时主动提醒",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Text(
-                        text = "保存计划时生成应用匹配规则；之后按间隔定时复核，或在阈值触发时由 AI 复核。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextMuted,
-                    )
-                }
-                Switch(
-                    checked = supervisionEnabled,
-                    onCheckedChange = {
-                        markSummaryEdited()
-                        supervisionEnabled = it
-                    },
-                    enabled = !loading,
-                )
-            }
+            com.monika.dashboard.ui.components.PreferenceSwitchRow(
+                checked = supervisionEnabled,
+                title = "偏离目标时主动提醒",
+                body = "保存计划时生成应用匹配规则；之后按间隔定时复核，或在阈值触发时由 AI 复核。",
+                enabled = !loading,
+                onChange = {
+                    markSummaryEdited()
+                    supervisionEnabled = it
+                },
+            )
             if (supervisionEnabled) {
                 SegmentedControl(
                     options = listOf("定时复核", "阈值触发"),
@@ -555,95 +526,48 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                         supervisionCheckMode = if (it == 1) "triggered" else "hourly"
                     },
                 )
-                Row(
+                OutlinedTextField(
+                    value = supervisionCheckIntervalMinutes,
+                    onValueChange = {
+                        markSummaryEdited()
+                        supervisionCheckIntervalMinutes = it.filter { ch -> ch.isDigit() }.take(3)
+                    },
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    OutlinedTextField(
-                        value = supervisionCheckIntervalMinutes,
-                        onValueChange = {
-                            markSummaryEdited()
-                            supervisionCheckIntervalMinutes = it.filter { ch -> ch.isDigit() }.take(3)
-                        },
-                        modifier = Modifier.weight(1f),
-                        enabled = !loading,
-                        label = { Text("复核间隔分钟") },
-                        singleLine = true,
-                    )
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "偏离时震动",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                            Text(
-                                text = "切回目标应用后停止",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextMuted,
-                            )
-                        }
-                        Switch(
-                            checked = supervisionVibrate,
-                            onCheckedChange = {
-                                markSummaryEdited()
-                                supervisionVibrate = it
-                            },
-                            enabled = !loading,
-                        )
-                    }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "睡着时跳过",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        Text(
-                            text = "仅使用手表睡眠数据判断，避免手机息屏误判。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextMuted,
-                        )
-                    }
-                    Switch(
-                        checked = supervisionSkipWatchSleep,
-                        onCheckedChange = {
-                            markSummaryEdited()
-                            supervisionSkipWatchSleep = it
-                        },
-                        enabled = !loading,
-                    )
-                }
+                    enabled = !loading,
+                    label = { Text("复核间隔分钟") },
+                    singleLine = true,
+                )
+                com.monika.dashboard.ui.components.PreferenceSwitchRow(
+                    checked = supervisionVibrate,
+                    title = "偏离时震动",
+                    body = "切回目标应用后停止。",
+                    enabled = !loading,
+                    onChange = {
+                        markSummaryEdited()
+                        supervisionVibrate = it
+                    },
+                )
+                com.monika.dashboard.ui.components.PreferenceSwitchRow(
+                    checked = supervisionSkipWatchSleep,
+                    title = "睡着时跳过",
+                    body = "仅使用手表睡眠数据判断，避免手机息屏误判。",
+                    enabled = !loading,
+                    onChange = {
+                        markSummaryEdited()
+                        supervisionSkipWatchSleep = it
+                    },
+                )
                 if (BuildConfig.PRIVILEGED_FEATURES) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "LSPosed 短时冻结偏离应用",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                            Text(
-                                text = "优先使用系统挂起，图标变灰且不能启动；失败时才短时停止应用。系统、桌面、安全组件和本应用会硬保护。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextMuted,
-                            )
-                        }
-                        Switch(
-                            checked = supervisionLspFreeze,
-                            onCheckedChange = {
-                                markSummaryEdited()
-                                supervisionLspFreeze = it
-                            },
-                            enabled = !loading,
-                        )
-                    }
+                    com.monika.dashboard.ui.components.PreferenceSwitchRow(
+                        checked = supervisionLspFreeze,
+                        title = "LSPosed 短时冻结偏离应用",
+                        body = "优先使用系统挂起；失败时才短时停止应用。系统、桌面、安全组件和本应用始终不会被冻结。",
+                        enabled = !loading,
+                        onChange = {
+                            markSummaryEdited()
+                            supervisionLspFreeze = it
+                        },
+                    )
                     Button(
                         onClick = {
                             if (unfreezeReady) {
@@ -706,7 +630,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     !supervisionRulesUpdatedAt.isNullOrBlank() -> "规则已更新 ${formatClock(supervisionRulesUpdatedAt.orEmpty())}"
                     else -> "保存后生成监督规则"
                 }
-                StatusPill(
+                StatusBlock(
                     text = supervisionMeta,
                     tone = if (!supervisionRulesError.isNullOrBlank()) DashboardTone.Warn else DashboardTone.Neutral,
                 )
@@ -823,14 +747,14 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
             )
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(
                     onClick = { testAiConnection() },
                     enabled = !aiLocked && !aiLoading,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(if (aiLoading) "处理中" else "测试并获取模型")
                 }
@@ -838,15 +762,10 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     onClick = { saveAiConfig() },
                     enabled = !aiLocked && !aiLoading,
                     colors = PrimaryActionColors(),
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("保存 AI 配置")
                 }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
                 TextButton(
                     onClick = { loadAiConfig() },
                     enabled = !aiLoading,

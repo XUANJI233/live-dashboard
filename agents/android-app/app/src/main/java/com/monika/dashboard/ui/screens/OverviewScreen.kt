@@ -1,6 +1,8 @@
 package com.monika.dashboard.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -8,9 +10,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -26,6 +30,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.monika.dashboard.data.SettingsStore
@@ -38,8 +43,10 @@ import com.monika.dashboard.ui.components.MarkdownText
 import com.monika.dashboard.ui.components.ScreenHeader
 import com.monika.dashboard.ui.components.SegmentedControl
 import com.monika.dashboard.ui.components.SectionTitle
+import com.monika.dashboard.ui.components.StatusBlock
 import com.monika.dashboard.ui.components.StatusPill
 import com.monika.dashboard.ui.components.friendlyErrorMessage
+import com.monika.dashboard.ui.theme.SurfaceMuted
 import com.monika.dashboard.ui.theme.TextMuted
 import java.time.Instant
 import java.time.LocalDate
@@ -57,6 +64,7 @@ fun OverviewScreen(settings: SettingsStore) {
     val scope = rememberCoroutineScope()
     var selectedDate by rememberSaveable { mutableStateOf(today.toString()) }
     var selectedPeriod by rememberSaveable { mutableIntStateOf(0) }
+    var dateWindowOffset by rememberSaveable { mutableIntStateOf(0) }
     var loading by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -98,8 +106,8 @@ fun OverviewScreen(settings: SettingsStore) {
         loading = false
     }
 
-    val days = remember(today) {
-        (0L..6L).map { offset -> today.minusDays(offset) }
+    val days = remember(today, dateWindowOffset) {
+        (0L..6L).map { offset -> today.minusDays(offset + dateWindowOffset.toLong()) }
     }
     val segments = timeline?.segments.orEmpty()
     val appUsage = remember(segments) { aggregateUsage(segments) }
@@ -127,27 +135,15 @@ fun OverviewScreen(settings: SettingsStore) {
         }
 
         item {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(days, key = { it.toString() }) { day ->
-                    val selected = day.toString() == selectedDate
-                    FilterChip(
-                        selected = selected,
-                        onClick = { selectedDate = day.toString() },
-                        label = {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    text = day.format(DateTimeFormatter.ofPattern("MM/dd")),
-                                    style = MaterialTheme.typography.labelSmall,
-                                )
-                                Text(
-                                    text = dayLabel(day, today),
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                        },
-                    )
-                }
-            }
+            DateSelector(
+                days = days,
+                today = today,
+                selectedDate = selectedDate,
+                onSelectDate = { selectedDate = it },
+                onOlder = { dateWindowOffset += 7 },
+                onNewer = { dateWindowOffset = (dateWindowOffset - 7).coerceAtLeast(0) },
+                newerEnabled = dateWindowOffset > 0,
+            )
         }
 
         item {
@@ -155,29 +151,37 @@ fun OverviewScreen(settings: SettingsStore) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalAlignment = Alignment.Top,
                 ) {
-                    SectionTitle(
-                        title = if (isWeekly) "AI 周总结" else "AI 日总结",
-                        meta = (if (isWeekly) weeklySummary?.generatedAt else dailySummary?.generatedAt)?.let { "生成 ${formatClock(it)}" },
+                    Column(
                         modifier = Modifier.weight(1f),
-                    )
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        SectionTitle(
+                            title = if (isWeekly) "AI 周总结" else "AI 日总结",
+                            meta = (if (isWeekly) weeklySummary?.generatedAt else dailySummary?.generatedAt)?.let { "生成 ${formatClock(it)}" },
+                        )
+                        StatusPill(
+                            text = summaryModeLabel(if (isWeekly) weeklySummary?.mode else dailySummary?.mode),
+                            tone = DashboardTone.Neutral,
+                        )
+                    }
                     TextButton(
                         onClick = { refreshSummary() },
                         enabled = !loading && !refreshing,
+                        modifier = Modifier.widthIn(min = 64.dp),
                     ) {
                         Text(if (refreshing) "刷新中" else "刷新")
                     }
                 }
-                StatusPill(
-                    text = summaryModeLabel(if (isWeekly) weeklySummary?.mode else dailySummary?.mode),
-                    tone = DashboardTone.Neutral,
-                )
+                if (loading) {
+                    StatusBlock(text = "正在读取总结和时间线", tone = DashboardTone.Info)
+                }
                 MarkdownText(
                     text = if (isWeekly) {
-                        weeklySummary?.summary ?: "服务端还没有生成这一周的 AI 总结；点击刷新可让服务器立即生成。"
+                        weeklySummary?.summary ?: "这一周还没有 AI 总结，点「刷新」让服务器现在生成。"
                     } else {
-                        dailySummary?.summary ?: "服务端还没有生成这天的 AI 总结；点击刷新可让服务器立即生成。"
+                        dailySummary?.summary ?: "这天还没有 AI 总结，点「刷新」让服务器现在生成。"
                     },
                 )
             }
@@ -208,7 +212,7 @@ fun OverviewScreen(settings: SettingsStore) {
             }
         } else {
             items(appUsage.take(8), key = { "${it.appName}:${it.deviceName}" }) { item ->
-                UsageRow(item)
+                UsageRow(item, totalSeconds)
             }
         }
 
@@ -236,6 +240,61 @@ private data class OverviewLoad(
     val weeklySummary: ReportClient.WeeklySummary?,
     val timeline: ReportClient.TimelineResponse,
 )
+
+@Composable
+private fun DateSelector(
+    days: List<LocalDate>,
+    today: LocalDate,
+    selectedDate: String,
+    onSelectDate: (String) -> Unit,
+    onOlder: () -> Unit,
+    onNewer: () -> Unit,
+    newerEnabled: Boolean,
+) {
+    DashboardCard(contentPadding = 12.dp) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = onOlder,
+                modifier = Modifier.widthIn(min = 64.dp),
+            ) { Text("更早") }
+            Text(
+                text = "${days.last().format(DateTimeFormatter.ofPattern("MM/dd"))} - ${days.first().format(DateTimeFormatter.ofPattern("MM/dd"))}",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextMuted,
+            )
+            TextButton(
+                onClick = onNewer,
+                enabled = newerEnabled,
+                modifier = Modifier.widthIn(min = 64.dp),
+            ) { Text("更晚") }
+        }
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(days, key = { it.toString() }) { day ->
+                val selected = day.toString() == selectedDate
+                FilterChip(
+                    selected = selected,
+                    onClick = { onSelectDate(day.toString()) },
+                    label = {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = day.format(DateTimeFormatter.ofPattern("MM/dd")),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                            Text(
+                                text = dayLabel(day, today),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    },
+                )
+            }
+        }
+    }
+}
 
 private suspend fun loadOverviewData(
     settings: SettingsStore,
@@ -316,7 +375,12 @@ private fun aggregateUsage(segments: List<ReportClient.TimelineSegment>): List<U
         .sortedByDescending { it.durationSeconds }
 
 @Composable
-private fun UsageRow(item: UsageItem) {
+private fun UsageRow(item: UsageItem, totalSeconds: Int) {
+    val fraction = if (totalSeconds > 0) {
+        item.durationSeconds.toFloat() / totalSeconds.toFloat()
+    } else {
+        0f
+    }
     DashboardCard(contentPadding = 12.dp) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -329,6 +393,21 @@ private fun UsageRow(item: UsageItem) {
                 Text(text = item.deviceName, style = MaterialTheme.typography.bodySmall, color = TextMuted)
             }
             StatusPill(text = formatDuration(item.durationSeconds), tone = DashboardTone.Neutral)
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(4.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(SurfaceMuted),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(fraction.coerceIn(0.04f, 1f))
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(MaterialTheme.colorScheme.tertiary),
+            )
         }
     }
 }
@@ -348,7 +427,13 @@ private fun TimelineRow(segment: ReportClient.TimelineSegment) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(text = segment.appName.ifBlank { "未知应用" }, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = segment.appName.ifBlank { "未知应用" },
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                     Text(
                         text = formatDuration(segment.durationSeconds),
                         style = MaterialTheme.typography.labelSmall,

@@ -27,6 +27,7 @@ internal fun parseSupervisionRules(json: JSONObject?): SupervisionRules {
     return SupervisionRules(
         whitelistAppRegex = parseStringArray(json.optJSONArray("whitelist_app_regex")),
         blacklistAppRegex = parseStringArray(json.optJSONArray("blacklist_app_regex")),
+        riskAppRegex = parseStringArray(json.optJSONArray("risk_app_regex")),
         targetAppRegex = parseStringArray(json.optJSONArray("target_app_regex")),
         reason = json.optString("reason").take(180),
     )

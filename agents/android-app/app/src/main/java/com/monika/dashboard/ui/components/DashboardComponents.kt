@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -200,14 +201,21 @@ fun SectionTitle(
     ) {
         Text(
             text = title,
+            modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         if (!meta.isNullOrBlank()) {
+            Spacer(modifier = Modifier.width(12.dp))
             Text(
                 text = meta,
+                modifier = Modifier.widthIn(max = 172.dp),
                 style = MaterialTheme.typography.labelSmall,
                 color = TextMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -220,7 +228,7 @@ fun StatusPill(
     tone: DashboardTone = DashboardTone.Neutral,
 ) {
     Surface(
-        modifier = modifier,
+        modifier = modifier.widthIn(max = 220.dp),
         shape = RoundedCornerShape(999.dp),
         color = tone.surfaceColor(),
         border = BorderStroke(1.dp, Border),
@@ -275,6 +283,7 @@ fun InitialBadge(
             color = tone.contentColor(),
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -300,7 +309,12 @@ fun MetricTile(
 ) {
     DashboardCard(modifier = modifier, tone = tone, contentPadding = 12.dp) {
         Text(text = label, style = MaterialTheme.typography.labelSmall, color = TextMuted)
-        Text(text = value, style = MaterialTheme.typography.titleLarge)
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

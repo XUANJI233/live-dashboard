@@ -26,7 +26,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -54,10 +53,9 @@ import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.realtime.MessageSocketManager
 import com.monika.dashboard.service.HeartbeatWorker
 import com.monika.dashboard.system.LsposedConfigBridge
-import com.monika.dashboard.ui.components.CompactDivider
 import com.monika.dashboard.ui.components.DashboardCard
-import com.monika.dashboard.ui.components.DashboardSwitchColors
 import com.monika.dashboard.ui.components.DashboardTone
+import com.monika.dashboard.ui.components.PreferenceSwitchRow
 import com.monika.dashboard.ui.components.ScreenHeader
 import com.monika.dashboard.ui.components.SectionTitle
 import com.monika.dashboard.ui.components.StatusPill
@@ -265,7 +263,7 @@ fun SetupScreen(settings: SettingsStore, showHeader: Boolean = true) {
             item {
                 DashboardCard {
                     SectionTitle("上报范围")
-                    SettingSwitchRow(
+                    PreferenceSwitchRow(
                         checked = highFrequencyInput,
                         title = "高频上报",
                         body = "每 5 秒上传一次状态；只在确实需要实时细节时开启。",
@@ -315,7 +313,7 @@ fun SetupScreen(settings: SettingsStore, showHeader: Boolean = true) {
                         networkInput = it
                         scope.launch { settings.setUploadNetwork(it); notifySaved() }
                     }
-                    SettingSwitchRow(
+                    PreferenceSwitchRow(
                         checked = locationInput,
                         title = "最近位置",
                         body = "只使用系统最近已知位置，不主动高频定位。",
@@ -327,7 +325,7 @@ fun SetupScreen(settings: SettingsStore, showHeader: Boolean = true) {
                             notifySaved()
                         }
                     }
-                    SettingSwitchRow(
+                    PreferenceSwitchRow(
                         checked = vpnInput,
                         title = "VPN 状态",
                         body = "只上传是否连接 VPN 和系统提供的 VPN 名称。",
@@ -335,7 +333,7 @@ fun SetupScreen(settings: SettingsStore, showHeader: Boolean = true) {
                         vpnInput = it
                         scope.launch { settings.setUploadVpnStatus(it); notifySaved() }
                     }
-                    SettingSwitchRow(
+                    PreferenceSwitchRow(
                         checked = debugInput,
                         title = "调试模式",
                         body = "在诊断页显示最近上传 payload 和本地日志。",
@@ -501,7 +499,7 @@ private fun UploadSwitch(
         status.ok -> DashboardTone.Good
         else -> DashboardTone.Bad
     }
-    SettingSwitchRow(
+    PreferenceSwitchRow(
         checked = checked,
         title = title,
         body = body,
@@ -545,41 +543,6 @@ private fun CapabilityOption(
                 Text(text = body, style = MaterialTheme.typography.bodySmall, color = TextMuted)
             }
         }
-    }
-}
-
-@Composable
-private fun SettingSwitchRow(
-    checked: Boolean,
-    title: String,
-    body: String,
-    trailing: (@Composable () -> Unit)? = null,
-    onChange: (Boolean) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Switch(
-                checked = checked,
-                onCheckedChange = onChange,
-                colors = DashboardSwitchColors(),
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(text = title, style = MaterialTheme.typography.titleSmall)
-                    trailing?.invoke()
-                }
-                Text(text = body, style = MaterialTheme.typography.bodySmall, color = TextMuted)
-            }
-        }
-        CompactDivider()
     }
 }
 

@@ -16,6 +16,7 @@ final class LspDeviceCommandProtocol {
     static final String TYPE_RECEIPT_ACK = "device_command_receipt_received";
     static final String TYPE_RESULT_ACK = "device_command_result_received";
     static final String KIND_SUPERVISION = "supervision";
+    static final String KIND_SUPERVISION_POLICY = "supervision_policy";
     static final long VIBRATE_MS = 650L;
 
     private LspDeviceCommandProtocol() {}

@@ -31,6 +31,7 @@ fun SupervisionRulesView(rules: SupervisionRules) {
         }
         SupervisionRuleLine("目标", rules.targetAppRegex)
         SupervisionRuleLine("偏离", rules.blacklistAppRegex)
+        SupervisionRuleLine("风险", rules.riskAppRegex)
         SupervisionRuleLine("放行", rules.whitelistAppRegex)
     }
 }

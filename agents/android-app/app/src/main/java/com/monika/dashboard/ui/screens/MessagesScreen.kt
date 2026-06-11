@@ -12,9 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -42,6 +40,7 @@ import com.monika.dashboard.ui.components.DashboardCard
 import com.monika.dashboard.ui.components.DashboardTone
 import com.monika.dashboard.ui.components.EmptyState
 import com.monika.dashboard.ui.components.InitialBadge
+import com.monika.dashboard.ui.components.ReplyComposer
 import com.monika.dashboard.ui.components.ScreenHeader
 import com.monika.dashboard.ui.components.SectionTitle
 import com.monika.dashboard.ui.components.StatusPill
@@ -140,7 +139,7 @@ fun MessagesScreen(settings: SettingsStore, showHeader: Boolean = true) {
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             InitialBadge(text = "访", tone = DashboardTone.Info)
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = activeRemark.ifBlank { activeName },
                                     style = MaterialTheme.typography.titleMedium,
@@ -233,36 +232,26 @@ fun MessagesScreen(settings: SettingsStore, showHeader: Boolean = true) {
 
             item {
                 DashboardCard {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        OutlinedTextField(
-                            value = replyText,
-                            onValueChange = { replyText = it.take(500) },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            placeholder = { Text("回复当前访客") },
-                            shape = RoundedCornerShape(10.dp),
-                        )
-                        Button(
-                            enabled = activeViewer != null && replyText.isNotBlank(),
-                            onClick = {
-                                val viewerId = activeViewer ?: return@Button
-                                val related = activeMessages.lastOrNull()?.id.orEmpty()
-                                val text = replyText.trim()
-                                replyText = ""
-                                scope.launch(Dispatchers.IO) {
-                                    syncMessageAction(settings) { client ->
-                                        client.replyToMessage(related, viewerId, text)
-                                    }
-                                    delay(200)
-                                    syncMessages()
-                                    blockTick++
+                    ReplyComposer(
+                        value = replyText,
+                        onValueChange = { replyText = it },
+                        placeholder = "回复当前访客",
+                        sendEnabled = activeViewer != null && replyText.isNotBlank(),
+                        onSend = {
+                            val viewerId = activeViewer ?: return@ReplyComposer
+                            val related = activeMessages.lastOrNull()?.id.orEmpty()
+                            val text = replyText.trim()
+                            replyText = ""
+                            scope.launch(Dispatchers.IO) {
+                                syncMessageAction(settings) { client ->
+                                    client.replyToMessage(related, viewerId, text)
                                 }
-                            },
-                            shape = RoundedCornerShape(10.dp),
-                        ) {
-                            Text("发送")
-                        }
-                    }
+                                delay(200)
+                                syncMessages()
+                                blockTick++
+                            }
+                        },
+                    )
                 }
             }
 

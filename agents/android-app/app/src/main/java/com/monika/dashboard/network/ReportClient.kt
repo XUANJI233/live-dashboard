@@ -12,6 +12,7 @@ import android.util.Base64
 import com.monika.dashboard.data.DebugLog
 import com.monika.dashboard.data.UploadStatusStore
 import com.monika.dashboard.data.VisitorMessage
+import com.monika.dashboard.realtime.MessageSocketManager
 import java.net.SocketTimeoutException
 import java.net.URLEncoder
 import java.net.URI
@@ -20,6 +21,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.Instant
 import java.util.TimeZone
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
 import javax.crypto.Mac
@@ -536,52 +538,32 @@ class ReportClient(
     }
 
     fun refreshDailySummary(date: String): Result<DailySummary> {
-        val body = JSONObject().apply {
-            put("date", date)
-            put("tz", clientTimezoneOffsetMinutes())
-        }
-        val request = Request.Builder()
-            .url("${serverUrl.trimEnd('/')}/api/daily-summary")
-            .addHeader("Authorization", "Bearer $token")
-            .addHeader("Content-Type", "application/json")
-            .post(body.toString().toRequestBody(jsonMediaType))
-            .build()
-
         return try {
-            val response = slowClient.newCall(request).execute()
-            response.use {
-                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(it.body?.string())}"))
-                val json = JSONObject(it.body?.string().orEmpty())
-                Result.success(
-                    DailySummary(
-                        date = json.optString("date", date),
-                        summary = json.optString("summary").takeIf { value -> value.isNotBlank() && value != "null" },
-                        generatedAt = json.optString("generated_at").takeIf { value -> value.isNotBlank() && value != "null" },
-                        mode = json.optString("mode").takeIf { value -> value.isNotBlank() && value != "null" },
-                    ),
-                )
-            }
+            val result = executeAiJob(
+                kind = "daily_summary",
+                payload = JSONObject().apply {
+                    put("date", date)
+                    put("tz", clientTimezoneOffsetMinutes())
+                },
+            ).getOrThrow()
+            Result.success(parseDailySummary(result, date))
         } catch (e: Exception) {
             Result.failure(aiPendingFailure(e))
         }
     }
 
     fun refreshWeeklySummary(date: String): Result<WeeklySummary> {
-        val body = JSONObject().apply {
-            put("date", date)
-            put("tz", clientTimezoneOffsetMinutes())
-        }
-        val request = Request.Builder()
-            .url("${serverUrl.trimEnd('/')}/api/weekly-summary")
-            .addHeader("Authorization", "Bearer $token")
-            .addHeader("Content-Type", "application/json")
-            .post(body.toString().toRequestBody(jsonMediaType))
-            .build()
-
         return try {
-            executeSummaryRequest(request, date)
+            val result = executeAiJob(
+                kind = "weekly_summary",
+                payload = JSONObject().apply {
+                    put("date", date)
+                    put("tz", clientTimezoneOffsetMinutes())
+                },
+            ).getOrThrow()
+            Result.success(parseWeeklySummary(result, date))
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure(aiPendingFailure(e))
         }
     }
 
@@ -666,13 +648,13 @@ class ReportClient(
             val body = encryptedAiConfigBodyFromServer(apiUrl, apiKey, model).getOrElse {
                 return Result.failure(it)
             }
-            val request = Request.Builder()
-                .url("${serverUrl.trimEnd('/')}/api/ai-config/test")
-                .addHeader("Authorization", "Bearer $token")
-                .addHeader("Content-Type", "application/json")
-                .post(body.toString().toRequestBody(jsonMediaType))
-                .build()
-            executeAiConfigTestRequest(request)
+            val result = executeAiJob("ai_config_test", body).getOrThrow()
+            val parsed = parseAiConfigTest(result)
+            DebugLog.log(
+                "AI",
+                "测试结果: ok=${parsed.ok} selected=${parsed.selectedModel.ifBlank { "none" }} models=${parsed.models.size} message=${sanitizeLogText(parsed.message).take(800)}"
+            )
+            Result.success(parsed)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -798,19 +780,151 @@ class ReportClient(
                     _slowShared?.let { return it }
                     _slowShared = sharedClient.newBuilder()
                         .writeTimeout(30, TimeUnit.SECONDS)
-                        .readTimeout(90, TimeUnit.SECONDS)
-                        .callTimeout(120, TimeUnit.SECONDS)
+                        .readTimeout(AI_REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+                        .callTimeout(AI_REQUEST_TIMEOUT_MINUTES, TimeUnit.MINUTES)
                         .build()
                     return _slowShared!!
                 }
             }
 
         const val PUBLIC_RECENT_HOURS = 168
+        private const val AI_REQUEST_TIMEOUT_MINUTES = 5L
+        private const val AI_JOB_ACK_TIMEOUT_MS = 4_000L
+        private const val AI_JOB_PUSH_WAIT_MS = 30_000L
+        private const val AI_JOB_POLL_INTERVAL_MS = 2_000L
+        private const val AI_JOB_MAX_WAIT_MS = AI_REQUEST_TIMEOUT_MINUTES * 60_000L
         private const val CURVE25519_KEY_SIZE = 32
         private const val AES_256_KEY_SIZE = 32
         private const val AES_GCM_NONCE_SIZE = 12
         private const val AI_CONFIG_ENCRYPTION_ALG = "X25519-A256GCM-HS256"
     }
+
+    private fun executeAiJob(kind: String, payload: JSONObject): Result<JSONObject> {
+        val clientRequestId = "req_${UUID.randomUUID()}"
+        val aiRequest = JSONObject().apply {
+            put("type", "ai_request")
+            put("request_id", clientRequestId)
+            put("kind", kind)
+            put("payload", payload)
+        }
+
+        val wsAck = MessageSocketManager.sendAiRequest(aiRequest, AI_JOB_ACK_TIMEOUT_MS)
+        val submitted = if (wsAck != null) {
+            if (!wsAck.optBoolean("accepted", false)) {
+                return Result.failure(IOException(aiJobErrorText(wsAck)))
+            }
+            wsAck
+        } else {
+            submitAiJobOverHttp(aiRequest).getOrElse { return Result.failure(it) }
+        }
+
+        val initialJob = submitted.optJSONObject("job")
+            ?: return Result.failure(IOException("AI job response missing job"))
+        val jobRequestId = initialJob.optString("request_id").ifBlank {
+            submitted.optString("job_request_id").ifBlank { clientRequestId }
+        }
+        return awaitAiJobResult(jobRequestId, initialJob)
+    }
+
+    private fun submitAiJobOverHttp(aiRequest: JSONObject): Result<JSONObject> {
+        val request = Request.Builder()
+            .url("${serverUrl.trimEnd('/')}/api/ai-jobs")
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Content-Type", "application/json")
+            .post(aiRequest.toString().toRequestBody(jsonMediaType))
+            .build()
+
+        return try {
+            val response = client.newCall(request).execute()
+            response.use {
+                val raw = it.body?.string().orEmpty()
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(raw)}"))
+                Result.success(JSONObject(raw))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun awaitAiJobResult(requestId: String, initialJob: JSONObject): Result<JSONObject> {
+        aiJobResult(initialJob)?.let { return it }
+        MessageSocketManager.waitForAiJob(requestId, AI_JOB_PUSH_WAIT_MS)?.let { pushed ->
+            aiJobResult(pushed)?.let { return it }
+        }
+
+        val deadline = System.currentTimeMillis() + AI_JOB_MAX_WAIT_MS
+        var latest = initialJob
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                TimeUnit.MILLISECONDS.sleep(AI_JOB_POLL_INTERVAL_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return Result.failure(IOException("AI job wait interrupted"))
+            }
+            latest = fetchAiJob(requestId).getOrElse { return Result.failure(it) }
+            aiJobResult(latest)?.let { return it }
+        }
+        val status = latest.optString("status", "running")
+        return Result.failure(IOException("服务端仍在处理 AI 请求，请稍后刷新结果。status=$status"))
+    }
+
+    private fun fetchAiJob(requestId: String): Result<JSONObject> {
+        val request = Request.Builder()
+            .url("${serverUrl.trimEnd('/')}/api/ai-jobs?request_id=${URLEncoder.encode(requestId, "UTF-8")}")
+            .addHeader("Authorization", "Bearer $token")
+            .get()
+            .build()
+
+        return try {
+            val response = client.newCall(request).execute()
+            response.use {
+                val raw = it.body?.string().orEmpty()
+                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(raw)}"))
+                val job = JSONObject(raw).optJSONObject("job")
+                    ?: return Result.failure(IOException("AI job response missing job"))
+                Result.success(job)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun aiJobResult(job: JSONObject): Result<JSONObject>? {
+        return when (job.optString("status")) {
+            "succeeded" -> Result.success(job.optJSONObject("result") ?: JSONObject())
+            "failed" -> Result.failure(IOException(aiJobErrorText(job.optJSONObject("error") ?: job)))
+            else -> null
+        }
+    }
+
+    private fun aiJobErrorText(json: JSONObject): String {
+        val code = json.optString("code").takeIf { it.isNotBlank() }
+        val message = json.optString("message").ifBlank {
+            json.optString("error").ifBlank { "AI job failed" }
+        }
+        return listOfNotNull(code, message.takeIf { it.isNotBlank() })
+            .joinToString(": ")
+            .let(::sanitizeLogText)
+            .take(1000)
+            .ifBlank { "AI job failed" }
+    }
+
+    private fun parseDailySummary(json: JSONObject, fallbackDate: String): DailySummary =
+        DailySummary(
+            date = json.optString("date", fallbackDate),
+            summary = json.optString("summary").takeIf { value -> value.isNotBlank() && value != "null" },
+            generatedAt = json.optString("generated_at").takeIf { value -> value.isNotBlank() && value != "null" },
+            mode = json.optString("mode").takeIf { value -> value.isNotBlank() && value != "null" },
+        )
+
+    private fun parseWeeklySummary(json: JSONObject, fallbackDate: String): WeeklySummary =
+        WeeklySummary(
+            weekStart = json.optString("week_start", fallbackDate),
+            weekEnd = json.optString("week_end", fallbackDate),
+            summary = json.optString("summary").takeIf { value -> value.isNotBlank() && value != "null" },
+            generatedAt = json.optString("generated_at").takeIf { value -> value.isNotBlank() && value != "null" },
+            mode = json.optString("mode").takeIf { value -> value.isNotBlank() && value != "null" },
+        )
 
     private fun executeSummaryRequest(request: Request, fallbackDate: String): Result<WeeklySummary> {
         return try {
@@ -926,28 +1040,6 @@ class ReportClient(
             Result.success(encryptedAiConfigBody(apiUrl, apiKey, model, serverPublicKey))
         } catch (e: Exception) {
             Result.failure(e)
-        }
-    }
-
-    private fun executeAiConfigTestRequest(request: Request): Result<AiConfigTestResult> {
-        return try {
-            val response = slowClient.newCall(request).execute()
-            response.use {
-                val raw = it.body?.string().orEmpty()
-                DebugLog.log("AI", "测试响应 HTTP ${it.code}: ${sanitizeLogText(raw).take(1200)}")
-                if (!it.isSuccessful) return Result.failure(IOException("HTTP ${it.code}: ${errorText(raw)}"))
-                val json = JSONObject(raw)
-                val parsed = parseAiConfigTest(json)
-                DebugLog.log(
-                    "AI",
-                    "测试结果: ok=${parsed.ok} selected=${parsed.selectedModel.ifBlank { "none" }} models=${parsed.models.size} message=${sanitizeLogText(parsed.message).take(800)}"
-                )
-                Result.success(parsed)
-            }
-        } catch (e: Exception) {
-            val failure = aiPendingFailure(e)
-            DebugLog.log("AI", "测试异常: ${sanitizeLogText(failure.message.orEmpty()).take(800)}")
-            Result.failure(failure)
         }
     }
 
@@ -1095,6 +1187,8 @@ internal fun putNormalAndroidCapabilities(device: JSONObject) {
             put("vibrate", true)
             put("screen_off", false)
             put("say", true)
+            put("risk_app_monitor", false)
+            put("app_time_limit", false)
         },
     )
 }

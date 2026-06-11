@@ -12,11 +12,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -39,6 +36,7 @@ import com.monika.dashboard.ui.components.DashboardCard
 import com.monika.dashboard.ui.components.DashboardTone
 import com.monika.dashboard.ui.components.EmptyState
 import com.monika.dashboard.ui.components.InitialBadge
+import com.monika.dashboard.ui.components.ReplyComposer
 import com.monika.dashboard.ui.components.ScreenHeader
 import com.monika.dashboard.ui.components.SectionTitle
 import com.monika.dashboard.ui.components.StatusPill
@@ -135,36 +133,26 @@ fun BoardScreen(settings: SettingsStore, showHeader: Boolean = true) {
                     style = MaterialTheme.typography.bodySmall,
                     color = TextMuted,
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
-                        value = replyText,
-                        onValueChange = { replyText = it.take(500) },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        placeholder = { Text("写一条公开回复") },
-                        shape = RoundedCornerShape(10.dp),
-                    )
-                    Button(
-                        enabled = replyText.isNotBlank() && replyTarget != null,
-                        onClick = {
-                            val text = replyText.trim()
-                            val target = replyTarget ?: return@Button
-                            replyText = ""
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    boardWriteAction(settings) { client ->
-                                        client.replyToMessage(target.id, "__public__", text)
-                                    }
+                ReplyComposer(
+                    value = replyText,
+                    onValueChange = { replyText = it },
+                    placeholder = "写一条公开回复",
+                    sendEnabled = replyText.isNotBlank() && replyTarget != null,
+                    onSend = {
+                        val text = replyText.trim()
+                        val target = replyTarget ?: return@ReplyComposer
+                        replyText = ""
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                boardWriteAction(settings) { client ->
+                                    client.replyToMessage(target.id, "__public__", text)
                                 }
-                                delay(200)
-                                loadPublicMessages()
                             }
-                        },
-                        shape = RoundedCornerShape(10.dp),
-                    ) {
-                        Text("发送")
-                    }
-                }
+                            delay(200)
+                            loadPublicMessages()
+                        }
+                    },
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -198,7 +186,7 @@ fun BoardScreen(settings: SettingsStore, showHeader: Boolean = true) {
             item {
                 EmptyState(
                     title = "暂无公开留言",
-                    body = "游客在网页公开留言板发言后会出现在这里。",
+                    body = "访客在网页公开留言板发言后会出现在这里。",
                 )
             }
         } else {
@@ -242,6 +230,7 @@ fun BoardScreen(settings: SettingsStore, showHeader: Boolean = true) {
                             ) {
                                 Text(
                                     text = if (isAdmin) "管理员" else message.viewerName.ifBlank { "访客" },
+                                    modifier = Modifier.weight(1f),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = TextMuted,
                                     maxLines = 1,
