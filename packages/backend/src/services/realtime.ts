@@ -6,7 +6,8 @@ import { processReportPayload, ReportPayloadError } from "./device-status-handle
 import { requestSupervisionCheckFromReportPayload } from "./supervision-report-trigger";
 import { deviceCommandReceiptWsResponse, deviceCommandResultWsResponse } from "./supervision-ack";
 import type { DeviceCommandEnvelope, DeliveryStatus } from "./mcp-contracts";
-import { aiJobInputErrorResponse, setAiJobNotifier, submitAiJobFromClient, type PublicAiJob } from "./ai-jobs";
+import { aiJobInputErrorResponse, setAiJobNotifier, submitAiJobFromClient } from "./ai-jobs";
+import { realtimeSocketHub, sendJson } from "./realtime-socket-hub";
 import {
   cleanDeviceId,
   cleanKind,
@@ -22,33 +23,19 @@ import {
   type MessageDirection,
   type StoredMessageKind,
 } from "./message-protocol";
-import type { DeviceInfo } from "../types";
+import type { WsData } from "./realtime-types";
 import type { ServerWebSocket } from "bun";
 
-type Role = "viewer" | "device";
-
-export interface WsData {
-  role: Role;
-  id: string;
-  device?: DeviceInfo;
-  deviceToken?: string;
-}
+export type { WsData } from "./realtime-types";
 
 const MESSAGE_TTL_MINUTES = 30;
 const VIEWER_RATE_LIMIT = 10;
 const VIEWER_API_RATE_LIMIT = 60;
 const VIEWER_WS_RATE_LIMIT = 30;
 const RATE_WINDOW_MS = 60_000;
-const PING_INTERVAL_MS = 25_000;
-const PONG_TIMEOUT_MS = 35_000;
-const MAX_VIEWER_SOCKETS_PER_VIEWER = 4;
-const MAX_VIEWER_SOCKETS_TOTAL = 1000;
 const GLOBAL_IP_RATE_LIMIT = 120; // 120 requests per minute per IP
 const MAX_GLOBAL_IP_RATE_KEYS = 20_000;
 
-const deviceSockets = new Map<string, ServerWebSocket<WsData>>();
-const viewerSockets = new Map<string, Set<ServerWebSocket<WsData>>>();
-const devicePongTimes = new Map<string, number>();
 const viewerRate = new Map<string, { count: number; resetAt: number }>();
 const viewerApiRate = new Map<string, { count: number; resetAt: number }>();
 const viewerWsRate = new Map<string, { count: number; resetAt: number }>();
@@ -81,20 +68,6 @@ const markDeviceOffline = db.prepare(`
   UPDATE device_states SET is_online = 0
   WHERE device_id = ? AND is_online = 1
 `);
-
-// ── WS keepalive: periodic ping → pong timeout → close stale connections ──
-const pingTimer = setInterval(() => {
-  const now = Date.now();
-  for (const [deviceId, ws] of deviceSockets) {
-    const lastPong = devicePongTimes.get(deviceId) ?? 0;
-    if (now - lastPong > PONG_TIMEOUT_MS) {
-      ws.close(4001, "pong timeout");
-      continue;
-    }
-    try { ws.ping(); } catch { /* socket may already be closing */ }
-  }
-}, PING_INTERVAL_MS);
-pingTimer.unref();
 
 // ── Rate limit cleanup: evict expired entries to prevent memory leaks ──
 const rateCleanupTimer = setInterval(() => {
@@ -276,49 +249,9 @@ const getMessageTargetDevice = db.prepare(`
   LIMIT 1
 `);
 
-function send(ws: ServerWebSocket<WsData>, payload: unknown) {
-  ws.send(JSON.stringify(payload));
-}
-
 setAiJobNotifier((job) => {
-  broadcastAiJobUpdate(job);
+  realtimeSocketHub.broadcastDevicePayload({ type: "ai_job_update", job }, { messageCapableOnly: true });
 });
-
-function broadcastAiJobUpdate(job: PublicAiJob): void {
-  const payload = JSON.stringify({ type: "ai_job_update", job });
-  for (const ws of deviceSockets.values()) {
-    if (ws.data.device?.platform === "zepp") continue;
-    try { ws.send(payload); } catch { /* polling fallback covers missed pushes */ }
-  }
-}
-
-function addViewerSocket(viewerId: string, ws: ServerWebSocket<WsData>) {
-  const sockets = viewerSockets.get(viewerId) ?? new Set<ServerWebSocket<WsData>>();
-  if (sockets.size >= MAX_VIEWER_SOCKETS_PER_VIEWER) {
-    const oldest = sockets.values().next().value as ServerWebSocket<WsData> | undefined;
-    if (oldest) {
-      sockets.delete(oldest);
-      try { oldest.close(1013, "viewer socket limit"); } catch { /* ignore */ }
-    }
-  }
-  sockets.add(ws);
-  viewerSockets.set(viewerId, sockets);
-}
-
-function removeViewerSocket(viewerId: string, ws: ServerWebSocket<WsData>) {
-  const sockets = viewerSockets.get(viewerId);
-  if (!sockets) return;
-  sockets.delete(ws);
-  if (sockets.size === 0) {
-    viewerSockets.delete(viewerId);
-  }
-}
-
-function forEachViewerSocket(callback: (ws: ServerWebSocket<WsData>) => void) {
-  for (const sockets of viewerSockets.values()) {
-    for (const viewerWs of sockets) callback(viewerWs);
-  }
-}
 
 function broadcastPublicMessage(message: {
   id: string;
@@ -329,39 +262,11 @@ function broadcastPublicMessage(message: {
   text: string;
   created_at: string;
 }) {
-  const payload = JSON.stringify({ type: "public_message", message_id: message.id, message });
-  forEachViewerSocket((viewerWs) => {
-    try { viewerWs.send(payload); } catch { /* ignore */ }
-  });
+  realtimeSocketHub.broadcastViewerPayload({ type: "public_message", message_id: message.id, message });
 }
 
 function broadcastPublicMessageDeleted(messageId: string) {
-  const payload = JSON.stringify({ type: "public_message_deleted", message_id: messageId });
-  forEachViewerSocket((viewerWs) => {
-    try { viewerWs.send(payload); } catch { /* ignore */ }
-  });
-}
-
-function sendToViewerSockets(viewerId: string, payload: unknown): number {
-  const sockets = viewerSockets.get(viewerId);
-  if (!sockets || sockets.size === 0) return 0;
-  let delivered = 0;
-  const encoded = JSON.stringify(payload);
-  for (const viewerWs of sockets) {
-    try {
-      viewerWs.send(encoded);
-      delivered += 1;
-    } catch {
-      // The close callback will remove dead sockets; ignore transient send errors here.
-    }
-  }
-  return delivered;
-}
-
-function viewerSocketCount() {
-  let count = 0;
-  for (const sockets of viewerSockets.values()) count += sockets.size;
-  return count;
+  realtimeSocketHub.broadcastViewerPayload({ type: "public_message_deleted", message_id: messageId });
 }
 
 function requestIp(req: Request): string {
@@ -450,15 +355,15 @@ function messageTargets(preferredDeviceId = ""): string[] {
   for (const row of getMessageTargetDevices.all() as { device_id: string }[]) {
     if (row.device_id) ids.add(row.device_id);
   }
-  for (const [id, ws] of deviceSockets) {
-    if (ws.data.device?.platform !== "zepp") ids.add(id);
+  for (const id of realtimeSocketHub.onlineMessageDeviceIds()) {
+    ids.add(id);
   }
   return Array.from(ids).slice(0, 20);
 }
 
 function supportsDeviceMessages(deviceId: string): boolean {
-  const socketDevice = deviceSockets.get(deviceId)?.data.device;
-  if (socketDevice) return socketDevice.platform !== "zepp";
+  const online = realtimeSocketHub.onlineDeviceSupportsMessages(deviceId);
+  if (online !== null) return online;
   return !!getMessageTargetDevice.get(deviceId);
 }
 
@@ -479,7 +384,7 @@ function deliverViewerMessage(
     if (queued?.delivered_at) return "sent";
   }
 
-  const deviceWs = deviceSockets.get(targetDeviceId);
+  const deviceWs = realtimeSocketHub.getDeviceSocket(targetDeviceId);
   if (deviceWs) {
     const message: Record<string, unknown> = {
       type: "viewer_message",
@@ -493,12 +398,11 @@ function deliverViewerMessage(
     const parsedPayload = parseMessagePayload(payloadText);
     if (parsedPayload) message.payload = parsedPayload;
     try {
-      send(deviceWs, message);
+      sendJson(deviceWs, message);
       markMessageDelivered.run(messageId, targetDeviceId);
       return "sent";
     } catch {
-      deviceSockets.delete(targetDeviceId);
-      devicePongTimes.delete(targetDeviceId);
+      realtimeSocketHub.removeDeviceById(targetDeviceId);
     }
   }
   return "queued";
@@ -514,14 +418,13 @@ export function deliverDeviceCommandMessage(input: {
   const payloadText = serializedMessagePayload(input.envelope);
   if (!payloadText) return { status: "failed", reason: "payload_too_large" };
 
-  const deviceWs = deviceSockets.get(input.deviceId);
+  const deviceWs = realtimeSocketHub.getDeviceSocket(input.deviceId);
   if (deviceWs) {
     try {
-      send(deviceWs, input.envelope);
+      sendJson(deviceWs, input.envelope);
       return { status: "sent", reason: "" };
     } catch {
-      deviceSockets.delete(input.deviceId);
-      devicePongTimes.delete(input.deviceId);
+      realtimeSocketHub.removeDeviceById(input.deviceId);
     }
   }
 
@@ -565,7 +468,7 @@ function deliverQueuedMessages(deviceId: string, ws: ServerWebSocket<WsData>) {
     };
     const payload = parseMessagePayload(row.payload);
     if (payload) message.payload = payload;
-    send(ws, message);
+    sendJson(ws, message);
   }
 }
 
@@ -590,7 +493,7 @@ export function getWsInfo(req: Request): WsData | Response {
     if (!wsRateLimit(viewer.viewerId)) {
       return Response.json({ error: "Too many WebSocket reconnects" }, { status: 429 });
     }
-    if (viewerSocketCount() >= MAX_VIEWER_SOCKETS_TOTAL) {
+    if (realtimeSocketHub.viewerSocketLimitReached()) {
       return Response.json({ error: "Too many WebSocket connections" }, { status: 503 });
     }
     return { role: "viewer", id: viewer.viewerId };
@@ -602,42 +505,37 @@ export function getWsInfo(req: Request): WsData | Response {
 export const realtimeWebSocket = {
   open(ws: ServerWebSocket<WsData>) {
     if (ws.data.role === "device") {
-      const previous = deviceSockets.get(ws.data.id);
-      if (previous && previous !== ws) {
-        try { previous.close(4000, "replaced by new device socket"); } catch { /* ignore */ }
-      }
-      deviceSockets.set(ws.data.id, ws);
-      devicePongTimes.set(ws.data.id, Date.now());
-      send(ws, { type: "ack", status: "connected", role: "device", device_id: ws.data.id });
+      realtimeSocketHub.registerDevice(ws);
+      sendJson(ws, { type: "ack", status: "connected", role: "device", device_id: ws.data.id });
       deliverQueuedMessages(ws.data.id, ws);
       return;
     }
-    addViewerSocket(ws.data.id, ws);
-    send(ws, { type: "ack", status: "connected", role: "viewer", viewer_id: ws.data.id });
+    realtimeSocketHub.registerViewer(ws.data.id, ws);
+    sendJson(ws, { type: "ack", status: "connected", role: "viewer", viewer_id: ws.data.id });
   },
 
   pong(ws: ServerWebSocket<WsData>) {
     if (ws.data.role === "device") {
-      devicePongTimes.set(ws.data.id, Date.now());
+      realtimeSocketHub.markDevicePong(ws);
     }
   },
 
   message(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
     const data = parseJson(raw);
     if (!data || typeof data.type !== "string") {
-      send(ws, { type: "error", error: "Invalid JSON" });
+      sendJson(ws, { type: "error", error: "Invalid JSON" });
       return;
     }
 
     if (ws.data.role === "viewer" && data.type === "viewer_ping") {
-      send(ws, { type: "viewer_pong", at: new Date().toISOString() });
+      sendJson(ws, { type: "viewer_pong", at: new Date().toISOString() });
       return;
     }
 
     if (ws.data.role === "viewer" && data.type === "viewer_message") {
       const messageId = cleanMessageId(data.message_id) || crypto.randomUUID();
       if (!rateLimit(ws.data.id)) {
-        send(ws, { type: "error", message_id: messageId, error: "Rate limit exceeded" });
+        sendJson(ws, { type: "error", message_id: messageId, error: "Rate limit exceeded" });
         return;
       }
 
@@ -647,11 +545,11 @@ export const realtimeWebSocket = {
       const viewerName = cleanViewerName(data.viewer_name);
       if (!targetDeviceId || !text) {
         if (kind === "private") {
-          send(ws, { type: "error", message_id: messageId, error: "target_device_id and text required" });
+          sendJson(ws, { type: "error", message_id: messageId, error: "target_device_id and text required" });
           return;
         }
         if (!text) {
-          send(ws, { type: "error", message_id: messageId, error: "text required" });
+          sendJson(ws, { type: "error", message_id: messageId, error: "text required" });
           return;
         }
       }
@@ -677,16 +575,16 @@ export const realtimeWebSocket = {
           text,
           created_at: createdAt,
         });
-        send(ws, { type: "ack", message_id: messageId, status: sent > 0 ? "sent" : queued > 0 ? "queued" : "recorded", sent, queued });
+        sendJson(ws, { type: "ack", message_id: messageId, status: sent > 0 ? "sent" : queued > 0 ? "queued" : "recorded", sent, queued });
         return;
       }
 
       if (!supportsDeviceMessages(targetDeviceId)) {
-        send(ws, { type: "error", message_id: messageId, error: "unsupported_target_device" });
+        sendJson(ws, { type: "error", message_id: messageId, error: "unsupported_target_device" });
         return;
       }
       if (isViewerBlocked(targetDeviceId, ws.data.id)) {
-        send(ws, { type: "error", message_id: messageId, error: "blocked_by_device" });
+        sendJson(ws, { type: "error", message_id: messageId, error: "blocked_by_device" });
         return;
       }
 
@@ -695,7 +593,7 @@ export const realtimeWebSocket = {
       const status = deliverViewerMessage(targetDeviceId, ws.data.id, viewerName, "private", text, messageId, createdAt);
       const sent = status === "sent" ? 1 : 0;
       const queued = status === "queued" ? 1 : 0;
-      sendToViewerSockets(ws.data.id, {
+      realtimeSocketHub.sendToViewer(ws.data.id, {
         type: "viewer_message_sent",
         message_id: messageId,
         message: {
@@ -709,24 +607,24 @@ export const realtimeWebSocket = {
         },
         status,
       });
-      send(ws, { type: "ack", message_id: messageId, status, sent, queued });
+      sendJson(ws, { type: "ack", message_id: messageId, status, sent, queued });
       return;
     }
 
     if (ws.data.role === "device" && data.type === "device_command_receipt") {
-      send(ws, deviceCommandReceiptWsResponse(data, ws.data.device));
+      sendJson(ws, deviceCommandReceiptWsResponse(data, ws.data.device));
       return;
     }
 
     if (ws.data.role === "device" && data.type === "device_command_result") {
-      send(ws, deviceCommandResultWsResponse(data, ws.data.device));
+      sendJson(ws, deviceCommandResultWsResponse(data, ws.data.device));
       return;
     }
 
     if (ws.data.role === "device" && data.type === "ai_request" && ws.data.device) {
       try {
         const submitted = submitAiJobFromClient(data, ws.data.device, ws.data.deviceToken || "");
-        send(ws, {
+        sendJson(ws, {
           type: "ai_request_ack",
           request_id: typeof data.request_id === "string" ? data.request_id : submitted.client_request_id,
           accepted: true,
@@ -736,7 +634,7 @@ export const realtimeWebSocket = {
         });
       } catch (e) {
         const error = aiJobInputErrorResponse(e);
-        send(ws, {
+        sendJson(ws, {
           type: "ai_request_ack",
           request_id: typeof data.request_id === "string" ? data.request_id : "",
           accepted: false,
@@ -757,7 +655,7 @@ export const realtimeWebSocket = {
         : null;
       const isPublicThread = original?.kind === "public" || original?.kind === "public_reply";
       if (!text || (!isPublicThread && !targetViewerId)) {
-        send(ws, { type: "error", message_id: messageId, error: "target_viewer_id and text required" });
+        sendJson(ws, { type: "error", message_id: messageId, error: "target_viewer_id and text required" });
         return;
       }
       if (messageId) markMessageReplied.run(messageId);
@@ -776,7 +674,7 @@ export const realtimeWebSocket = {
             created_at: createdAt,
           });
         }
-        send(ws, {
+        sendJson(ws, {
           type: "ack",
           message_id: messageId,
           reply_id: publicReplyId,
@@ -788,7 +686,7 @@ export const realtimeWebSocket = {
 
       const inserted = recordMessage(replyId, ws.data.id, targetViewerId, "", "reply", "device", text, createdAt);
       if (inserted) {
-        sendToViewerSockets(targetViewerId, {
+        realtimeSocketHub.sendToViewer(targetViewerId, {
           type: "device_reply",
           message_id: replyId,
           in_reply_to: messageId,
@@ -797,7 +695,7 @@ export const realtimeWebSocket = {
           created_at: createdAt,
         });
       }
-      send(ws, {
+      sendJson(ws, {
         type: "ack",
         message_id: messageId,
         reply_id: replyId,
@@ -822,7 +720,7 @@ export const realtimeWebSocket = {
     if (ws.data.role === "device" && data.type === "device_status") {
       const statusId = cleanMessageId(data.status_id);
       // Any device_status message refreshes keepalive (proof of life)
-      devicePongTimes.set(ws.data.id, Date.now());
+      realtimeSocketHub.markDevicePong(ws);
       // If payload present, process as full report (WebSocket上报通道)
       if (data.payload && ws.data.device) {
         const receivedAt = new Date().toISOString();
@@ -833,28 +731,24 @@ export const realtimeWebSocket = {
           syncSupervisionPolicyForReportedDevice(ws.data.id);
         } catch (e: any) {
           if (e instanceof ReportPayloadError) {
-            send(ws, { type: "error", error: e.code, message: e.message });
+            sendJson(ws, { type: "error", error: e.code, message: e.message });
             return;
           }
           console.error("[ws] device_status processing error:", e.message);
-          send(ws, { type: "error", error: "status_processing_failed" });
+          sendJson(ws, { type: "error", error: "status_processing_failed" });
           return;
         }
         // Broadcast only the sanitized public fields. Raw window titles stay server-side.
         if (publicPayload) {
-          const deviceUpdate = {
+          realtimeSocketHub.broadcastViewerPayload({
             type: "device_update",
             device_id: ws.data.device.device_id,
             payload: publicPayload,
             timestamp: receivedAt,
-          };
-          const updateMsg = JSON.stringify(deviceUpdate);
-          forEachViewerSocket((viewerWs) => {
-            try { viewerWs.send(updateMsg); } catch { /* ignore send errors */ }
           });
         }
       }
-      send(ws, {
+      sendJson(ws, {
         type: "ack",
         status: "status_received",
         ...(statusId ? { status_id: statusId } : {}),
@@ -862,17 +756,16 @@ export const realtimeWebSocket = {
       return;
     }
 
-    send(ws, { type: "error", error: "Unsupported message type" });
+    sendJson(ws, { type: "error", error: "Unsupported message type" });
   },
 
   close(ws: ServerWebSocket<WsData>) {
     if (ws.data.role === "device") {
-      if (deviceSockets.get(ws.data.id) === ws) deviceSockets.delete(ws.data.id);
-      devicePongTimes.delete(ws.data.id);
+      realtimeSocketHub.removeDevice(ws);
       // Immediately mark device offline so dashboard reflects disconnection
       try { markDeviceOffline.run(ws.data.id); } catch { /* ignore */ }
     } else {
-      removeViewerSocket(ws.data.id, ws);
+      realtimeSocketHub.removeViewer(ws.data.id, ws);
     }
   },
 };
@@ -994,7 +887,7 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
 
   const inserted = recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text, createdAt);
   const delivered = inserted
-    ? sendToViewerSockets(viewerId, {
+    ? realtimeSocketHub.sendToViewer(viewerId, {
       type: "device_reply",
       message_id: replyId,
       in_reply_to: messageId,
@@ -1097,7 +990,7 @@ export async function handlePrivateMessagePost(req: Request): Promise<Response> 
   const createdAt = new Date().toISOString();
   recordMessage(messageId, targetDeviceId, viewer.viewerId, viewerName, "private", "viewer", text, createdAt);
   const status = deliverViewerMessage(targetDeviceId, viewer.viewerId, viewerName, "private", text, messageId, createdAt);
-  sendToViewerSockets(viewer.viewerId, {
+  realtimeSocketHub.sendToViewer(viewer.viewerId, {
     type: "viewer_message_sent",
     message_id: messageId,
     message: {
@@ -1244,7 +1137,7 @@ export async function handleDeleteMessage(req: Request): Promise<Response> {
     if (existing.kind === "public" || existing.kind === "public_reply") {
       broadcastPublicMessageDeleted(messageId);
     } else if (existing.viewer_id) {
-      sendToViewerSockets(existing.viewer_id, {
+      realtimeSocketHub.sendToViewer(existing.viewer_id, {
         type: "message_deleted",
         message_id: messageId,
         device_id: existing.device_id,
@@ -1270,7 +1163,7 @@ export async function handleDeleteViewerMessages(req: Request): Promise<Response
   const result = deleteVisitorMessagesByViewer.run(device.device_id, viewerId);
   deleteDeviceMessagesByViewer.run(device.device_id, viewerId);
   if (result.changes > 0) {
-    sendToViewerSockets(viewerId, {
+    realtimeSocketHub.sendToViewer(viewerId, {
       type: "viewer_messages_deleted",
       device_id: device.device_id,
     });
@@ -1308,12 +1201,7 @@ export async function handleDeleteDevice(req: Request): Promise<Response> {
   const { deleteDevice, deleteDeviceActivities } = await import("../db");
 
   // 1. 断开 WebSocket 连接
-  const ws = deviceSockets.get(device.device_id);
-  if (ws) {
-    try { ws.close(4003, "device_deleted"); } catch { /* ignore */ }
-    deviceSockets.delete(device.device_id);
-  }
-  devicePongTimes.delete(device.device_id);
+  realtimeSocketHub.closeDevice(device.device_id, 4003, "device_deleted");
 
   // 2. 删除数据库记录
   deleteDeviceActivities.run(device.device_id);
