@@ -19,7 +19,7 @@ import {
   type DeviceCommandPayload,
   type DeliveryStatus,
 } from "./mcp-contracts";
-import { deliverDeviceCommandMessage } from "./realtime";
+import { deliverDeviceCommandMessage } from "./realtime-message-delivery";
 
 const DEFAULT_EXPIRES_SECONDS = 60 * 60;
 const MIN_EXPIRES_SECONDS = 10;

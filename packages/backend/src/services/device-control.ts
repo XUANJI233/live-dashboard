@@ -20,7 +20,7 @@ import {
   type DeviceCommandPayload,
   type DeliveryStatus,
 } from "./mcp-contracts";
-import { deliverDeviceCommandMessage } from "./realtime";
+import { deliverDeviceCommandMessage } from "./realtime-message-delivery";
 
 const MAX_COMMANDS_PER_REQUEST = 20;
 const MAX_PATTERN_COUNT = 12;

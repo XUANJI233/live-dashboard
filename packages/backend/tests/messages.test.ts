@@ -19,7 +19,7 @@ describe("visitor messages", () => {
 
   test("keeps private message HTTP fallback idempotent by message_id", async () => {
     const { db } = await import("../src/db");
-    const { handlePrivateMessagePost } = await import("../src/services/realtime");
+    const { handlePrivateMessagePost } = await import("../src/services/realtime-message-handlers");
     const token = await viewerToken();
     insertDeviceState(db, {
       device_id: "android-message-target",
@@ -46,7 +46,7 @@ describe("visitor messages", () => {
 
   test("rejects unsupported private message targets without leaving dead queued rows", async () => {
     const { db } = await import("../src/db");
-    const { handlePrivateMessagePost } = await import("../src/services/realtime");
+    const { handlePrivateMessagePost } = await import("../src/services/realtime-message-handlers");
     const token = await viewerToken("fedcba9876543210fedcba9876543210");
     insertDeviceState(db, {
       device_id: "zepp-message-target",
@@ -95,7 +95,7 @@ describe("visitor messages", () => {
 
   test("deduplicates device replies by reply_id across HTTP retries", async () => {
     const { db } = await import("../src/db");
-    const { handleDeviceMessageReply } = await import("../src/services/realtime");
+    const { handleDeviceMessageReply } = await import("../src/services/realtime-message-handlers");
     insertDeviceState(db, {
       device_id: "android-message-target",
       device_name: "Android Message Target",

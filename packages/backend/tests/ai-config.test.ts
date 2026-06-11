@@ -887,7 +887,7 @@ describe("ai-config", () => {
 
   test("keeps older public messages visible in the default recent window", async () => {
     const { db } = await import("../src/db");
-    const { handlePublicMessages } = await import("../src/services/realtime");
+    const { handlePublicMessages } = await import("../src/services/realtime-message-handlers");
     const id = `public-old-${randomHex(8)}`;
     const createdAt = new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString();
     db.prepare(`

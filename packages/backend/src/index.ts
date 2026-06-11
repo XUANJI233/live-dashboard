@@ -27,6 +27,11 @@ import { handleViewerTokenIssue, handlePowChallenge } from "./routes/viewer-toke
 import { powChallengeRateLimit } from "./services/viewer-auth";
 import {
   getWsInfo,
+  realtimeWebSocket,
+  type WsData,
+  handleDeleteDevice,
+} from "./services/realtime";
+import {
   handleBlockViewer,
   handleUnblockViewer,
   handleDeviceMessageHistory,
@@ -39,10 +44,7 @@ import {
   handlePublicMessages,
   handlePublicMessagePost,
   handlePrivateMessagePost,
-  realtimeWebSocket,
-  type WsData,
-  handleDeleteDevice,
-} from "./services/realtime";
+} from "./services/realtime-message-handlers";
 import { globalIpRateLimit } from "./services/realtime-rate-limit";
 import { noStore, withCdnHeaders } from "./services/cdn";
 import { normalizeClientIp } from "./services/visitors";
