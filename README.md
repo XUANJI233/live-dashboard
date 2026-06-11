@@ -152,6 +152,7 @@ App 管理的 AI 配置会存进 SQLite `meta` 表：`ai_runtime_config` 保存 
 - [架构与项目结构](https://github.com/Monika-Dream/live-dashboard/wiki/架构与项目结构) — 架构图 + 项目树
 - [隐私分级系统](https://github.com/Monika-Dream/live-dashboard/wiki/隐私分级系统) — SHOW / BROWSER / HIDE
 - [API 参考](https://github.com/Monika-Dream/live-dashboard/wiki/API-参考) — 端点、请求体、响应格式
+- [接口契约](docs/API_PROTOCOL_CONTRACTS.md) — 固定 ID、Header、WS 帧和设备命令字段规范
 - [环境变量](https://github.com/Monika-Dream/live-dashboard/wiki/环境变量) — 配置项一览
 - [安全设计](https://github.com/Monika-Dream/live-dashboard/wiki/安全设计) — 安全特性
 - [边缘计算](edge-functions/README.md) — ESA 边缘函数部署指南
