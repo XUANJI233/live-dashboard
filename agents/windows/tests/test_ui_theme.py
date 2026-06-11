@@ -31,6 +31,7 @@ class UiThemeTests(unittest.TestCase):
 
     def test_tab_specs_match_mobile_information_architecture(self):
         self.assertEqual([tab.key for tab in TAB_SPECS], ["overview", "messages", "settings"])
+        self.assertEqual([tab.label for tab in TAB_SPECS], ["概览", "消息", "设置"])
         self.assertEqual(TAB_BY_KEY["overview"].title, "概览")
 
 

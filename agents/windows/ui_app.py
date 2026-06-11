@@ -10,7 +10,8 @@ import threading
 from typing import Callable
 
 from autostart_actions import toggle_autostart
-from ui_components import TAB_BY_KEY, TAB_SPECS, UiKit
+from ui_components import ButtonSpec, TAB_BY_KEY, TAB_SPECS, UiKit
+from ui_layout import overview_slots, settings_slots, text_wrap_width, use_two_columns
 from ui_messages import merge_new_messages, message_detail, message_key, message_summary
 from ui_theme import (
     BG,
@@ -67,10 +68,13 @@ class DashboardUiController:
         self._visible = False
         self._active_tab = "overview"
         self._notice_after_id: str | None = None
+        self._messages_refreshing = False
+        self._overview_layout_wide: bool | None = None
+        self._settings_layout_wide: bool | None = None
 
         self.root = tk.Tk()
         self.root.title("Live Dashboard")
-        self.root.geometry("900x640")
+        self.root.geometry("940x660")
         self.root.minsize(820, 560)
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
@@ -248,32 +252,40 @@ class DashboardUiController:
         frame = tk.Frame(parent, bg=BG)
         grid = tk.Frame(frame, bg=BG)
         grid.pack(fill="both", expand=True)
-        grid.columnconfigure(0, weight=1)
-        grid.columnconfigure(1, weight=1)
+        self._overview_grid = grid
 
         status_card = self._card(grid, "当前状态", "后台采集与上报的实时概况")
-        status_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=(0, 12))
         self._status_value = self.ttk.Label(status_card.body, text="初始化中", style="Value.TLabel")
         self._status_value.pack(anchor="w", pady=(8, 2))
         self._current_value = self.ttk.Label(status_card.body, text="暂无窗口", style="CardBody.TLabel", wraplength=330)
         self._current_value.pack(anchor="w", pady=(2, 0))
 
         config_card = self._card(grid, "连接配置", "当前服务器和本机启动项")
-        config_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=(0, 12))
         self._server_value = self.ttk.Label(config_card.body, text="未配置", style="CardBody.TLabel", wraplength=330)
         self._server_value.pack(anchor="w", pady=(8, 6))
         self._autostart_value = self.ttk.Label(config_card.body, text="自启动: 未开启", style="CardBody.TLabel")
         self._autostart_value.pack(anchor="w")
 
         actions_card = self._card(grid, "常用操作", "不离开主界面完成日常维护")
-        actions_card.grid(row=1, column=0, columnspan=2, sticky="nsew")
-        actions = tk.Frame(actions_card.body, bg=SURFACE)
+        actions = self._ui.button_grid(
+            actions_card.body,
+            (
+                ButtonSpec("打开设置", lambda: self._select_tab("settings")),
+                ButtonSpec("查看留言", lambda: self._select_tab("messages")),
+                ButtonSpec("切换自启动", self._toggle_autostart),
+                ButtonSpec("打开日志", self._open_log),
+                ButtonSpec("退出", self._request_quit),
+            ),
+            columns=3,
+        )
         actions.pack(fill="x", pady=(10, 0))
-        self._button(actions, "打开设置", lambda: self._select_tab("settings")).pack(side="left", padx=(0, 8))
-        self._button(actions, "查看留言", lambda: self._select_tab("messages")).pack(side="left", padx=(0, 8))
-        self._button(actions, "切换自启动", self._toggle_autostart).pack(side="left", padx=(0, 8))
-        self._button(actions, "打开日志", self._open_log).pack(side="left", padx=(0, 8))
-        self._button(actions, "退出", self._request_quit).pack(side="left")
+        self._overview_cards = {
+            "status": status_card,
+            "config": config_card,
+            "actions": actions_card,
+        }
+        grid.bind("<Configure>", lambda event: self._layout_overview(event.width))
+        self._layout_overview(0)
         return frame
 
     def _build_messages(self, parent):
@@ -326,13 +338,8 @@ class DashboardUiController:
     def _build_settings(self, parent):
         tk = self.tk
         frame = tk.Frame(parent, bg=BG)
-        card = self._card(frame, "配置", "服务器连接、采集间隔和本地日志")
-        card.pack(fill="both", expand=True)
-
-        form = tk.Frame(card.body, bg=SURFACE)
-        form.pack(fill="x", pady=(10, 0))
-        form.columnconfigure(1, weight=1)
-
+        scroll = self._ui.scrollable_frame(frame)
+        scroll.pack(fill="both", expand=True)
         self._server_var = tk.StringVar()
         self._token_var = tk.StringVar()
         self._interval_var = tk.StringVar()
@@ -340,28 +347,76 @@ class DashboardUiController:
         self._idle_var = tk.StringVar()
         self._log_var = tk.BooleanVar()
 
-        self._field(form, 0, "服务器地址", self.ttk.Entry(form, textvariable=self._server_var))
-        self._field(form, 1, "Token", self.ttk.Entry(form, textvariable=self._token_var, show="*"))
-        self._field(form, 2, "上报间隔 (秒)", self.ttk.Spinbox(form, from_=1, to=300, textvariable=self._interval_var, width=12))
-        self._field(form, 3, "心跳间隔 (秒)", self.ttk.Spinbox(form, from_=10, to=600, textvariable=self._heartbeat_var, width=12))
-        self._field(form, 4, "AFK 判定 (秒)", self.ttk.Spinbox(form, from_=30, to=3600, textvariable=self._idle_var, width=12))
+        grid = scroll.body
+        self._settings_grid = grid
 
-        log_check = tk.Checkbutton(
-            form,
-            text="开启日志文件",
-            variable=self._log_var,
-            bg=SURFACE,
-            fg=TEXT,
-            activebackground=SURFACE,
-            selectcolor=SURFACE,
-            font=("Segoe UI", 10),
+        connection_card = self._card(grid, "连接", "服务端地址和设备密钥")
+        connection_form = tk.Frame(connection_card.body, bg=SURFACE)
+        connection_form.pack(fill="x", pady=(10, 0))
+        connection_form.columnconfigure(1, weight=1)
+        self._field(connection_form, 0, "服务器地址", self.ttk.Entry(connection_form, textvariable=self._server_var))
+        self._field(connection_form, 1, "Token", self.ttk.Entry(connection_form, textvariable=self._token_var, show="*"))
+
+        cadence_card = self._card(grid, "采集节奏", "前台窗口、心跳和 AFK 判定")
+        cadence_form = tk.Frame(cadence_card.body, bg=SURFACE)
+        cadence_form.pack(fill="x", pady=(10, 0))
+        cadence_form.columnconfigure(1, weight=1)
+        self._field(
+            cadence_form,
+            0,
+            "上报间隔 (秒)",
+            self.ttk.Spinbox(cadence_form, from_=1, to=300, textvariable=self._interval_var, width=12),
         )
-        log_check.grid(row=5, column=1, sticky="w", pady=8)
+        self._field(
+            cadence_form,
+            1,
+            "心跳间隔 (秒)",
+            self.ttk.Spinbox(cadence_form, from_=10, to=600, textvariable=self._heartbeat_var, width=12),
+        )
+        self._field(
+            cadence_form,
+            2,
+            "AFK 判定 (秒)",
+            self.ttk.Spinbox(cadence_form, from_=30, to=3600, textvariable=self._idle_var, width=12),
+        )
 
-        actions = tk.Frame(card.body, bg=SURFACE)
-        actions.pack(fill="x", pady=(18, 0))
-        self._button(actions, "保存配置", self._save_settings, primary=True).pack(side="left", padx=(0, 8))
-        self._button(actions, "重新载入", lambda: self._apply_config(self._load_config())).pack(side="left")
+        local_card = self._card(grid, "本地行为", "日志和开机自启动")
+        local_body = tk.Frame(local_card.body, bg=SURFACE)
+        local_body.pack(fill="x", pady=(10, 0))
+        log_check = self._ui.preference_check(
+            local_body,
+            "日志文件",
+            "开启后写入 agent.log，便于定位后台采集、WebSocket 和自启动问题。",
+            variable=self._log_var,
+        )
+        log_check.pack(fill="x", pady=(0, 12))
+        self._ui.compact_divider(local_body).pack(fill="x", pady=(0, 12))
+        self._settings_autostart_value = self.ttk.Label(
+            local_body,
+            text="自启动: 未开启",
+            style="CardBody.TLabel",
+        )
+        self._settings_autostart_value.pack(anchor="w", pady=(0, 10))
+        self._button(local_body, "切换自启动", self._toggle_autostart).pack(anchor="w")
+
+        actions_card = self._card(grid, "操作", "保存后后台运行时会自动重载")
+        actions = self._ui.button_grid(
+            actions_card.body,
+            (
+                ButtonSpec("保存配置", self._save_settings, primary=True),
+                ButtonSpec("重新载入", lambda: self._apply_config(self._load_config())),
+            ),
+            columns=2,
+        )
+        actions.pack(fill="x", pady=(10, 0))
+        self._settings_cards = {
+            "connection": connection_card,
+            "cadence": cadence_card,
+            "local": local_card,
+            "actions": actions_card,
+        }
+        scroll.canvas.bind("<Configure>", lambda event: self._layout_settings(event.width), add="+")
+        self._layout_settings(0)
         return frame
 
     def _field(self, parent, row: int, label: str, widget) -> None:
@@ -372,6 +427,45 @@ class DashboardUiController:
 
     def _button(self, parent, text: str, command: Callable[[], None], primary: bool = False):
         return self._ui.button(parent, text, command, primary)
+
+    def _layout_overview(self, width: int) -> None:
+        self._layout_cards(
+            self._overview_grid,
+            self._overview_cards,
+            overview_slots(width),
+            "_overview_layout_wide",
+            width,
+        )
+        wrap = text_wrap_width(width // 2 if use_two_columns(width) else width)
+        self._current_value.configure(wraplength=wrap)
+        self._server_value.configure(wraplength=wrap)
+
+    def _layout_settings(self, width: int) -> None:
+        self._layout_cards(
+            self._settings_grid,
+            self._settings_cards,
+            settings_slots(width),
+            "_settings_layout_wide",
+            width,
+        )
+
+    def _layout_cards(self, grid, cards: dict[str, object], slots: dict[str, object], state_attr: str, width: int) -> None:
+        wide = use_two_columns(width)
+        if getattr(self, state_attr) == wide:
+            return
+        setattr(self, state_attr, wide)
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1 if wide else 0)
+        for key, card in cards.items():
+            slot = slots[key]
+            card.grid(
+                row=slot.row,
+                column=slot.column,
+                columnspan=slot.columnspan,
+                sticky="nsew",
+                padx=slot.padx,
+                pady=slot.pady,
+            )
 
     # -- actions -------------------------------------------------------------
 
@@ -455,6 +549,11 @@ class DashboardUiController:
         if not self._message_client:
             self._show_notice_now("Live Dashboard", "消息客户端尚未启动。")
             return
+        if self._messages_refreshing:
+            self._show_notice_now("Live Dashboard", "正在刷新留言。")
+            return
+        self._messages_refreshing = True
+        self._messages_hint.configure(text="同步中...")
 
         def worker() -> None:
             try:
@@ -462,6 +561,8 @@ class DashboardUiController:
                 self._commands.put(("messages", messages))
             except Exception as exc:
                 self._commands.put(("notice", ("Live Dashboard", f"刷新留言失败: {exc}", True)))
+            finally:
+                self._commands.put(("messages_done", None))
 
         threading.Thread(target=worker, name="ui-refresh-messages", daemon=True).start()
 
@@ -484,16 +585,38 @@ class DashboardUiController:
         cfg = self._load_config()
         server = cfg.get("server_url") or "未配置"
         self._server_value.configure(text=f"服务器: {server}")
-        self._autostart_value.configure(text=f"自启动: {'已开启' if is_autostart_enabled() else '未开启'}")
+        autostart_text = self._autostart_text()
+        self._autostart_value.configure(text=autostart_text)
+        if hasattr(self, "_settings_autostart_value"):
+            self._settings_autostart_value.configure(text=autostart_text)
         self._render_messages()
 
+    def _autostart_text(self) -> str:
+        return f"自启动: {'已开启' if is_autostart_enabled() else '未开启'}"
+
     def _render_messages(self) -> None:
+        selection = self._message_list.curselection()
+        selected_key = ""
+        if selection:
+            index = int(selection[0])
+            if index < len(self._messages):
+                selected_key = message_key(self._messages[index])
         self._message_list.delete(0, "end")
         for msg in self._messages[:30]:
             self._message_list.insert("end", message_summary(msg))
         self._messages_hint.configure(text=f"{len(self._messages)} 条已缓存" if self._messages else "暂无留言")
         if not self._messages:
             self._set_detail("暂无留言。")
+            return
+        selected_index = 0
+        if selected_key:
+            for index, item in enumerate(self._messages):
+                if message_key(item) == selected_key:
+                    selected_index = index
+                    break
+        self._message_list.selection_set(selected_index)
+        self._message_list.activate(selected_index)
+        self._set_detail(message_detail(self._messages[selected_index]))
 
     def _show_selected_message(self) -> None:
         selection = self._message_list.curselection()
@@ -541,9 +664,16 @@ class DashboardUiController:
                 self._add_message_now(payload)
             elif command == "messages":
                 self._merge_messages(payload)
+            elif command == "messages_done":
+                self._messages_refreshing = False
+                self._render_messages()
 
     def _show(self, tab: str) -> None:
         self._select_tab(tab)
+        try:
+            self.root.state("normal")
+        except Exception:
+            log.debug("window state restore skipped", exc_info=True)
         self.root.deiconify()
         self.root.lift()
         self.root.focus_force()
@@ -598,6 +728,6 @@ class DashboardUiController:
     def _merge_messages(self, payload: object) -> None:
         if not isinstance(payload, list):
             return
-        for item in reversed(payload):
-            self._add_message_now(item)
+        incoming = [item for item in reversed(payload) if isinstance(item, dict)]
+        self._messages = merge_new_messages(self._messages, incoming)
         self._render_messages()
