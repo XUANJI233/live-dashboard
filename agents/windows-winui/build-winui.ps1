@@ -36,12 +36,17 @@ function Publish-Agent {
         -p:Platform=$platform `
         -p:LiveDashboardDistribution=$Distribution `
         -p:WindowsPackageType=None `
+        -p:WindowsAppSDKSelfContained=true `
         -o $output
 
-    $exeName = "LiveDashboardAgent.exe"
-    if ($Distribution -eq "Portable") {
-        $exeName = "LiveDashboardAgent.Portable.exe"
+    $markerPath = Join-Path $output ".live-dashboard-agent-installer"
+    if ($Distribution -eq "UserInstall") {
+        Set-Content -LiteralPath $markerPath -Value "true" -Encoding utf8
+    } elseif (Test-Path -LiteralPath $markerPath) {
+        Remove-Item -LiteralPath $markerPath -Force
     }
+
+    $exeName = "LiveDashboardAgent.exe"
     $exePath = Join-Path $output $exeName
     if (-not (Test-Path -LiteralPath $exePath)) {
         throw "Expected output was not created: $exePath"

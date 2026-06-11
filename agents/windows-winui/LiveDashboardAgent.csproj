@@ -10,13 +10,11 @@
     <PublishProfile Condition="Exists('Properties\PublishProfiles\win-$(Platform).pubxml')">win-$(Platform).pubxml</PublishProfile>
     <UseWinUI>true</UseWinUI>
     <WinUISDKReferences>false</WinUISDKReferences>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <EnableMsixTooling>true</EnableMsixTooling>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <LiveDashboardDistribution Condition="'$(LiveDashboardDistribution)' == ''">Portable</LiveDashboardDistribution>
-    <AssemblyName Condition="'$(LiveDashboardDistribution)' == 'Portable'">LiveDashboardAgent.Portable</AssemblyName>
-    <AssemblyName Condition="'$(LiveDashboardDistribution)' == 'UserInstall'">LiveDashboardAgent</AssemblyName>
-    <DefineConstants Condition="'$(LiveDashboardDistribution)' == 'UserInstall'">$(DefineConstants);LIVE_DASHBOARD_USER_INSTALL</DefineConstants>
+    <AssemblyName>LiveDashboardAgent</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>

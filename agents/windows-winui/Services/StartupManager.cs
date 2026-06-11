@@ -19,20 +19,22 @@ public sealed class StartupManager
     ];
 
     private readonly string _executablePath;
+    private readonly InstallScope _scope;
 
     public StartupManager()
-        : this(CurrentExecutablePath())
+        : this(CurrentExecutablePath(), InstallScope.CurrentUser)
     {
     }
 
-    public StartupManager(string executablePath)
+    public StartupManager(string executablePath, InstallScope scope = InstallScope.CurrentUser)
     {
         _executablePath = Path.GetFullPath(executablePath);
+        _scope = scope;
     }
 
     public bool IsEnabled()
     {
-        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath);
+        using var key = OpenRunKey(_scope, writable: false);
         var command = key?.GetValue(AppName) as string;
         return IsManagedExecutableCommand(command);
     }
@@ -44,26 +46,38 @@ public sealed class StartupManager
 
     public StartupChangeResult SetEnabled(bool enabled)
     {
+        if (_scope == InstallScope.AllUsers && !ProcessElevation.IsAdministrator())
+        {
+            return new StartupChangeResult(
+                IsEnabled(),
+                false,
+                "所有用户自启动需要管理员权限。");
+        }
+
         var cleanupOk = CleanupDuplicateAutostartEntries();
         var registryOk = SetRunValue(enabled);
         var ok = cleanupOk && registryOk;
         var actual = IsEnabled();
+        var scope = InstallationMode.LabelFor(_scope);
         var message = enabled
             ? ok
-                ? "开机自启动已开启。"
-                : "已尝试开启自启动，但部分旧启动项未能清理。"
+                ? $"{scope}自启动已开启。"
+                : $"已尝试开启{scope}自启动，但部分旧启动项未能清理。"
             : ok
-                ? "开机自启动已关闭。"
-                : "已尝试关闭自启动，但部分旧启动项未能清理。";
+                ? $"{scope}自启动已关闭。"
+                : $"已尝试关闭{scope}自启动，但部分旧启动项未能清理。";
         return new StartupChangeResult(actual, ok, message);
     }
 
     public bool CleanupDuplicateAutostartEntries()
     {
-        var runOk = CleanupRunKey();
+        var currentUserOk = CleanupRunKey(Registry.CurrentUser, removeManagedAppName: _scope == InstallScope.AllUsers);
+        var machineOk = ProcessElevation.IsAdministrator()
+            ? CleanupRunKey(Registry.LocalMachine, removeManagedAppName: _scope == InstallScope.CurrentUser)
+            : true;
         var startupFolderOk = CleanupStartupFolder();
         var taskOk = RemoveLegacyScheduledTask();
-        return runOk && startupFolderOk && taskOk;
+        return currentUserOk && machineOk && startupFolderOk && taskOk;
     }
 
     public string CurrentCommandLine()
@@ -75,7 +89,11 @@ public sealed class StartupManager
     {
         try
         {
-            using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, true);
+            using var key = OpenRunKey(_scope, writable: true);
+            if (key is null)
+            {
+                return false;
+            }
             if (enabled)
             {
                 key.SetValue(AppName, CurrentCommandLine(), RegistryValueKind.String);
@@ -92,15 +110,15 @@ public sealed class StartupManager
         }
     }
 
-    private bool CleanupRunKey()
+    private bool CleanupRunKey(RegistryKey root, bool removeManagedAppName)
     {
         try
         {
-            using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, true);
+            using var key = root.CreateSubKey(RunKeyPath, true);
             foreach (var valueName in key.GetValueNames())
             {
                 var command = key.GetValue(valueName) as string;
-                if (!ShouldRemoveRunValue(valueName, command))
+                if (!ShouldRemoveRunValue(valueName, command, removeManagedAppName))
                 {
                     continue;
                 }
@@ -114,17 +132,23 @@ public sealed class StartupManager
         }
     }
 
-    private bool ShouldRemoveRunValue(string valueName, string? command)
+    private bool ShouldRemoveRunValue(string valueName, string? command, bool removeManagedAppName)
     {
         if (valueName.Equals(AppName, StringComparison.OrdinalIgnoreCase))
         {
-            return !IsManagedExecutableCommand(command);
+            return removeManagedAppName || !IsManagedExecutableCommand(command);
         }
         if (KnownValueNames.Any(name => valueName.Equals(name, StringComparison.OrdinalIgnoreCase)))
         {
             return true;
         }
         return LooksLikeLiveDashboardCommand(command);
+    }
+
+    private static RegistryKey? OpenRunKey(InstallScope scope, bool writable)
+    {
+        var root = scope == InstallScope.AllUsers ? Registry.LocalMachine : Registry.CurrentUser;
+        return writable ? root.CreateSubKey(RunKeyPath, true) : root.OpenSubKey(RunKeyPath, false);
     }
 
     private bool CleanupStartupFolder()

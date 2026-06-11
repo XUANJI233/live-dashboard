@@ -29,7 +29,7 @@ public sealed partial class OverviewPage : Page
         ServerText.Text = snapshot.Server;
         AutostartText.Text = $"自启动: {snapshot.Autostart}";
         DistributionText.Text = snapshot.DistributionMode;
-        InstallDirectoryText.Text = snapshot.InstallDirectory;
+        InstallDirectoryText.Text = snapshot.RuntimeDirectory;
         CommandLineText.Text = snapshot.CommandLine;
     }
 }

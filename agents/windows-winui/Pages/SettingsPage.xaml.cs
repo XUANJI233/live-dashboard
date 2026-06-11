@@ -6,6 +6,8 @@ namespace LiveDashboardAgent.Pages;
 
 public sealed partial class SettingsPage : Page
 {
+    private bool _isBusy;
+
     public SettingsPage()
     {
         InitializeComponent();
@@ -34,19 +36,39 @@ public sealed partial class SettingsPage : Page
         }
     }
 
-    private void ToggleAutostart_Click(object sender, RoutedEventArgs e)
+    private async void ToggleAutostart_Click(object sender, RoutedEventArgs e)
     {
-        var result = AppServices.StartupManager.Toggle();
-        RefreshAutostart();
-        ShowStatus("Live Dashboard", result.Message, result.Ok ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+        await RunWithBusy(async () =>
+        {
+            var result = await Task.Run(() => AppServices.StartupManager.Toggle());
+            RefreshAutostart();
+            ShowStatus("Live Dashboard", result.Message, result.Ok ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+        });
     }
 
-    private void Install_Click(object sender, RoutedEventArgs e)
+    private async Task RunWithBusy(Func<Task> action)
     {
-        var result = AppServices.UserInstallService.InstallCurrentUser();
-        RefreshInstallAction();
-        RefreshAutostart();
-        ShowStatus("Live Dashboard", result.Message, result.Ok ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+        if (_isBusy)
+        {
+            return;
+        }
+        SetBusy(true);
+        try
+        {
+            await action();
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    private void SetBusy(bool busy)
+    {
+        _isBusy = busy;
+        BusyRing.IsActive = busy;
+        SaveButton.IsEnabled = !busy;
+        ToggleAutostartButton.IsEnabled = !busy;
     }
 
     private void Reload_Click(object sender, RoutedEventArgs e)
@@ -65,8 +87,10 @@ public sealed partial class SettingsPage : Page
         HeartbeatBox.Value = config.HeartbeatSeconds;
         IdleBox.Value = config.IdleThresholdSeconds;
         EnableLogSwitch.IsOn = config.EnableLog;
-        ModeText.Text = InstallationMode.Label;
-        RefreshInstallAction();
+        var install = AppServices.UserInstallService.GetRunningInstall();
+        ModeText.Text = install is null
+            ? InstallationMode.Label
+            : $"{InstallationMode.LabelFor(install.Scope)}安装版";
         RefreshAutostart();
     }
 
@@ -88,12 +112,6 @@ public sealed partial class SettingsPage : Page
         AutostartStatusText.Text = AppServices.StartupManager.IsEnabled()
             ? "自启动: 已开启"
             : "自启动: 未开启";
-    }
-
-    private void RefreshInstallAction()
-    {
-        var installMode = InstallationMode.Current == AgentDistributionMode.UserInstall;
-        InstallButton.IsEnabled = installMode && !AppServices.UserInstallService.IsRunningFromInstallDirectory();
     }
 
     private void ShowStatus(string title, string message, InfoBarSeverity severity)

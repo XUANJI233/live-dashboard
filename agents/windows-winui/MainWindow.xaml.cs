@@ -16,7 +16,14 @@ public sealed partial class MainWindow : Window
         SetTitleBar(AppTitleBar);
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
         AppWindow.SetIcon("Assets/AppIcon.ico");
-        NavFrame.Navigate(typeof(OverviewPage));
+        if (AppServices.UserInstallService.ShouldShowInstallerOnLaunch())
+        {
+            ShowInstaller();
+        }
+        else
+        {
+            NavFrame.Navigate(typeof(OverviewPage));
+        }
     }
 
     private void TitleBar_PaneToggleRequested(TitleBar sender, object args)
@@ -48,5 +55,13 @@ public sealed partial class MainWindow : Window
                     throw new InvalidOperationException($"Unknown navigation item tag: {item.Tag}");
             }
         }
+    }
+
+    private void ShowInstaller()
+    {
+        AppTitleBar.Title = "Live Dashboard 安装";
+        AppTitleBar.IsPaneToggleButtonVisible = false;
+        NavView.IsPaneVisible = false;
+        NavFrame.Navigate(typeof(InstallerPage));
     }
 }

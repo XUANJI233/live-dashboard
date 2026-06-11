@@ -28,8 +28,23 @@
                 IsClosable="True" />
 
             <Border Grid.Row="2" Style="{StaticResource CardBorderStyle}">
+                <Border.Transitions>
+                    <TransitionCollection>
+                        <EntranceThemeTransition FromVerticalOffset="12" />
+                    </TransitionCollection>
+                </Border.Transitions>
                 <StackPanel Spacing="18">
-                    <TextBlock Text="服务器" Style="{StaticResource CardTitleTextStyle}" />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="服务器" Style="{StaticResource CardTitleTextStyle}" />
+                            <TextBlock Text="设备上报和消息连接使用同一地址。" Style="{StaticResource MutedTextStyle}" />
+                        </StackPanel>
+                        <ProgressRing x:Name="BusyRing" Grid.Column="1" Width="22" Height="22" IsActive="False" />
+                    </Grid>
                     <TextBox
                         x:Name="ServerUrlBox"
                         Header="后端地址"
@@ -52,6 +67,11 @@
                 </Grid.RowDefinitions>
 
                 <Border Style="{StaticResource CardBorderStyle}">
+                    <Border.Transitions>
+                        <TransitionCollection>
+                            <EntranceThemeTransition FromVerticalOffset="12" />
+                        </TransitionCollection>
+                    </Border.Transitions>
                     <StackPanel Spacing="14">
                         <TextBlock Text="采集" Style="{StaticResource CardTitleTextStyle}" />
                         <NumberBox
@@ -80,6 +100,11 @@
                 </Border>
 
                 <Border Grid.Column="1" Style="{StaticResource CardBorderStyle}">
+                    <Border.Transitions>
+                        <TransitionCollection>
+                            <EntranceThemeTransition FromVerticalOffset="12" />
+                        </TransitionCollection>
+                    </Border.Transitions>
                     <StackPanel Spacing="14">
                         <TextBlock Text="启动" Style="{StaticResource CardTitleTextStyle}" />
                         <TextBlock x:Name="ModeText" FontSize="18" />
@@ -93,14 +118,14 @@
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
-                            <Button Content="保存配置" Click="Save_Click" Style="{StaticResource AccentButtonStyle}" HorizontalAlignment="Stretch" />
-                            <Button x:Name="InstallButton" Grid.Column="1" Content="安装到当前用户" Click="Install_Click" HorizontalAlignment="Stretch" />
-                            <Button Grid.Row="1" Content="切换自启动" Click="ToggleAutostart_Click" HorizontalAlignment="Stretch" />
+                            <Button x:Name="SaveButton" Content="保存配置" Click="Save_Click" Style="{StaticResource AccentButtonStyle}" HorizontalAlignment="Stretch" />
+                            <Button x:Name="ToggleAutostartButton" Grid.Column="1" Content="切换自启动" Click="ToggleAutostart_Click" HorizontalAlignment="Stretch" />
                             <Button Grid.Row="1" Grid.Column="1" Content="重新载入" Click="Reload_Click" HorizontalAlignment="Stretch" />
                         </Grid>
                     </StackPanel>
                 </Border>
             </Grid>
+
         </Grid>
     </ScrollViewer>
 </Page>
