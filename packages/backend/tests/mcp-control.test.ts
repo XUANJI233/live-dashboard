@@ -37,6 +37,7 @@ describe("mcp control plane", () => {
     expect(response.status).toBe(200);
     expect(body.error).toBeUndefined();
     expect(body.result?.tools?.map((tool) => tool.name)).toContain("live_dashboard.send_device_commands");
+    expect(body.result?.tools?.map((tool) => tool.name)).toContain("live_dashboard.set_supervision_policy");
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
@@ -275,6 +276,8 @@ describe("mcp control plane", () => {
             vibrate: true,
             screen_off: true,
             say: true,
+            risk_app_monitor: true,
+            app_time_limit: true,
           },
         },
       }),
@@ -286,6 +289,8 @@ describe("mcp control plane", () => {
       vibrate: true,
       screen_off: false,
       say: true,
+      risk_app_monitor: true,
+      app_time_limit: true,
     });
 
     const sent = sendDeviceCommands({
@@ -305,6 +310,207 @@ describe("mcp control plane", () => {
       screen_off: false,
       say: "回到目标",
       notes: ["screen_off_not_supported", "freeze_not_supported"],
+    });
+  });
+
+  test("sends supervision policy only to devices with policy capabilities", async () => {
+    const { db } = await import("../src/db");
+    const { setAndSendSupervisionPolicy } = await import("../src/services/supervision-policy-control");
+
+    insertDeviceState(db, {
+      device_id: "android-policy-lsp",
+      device_name: "Policy LSP",
+      platform: "android",
+      extra: JSON.stringify({
+        device: {
+          profile: "android_lsp",
+          capabilities: {
+            freeze: true,
+            unfreeze: true,
+            vibrate: true,
+            screen_off: false,
+            say: true,
+            risk_app_monitor: true,
+            app_time_limit: true,
+          },
+        },
+      }),
+    });
+    insertDeviceState(db, {
+      device_id: "android-policy-normal",
+      device_name: "Policy Normal",
+      platform: "android",
+      extra: JSON.stringify({
+        device: {
+          profile: "android_normal",
+          capabilities: {
+            freeze: false,
+            unfreeze: false,
+            vibrate: true,
+            screen_off: false,
+            say: true,
+            risk_app_monitor: false,
+            app_time_limit: false,
+          },
+        },
+      }),
+    });
+    insertDeviceState(db, {
+      device_id: "desktop-policy",
+      device_name: "Policy Desktop",
+      platform: "windows",
+      extra: JSON.stringify({
+        device: {
+          profile: "desktop_message",
+          capabilities: {
+            freeze: false,
+            unfreeze: false,
+            vibrate: false,
+            screen_off: false,
+            say: true,
+            risk_app_monitor: false,
+            app_time_limit: false,
+          },
+        },
+      }),
+    });
+
+    const sent = setAndSendSupervisionPolicy({
+      request_id: "req_policy_capabilities",
+      device_ids: ["android-policy-lsp", "android-policy-normal", "desktop-policy"],
+      risk_app_regex: ["Video"],
+      risk_trigger_minutes: 3,
+      app_time_limits: [{ app_regex: "Game", limit_minutes: 10, reason: "限时" }],
+    });
+
+    expect(sent.policy).toEqual({
+      risk_app_regex: ["Video"],
+      risk_trigger_minutes: 3,
+      app_time_limits: [{ app_regex: "Game", limit_minutes: 10, reason: "限时" }],
+    });
+    expect(sent.commands.map((item) => ({
+      target: item.target_device_id,
+      kind: item.kind,
+      delivery: item.delivery.status,
+      result: item.result.status,
+      reason: item.result.payload.reason,
+    }))).toEqual([
+      {
+        target: "android-policy-lsp",
+        kind: "supervision_policy",
+        delivery: "queued",
+        result: "unknown",
+        reason: undefined,
+      },
+      {
+        target: "android-policy-normal",
+        kind: "supervision_policy",
+        delivery: "skipped",
+        result: "unsupported",
+        reason: "policy_capability_not_supported",
+      },
+      {
+        target: "desktop-policy",
+        kind: "supervision_policy",
+        delivery: "skipped",
+        result: "unsupported",
+        reason: "policy_capability_not_supported",
+      },
+    ]);
+    expect(sent.commands[0]?.payload.payload).toMatchObject({
+      kind: "supervision_policy",
+      risk_app_regex: ["Video"],
+      risk_trigger_minutes: 3,
+      app_time_limits: [{ app_regex: "Game", limit_minutes: 10, reason: "限时" }],
+    });
+    const policyTtlMs = Date.parse(sent.commands[0]!.expires_at) - Date.parse(sent.commands[0]!.issued_at);
+    expect(policyTtlMs).toBeGreaterThanOrEqual(59 * 60_000);
+  });
+
+  test("syncs current supervision policy idempotently for reporting LSP devices", async () => {
+    const { db } = await import("../src/db");
+    const { updateSummarySettings, updateSupervisionPolicy } = await import("../src/services/daily-summary-gen");
+    const {
+      syncCurrentSupervisionPolicyForDevice,
+      syncCurrentSupervisionPolicyToCapableDevices,
+    } = await import("../src/services/supervision-policy-control");
+    const deviceId = "android-policy-autosync";
+    insertDeviceState(db, {
+      device_id: deviceId,
+      device_name: "Policy Auto Sync",
+      platform: "android",
+      extra: JSON.stringify({
+        device: {
+          profile: "android_lsp",
+          capabilities: {
+            freeze: true,
+            unfreeze: true,
+            vibrate: true,
+            screen_off: false,
+            say: true,
+            risk_app_monitor: true,
+            app_time_limit: true,
+          },
+        },
+      }),
+    });
+    updateSummarySettings({
+      client_updated_at: "2030-01-01T00:00:00.000Z",
+      supervision_enabled: true,
+    });
+    updateSupervisionPolicy({
+      risk_app_regex: ["Video"],
+      risk_trigger_minutes: 3,
+      app_time_limits: [{ app_regex: "Game", limit_minutes: 10, reason: "limit" }],
+    });
+
+    const first = syncCurrentSupervisionPolicyForDevice(deviceId);
+    expect(first.synced).toBe(true);
+    expect(first.commands[0]?.delivery.status).toBe("queued");
+    expect(first.commands[0]?.payload.payload).toMatchObject({
+      kind: "supervision_policy",
+      risk_app_regex: ["Video"],
+      app_time_limits: [{ app_regex: "Game", limit_minutes: 10, reason: "limit" }],
+    });
+
+    const countAfterFirst = policyCommandCount(db, deviceId);
+    const duplicate = syncCurrentSupervisionPolicyForDevice(deviceId);
+    expect(duplicate.synced).toBe(false);
+    expect(duplicate.reason).toBe("policy_already_synced");
+    expect(policyCommandCount(db, deviceId)).toBe(countAfterFirst);
+    const duplicateAll = syncCurrentSupervisionPolicyToCapableDevices();
+    expect(duplicateAll.commands.some((command) => command.target_device_id === deviceId)).toBe(false);
+    expect(policyCommandCount(db, deviceId)).toBe(countAfterFirst);
+
+    const metaKey = `supervision_policy_sync:${deviceId}`;
+    const metaRow = db.prepare("SELECT value FROM meta WHERE key = ?").get(metaKey) as { value: string } | null;
+    const staleMeta = { ...JSON.parse(metaRow!.value), recorded_at: "2000-01-01T00:00:00.000Z" };
+    db.prepare("UPDATE meta SET value = ? WHERE key = ?").run(JSON.stringify(staleMeta), metaKey);
+    const staleQueued = syncCurrentSupervisionPolicyForDevice(deviceId);
+    expect(staleQueued.synced).toBe(true);
+    expect(staleQueued.commands[0]?.delivery.status).toBe("queued");
+    const countAfterStaleRetry = policyCommandCount(db, deviceId);
+    expect(countAfterStaleRetry).toBe(countAfterFirst + 1);
+
+    updateSupervisionPolicy({
+      risk_app_regex: ["Video", "Shorts"],
+      risk_trigger_minutes: 3,
+      app_time_limits: [{ app_regex: "Game", limit_minutes: 10, reason: "limit" }],
+    });
+    const changed = syncCurrentSupervisionPolicyForDevice(deviceId);
+    expect(changed.synced).toBe(true);
+    expect(policyCommandCount(db, deviceId)).toBe(countAfterStaleRetry + 1);
+
+    updateSummarySettings({
+      client_updated_at: "2030-01-01T00:01:00.000Z",
+      supervision_enabled: false,
+    });
+    const disabled = syncCurrentSupervisionPolicyForDevice(deviceId);
+    expect(disabled.synced).toBe(true);
+    expect(disabled.commands[0]?.payload.payload).toMatchObject({
+      kind: "supervision_policy",
+      risk_app_regex: [],
+      app_time_limits: [],
     });
   });
 
@@ -404,4 +610,13 @@ function insertDeviceState(db: typeof import("../src/db").db, row: {
     "2026-06-10T09:59:00.000Z",
     row.extra,
   );
+}
+
+function policyCommandCount(db: typeof import("../src/db").db, deviceId: string): number {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM device_commands
+    WHERE target_device_id = ? AND kind = 'supervision_policy'
+  `).get(deviceId) as { count: number };
+  return row.count;
 }

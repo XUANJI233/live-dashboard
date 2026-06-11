@@ -129,8 +129,10 @@ describe("ai-config", () => {
   });
 
   test("keeps the newest cross-device summary plan by client timestamp", async () => {
+    const { db } = await import("../src/db");
     const { getSummarySettings, updateSummarySettings } = await import("../src/services/daily-summary-gen");
 
+    db.prepare("DELETE FROM meta WHERE key = 'ai_summary_settings'").run();
     const newer = updateSummarySettings({
       mode: "normal",
       target: "finish the draft",
@@ -386,13 +388,12 @@ describe("ai-config", () => {
   test("honors caller-provided AI chat timeouts", async () => {
     const { requestAiChatCompletion } = await import("../src/services/ai-config");
     const originalFetch = globalThis.fetch;
-    const originalSetTimeout = globalThis.setTimeout;
+    const originalAbortSignalTimeout = AbortSignal.timeout;
     const delays: number[] = [];
-    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
-      const [, timeout] = args;
-      delays.push(Number(timeout ?? 0));
-      return originalSetTimeout(...args);
-    }) as typeof setTimeout;
+    AbortSignal.timeout = ((timeout: number) => {
+      delays.push(timeout);
+      return originalAbortSignalTimeout(timeout);
+    }) as typeof AbortSignal.timeout;
     globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       const body = JSON.parse(String(init?.body || "{}"));
       return Response.json({
@@ -424,7 +425,7 @@ describe("ai-config", () => {
       expect(delays).not.toContain(5 * 60_000);
     } finally {
       globalThis.fetch = originalFetch;
-      globalThis.setTimeout = originalSetTimeout;
+      AbortSignal.timeout = originalAbortSignalTimeout;
     }
   });
 
@@ -730,6 +731,7 @@ describe("ai-config", () => {
             content: JSON.stringify({
               whitelist_app_regex: ["(?i)^com\\.android\\.", "(?i:Live Dashboard)", "new RegExp(\"com\\\\.example\", \"i\")"],
               blacklist_app_regex: ["RegExp(\"(?:douyin|tiktok)\", \"i\")"],
+              risk_app_regex: ["RegExp(\"(?:youtube|bilibili)\", \"i\")"],
               target_app_regex: ["new RegExp(\"Code\", \"i\")"],
               reason: "test",
             }),
@@ -749,6 +751,7 @@ describe("ai-config", () => {
       expect(result.supervision_rules_error).toBeNull();
       expect(result.supervision_rules.whitelist_app_regex).toEqual(["^com\\.android\\.", "(?:Live Dashboard)", "com\\.example"]);
       expect(result.supervision_rules.blacklist_app_regex).toEqual(["(?:douyin|tiktok)"]);
+      expect(result.supervision_rules.risk_app_regex).toEqual(["(?:youtube|bilibili)"]);
       expect(result.supervision_rules.target_app_regex).toEqual(["Code"]);
     } finally {
       globalThis.fetch = originalFetch;
@@ -791,6 +794,7 @@ describe("ai-config", () => {
               ? JSON.stringify({
                   whitelist_app_regex: ["Code"],
                   blacklist_app_regex: ["TikTok"],
+                  risk_app_regex: ["YouTube"],
                   target_app_regex: ["Code"],
                   reason: "retry ok",
                 })
@@ -809,6 +813,7 @@ describe("ai-config", () => {
       });
       expect(result.supervision_rules_error).toBeNull();
       expect(result.supervision_rules.blacklist_app_regex).toEqual(["TikTok"]);
+      expect(result.supervision_rules.risk_app_regex).toEqual(["YouTube"]);
       expect(bodies).toHaveLength(2);
     } finally {
       globalThis.fetch = originalFetch;
@@ -933,6 +938,7 @@ describe("ai-config", () => {
       supervision_rules: {
         whitelist_app_regex: ["Code"],
         blacklist_app_regex: ["Short Video"],
+        risk_app_regex: [],
         target_app_regex: ["Code"],
         reason: "test",
       },
@@ -1015,6 +1021,94 @@ describe("ai-config", () => {
     expect(Date.parse(String(envelope.issued_at))).toBeGreaterThanOrEqual(checkedAt.getTime());
   });
 
+  test("releases pending risk freeze even when formal LSP freeze is disabled", async () => {
+    const { db } = await import("../src/db");
+    const {
+      describeAiConfig,
+      saveEncryptedAiConfigFromDevice,
+    } = await import("../src/services/ai-config");
+    const {
+      getSummarySettings,
+      saveSummarySettings,
+    } = await import("../src/services/daily-summary-gen");
+    const { runSupervisionTick } = await import("../src/services/supervision");
+
+    const suffix = randomHex(8);
+    const token = `supervision-pending-risk-token-${suffix}`;
+    const deviceId = `android-pending-risk-${suffix}`;
+    const checkedAt = new Date("2026-06-07T12:30:00.000Z");
+    const encryption = (await describeAiConfig()).encryption!;
+    await saveEncryptedAiConfigFromDevice(await encryptAiConfigForServer(encryption.public_key, token, {
+      api_url: "https://ai-pending-risk.example/v1/chat/completions",
+      api_key: `ai-pending-risk-key-${suffix}`,
+      model: "gpt-4o-mini",
+    }), token);
+
+    db.prepare("DELETE FROM meta WHERE key IN ('supervision_last_alert_at', 'supervision_last_ai_check_at')").run();
+    saveSummarySettings({
+      ...getSummarySettings(),
+      target: "写代码",
+      supervision_enabled: true,
+      supervision_check_mode: "hourly",
+      supervision_check_interval_minutes: 60,
+      supervision_blacklist_minutes: 1,
+      supervision_vibrate: false,
+      supervision_skip_watch_sleep: false,
+      supervision_lsp_freeze: false,
+      supervision_rules: {
+        whitelist_app_regex: ["Code"],
+        blacklist_app_regex: ["Short Video"],
+        risk_app_regex: ["Short Video"],
+        target_app_regex: ["Code"],
+        reason: "test",
+      },
+    });
+
+    db.prepare(`
+      INSERT INTO device_states (device_id, device_name, platform, app_id, app_name, window_title, display_title, last_seen_at, extra, is_online)
+      VALUES (?, 'Android phone', 'android', 'com.example.shortvideo', 'Short Video', '', 'Short Video', ?, ?, 1)
+    `).run(deviceId, checkedAt.toISOString(), JSON.stringify({
+      device: {
+        profile: "android_lsp",
+        frozen_packages: [{
+          package_name: "com.example.shortvideo",
+          app_name: "Short Video",
+          reason: "pending_supervision_review",
+        }],
+      },
+    }));
+    db.prepare(`
+      INSERT INTO activities (device_id, device_name, platform, app_id, app_name, window_title, display_title, extra, title_hash, time_bucket, started_at)
+      VALUES (?, 'Android phone', 'android', 'com.example.shortvideo', 'Short Video', 'short video', 'short video', '{}', ?, 1, ?)
+    `).run(deviceId, `hash-pending-risk-${suffix}`, new Date(checkedAt.getTime() - 20 * 60_000).toISOString());
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error("simulated AI outage");
+    }) as unknown as typeof fetch;
+
+    try {
+      await runSupervisionTick(checkedAt, { force: true });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const row = db.prepare(`
+      SELECT payload
+      FROM device_commands
+      WHERE target_device_id = ?
+      ORDER BY issued_at DESC
+      LIMIT 1
+    `).get(deviceId) as { payload?: string } | null;
+    const envelope = JSON.parse(row?.payload || "{}") as Record<string, any>;
+    expect(envelope.type).toBe("device_command");
+    expect(envelope.target_device_id).toBe(deviceId);
+    expect(envelope.payload.kind).toBe("supervision");
+    expect(envelope.payload.freeze_commands).toEqual([]);
+    expect(envelope.payload.unfreeze_commands).toEqual(["pending_supervision_review"]);
+    expect(envelope.payload.vibrate).toBe(false);
+  });
+
   test("translates AI freeze command arrays into device command payloads", async () => {
     const { db } = await import("../src/db");
     const {
@@ -1051,6 +1145,7 @@ describe("ai-config", () => {
       supervision_rules: {
         whitelist_app_regex: ["Code"],
         blacklist_app_regex: ["TikTok", "VPN"],
+        risk_app_regex: [],
         target_app_regex: ["Code"],
         reason: "test",
       },
@@ -1164,6 +1259,7 @@ describe("ai-config", () => {
       supervision_rules: {
         whitelist_app_regex: ["Code"],
         blacklist_app_regex: ["TikTok", "Game"],
+        risk_app_regex: [],
         target_app_regex: ["Code"],
         reason: "test",
       },

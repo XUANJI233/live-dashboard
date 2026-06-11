@@ -1,5 +1,6 @@
 import { authenticateToken } from "../middleware/auth";
 import { processReportPayload, ReportPayloadError } from "../services/device-status-handler";
+import { syncCurrentSupervisionPolicyForDevice } from "../services/supervision-policy-control";
 import { requestSupervisionCheckFromReportPayload } from "../services/supervision-report-trigger";
 
 /**
@@ -35,6 +36,7 @@ export async function handleReport(req: Request): Promise<Response> {
   try {
     processReportPayload(body as Record<string, unknown>, device);
     requestSupervisionCheckFromReportPayload(body as Record<string, unknown>, device);
+    syncCurrentSupervisionPolicyForDevice(device.device_id);
   } catch (e: any) {
     if (e instanceof ReportPayloadError) {
       return Response.json({ error: e.message, code: e.code }, { status: e.status });

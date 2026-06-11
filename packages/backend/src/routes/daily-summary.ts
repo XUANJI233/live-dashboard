@@ -1,18 +1,17 @@
-import { authenticateToken } from "../middleware/auth";
+import { authenticateToken, extractBearerToken } from "../middleware/auth";
 import { getDailySummary, getWeeklySummary } from "../db";
 import { noStore, safeTimezoneOffset, withCdnHeaders } from "../services/cdn";
-import { describeAiConfig, saveEncryptedAiConfigFromDevice, testEncryptedAiConfigFromDevice } from "../services/ai-config";
-import { refreshSupervisionRules } from "../services/supervision";
+import { describeAiConfig, saveEncryptedAiConfigFromDevice } from "../services/ai-config";
 import {
   addDays,
-  generateDailySummary,
-  generateWeeklySummary,
   getSummarySettings,
   startOfWeek,
   updateSummarySettings,
   validDateString,
   type SummaryMode,
 } from "../services/daily-summary-gen";
+import { syncCurrentSupervisionPolicyToCapableDevices } from "../services/supervision-policy-control";
+import { aiJobInputErrorResponse, submitAiJobFromClient } from "../services/ai-jobs";
 
 interface DailySummaryRow {
   date: string;
@@ -48,8 +47,8 @@ export function handleDailySummary(url: URL): Response {
 }
 
 export async function handleDailySummaryRefresh(req: Request, url: URL): Promise<Response> {
-  const unauthorized = requireAdmin(req);
-  if (unauthorized) return unauthorized;
+  const device = authenticateToken(req.headers.get("authorization"));
+  if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await readJsonObject(req);
   const date = pickDate(url, body, "date");
@@ -57,17 +56,17 @@ export async function handleDailySummaryRefresh(req: Request, url: URL): Promise
     return noStore(Response.json({ error: "Missing or invalid date (YYYY-MM-DD)" }, { status: 400 }), ["daily-summary-refresh"]);
   }
 
-  const result = await generateDailySummary({
-    date,
-    tzOffsetMinutes: pickTimezoneOffset(url, body),
-  });
-  if (!result.ok) {
-    return noStore(
-      Response.json({ error: result.reason || "AI summary failed", skipped: result.skipped === true }, { status: result.skipped ? 409 : 502 }),
-      ["daily-summary", `daily-summary-${date}`],
-    );
+  try {
+    const submitted = submitAiJobFromClient({
+      request_id: body.request_id,
+      kind: "daily_summary",
+      payload: { date, tz: pickTimezoneOffset(url, body) },
+    }, device, extractBearerToken(req.headers.get("authorization")));
+    return noStore(Response.json(submitted, { status: 202 }), ["daily-summary", `daily-summary-${date}`, "ai-jobs"]);
+  } catch (e) {
+    const error = aiJobInputErrorResponse(e);
+    return noStore(Response.json(error.body, { status: error.status }), ["daily-summary", `daily-summary-${date}`]);
   }
-  return noStore(Response.json(result), ["daily-summary", `daily-summary-${date}`]);
 }
 
 export function handleWeeklySummary(url: URL): Response {
@@ -89,8 +88,8 @@ export function handleWeeklySummary(url: URL): Response {
 }
 
 export async function handleWeeklySummaryRefresh(req: Request, url: URL): Promise<Response> {
-  const unauthorized = requireAdmin(req);
-  if (unauthorized) return unauthorized;
+  const device = authenticateToken(req.headers.get("authorization"));
+  if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await readJsonObject(req);
   const weekStart = normalizeWeekParam(url, body);
@@ -98,17 +97,17 @@ export async function handleWeeklySummaryRefresh(req: Request, url: URL): Promis
     return noStore(Response.json({ error: "Missing or invalid date/week_start (YYYY-MM-DD)" }, { status: 400 }), ["weekly-summary-refresh"]);
   }
 
-  const result = await generateWeeklySummary({
-    weekStart,
-    tzOffsetMinutes: pickTimezoneOffset(url, body),
-  });
-  if (!result.ok) {
-    return noStore(
-      Response.json({ error: result.reason || "AI weekly summary failed", skipped: result.skipped === true }, { status: result.skipped ? 409 : 502 }),
-      ["weekly-summary", `weekly-summary-${weekStart}`],
-    );
+  try {
+    const submitted = submitAiJobFromClient({
+      request_id: body.request_id,
+      kind: "weekly_summary",
+      payload: { week_start: weekStart, tz: pickTimezoneOffset(url, body) },
+    }, device, extractBearerToken(req.headers.get("authorization")));
+    return noStore(Response.json(submitted, { status: 202 }), ["weekly-summary", `weekly-summary-${weekStart}`, "ai-jobs"]);
+  } catch (e) {
+    const error = aiJobInputErrorResponse(e);
+    return noStore(Response.json(error.body, { status: error.status }), ["weekly-summary", `weekly-summary-${weekStart}`]);
   }
-  return noStore(Response.json(result), ["weekly-summary", `weekly-summary-${weekStart}`]);
 }
 
 export function handleSummarySettings(req: Request): Response {
@@ -118,15 +117,26 @@ export function handleSummarySettings(req: Request): Response {
 }
 
 export async function handleSummarySettingsUpdate(req: Request): Promise<Response> {
-  const unauthorized = requireAdmin(req);
-  if (unauthorized) return unauthorized;
+  const device = authenticateToken(req.headers.get("authorization"));
+  if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
   const body = await readJsonObject(req);
-  let settings = updateSummarySettings(body);
+  const settings = updateSummarySettings(body);
+  let rulesRefreshJob: unknown = null;
   if (settings.sync_status === "applied" && settings.supervision_enabled) {
-    settings = await refreshSupervisionRules(settings);
-    settings.sync_status = "applied";
+    try {
+      rulesRefreshJob = submitAiJobFromClient({
+        request_id: body.request_id,
+        kind: "supervision_rules_refresh",
+        payload: { settings_updated_at: settings.updated_at },
+      }, device, extractBearerToken(req.headers.get("authorization"))).job;
+    } catch {
+      rulesRefreshJob = { status: "failed_to_queue" };
+    }
   }
-  return noStore(Response.json(settings), ["summary-settings"]);
+  if (settings.sync_status === "applied") {
+    syncCurrentSupervisionPolicyToCapableDevices(settings);
+  }
+  return noStore(Response.json({ ...settings, rules_refresh_job: rulesRefreshJob }), ["summary-settings", "ai-jobs"]);
 }
 
 export async function handleAiConfig(req: Request): Promise<Response> {
@@ -138,7 +148,7 @@ export async function handleAiConfig(req: Request): Promise<Response> {
 export async function handleAiConfigUpdate(req: Request): Promise<Response> {
   const unauthorized = requireAdmin(req);
   if (unauthorized) return unauthorized;
-  const token = extractBearerToken(req);
+  const token = extractBearerToken(req.headers.get("authorization"));
   const body = await readJsonObject(req);
   try {
     const config = await saveEncryptedAiConfigFromDevice(body, token);
@@ -156,21 +166,21 @@ export async function handleAiConfigUpdate(req: Request): Promise<Response> {
 }
 
 export async function handleAiConfigTest(req: Request): Promise<Response> {
-  const unauthorized = requireAdmin(req);
-  if (unauthorized) return unauthorized;
-  const token = extractBearerToken(req);
+  const device = authenticateToken(req.headers.get("authorization"));
+  if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const token = extractBearerToken(req.headers.get("authorization"));
   const body = await readJsonObject(req);
   try {
-    const result = await testEncryptedAiConfigFromDevice(body, token);
-    return noStore(Response.json(result), ["ai-config"]);
+    const submitted = submitAiJobFromClient({
+      request_id: body.request_id,
+      kind: "ai_config_test",
+      payload: body,
+    }, device, token);
+    return noStore(Response.json(submitted, { status: 202 }), ["ai-config", "ai-jobs"]);
   } catch (e) {
-    const err = e as Error & { status?: number; code?: string };
+    const err = aiJobInputErrorResponse(e);
     return noStore(
-      Response.json({
-        ok: false,
-        error: err.message || "AI config test failed",
-        code: err.code || "AI_CONFIG_TEST_FAILED",
-      }, { status: err.status || 400 }),
+      Response.json(err.body, { status: err.status }),
       ["ai-config"],
     );
   }
@@ -180,11 +190,6 @@ function requireAdmin(req: Request): Response | null {
   const device = authenticateToken(req.headers.get("authorization"));
   if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
   return null;
-}
-
-function extractBearerToken(req: Request): string {
-  const match = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i);
-  return match?.[1]?.trim() || "";
 }
 
 async function readJsonObject(req: Request): Promise<Record<string, unknown>> {

@@ -26,6 +26,7 @@ export function deepSeekCachePrimingMiddleware(options: {
         const warmup = await model.doGenerate({
           ...params,
           prompt: [...split.context, userTextMessage(WARMUP_USER_MESSAGE)],
+          responseFormat: { type: "text" },
           maxOutputTokens: options.warmupMaxTokens ?? 32,
           temperature: 0,
         });

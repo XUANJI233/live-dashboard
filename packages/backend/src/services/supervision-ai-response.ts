@@ -1,6 +1,29 @@
 import type { SupervisionRules } from "./daily-summary-gen";
-import { parseAiJsonObject } from "./ai-json";
 import { normalizeSupervisionPatternList } from "./supervision-patterns";
+import { z } from "zod";
+
+export const SupervisionRulesResponseSchema = z.object({
+  whitelist_app_regex: z.array(z.string()).max(12),
+  blacklist_app_regex: z.array(z.string()).max(12),
+  risk_app_regex: z.array(z.string()).max(12),
+  target_app_regex: z.array(z.string()).max(12),
+  reason: z.string(),
+}).strict();
+
+const SupervisionDeviceDecisionSchema = z.object({
+  device_id: z.string(),
+  "是否偏离": z.boolean(),
+  "原因": z.string(),
+  "冻结命令": z.array(z.string()).max(12),
+  "解冻命令": z.array(z.string()).max(12),
+  "是否震动": z.boolean(),
+  "是否息屏": z.boolean(),
+  "要说的话": z.string(),
+}).strict();
+
+export const SupervisionDecisionResponseSchema = z.object({
+  "设备命令": z.array(SupervisionDeviceDecisionSchema).max(20),
+}).strict();
 
 export interface SupervisionCommandDecision {
   device_id: string;
@@ -19,30 +42,25 @@ export interface SupervisionDecision extends Omit<SupervisionCommandDecision, "d
   device_decisions: SupervisionCommandDecision[];
 }
 
-export function parseRulesResponse(raw: string): SupervisionRules {
-  const parsed = parseAiJsonObject(raw);
+export function parseRulesResponse(input: unknown): SupervisionRules {
+  const parsed = SupervisionRulesResponseSchema.parse(input);
   const whitelist = parsed.whitelist_app_regex;
   const blacklist = parsed.blacklist_app_regex;
+  const risk = parsed.risk_app_regex;
   const target = parsed.target_app_regex;
-  if (!Array.isArray(whitelist) || !Array.isArray(blacklist) || !Array.isArray(target)) {
-    throw new Error("AI rules response missing required regex arrays");
-  }
   return {
     whitelist_app_regex: normalizeSupervisionPatternList(whitelist),
     blacklist_app_regex: normalizeSupervisionPatternList(blacklist),
+    risk_app_regex: normalizeSupervisionPatternList(risk),
     target_app_regex: normalizeSupervisionPatternList(target),
     reason: cleanText(String(parsed.reason || ""), 180),
   };
 }
 
-export function parseDecisionResponse(raw: string): SupervisionDecision {
-  const parsed = parseAiJsonObject(raw);
+export function parseDecisionResponse(input: unknown): SupervisionDecision {
+  const parsed = SupervisionDecisionResponseSchema.parse(input);
   const rawDeviceCommands = parsed["设备命令"];
-  if (!Array.isArray(rawDeviceCommands)) {
-    throw new Error("AI supervision response missing 设备命令 array");
-  }
   const deviceDecisions = rawDeviceCommands
-    .filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item))
     .map(parseDeviceDecision)
     .filter((item) => item.device_id);
   return aggregateDeviceDecisions(deviceDecisions);

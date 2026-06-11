@@ -9,10 +9,14 @@ export function authenticateToken(authHeader: string | null): DeviceInfo | null 
   if (!authHeader) return null;
   loadDeviceTokens();
 
-  const match = authHeader.match(/^Bearer\s+(.+)$/i);
-  if (!match) return null;
+  const token = extractBearerToken(authHeader);
+  if (!token) return null;
+  return tokenMap.get(token) || null;
+}
 
-  return tokenMap.get(match[1]!) || null;
+export function extractBearerToken(authHeader: string | null): string {
+  const match = authHeader?.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || "";
 }
 
 function loadDeviceTokens(): void {

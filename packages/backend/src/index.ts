@@ -10,6 +10,7 @@ import { handleHealthWebhook } from "./routes/health-webhook";
 import { handleConfig } from "./routes/config";
 import { handleSupervisionAck } from "./routes/supervision-ack";
 import { authenticateToken } from "./middleware/auth";
+import { handleAiJobQuery, handleAiJobSubmit } from "./routes/ai-jobs";
 import {
   handleDailySummary,
   handleDailySummaryRefresh,
@@ -49,9 +50,11 @@ import { getVapidKeys, saveSubscription, removeSubscription } from "./services/p
 import { verifyViewerToken, viewerTokenFromRequest } from "./services/viewer-auth";
 import { injectSiteConfig } from "./services/site-config";
 import { startLocalMcpServer } from "./services/mcp-local-server";
+import { recoverInterruptedAiJobs } from "./services/ai-jobs";
 
 // Start scheduled cleanup tasks (import triggers setInterval registration)
 import "./services/cleanup";
+recoverInterruptedAiJobs();
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 if (isNaN(PORT) || PORT < 1 || PORT > 65535) {
@@ -261,6 +264,10 @@ const server = Bun.serve<WsData>({
         response = await handleAiConfigUpdate(req);
       } else if (pathname === "/api/ai-config/test" && req.method === "POST") {
         response = await handleAiConfigTest(req);
+      } else if (pathname === "/api/ai-jobs" && req.method === "POST") {
+        response = await handleAiJobSubmit(req);
+      } else if (pathname === "/api/ai-jobs" && req.method === "GET") {
+        response = handleAiJobQuery(req, url);
       } else if (pathname === "/api/location" && req.method === "GET") {
         response = handleLocationQuery(url, req);
       } else if (pathname === "/api/messages" && req.method === "GET") {

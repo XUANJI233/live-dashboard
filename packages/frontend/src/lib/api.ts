@@ -29,6 +29,8 @@ export interface DeviceState {
         vibrate?: boolean;
         screen_off?: boolean;
         say?: boolean;
+        risk_app_monitor?: boolean;
+        app_time_limit?: boolean;
       };
       frozen_packages?: Array<{
         package_name?: string;

@@ -3,7 +3,7 @@ import { parseDecisionResponse, parseRulesResponse } from "../src/services/super
 
 describe("supervision AI response parsing", () => {
   test("accepts the current device-command decision schema", () => {
-    const parsed = parseDecisionResponse(JSON.stringify({
+    const parsed = parseDecisionResponse({
       "设备命令": [{
         device_id: "android-lsp",
         "是否偏离": true,
@@ -14,7 +14,7 @@ describe("supervision AI response parsing", () => {
         "是否息屏": false,
         "要说的话": "回到目标。",
       }],
-    }));
+    });
 
     expect(parsed.deviated).toBe(true);
     expect(parsed.device_decisions[0]?.device_id).toBe("android-lsp");
@@ -24,7 +24,7 @@ describe("supervision AI response parsing", () => {
   });
 
   test("rejects legacy decision aliases", () => {
-    expect(() => parseDecisionResponse(JSON.stringify({
+    expect(() => parseDecisionResponse({
       deviceCommands: [{
         deviceId: "android-lsp",
         freezeCommands: ["com.video"],
@@ -32,26 +32,29 @@ describe("supervision AI response parsing", () => {
         screenOff: false,
         message: "legacy",
       }],
-    }))).toThrow("设备命令");
+    })).toThrow("设备命令");
   });
 
   test("normalizes current rule fields without accepting alias fields", () => {
-    const parsed = parseRulesResponse(JSON.stringify({
+    const parsed = parseRulesResponse({
       whitelist_app_regex: ["RegExp(\"Code\", \"i\")"],
       blacklist_app_regex: ["(?i:TikTok)"],
+      risk_app_regex: ["RegExp(\"YouTube\", \"i\")"],
       target_app_regex: ["Docs"],
       reason: "test",
-    }));
+    });
 
     expect(parsed.whitelist_app_regex).toEqual(["Code"]);
     expect(parsed.blacklist_app_regex).toEqual(["(?:TikTok)"]);
+    expect(parsed.risk_app_regex).toEqual(["YouTube"]);
     expect(parsed.target_app_regex).toEqual(["Docs"]);
 
-    expect(() => parseRulesResponse(JSON.stringify({
+    expect(() => parseRulesResponse({
       whitelistAppRegex: ["Code"],
       blacklistAppRegex: ["TikTok"],
+      riskAppRegex: ["YouTube"],
       targetAppRegex: ["Docs"],
       reason: "legacy",
-    }))).toThrow("required regex arrays");
+    })).toThrow("whitelist_app_regex");
   });
 });

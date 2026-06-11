@@ -25,6 +25,8 @@ export interface ReportPayload {
         vibrate?: boolean;
         screen_off?: boolean;
         say?: boolean;
+        risk_app_monitor?: boolean;
+        app_time_limit?: boolean;
       };
       last_sample_at?: string;
       relay_mode?: string;

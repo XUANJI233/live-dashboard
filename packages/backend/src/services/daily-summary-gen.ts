@@ -9,7 +9,7 @@ import {
   upsertWeeklySummary,
 } from "../db";
 import { buildTimelineSegments } from "../routes/timeline";
-import { getAiRuntimeConfig, requestAiChatCompletion, requestAiChatCompletionWithCachePriming } from "./ai-config";
+import { AI_CHAT_TIMEOUT_MS, getAiRuntimeConfig, requestAiChatCompletion, requestAiChatCompletionWithCachePriming } from "./ai-config";
 import { logAiDebug } from "./ai-debug";
 import { safeTimezoneOffset, utcRangeForLocalDate } from "./cdn";
 import { healthContextLinesForRange } from "./health-context";
@@ -49,10 +49,12 @@ export interface SummarySettings {
   supervision_check_mode: SupervisionCheckMode;
   supervision_check_interval_minutes: number;
   supervision_blacklist_minutes: number;
+  supervision_risk_trigger_minutes: number;
   supervision_target_min_minutes: number;
   supervision_vibrate: boolean;
   supervision_skip_watch_sleep: boolean;
   supervision_lsp_freeze: boolean;
+  supervision_app_time_limits: SupervisionAppTimeLimit[];
   supervision_rules: SupervisionRules;
   supervision_rules_updated_at: string | null;
   supervision_rules_error: string | null;
@@ -71,7 +73,14 @@ export type SupervisionCheckMode = "hourly" | "triggered";
 export interface SupervisionRules {
   whitelist_app_regex: string[];
   blacklist_app_regex: string[];
+  risk_app_regex: string[];
   target_app_regex: string[];
+  reason: string;
+}
+
+export interface SupervisionAppTimeLimit {
+  app_regex: string;
+  limit_minutes: number;
   reason: string;
 }
 
@@ -152,6 +161,7 @@ export function getSummarySettings(): SummarySettings {
       supervision_check_mode: normalizeSupervisionCheckMode(parsed.supervision_check_mode),
       supervision_check_interval_minutes: normalizeSupervisionInterval(parsed.supervision_check_interval_minutes, 60),
       supervision_blacklist_minutes: normalizeMinuteThreshold(parsed.supervision_blacklist_minutes, 20),
+      supervision_risk_trigger_minutes: normalizeMinuteThreshold(parsed.supervision_risk_trigger_minutes, 3),
       supervision_target_min_minutes: normalizeMinuteThreshold(parsed.supervision_target_min_minutes, 25),
       supervision_vibrate: parsed.supervision_vibrate === undefined
         ? true
@@ -160,6 +170,7 @@ export function getSummarySettings(): SummarySettings {
         ? true
         : normalizeBoolean(parsed.supervision_skip_watch_sleep),
       supervision_lsp_freeze: normalizeBoolean(parsed.supervision_lsp_freeze),
+      supervision_app_time_limits: normalizeSupervisionAppTimeLimits(parsed.supervision_app_time_limits),
       supervision_rules: normalizeSupervisionRules(parsed.supervision_rules),
       supervision_rules_updated_at: typeof parsed.supervision_rules_updated_at === "string" ? parsed.supervision_rules_updated_at : null,
       supervision_rules_error: typeof parsed.supervision_rules_error === "string" ? parsed.supervision_rules_error : null,
@@ -216,6 +227,9 @@ export function updateSummarySettings(input: unknown): SummarySettings {
     supervision_blacklist_minutes: source.supervision_blacklist_minutes === undefined
       ? current.supervision_blacklist_minutes
       : normalizeMinuteThreshold(source.supervision_blacklist_minutes, current.supervision_blacklist_minutes),
+    supervision_risk_trigger_minutes: source.supervision_risk_trigger_minutes === undefined
+      ? current.supervision_risk_trigger_minutes
+      : normalizeMinuteThreshold(source.supervision_risk_trigger_minutes, current.supervision_risk_trigger_minutes),
     supervision_target_min_minutes: source.supervision_target_min_minutes === undefined
       ? current.supervision_target_min_minutes
       : normalizeMinuteThreshold(source.supervision_target_min_minutes, current.supervision_target_min_minutes),
@@ -228,6 +242,9 @@ export function updateSummarySettings(input: unknown): SummarySettings {
     supervision_lsp_freeze: source.supervision_lsp_freeze === undefined
       ? current.supervision_lsp_freeze
       : normalizeBoolean(source.supervision_lsp_freeze),
+    supervision_app_time_limits: source.supervision_app_time_limits === undefined
+      ? current.supervision_app_time_limits
+      : normalizeSupervisionAppTimeLimits(source.supervision_app_time_limits),
     supervision_rules: current.supervision_rules,
     supervision_rules_updated_at: current.supervision_rules_updated_at,
     supervision_rules_error: current.supervision_rules_error,
@@ -236,6 +253,55 @@ export function updateSummarySettings(input: unknown): SummarySettings {
   };
   metaSet(SUMMARY_SETTINGS_KEY, JSON.stringify(settingsForStorage(next)));
   return next;
+}
+
+export function updateSupervisionPolicy(input: unknown): SummarySettings {
+  const source = input && typeof input === "object" ? input as Record<string, unknown> : {};
+  const current = getSummarySettings();
+  const next: SummarySettings = {
+    ...current,
+    supervision_risk_trigger_minutes: source.risk_trigger_minutes === undefined
+      ? current.supervision_risk_trigger_minutes
+      : normalizeMinuteThreshold(source.risk_trigger_minutes, current.supervision_risk_trigger_minutes),
+    supervision_app_time_limits: source.app_time_limits === undefined
+      ? current.supervision_app_time_limits
+      : normalizeSupervisionAppTimeLimits(source.app_time_limits),
+    supervision_rules: {
+      ...current.supervision_rules,
+      risk_app_regex: source.risk_app_regex === undefined
+        ? current.supervision_rules.risk_app_regex
+        : normalizeRegexList(source.risk_app_regex),
+    },
+    updated_at: new Date().toISOString(),
+  };
+  metaSet(SUMMARY_SETTINGS_KEY, JSON.stringify(settingsForStorage(next)));
+  return getSummarySettings();
+}
+
+export function supervisionPolicySnapshot(settings = getSummarySettings()): {
+  risk_app_regex: string[];
+  risk_trigger_minutes: number;
+  app_time_limits: SupervisionAppTimeLimit[];
+} {
+  return {
+    risk_app_regex: settings.supervision_rules.risk_app_regex,
+    risk_trigger_minutes: settings.supervision_risk_trigger_minutes,
+    app_time_limits: settings.supervision_app_time_limits,
+  };
+}
+
+export function effectiveSupervisionPolicySnapshot(settings = getSummarySettings()): {
+  risk_app_regex: string[];
+  risk_trigger_minutes: number;
+  app_time_limits: SupervisionAppTimeLimit[];
+} {
+  const policy = supervisionPolicySnapshot(settings);
+  if (settings.supervision_enabled) return policy;
+  return {
+    risk_app_regex: [],
+    risk_trigger_minutes: policy.risk_trigger_minutes,
+    app_time_limits: [],
+  };
 }
 
 export function saveSummarySettings(settings: SummarySettings): SummarySettings {
@@ -380,10 +446,12 @@ function defaultSummarySettings(): SummarySettings {
     supervision_check_mode: "hourly",
     supervision_check_interval_minutes: 60,
     supervision_blacklist_minutes: 20,
+    supervision_risk_trigger_minutes: 3,
     supervision_target_min_minutes: 25,
     supervision_vibrate: true,
     supervision_skip_watch_sleep: true,
     supervision_lsp_freeze: false,
+    supervision_app_time_limits: [],
     supervision_rules: defaultSupervisionRules(),
     supervision_rules_updated_at: null,
     supervision_rules_error: null,
@@ -440,9 +508,28 @@ export function normalizeSupervisionRules(value: unknown): SupervisionRules {
   return {
     whitelist_app_regex: normalizeRegexList(source.whitelist_app_regex),
     blacklist_app_regex: normalizeRegexList(source.blacklist_app_regex),
+    risk_app_regex: normalizeRegexList(source.risk_app_regex),
     target_app_regex: normalizeRegexList(source.target_app_regex),
     reason: sanitizeTarget(source.reason).slice(0, 180),
   };
+}
+
+export function normalizeSupervisionAppTimeLimits(value: unknown): SupervisionAppTimeLimit[] {
+  if (!Array.isArray(value)) return [];
+  const out: SupervisionAppTimeLimit[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const source = item as Record<string, unknown>;
+    const appRegex = normalizeRegexList([source.app_regex])[0] || "";
+    if (!appRegex) continue;
+    out.push({
+      app_regex: appRegex,
+      limit_minutes: normalizeMinuteThreshold(source.limit_minutes, 3),
+      reason: sanitizeTarget(source.reason).slice(0, 120),
+    });
+    if (out.length >= 12) break;
+  }
+  return out;
 }
 
 function normalizeSupervisionCheckMode(value: unknown): SupervisionCheckMode {
@@ -476,6 +563,7 @@ function defaultSupervisionRules(): SupervisionRules {
   return {
     whitelist_app_regex: [],
     blacklist_app_regex: [],
+    risk_app_regex: [],
     target_app_regex: [],
     reason: "",
   };
@@ -539,10 +627,12 @@ function settingsForStorage(settings: SummarySettings): Omit<SummarySettings, "s
     supervision_check_mode: settings.supervision_check_mode,
     supervision_check_interval_minutes: settings.supervision_check_interval_minutes,
     supervision_blacklist_minutes: settings.supervision_blacklist_minutes,
+    supervision_risk_trigger_minutes: settings.supervision_risk_trigger_minutes,
     supervision_target_min_minutes: settings.supervision_target_min_minutes,
     supervision_vibrate: settings.supervision_vibrate,
     supervision_skip_watch_sleep: settings.supervision_skip_watch_sleep,
     supervision_lsp_freeze: settings.supervision_lsp_freeze,
+    supervision_app_time_limits: settings.supervision_app_time_limits,
     supervision_rules: settings.supervision_rules,
     supervision_rules_updated_at: settings.supervision_rules_updated_at,
     supervision_rules_error: settings.supervision_rules_error,
@@ -689,7 +779,7 @@ async function generateSummaryText(input: {
       finalUserMessage: finalInstruction,
       maxTokens,
       temperature,
-      timeoutMs: 30_000,
+      timeoutMs: AI_CHAT_TIMEOUT_MS,
     });
     let summary = sanitizeAiSummary(rawSummary, input.kind);
     logAiDebug("summary.response", {
@@ -723,7 +813,7 @@ async function generateSummaryText(input: {
         messages: retryMessages,
         maxTokens,
         temperature: Math.min(temperature, 0.55),
-        timeoutMs: 30_000,
+        timeoutMs: AI_CHAT_TIMEOUT_MS,
       });
       summary = sanitizeAiSummary(rawSummary, input.kind);
       logAiDebug("summary.retry.response", {

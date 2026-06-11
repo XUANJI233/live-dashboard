@@ -100,6 +100,7 @@ const KNOWN_TABLES = new Set([
   "device_messages",
   "device_commands",
   "device_command_results",
+  "ai_jobs",
   "daily_summaries",
   "weekly_summaries",
 ]);
@@ -392,6 +393,36 @@ db.run(`
   ON device_command_results(command_id, received_at)
 `);
 
+// ── Async AI jobs (keeps long AI work out of edge HTTP lifetimes) ──
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS ai_jobs (
+    request_id TEXT PRIMARY KEY,
+    job_kind TEXT NOT NULL,
+    job_key TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    result TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    started_at TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    UNIQUE(job_kind, job_key)
+  )
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_ai_jobs_kind_key
+  ON ai_jobs(job_kind, job_key)
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_ai_jobs_device_updated
+  ON ai_jobs(device_id, updated_at)
+`);
+
 // Daily summaries table (AI-generated)
 db.run(`
   CREATE TABLE IF NOT EXISTS daily_summaries (
@@ -511,6 +542,19 @@ export const cleanupOldDeviceCommandResults = db.prepare(`
 
 export const cleanupOldDeviceCommands = db.prepare(`
   DELETE FROM device_commands WHERE datetime(issued_at) < datetime('now', '-14 days')
+`);
+
+export const cleanupOldAiJobs = db.prepare(`
+  DELETE FROM ai_jobs WHERE datetime(created_at) < datetime('now', '-7 days')
+`);
+
+export const markInterruptedAiJobsFailed = db.prepare(`
+  UPDATE ai_jobs
+  SET status = 'failed',
+      error = ?,
+      finished_at = ?,
+      updated_at = ?
+  WHERE status IN ('queued', 'running')
 `);
 
 export const insertLocationRecord = db.prepare(`

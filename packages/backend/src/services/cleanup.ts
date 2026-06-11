@@ -1,4 +1,4 @@
-import { cleanupExpiredMessages, cleanupOldActivities, cleanupOldDeviceCommandResults, cleanupOldDeviceCommands, cleanupOldLocations, cleanupOldSummaries, cleanupOldWeeklySummaries, markOfflineDevices, optimizeDatabase } from "../db";
+import { cleanupExpiredMessages, cleanupOldActivities, cleanupOldAiJobs, cleanupOldDeviceCommandResults, cleanupOldDeviceCommands, cleanupOldLocations, cleanupOldSummaries, cleanupOldWeeklySummaries, markOfflineDevices, optimizeDatabase } from "../db";
 import { generateDailySummary, generateWeeklySummary, getSummarySettings, isoWeekday } from "./daily-summary-gen";
 import { runSupervisionTick } from "./supervision";
 
@@ -39,6 +39,15 @@ const hourlyCleanupTimer = setInterval(() => {
     }
   } catch (e) {
     console.error("[cleanup] Device command cleanup failed:", e);
+  }
+
+  try {
+    const aiJobResult = cleanupOldAiJobs.run();
+    if (aiJobResult.changes > 0) {
+      console.log(`[cleanup] Deleted ${aiJobResult.changes} old AI jobs`);
+    }
+  } catch (e) {
+    console.error("[cleanup] AI job cleanup failed:", e);
   }
 
   try {

@@ -28,6 +28,8 @@ export function deviceCapabilitiesLabel(device: DeviceState): string | null {
     capabilities.vibrate ? "震动" : "",
     capabilities.say ? "提醒" : "",
     capabilities.screen_off ? "息屏" : "",
+    capabilities.risk_app_monitor ? "风险复核" : "",
+    capabilities.app_time_limit ? "应用限时" : "",
   ].filter(Boolean);
   return parts.length > 0 ? parts.join("/") : "无控制能力";
 }

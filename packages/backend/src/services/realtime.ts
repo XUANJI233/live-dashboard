@@ -1,11 +1,12 @@
 import { db } from "../db";
-import { authenticateToken } from "../middleware/auth";
+import { authenticateToken, extractBearerToken } from "../middleware/auth";
 import { currentHourWindow, currentMessageSlot, noStore, withCdnHeaders } from "./cdn";
 import { verifyViewerToken, viewerTokenFromRequest, viewerTokenRateLimit, edgeViewerIdentity } from "./viewer-auth";
 import { processReportPayload, ReportPayloadError } from "./device-status-handler";
 import { requestSupervisionCheckFromReportPayload } from "./supervision-report-trigger";
 import { deviceCommandReceiptWsResponse, deviceCommandResultWsResponse } from "./supervision-ack";
 import type { DeviceCommandEnvelope, DeliveryStatus } from "./mcp-contracts";
+import { aiJobInputErrorResponse, setAiJobNotifier, submitAiJobFromClient, type PublicAiJob } from "./ai-jobs";
 import type { DeviceInfo } from "../types";
 import type { ServerWebSocket } from "bun";
 
@@ -15,6 +16,7 @@ export interface WsData {
   role: Role;
   id: string;
   device?: DeviceInfo;
+  deviceToken?: string;
 }
 
 const MAX_TEXT_LENGTH = 500;
@@ -259,6 +261,18 @@ const getMessageTargetDevice = db.prepare(`
 
 function send(ws: ServerWebSocket<WsData>, payload: unknown) {
   ws.send(JSON.stringify(payload));
+}
+
+setAiJobNotifier((job) => {
+  broadcastAiJobUpdate(job);
+});
+
+function broadcastAiJobUpdate(job: PublicAiJob): void {
+  const payload = JSON.stringify({ type: "ai_job_update", job });
+  for (const ws of deviceSockets.values()) {
+    if (ws.data.device?.platform === "zepp") continue;
+    try { ws.send(payload); } catch { /* polling fallback covers missed pushes */ }
+  }
 }
 
 function addViewerSocket(viewerId: string, ws: ServerWebSocket<WsData>) {
@@ -657,9 +671,10 @@ export function getWsInfo(req: Request): WsData | Response {
   }
 
   if (role === "device") {
-    const device = authenticateToken(req.headers.get("authorization"));
+    const authorization = req.headers.get("authorization");
+    const device = authenticateToken(authorization);
     if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
-    return { role: "device", id: device.device_id, device };
+    return { role: "device", id: device.device_id, device, deviceToken: extractBearerToken(authorization) };
   }
 
   if (role === "viewer") {
@@ -798,6 +813,29 @@ export const realtimeWebSocket = {
       return;
     }
 
+    if (ws.data.role === "device" && data.type === "ai_request" && ws.data.device) {
+      try {
+        const submitted = submitAiJobFromClient(data, ws.data.device, ws.data.deviceToken || "");
+        send(ws, {
+          type: "ai_request_ack",
+          request_id: typeof data.request_id === "string" ? data.request_id : submitted.client_request_id,
+          accepted: true,
+          attached: submitted.attached,
+          job_request_id: submitted.job.request_id,
+          job: submitted.job,
+        });
+      } catch (e) {
+        const error = aiJobInputErrorResponse(e);
+        send(ws, {
+          type: "ai_request_ack",
+          request_id: typeof data.request_id === "string" ? data.request_id : "",
+          accepted: false,
+          ...error.body,
+        });
+      }
+      return;
+    }
+
     if (ws.data.role === "device" && data.type === "device_reply") {
       const targetViewerId = typeof data.target_viewer_id === "string" ? data.target_viewer_id : "";
       const text = cleanText(data.text);
@@ -854,6 +892,7 @@ export const realtimeWebSocket = {
     }
 
     if (ws.data.role === "device" && data.type === "device_status") {
+      const statusId = cleanMessageId(data.status_id);
       // Any device_status message refreshes keepalive (proof of life)
       devicePongTimes.set(ws.data.id, Date.now());
       // If payload present, process as full report (WebSocket上报通道)
@@ -863,6 +902,7 @@ export const realtimeWebSocket = {
         try {
           publicPayload = processReportPayload(data.payload, ws.data.device);
           requestSupervisionCheckFromReportPayload(data.payload, ws.data.device);
+          syncSupervisionPolicyForReportedDevice(ws.data.id);
         } catch (e: any) {
           if (e instanceof ReportPayloadError) {
             send(ws, { type: "error", error: e.code, message: e.message });
@@ -886,7 +926,11 @@ export const realtimeWebSocket = {
           });
         }
       }
-      send(ws, { type: "ack", status: "status_received" });
+      send(ws, {
+        type: "ack",
+        status: "status_received",
+        ...(statusId ? { status_id: statusId } : {}),
+      });
       return;
     }
 
@@ -904,6 +948,16 @@ export const realtimeWebSocket = {
     }
   },
 };
+
+function syncSupervisionPolicyForReportedDevice(deviceId: string): void {
+  void import("./supervision-policy-control")
+    .then(({ syncCurrentSupervisionPolicyForDevice }) => {
+      syncCurrentSupervisionPolicyForDevice(deviceId);
+    })
+    .catch((e) => {
+      console.error("[ws] supervision policy sync failed:", e instanceof Error ? e.message : "sync failed");
+    });
+}
 
 export function handleDeviceMessages(req: Request): Response {
   const device = authenticateToken(req.headers.get("authorization"));

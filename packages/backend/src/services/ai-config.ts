@@ -2,7 +2,17 @@ import { HASH_SECRET, metaGet, metaSet } from "../db";
 import { x25519 } from "@noble/curves/ed25519.js";
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { createGateway, generateText, wrapLanguageModel, type LanguageModel, type LanguageModelMiddleware } from "ai";
+import {
+  createGateway,
+  extractJsonMiddleware,
+  generateText,
+  NoObjectGeneratedError,
+  Output,
+  wrapLanguageModel,
+  type FlexibleSchema,
+  type LanguageModel,
+  type LanguageModelMiddleware,
+} from "ai";
 import { deepSeekCachePrimingMiddleware } from "./ai-cache-middleware";
 import { logAiDebug } from "./ai-debug";
 
@@ -19,7 +29,7 @@ const AI_CONFIG_PAYLOAD_VERSION = 2;
 const SEALED_JSON_VERSION = 2;
 const STORE_SEALING_SALT = "live-dashboard-ai-config-store-v2";
 const AI_CONFIG_TEST_MAX_TOKENS = 8192;
-const AI_CHAT_TIMEOUT_MS = 5 * 60_000;
+export const AI_CHAT_TIMEOUT_MS = 5 * 60_000;
 const AI_CHAT_MIN_TIMEOUT_MS = 1_000;
 const AI_CHAT_MAX_RETRIES = 3;
 
@@ -247,8 +257,6 @@ export async function requestAiChatCompletion(
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= AI_CHAT_MAX_RETRIES; attempt += 1) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const result = await generateText({
         model: languageModelForConfig(config, options.middleware),
@@ -257,7 +265,7 @@ export async function requestAiChatCompletion(
         maxOutputTokens: options.maxTokens,
         temperature: options.temperature,
         ...(providerOptions ? { providerOptions } : {}),
-        abortSignal: controller.signal,
+        timeout: { totalMs: timeoutMs },
         maxRetries: 0,
       });
       logAiCacheUsage(config.model, result.usage, result.providerMetadata);
@@ -267,7 +275,8 @@ export async function requestAiChatCompletion(
       }
       return text;
     } catch (e) {
-      lastError = (e as Error).name === "AbortError"
+      const errorName = (e as Error).name;
+      lastError = errorName === "AbortError" || errorName === "TimeoutError"
         ? Object.assign(new Error("AI API request timed out"), { code: "AI_CHAT_TIMEOUT" })
         : e;
       if (attempt >= AI_CHAT_MAX_RETRIES) break;
@@ -277,8 +286,6 @@ export async function requestAiChatCompletion(
         retriesRemaining: AI_CHAT_MAX_RETRIES - attempt,
         error: safeErrorMessage(lastError),
       });
-    } finally {
-      clearTimeout(timeoutId);
     }
   }
 
@@ -305,6 +312,111 @@ export async function requestAiChatCompletionWithCachePriming(
   const finalUserMessage: AiChatMessage = { role: "user", content: options.finalUserMessage };
   return requestAiChatCompletion(config, {
     messages: [...options.messages, finalUserMessage],
+    maxTokens: options.maxTokens,
+    temperature: options.temperature,
+    timeoutMs: options.timeoutMs,
+    ...(isDeepSeekRequest(config)
+      ? {
+        middleware: deepSeekCachePrimingMiddleware({
+          model: config.model,
+          warmupMaxTokens: options.warmupMaxTokens,
+        }),
+      }
+      : {}),
+  });
+}
+
+export async function requestAiObjectCompletion<T>(
+  config: Pick<AiRuntimeConfig, "apiUrl" | "apiKey" | "model">,
+  options: {
+    messages: AiChatMessage[];
+    schema: FlexibleSchema<T>;
+    schemaName?: string;
+    schemaDescription?: string;
+    maxTokens: number;
+    temperature?: number;
+    timeoutMs?: number;
+    middleware?: LanguageModelMiddleware | LanguageModelMiddleware[];
+  },
+): Promise<T> {
+  const timeoutMs = normalizeAiChatTimeoutMs(options.timeoutMs);
+  const system = options.messages
+    .filter((message) => message.role === "system")
+    .map((message) => message.content)
+    .join("\n\n") || undefined;
+  const messages = options.messages.filter((message) => message.role !== "system");
+  const providerOptions = aiProviderOptions(config);
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= AI_CHAT_MAX_RETRIES; attempt += 1) {
+    try {
+      const result = await generateText({
+        model: languageModelForConfig(config, jsonObjectMiddleware(options.middleware)),
+        ...(system ? { system } : {}),
+        messages,
+        maxOutputTokens: options.maxTokens,
+        temperature: options.temperature,
+        output: Output.object({
+          schema: options.schema,
+          ...(options.schemaName ? { name: options.schemaName } : {}),
+          ...(options.schemaDescription ? { description: options.schemaDescription } : {}),
+        }),
+        ...(providerOptions ? { providerOptions } : {}),
+        timeout: { totalMs: timeoutMs },
+        maxRetries: 0,
+      });
+      logAiCacheUsage(config.model, result.usage, result.providerMetadata);
+      return result.output;
+    } catch (e) {
+      if (NoObjectGeneratedError.isInstance(e)) {
+        throw Object.assign(new Error(redactAiError(safeErrorMessage(e), config.apiKey)), {
+          code: "AI_OBJECT_INVALID",
+          rawText: e.text ?? "",
+        });
+      }
+      const errorName = (e as Error).name;
+      lastError = errorName === "AbortError" || errorName === "TimeoutError"
+        ? Object.assign(new Error("AI API request timed out"), { code: "AI_CHAT_TIMEOUT" })
+        : e;
+      if (attempt >= AI_CHAT_MAX_RETRIES) break;
+      logAiDebug("chat.object_retry", {
+        model: config.model,
+        attempt: attempt + 1,
+        retriesRemaining: AI_CHAT_MAX_RETRIES - attempt,
+        error: safeErrorMessage(lastError),
+      });
+    }
+  }
+
+  const code = (lastError as { code?: string } | null)?.code;
+  if (code === "AI_CHAT_TIMEOUT") {
+    throw Object.assign(new Error("AI API request timed out"), { code });
+  }
+  throw Object.assign(new Error(redactAiError(safeErrorMessage(lastError), config.apiKey)), {
+    code: "AI_CHAT_FAILED",
+  });
+}
+
+export async function requestAiObjectCompletionWithCachePriming<T>(
+  config: Pick<AiRuntimeConfig, "apiUrl" | "apiKey" | "model">,
+  options: {
+    messages: AiChatMessage[];
+    finalUserMessage: string;
+    schema: FlexibleSchema<T>;
+    schemaName?: string;
+    schemaDescription?: string;
+    maxTokens: number;
+    temperature?: number;
+    timeoutMs?: number;
+    warmupMaxTokens?: number;
+  },
+): Promise<T> {
+  const finalUserMessage: AiChatMessage = { role: "user", content: options.finalUserMessage };
+  return requestAiObjectCompletion(config, {
+    messages: [...options.messages, finalUserMessage],
+    schema: options.schema,
+    schemaName: options.schemaName,
+    schemaDescription: options.schemaDescription,
     maxTokens: options.maxTokens,
     temperature: options.temperature,
     timeoutMs: options.timeoutMs,
@@ -364,6 +476,15 @@ function languageModelForConfig(
     model = provider.chatModel(config.model);
   }
   return middleware ? wrapLanguageModel({ model, middleware }) : model;
+}
+
+function jsonObjectMiddleware(middleware?: LanguageModelMiddleware | LanguageModelMiddleware[]): LanguageModelMiddleware[] {
+  return [extractJsonMiddleware(), ...middlewareArray(middleware)];
+}
+
+function middlewareArray(middleware?: LanguageModelMiddleware | LanguageModelMiddleware[]): LanguageModelMiddleware[] {
+  if (!middleware) return [];
+  return Array.isArray(middleware) ? middleware : [middleware];
 }
 
 function isDeepSeekEndpoint(apiUrl: string): boolean {

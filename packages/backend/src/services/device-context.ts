@@ -57,6 +57,8 @@ export interface DeviceCapabilityFlags {
   vibrate: boolean;
   screen_off: boolean;
   say: boolean;
+  risk_app_monitor: boolean;
+  app_time_limit: boolean;
 }
 
 export interface FrozenPackageItem {
@@ -205,15 +207,15 @@ function capabilityProfile(platform: string, deviceExtra: Record<string, unknown
 
 function defaultCapabilities(profile: DeviceCapabilityProfile): DeviceCapabilityFlags {
   if (profile === "android_lsp") {
-    return { freeze: true, unfreeze: true, vibrate: true, screen_off: false, say: true };
+    return { freeze: true, unfreeze: true, vibrate: true, screen_off: false, say: true, risk_app_monitor: true, app_time_limit: true };
   }
   if (profile === "android_normal") {
-    return { freeze: false, unfreeze: false, vibrate: true, screen_off: false, say: true };
+    return { freeze: false, unfreeze: false, vibrate: true, screen_off: false, say: true, risk_app_monitor: false, app_time_limit: false };
   }
   if (profile === "desktop_message") {
-    return { freeze: false, unfreeze: false, vibrate: false, screen_off: false, say: true };
+    return { freeze: false, unfreeze: false, vibrate: false, screen_off: false, say: true, risk_app_monitor: false, app_time_limit: false };
   }
-  return { freeze: false, unfreeze: false, vibrate: false, screen_off: false, say: false };
+  return { freeze: false, unfreeze: false, vibrate: false, screen_off: false, say: false, risk_app_monitor: false, app_time_limit: false };
 }
 
 function boundedCapabilities(maxCapabilities: DeviceCapabilityFlags, reported: Record<string, unknown>): DeviceCapabilityFlags {
@@ -224,6 +226,8 @@ function boundedCapabilities(maxCapabilities: DeviceCapabilityFlags, reported: R
     vibrate: capabilityFlag(maxCapabilities.vibrate, reported.vibrate, hasReportedCapabilities),
     screen_off: false,
     say: capabilityFlag(maxCapabilities.say, reported.say, hasReportedCapabilities),
+    risk_app_monitor: capabilityFlag(maxCapabilities.risk_app_monitor, reported.risk_app_monitor, hasReportedCapabilities),
+    app_time_limit: capabilityFlag(maxCapabilities.app_time_limit, reported.app_time_limit, hasReportedCapabilities),
   };
 }
 
