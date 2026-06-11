@@ -3,11 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import type { DeviceState } from "@/lib/api";
 import { ensureViewerToken, getCachedViewerToken, type TokenStatus } from "@/lib/viewer-token";
-import { sendRealtime, subscribeRealtime, subscribeRealtimeState } from "@/lib/realtime-client";
+import { sendRealtimeWithAck, subscribeRealtime, subscribeRealtimeState } from "@/lib/realtime-client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 const PUBLIC_RECENT_HOURS = 24 * 365;
 const PUBLIC_POLL_INTERVAL_MS = 30_000;
+const PRIVATE_REALTIME_ACK_TIMEOUT_MS = 4_000;
 
 interface Props {
   device?: DeviceState;
@@ -439,7 +440,16 @@ export default function VisitorMessages({ device }: Props) {
     });
     setPrivateText("");
 
-    if (sendRealtime(payload)) return;
+    const realtimeAck = await sendRealtimeWithAck(payload, id, PRIVATE_REALTIME_ACK_TIMEOUT_MS);
+    if (realtimeAck.received) {
+      if (realtimeAck.error) {
+        setPrivateLineStatus(device.device_id, id, "failed");
+        setError(`私聊发送失败: ${realtimeAck.error}`);
+      } else {
+        setPrivateLineStatus(device.device_id, id, realtimeAck.status || "sent");
+      }
+      return;
+    }
 
     setPrivateSending(true);
     try {

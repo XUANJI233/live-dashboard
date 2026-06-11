@@ -3,9 +3,20 @@ import { getRealtimeUrl } from "@/lib/api";
 
 type MessageHandler = (message: any) => void;
 type StateHandler = (connected: boolean) => void;
+type RealtimeAckMissReason = "unavailable" | "send_failed" | "timeout" | "closed" | "replaced";
+
+export type RealtimeAckResult =
+  | { received: true; status?: string; error?: string }
+  | { received: false; reason: RealtimeAckMissReason };
+
+interface AckWaiter {
+  timer: ReturnType<typeof setTimeout>;
+  resolve: (result: RealtimeAckResult) => void;
+}
 
 const messageHandlers = new Set<MessageHandler>();
 const stateHandlers = new Set<StateHandler>();
+const ackWaiters = new Map<string, AckWaiter>();
 
 const RECONNECT_BASE_DELAY_MS = 5_000;
 const RECONNECT_MAX_DELAY_MS = 60_000;
@@ -25,6 +36,42 @@ function notifyState(next: boolean) {
 
 function emitMessage(message: any) {
   for (const handler of messageHandlers) handler(message);
+}
+
+function completeAckWaiter(messageId: string, result: RealtimeAckResult) {
+  const waiter = ackWaiters.get(messageId);
+  if (!waiter) return;
+  ackWaiters.delete(messageId);
+  clearTimeout(waiter.timer);
+  waiter.resolve(result);
+}
+
+function failPendingAckWaiters(reason: RealtimeAckMissReason) {
+  for (const messageId of Array.from(ackWaiters.keys())) {
+    completeAckWaiter(messageId, { received: false, reason });
+  }
+}
+
+function resolveAckMessage(message: any) {
+  if (message?.type === "ack" || message?.type === "error") {
+    const messageId = typeof message.message_id === "string" ? message.message_id : "";
+    if (!messageId) return;
+    completeAckWaiter(messageId, {
+      received: true,
+      status: typeof message.status === "string" ? message.status : undefined,
+      error: typeof message.error === "string" ? message.error : undefined,
+    });
+    return;
+  }
+
+  if (message?.type === "viewer_message_sent") {
+    const messageId = typeof message.message?.id === "string" ? message.message.id : "";
+    if (!messageId) return;
+    completeAckWaiter(messageId, {
+      received: true,
+      status: typeof message.status === "string" ? message.status : undefined,
+    });
+  }
 }
 
 async function connect() {
@@ -50,13 +97,16 @@ async function connect() {
 
     ws.onmessage = (event) => {
       try {
-        emitMessage(JSON.parse(event.data));
+        const message = JSON.parse(event.data);
+        resolveAckMessage(message);
+        emitMessage(message);
       } catch {
         // Ignore invalid frames.
       }
     };
 
     ws.onclose = () => {
+      failPendingAckWaiters("closed");
       socket = null;
       connecting = false;
       notifyState(false);
@@ -95,6 +145,7 @@ function disconnectIfIdle() {
     socket.close();
     socket = null;
   }
+  failPendingAckWaiters("closed");
   connecting = false;
   notifyState(false);
 }
@@ -118,14 +169,30 @@ export function subscribeRealtimeState(handler: StateHandler) {
   };
 }
 
-export function sendRealtime(payload: unknown): boolean {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-  try {
-    socket.send(JSON.stringify(payload));
-    return true;
-  } catch {
-    return false;
+export function sendRealtimeWithAck(
+  payload: unknown,
+  messageId: string,
+  timeoutMs = 4_000,
+): Promise<RealtimeAckResult> {
+  const currentSocket = socket;
+  if (!messageId) return Promise.resolve({ received: false, reason: "send_failed" });
+  if (!currentSocket || currentSocket.readyState !== WebSocket.OPEN) {
+    return Promise.resolve({ received: false, reason: "unavailable" });
   }
+
+  completeAckWaiter(messageId, { received: false, reason: "replaced" });
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      completeAckWaiter(messageId, { received: false, reason: "timeout" });
+    }, timeoutMs);
+    ackWaiters.set(messageId, { timer, resolve });
+
+    try {
+      currentSocket.send(JSON.stringify(payload));
+    } catch {
+      completeAckWaiter(messageId, { received: false, reason: "send_failed" });
+    }
+  });
 }
 
 export function isRealtimeConnected() {

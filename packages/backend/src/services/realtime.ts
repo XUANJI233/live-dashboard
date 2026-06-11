@@ -126,6 +126,13 @@ const markMessageDelivered = db.prepare(`
   WHERE id = ? AND device_id = ?
 `);
 
+const getQueuedMessageDelivery = db.prepare(`
+  SELECT delivered_at
+  FROM device_messages
+  WHERE id = ? AND device_id = ?
+  LIMIT 1
+`);
+
 const markMessagesDelivered = db.transaction((deviceId: string, ids: string[]) => {
   for (const id of ids) markMessageDelivered.run(id, deviceId);
 });
@@ -516,9 +523,9 @@ function recordMessage(
   insertVisitorMessage.run(id, deviceId, viewerId, viewerName, kind, direction, text, createdAt);
 }
 
-function queueMessage(deviceId: string, viewerId: string, text: string, messageId: string, payloadText = "") {
+function queueMessage(deviceId: string, viewerId: string, text: string, messageId: string, payloadText = ""): boolean {
   try {
-    insertQueuedMessage.run(
+    const result = insertQueuedMessage.run(
       messageId,
       deviceId,
       viewerId,
@@ -526,8 +533,10 @@ function queueMessage(deviceId: string, viewerId: string, text: string, messageI
       payloadText,
       `+${MESSAGE_TTL_MINUTES} minutes`
     );
+    return result.changes > 0;
   } catch {
     // Duplicate client-supplied message ids are ignored; the sender still gets an ack.
+    return false;
   }
 }
 
@@ -572,6 +581,12 @@ function deliverViewerMessage(
   payload: Record<string, unknown> | null = null,
 ) {
   const payloadText = serializedMessagePayload(payload);
+  const inserted = queueMessage(targetDeviceId, viewerId, text, messageId, payloadText);
+  if (!inserted) {
+    const queued = getQueuedMessageDelivery.get(messageId, targetDeviceId) as { delivered_at?: string } | null;
+    if (queued?.delivered_at) return "sent";
+  }
+
   const deviceWs = deviceSockets.get(targetDeviceId);
   if (deviceWs) {
     const message: Record<string, unknown> = {
@@ -587,13 +602,13 @@ function deliverViewerMessage(
     if (parsedPayload) message.payload = parsedPayload;
     try {
       send(deviceWs, message);
+      markMessageDelivered.run(messageId, targetDeviceId);
       return "sent";
     } catch {
       deviceSockets.delete(targetDeviceId);
       devicePongTimes.delete(targetDeviceId);
     }
   }
-  queueMessage(targetDeviceId, viewerId, text, messageId, payloadText);
   return "queued";
 }
 
@@ -774,23 +789,25 @@ export const realtimeWebSocket = {
         return;
       }
 
-      const createdAt = new Date().toISOString();
-      const targets = messageTargets(targetDeviceId)
-        .filter((deviceId) => !isViewerBlocked(deviceId, ws.data.id));
-      recordMessage(messageId, targetDeviceId || "__broadcast__", ws.data.id, viewerName, "private", "viewer", text, createdAt);
-      let sent = 0;
-      let queued = 0;
-      for (const deviceId of targets) {
-        const status = deliverViewerMessage(deviceId, ws.data.id, viewerName, "private", text, messageId, createdAt);
-        if (status === "sent") sent += 1;
-        else queued += 1;
+      if (!supportsDeviceMessages(targetDeviceId)) {
+        send(ws, { type: "error", message_id: messageId, error: "unsupported_target_device" });
+        return;
       }
-      const status = sent > 0 ? "sent" : queued > 0 ? "queued" : "recorded";
+      if (isViewerBlocked(targetDeviceId, ws.data.id)) {
+        send(ws, { type: "error", message_id: messageId, error: "blocked_by_device" });
+        return;
+      }
+
+      const createdAt = new Date().toISOString();
+      recordMessage(messageId, targetDeviceId, ws.data.id, viewerName, "private", "viewer", text, createdAt);
+      const status = deliverViewerMessage(targetDeviceId, ws.data.id, viewerName, "private", text, messageId, createdAt);
+      const sent = status === "sent" ? 1 : 0;
+      const queued = status === "queued" ? 1 : 0;
       sendToViewerSockets(ws.data.id, {
         type: "viewer_message_sent",
         message: {
           id: messageId,
-          device_id: targetDeviceId || "__broadcast__",
+          device_id: targetDeviceId,
           viewer_id: ws.data.id,
           viewer_name: viewerName,
           kind: "private",
@@ -1137,6 +1154,9 @@ export async function handlePrivateMessagePost(req: Request): Promise<Response> 
   const messageId = cleanMessageId(body.message_id) || crypto.randomUUID();
   if (!targetDeviceId || !text) {
     return Response.json({ error: "target_device_id and text required", message_id: messageId }, { status: 400 });
+  }
+  if (!supportsDeviceMessages(targetDeviceId)) {
+    return Response.json({ error: "unsupported_target_device", message_id: messageId }, { status: 404 });
   }
   if (isViewerBlocked(targetDeviceId, viewer.viewerId)) {
     return Response.json({ error: "blocked_by_device", message_id: messageId }, { status: 403 });
