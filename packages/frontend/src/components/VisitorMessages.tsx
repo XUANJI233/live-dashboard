@@ -234,7 +234,7 @@ export default function VisitorMessages({ device }: Props) {
         };
         if (!line.text) return;
         setLines((prev) => {
-          const next = [...prev, line];
+          const next = mergeChatLines(prev, [line]);
           saveHistory(device?.device_id, next);
           return next;
         });

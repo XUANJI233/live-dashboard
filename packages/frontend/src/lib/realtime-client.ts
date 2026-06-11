@@ -65,7 +65,11 @@ function resolveAckMessage(message: any) {
   }
 
   if (message?.type === "viewer_message_sent") {
-    const messageId = typeof message.message?.id === "string" ? message.message.id : "";
+    const messageId = typeof message.message_id === "string"
+      ? message.message_id
+      : typeof message.message?.id === "string"
+        ? message.message.id
+        : "";
     if (!messageId) return;
     completeAckWaiter(messageId, {
       received: true,

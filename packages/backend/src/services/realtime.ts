@@ -319,7 +319,7 @@ function broadcastPublicMessage(message: {
   text: string;
   created_at: string;
 }) {
-  const payload = JSON.stringify({ type: "public_message", message });
+  const payload = JSON.stringify({ type: "public_message", message_id: message.id, message });
   forEachViewerSocket((viewerWs) => {
     try { viewerWs.send(payload); } catch { /* ignore */ }
   });
@@ -519,8 +519,9 @@ function recordMessage(
   direction: "viewer" | "device",
   text: string,
   createdAt = new Date().toISOString(),
-) {
-  insertVisitorMessage.run(id, deviceId, viewerId, viewerName, kind, direction, text, createdAt);
+): boolean {
+  const result = insertVisitorMessage.run(id, deviceId, viewerId, viewerName, kind, direction, text, createdAt);
+  return result.changes > 0;
 }
 
 function queueMessage(deviceId: string, viewerId: string, text: string, messageId: string, payloadText = ""): boolean {
@@ -743,8 +744,9 @@ export const realtimeWebSocket = {
     }
 
     if (ws.data.role === "viewer" && data.type === "viewer_message") {
+      const messageId = cleanMessageId(data.message_id) || crypto.randomUUID();
       if (!rateLimit(ws.data.id)) {
-        send(ws, { type: "error", error: "Rate limit exceeded" });
+        send(ws, { type: "error", message_id: messageId, error: "Rate limit exceeded" });
         return;
       }
 
@@ -752,7 +754,6 @@ export const realtimeWebSocket = {
       const text = cleanText(data.text);
       const kind = cleanKind(data.kind);
       const viewerName = cleanViewerName(data.viewer_name);
-      const messageId = cleanMessageId(data.message_id) || crypto.randomUUID();
       if (!targetDeviceId || !text) {
         if (kind === "private") {
           send(ws, { type: "error", message_id: messageId, error: "target_device_id and text required" });
@@ -805,6 +806,7 @@ export const realtimeWebSocket = {
       const queued = status === "queued" ? 1 : 0;
       sendToViewerSockets(ws.data.id, {
         type: "viewer_message_sent",
+        message_id: messageId,
         message: {
           id: messageId,
           device_id: targetDeviceId,
@@ -871,40 +873,58 @@ export const realtimeWebSocket = {
 
       if (isPublicThread) {
         const publicReplyId = "pub_" + replyId;
-        recordMessage(publicReplyId, ws.data.id, "__public__", "up", "public_reply", "device", text, createdAt);
-        broadcastPublicMessage({
-          id: publicReplyId,
-          device_id: ws.data.id,
-          viewer_id: "__public__",
-          viewer_name: "up",
-          kind: "public_reply",
-          text,
-          created_at: createdAt,
+        const inserted = recordMessage(publicReplyId, ws.data.id, "__public__", "up", "public_reply", "device", text, createdAt);
+        if (inserted) {
+          broadcastPublicMessage({
+            id: publicReplyId,
+            device_id: ws.data.id,
+            viewer_id: "__public__",
+            viewer_name: "up",
+            kind: "public_reply",
+            text,
+            created_at: createdAt,
+          });
+        }
+        send(ws, {
+          type: "ack",
+          message_id: messageId,
+          reply_id: publicReplyId,
+          in_reply_to: messageId,
+          status: "public_reply_sent",
         });
-        send(ws, { type: "ack", message_id: messageId, status: "public_reply_sent" });
         return;
       }
 
-      recordMessage(replyId, ws.data.id, targetViewerId, "", "reply", "device", text, createdAt);
-      sendToViewerSockets(targetViewerId, {
-        type: "device_reply",
-        message_id: replyId,
+      const inserted = recordMessage(replyId, ws.data.id, targetViewerId, "", "reply", "device", text, createdAt);
+      if (inserted) {
+        sendToViewerSockets(targetViewerId, {
+          type: "device_reply",
+          message_id: replyId,
+          in_reply_to: messageId,
+          device_id: ws.data.id,
+          text,
+          created_at: createdAt,
+        });
+      }
+      send(ws, {
+        type: "ack",
+        message_id: messageId,
+        reply_id: replyId,
         in_reply_to: messageId,
-        device_id: ws.data.id,
-        text,
-        created_at: createdAt,
+        status: "reply_sent",
       });
-      send(ws, { type: "ack", message_id: messageId, status: "reply_sent" });
 
       // Web Push for offline viewer
-      import("./push").then(({ sendPush }) => {
-        sendPush(targetViewerId, {
-          title: "Monika 回复了",
-          body: text.slice(0, 120),
-          icon: "/icon-192.png",
-          url: "/",
-        }).catch(() => {});
-      });
+      if (inserted) {
+        import("./push").then(({ sendPush }) => {
+          sendPush(targetViewerId, {
+            title: "Monika 回复了",
+            body: text.slice(0, 120),
+            icon: "/icon-192.png",
+            url: "/",
+          }).catch(() => {});
+        });
+      }
       return;
     }
 
@@ -1059,40 +1079,61 @@ export async function handleDeviceMessageReply(req: Request): Promise<Response> 
 
   if (isPublicThread) {
     const publicReplyId = "pub_" + replyId;
-    recordMessage(publicReplyId, device.device_id, "__public__", "up", "public_reply", "device", text, createdAt);
-    broadcastPublicMessage({
-      id: publicReplyId,
-      device_id: device.device_id,
-      viewer_id: "__public__",
-      viewer_name: "up",
-      kind: "public_reply",
-      text,
-      created_at: createdAt,
+    const inserted = recordMessage(publicReplyId, device.device_id, "__public__", "up", "public_reply", "device", text, createdAt);
+    if (inserted) {
+      broadcastPublicMessage({
+        id: publicReplyId,
+        device_id: device.device_id,
+        viewer_id: "__public__",
+        viewer_name: "up",
+        kind: "public_reply",
+        text,
+        created_at: createdAt,
+      });
+    }
+    return Response.json({
+      ok: true,
+      public: true,
+      message_id: publicReplyId,
+      reply_id: publicReplyId,
+      in_reply_to: messageId,
+      duplicate: !inserted,
     });
-    return Response.json({ ok: true, public: true, message_id: publicReplyId });
   }
 
-  recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text, createdAt);
-  const delivered = sendToViewerSockets(viewerId, {
-    type: "device_reply",
-    message_id: replyId,
-    in_reply_to: messageId,
-    device_id: device.device_id,
-    text,
-    created_at: createdAt,
-  });
+  const inserted = recordMessage(replyId, device.device_id, viewerId, "", "reply", "device", text, createdAt);
+  const delivered = inserted
+    ? sendToViewerSockets(viewerId, {
+      type: "device_reply",
+      message_id: replyId,
+      in_reply_to: messageId,
+      device_id: device.device_id,
+      text,
+      created_at: createdAt,
+    })
+    : 0;
 
   // Web Push notification for offline viewers
-  import("./push").then(({ sendPush }) => {
-    sendPush(viewerId, {
-      title: "Monika 回复了",
-      body: text.slice(0, 120),
-      icon: "/icon-192.png",
-      url: "/",
-    }).catch(() => {});
-  });
+  if (inserted) {
+    import("./push").then(({ sendPush }) => {
+      sendPush(viewerId, {
+        title: "Monika 回复了",
+        body: text.slice(0, 120),
+        icon: "/icon-192.png",
+        url: "/",
+      }).catch(() => {});
+    });
+  }
 
-  return Response.json({ ok: true, delivered: delivered > 0, delivered_sockets: delivered });
+  return Response.json({
+    ok: true,
+    message_id: replyId,
+    reply_id: replyId,
+    in_reply_to: messageId,
+    duplicate: !inserted,
+    delivered: delivered > 0,
+    delivered_sockets: delivered,
+  });
 }
 
 export async function handlePublicMessagePost(req: Request): Promise<Response> {
@@ -1167,6 +1208,7 @@ export async function handlePrivateMessagePost(req: Request): Promise<Response> 
   const status = deliverViewerMessage(targetDeviceId, viewer.viewerId, viewerName, "private", text, messageId, createdAt);
   sendToViewerSockets(viewer.viewerId, {
     type: "viewer_message_sent",
+    message_id: messageId,
     message: {
       id: messageId,
       device_id: targetDeviceId,

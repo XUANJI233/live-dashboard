@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 const tempDir = mkdtempSync(join(tmpdir(), "live-messages-"));
 process.env.DB_PATH = join(tempDir, "test.db");
 process.env.HASH_SECRET = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
+process.env.DEVICE_TOKEN_1 = "message-device-token:android-message-target:Android Message Target:android";
 
 describe("visitor messages", () => {
   afterAll(() => {
@@ -66,6 +67,58 @@ describe("visitor messages", () => {
     expect(rowCount(db, "device_messages", "id = 'msg_unsupported_target'")).toBe(0);
     expect(rowCount(db, "visitor_messages", "id = 'msg_unsupported_target'")).toBe(0);
   });
+
+  test("keeps viewer websocket rate-limit errors correlated by message_id", async () => {
+    const { realtimeWebSocket } = await import("../src/services/realtime");
+    const frames: Array<{ type?: string; message_id?: string; error?: string }> = [];
+    const ws = {
+      data: { role: "viewer", id: "viewer-rate-limit" },
+      send(payload: string) {
+        frames.push(JSON.parse(payload));
+      },
+    };
+
+    for (let index = 0; index < 11; index += 1) {
+      realtimeWebSocket.message(ws as any, JSON.stringify({
+        type: "viewer_message",
+        kind: "private",
+        message_id: `msg_rate_${index}`,
+      }));
+    }
+
+    expect(frames.at(-1)).toEqual({
+      type: "error",
+      message_id: "msg_rate_10",
+      error: "Rate limit exceeded",
+    });
+  });
+
+  test("deduplicates device replies by reply_id across HTTP retries", async () => {
+    const { db } = await import("../src/db");
+    const { handleDeviceMessageReply } = await import("../src/services/realtime");
+    insertDeviceState(db, {
+      device_id: "android-message-target",
+      device_name: "Android Message Target",
+      platform: "android",
+    });
+
+    const body = {
+      message_id: "msg_original_private",
+      reply_id: "reply_retry_once",
+      target_viewer_id: "fp_0123456789abcdef0123456789abcdef",
+      text: "reply",
+    };
+    const first = await handleDeviceMessageReply(deviceMessageReplyRequest(body));
+    const duplicate = await handleDeviceMessageReply(deviceMessageReplyRequest(body));
+    const firstBody = await first.json() as { duplicate?: boolean };
+    const duplicateBody = await duplicate.json() as { duplicate?: boolean };
+
+    expect(first.status).toBe(200);
+    expect(duplicate.status).toBe(200);
+    expect(firstBody.duplicate).toBe(false);
+    expect(duplicateBody.duplicate).toBe(true);
+    expect(rowCount(db, "visitor_messages", "id = 'reply_retry_once'")).toBe(1);
+  });
 });
 
 async function viewerToken(fingerprint = "0123456789abcdef0123456789abcdef"): Promise<string> {
@@ -80,6 +133,17 @@ function privateMessageRequest(body: Record<string, unknown>, token: string): Re
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function deviceMessageReplyRequest(body: Record<string, unknown>): Request {
+  return new Request("http://localhost/api/messages/reply", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer message-device-token",
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
