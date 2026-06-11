@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { x25519 } from "@noble/curves/ed25519.js";
+import { z } from "zod";
 
 const tempDir = mkdtempSync(join(tmpdir(), "live-ai-config-"));
 process.env.DB_PATH = join(tempDir, "test.db");
@@ -480,6 +481,70 @@ describe("ai-config", () => {
         temperature: 0,
       });
       expect(text).toBe("FINAL");
+      expect(bodies).toHaveLength(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("primes DeepSeek context before the final structured object request", async () => {
+    const { requestAiObjectCompletionWithCachePriming } = await import("../src/services/ai-config");
+    const originalFetch = globalThis.fetch;
+    const bodies: Array<Record<string, any>> = [];
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      bodies.push(body);
+      const isWarmup = bodies.length === 1;
+      const messagesText = JSON.stringify(body.messages);
+      if (isWarmup) {
+        expect(body.max_tokens).toBe(32);
+        expect(messagesText).toContain("CONTEXT_READY");
+        expect(messagesText).not.toContain("只输出对象");
+      } else {
+        expect(body.max_tokens).toBe(128);
+        expect(body.messages.at(-3)?.content).toContain("CONTEXT_READY");
+        expect(body.messages.at(-2)).toEqual({ role: "assistant", content: "{\"status\":\"CONTEXT_READY\"}" });
+        expect(body.messages.at(-1)?.content).toBe("只输出对象");
+      }
+      return Response.json({
+        id: isWarmup ? "deepseek-object-cache-warmup-test" : "deepseek-object-cache-final-test",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: isWarmup ? "CONTEXT_READY" : JSON.stringify({ ok: true, reason: "done" }),
+          },
+          finish_reason: "stop",
+        }],
+        usage: {
+          prompt_tokens: isWarmup ? 100 : 110,
+          completion_tokens: 1,
+          total_tokens: isWarmup ? 101 : 111,
+          prompt_cache_hit_tokens: isWarmup ? 0 : 100,
+          prompt_cache_miss_tokens: isWarmup ? 100 : 10,
+        },
+      });
+    }) as typeof fetch;
+    try {
+      const output = await requestAiObjectCompletionWithCachePriming({
+        apiUrl: "https://api.deepseek.com/",
+        apiKey: `deepseek-key-${randomHex(8)}`,
+        model: "deepseek-chat",
+      }, {
+        messages: [
+          { role: "system", content: "只按用户上下文回答" },
+          { role: "user", content: "大段可缓存上下文" },
+        ],
+        finalUserMessage: "只输出对象",
+        schema: z.object({ ok: z.boolean(), reason: z.string() }),
+        schemaName: "cache_object_test",
+        maxTokens: 128,
+        temperature: 0,
+      });
+      expect(output).toEqual({ ok: true, reason: "done" });
       expect(bodies).toHaveLength(2);
     } finally {
       globalThis.fetch = originalFetch;
