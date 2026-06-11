@@ -126,6 +126,7 @@ private fun MainContent(
                     settings = settings,
                     selectedMessagesTab = selectedMessagesTab,
                     onSelectMessagesTab = { selectedMessagesTab = it },
+                    navigationRequest = navigationRequest,
                     selectedSettingsTab = selectedSettingsTab,
                     onSelectSettingsTab = { selectedSettingsTab = it },
                 )
@@ -152,6 +153,7 @@ private fun MainContent(
                 settings = settings,
                 selectedMessagesTab = selectedMessagesTab,
                 onSelectMessagesTab = { selectedMessagesTab = it },
+                navigationRequest = navigationRequest,
                 selectedSettingsTab = selectedSettingsTab,
                 onSelectSettingsTab = { selectedSettingsTab = it },
             )
@@ -239,6 +241,7 @@ private fun DashboardDestinationContent(
     settings: SettingsStore,
     selectedMessagesTab: Int,
     onSelectMessagesTab: (Int) -> Unit,
+    navigationRequest: DashboardNavigationRequest?,
     selectedSettingsTab: Int,
     onSelectSettingsTab: (Int) -> Unit,
 ) {
@@ -248,6 +251,8 @@ private fun DashboardDestinationContent(
             settings = settings,
             selectedIndex = selectedMessagesTab,
             onSelectedIndexChange = onSelectMessagesTab,
+            initialPrivateViewerId = navigationRequest?.viewerId,
+            initialPrivateSelectionNonce = navigationRequest?.requestId ?: 0L,
         )
         2 -> SettingsHubScreen(
             settings = settings,
@@ -265,6 +270,7 @@ private data class NavItem(
 private data class DashboardNavigationRequest(
     val destination: String,
     val messagesSection: String,
+    val viewerId: String,
     val requestId: Long,
 ) {
     companion object {
@@ -273,7 +279,8 @@ private data class DashboardNavigationRequest(
             if (destination != MessageSocketManager.DESTINATION_MESSAGES) return null
             val section = intent?.getStringExtra(MessageSocketManager.EXTRA_MESSAGES_SECTION)
                 ?: MessageSocketManager.MESSAGES_SECTION_PRIVATE
-            return DashboardNavigationRequest(destination, section, System.nanoTime())
+            val viewerId = intent?.getStringExtra(MessageSocketManager.EXTRA_VIEWER_ID).orEmpty()
+            return DashboardNavigationRequest(destination, section, viewerId, System.nanoTime())
         }
     }
 }

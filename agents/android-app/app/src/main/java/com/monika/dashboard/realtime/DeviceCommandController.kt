@@ -7,6 +7,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import com.monika.dashboard.data.DebugLog
+import com.monika.dashboard.data.MessageInboxStore
 import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.network.ReportClient
 import kotlinx.coroutines.CoroutineScope
@@ -182,7 +183,7 @@ object DeviceCommandController {
             MessageSocketManager.notifyIncoming(
                 context = context,
                 text = say,
-                viewerId = "__supervisor__",
+                viewerId = MessageInboxStore.SUPERVISOR_VIEWER_ID,
                 messageId = commandId,
                 viewerName = "MCP",
                 kind = "private",

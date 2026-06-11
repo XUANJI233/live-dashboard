@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -860,7 +861,8 @@ private fun LogsDialog(
     onDismiss: () -> Unit,
     onExport: () -> Unit,
 ) {
-    val logs = DebugLog.lines.joinToString("\n").ifBlank { "暂无日志" }
+    val logVersion by DebugLog.version.collectAsState()
+    val logs = remember(logVersion) { DebugLog.lines.joinToString("\n").ifBlank { "暂无日志" } }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("本地日志") },

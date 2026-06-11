@@ -51,7 +51,7 @@ class LsposedBridgeReceiver : BroadcastReceiver() {
         val viewerId = intent.getStringExtra(EXTRA_VIEWER_ID).orEmpty()
         val text = intent.getStringExtra(EXTRA_TEXT).orEmpty().take(500)
         if (viewerId.isBlank() || text.isBlank()) return
-        if (viewerId != "__supervisor__" && MessageSocketManager.isViewerBlocked(appContext, viewerId)) {
+        if (MessageSocketManager.isViewerBlocked(appContext, viewerId)) {
             DebugLog.log("LSPosed", "已忽略拉黑访客消息: $viewerId")
             return
         }

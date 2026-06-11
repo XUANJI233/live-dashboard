@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
+import com.monika.dashboard.data.MessageInboxStore
 import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.network.ReportClient
 import kotlinx.coroutines.flow.first
@@ -15,6 +16,10 @@ class MessageActionReceiver : BroadcastReceiver() {
         val pending = goAsync()
         val appContext = context.applicationContext
         val viewerId = intent.getStringExtra(MessageSocketManager.EXTRA_VIEWER_ID).orEmpty()
+        if (MessageInboxStore.isPrivilegedViewer(viewerId)) {
+            pending.finish()
+            return
+        }
         MessageSocketManager.blockViewer(appContext, viewerId)
         Thread {
             try {

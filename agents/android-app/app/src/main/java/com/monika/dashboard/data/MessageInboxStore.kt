@@ -19,6 +19,8 @@ data class VisitorMessage(
 )
 
 object MessageInboxStore {
+    const val SUPERVISOR_VIEWER_ID = "__supervisor__"
+
     private const val PREFS = "visitor_messages"
     private const val KEY_RECENT = "recent"
     private const val MAX_MESSAGES = 500
@@ -151,6 +153,9 @@ object MessageInboxStore {
             .mapValues { (_, values) -> values.sortedBy { it.at } }
             .toList()
             .sortedByDescending { (_, values) -> values.maxOfOrNull { it.at } ?: 0L }
+
+    fun isPrivilegedViewer(viewerId: String): Boolean =
+        viewerId == SUPERVISOR_VIEWER_ID
 
     private fun save(context: Context, messages: List<VisitorMessage>) {
         _messages.value = messages

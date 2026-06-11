@@ -3,8 +3,10 @@ package com.monika.dashboard.data
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.monika.dashboard.realtime.MessageSocketManager
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -82,6 +84,15 @@ class MessageInboxStoreTest {
 
         val result = MessageInboxStore.recentFromDisk(context)
         assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun `supervisor viewer id is privileged`() {
+        assertTrue(MessageInboxStore.isPrivilegedViewer(MessageInboxStore.SUPERVISOR_VIEWER_ID))
+        MessageSocketManager.blockViewer(context, MessageInboxStore.SUPERVISOR_VIEWER_ID)
+
+        assertFalse(MessageSocketManager.isViewerBlocked(context, MessageInboxStore.SUPERVISOR_VIEWER_ID))
+        assertFalse(MessageSocketManager.blockedViewers(context).contains(MessageInboxStore.SUPERVISOR_VIEWER_ID))
     }
 
     @Test

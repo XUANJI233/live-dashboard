@@ -43,6 +43,7 @@ object MessageSocketManager {
     const val EXTRA_MESSAGES_SECTION = "messages_section"
     const val DESTINATION_MESSAGES = "messages"
     const val MESSAGES_SECTION_PRIVATE = "private"
+    const val MESSAGES_SECTION_PUBLIC = "public"
     @Volatile
     private var reconnectAttempts = 0
     const val ACTION_BLOCK_VIEWER = "com.monika.dashboard.action.BLOCK_VIEWER"
@@ -211,14 +212,14 @@ object MessageSocketManager {
     }
 
     fun isViewerBlocked(context: Context, viewerId: String): Boolean {
-        if (viewerId.isBlank()) return false
+        if (viewerId.isBlank() || MessageInboxStore.isPrivilegedViewer(viewerId)) return false
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getStringSet("blocked_viewers", emptySet())
             ?.contains(viewerId) == true
     }
 
     fun blockViewer(context: Context, viewerId: String) {
-        if (viewerId.isBlank()) return
+        if (viewerId.isBlank() || MessageInboxStore.isPrivilegedViewer(viewerId)) return
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val current = prefs.getStringSet("blocked_viewers", emptySet()).orEmpty()
         prefs.edit().putStringSet("blocked_viewers", current + viewerId).apply()
@@ -237,6 +238,8 @@ object MessageSocketManager {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getStringSet("blocked_viewers", emptySet())
             .orEmpty()
+            .filterNot(MessageInboxStore::isPrivilegedViewer)
+            .toSet()
 
     fun notifyIncoming(
         context: Context,
@@ -262,9 +265,10 @@ object MessageSocketManager {
             )
         }
         createChannel(context)
+        val targetSection = if (kind == "public") MESSAGES_SECTION_PUBLIC else MESSAGES_SECTION_PRIVATE
         val intent = Intent(context, MainActivity::class.java)
             .putExtra(EXTRA_DESTINATION, DESTINATION_MESSAGES)
-            .putExtra(EXTRA_MESSAGES_SECTION, MESSAGES_SECTION_PRIVATE)
+            .putExtra(EXTRA_MESSAGES_SECTION, targetSection)
             .putExtra(EXTRA_VIEWER_ID, viewerId.orEmpty())
             .putExtra("message_id", messageId)
         val requestCode = notificationId(messageId, viewerId)
@@ -276,7 +280,7 @@ object MessageSocketManager {
         )
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(if (viewerId == "__supervisor__") "监督模式" else "网页访客消息")
+            .setContentTitle(if (MessageInboxStore.isPrivilegedViewer(viewerId.orEmpty())) "监督模式" else "网页访客消息")
             .setContentText(text.take(120))
             .setStyle(NotificationCompat.BigTextStyle().bigText(text.take(500)))
             .setContentIntent(pending)
@@ -284,7 +288,7 @@ object MessageSocketManager {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setAutoCancel(true)
-        if (!viewerId.isNullOrBlank() && viewerId != "__supervisor__") {
+        if (!viewerId.isNullOrBlank() && !MessageInboxStore.isPrivilegedViewer(viewerId)) {
             val blockIntent = Intent(context, MessageActionReceiver::class.java).apply {
                 action = ACTION_BLOCK_VIEWER
                 putExtra(EXTRA_VIEWER_ID, viewerId)
@@ -404,7 +408,7 @@ object MessageSocketManager {
             val kind = data.optString("kind", "private")
             val payload = data.optJSONObject("payload")
             if (DeviceCommandController.handleIncoming(context, payload ?: JSONObject(), source = "ws_payload")) return
-            if (viewerId != "__supervisor__" && isViewerBlocked(context, viewerId)) {
+            if (isViewerBlocked(context, viewerId)) {
                 DebugLog.log("消息", "已忽略拉黑访客消息: $viewerId")
                 return
             }
