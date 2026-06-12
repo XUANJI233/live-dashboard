@@ -6,7 +6,7 @@ on:
     tags:
       - "windows-agent-*"
     paths:
-      - "agents/windows-winui/**"
+      - "agents/windows-flutter/**"
       - ".github/workflows/windows-agent.yml"
   workflow_dispatch:
     inputs:
@@ -33,27 +33,38 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
-          dotnet-version: "8.0.x"
+          channel: stable
+          cache: true
 
-      - name: Build WinUI shell
-        working-directory: agents/windows-winui
-        run: dotnet build LiveDashboardAgent.csproj -c Debug -p:Platform=x64
+      - name: Analyze Flutter agent
+        working-directory: agents/windows-flutter
+        run: flutter analyze
+
+      - name: Test Flutter agent
+        working-directory: agents/windows-flutter
+        run: flutter test
 
       - name: Build and sign Windows agent
-        working-directory: agents/windows-winui
+        working-directory: agents/windows-flutter
         shell: powershell
-        run: .\build-winui.ps1 -Mode Both -Configuration Release
+        run: .\build-flutter.ps1 -Mode Both -Configuration Release
 
       - name: Check Windows artifact policy
-        working-directory: agents/windows-winui
+        working-directory: agents/windows-flutter
         shell: powershell
         run: |
           $artifacts = @(
             ".\dist\portable\LiveDashboardAgent.exe",
-            ".\dist\install\LiveDashboardAgent.exe"
+            ".\dist\portable\flutter_windows.dll",
+            ".\dist\portable\data\flutter_assets\AssetManifest.bin",
+            ".\dist\install\LiveDashboardAgent.exe",
+            ".\dist\install\flutter_windows.dll",
+            ".\dist\install\data\flutter_assets\AssetManifest.bin",
+            ".\dist\packages\LiveDashboardAgent-portable-win-x64.zip",
+            ".\dist\packages\LiveDashboardAgent-installer-win-x64.zip"
           )
           foreach ($artifact in $artifacts) {
             if (-not (Test-Path -LiteralPath $artifact)) {
@@ -79,7 +90,8 @@ jobs:
         with:
           name: ${{ env.WINDOWS_SKIP_SIGNING == 'true' && 'live-dashboard-agent-windows-unsigned-debug' || 'live-dashboard-agent-windows-authenticode' }}
           path: |
-            agents/windows-winui/dist/portable/LiveDashboardAgent.exe
-            agents/windows-winui/dist/install/LiveDashboardAgent.exe
+            agents/windows-flutter/dist/portable/**
+            agents/windows-flutter/dist/install/**
+            agents/windows-flutter/dist/packages/*.zip
           if-no-files-found: error
           retention-days: 7
