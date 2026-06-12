@@ -60,7 +60,7 @@ final class LspBrowserTitlePublisher {
             if (sendContext == null) sendContext = activity;
             publish(sendContext, packageName, clean, activity.getClass().getName(), source);
         } catch (Throwable t) {
-            host.logDebug("publishBrowserTitle failed: " + t.getMessage());
+            host.logDebug("browser title activity publish failed: " + t.getMessage());
         }
     }
 
@@ -91,7 +91,7 @@ final class LspBrowserTitlePublisher {
                 context.sendBroadcast(intent);
             }
         } catch (Throwable t) {
-            host.logDebug("publishBrowserTitleFromProcess failed: " + t.getMessage());
+            host.logDebug("browser title process publish failed: " + t.getMessage());
         }
     }
 
