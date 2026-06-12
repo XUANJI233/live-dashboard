@@ -2,6 +2,8 @@ package com.monika.dashboard.lsposed;
 
 import android.app.Activity;
 import android.content.Context;
+import android.view.View;
+import android.webkit.WebView;
 
 import java.lang.reflect.Method;
 import java.util.List;
@@ -280,6 +282,18 @@ final class LspBrowserWebViewTitleHooks {
         if (webView == null) return;
         String key = packageName + ":" + System.identityHashCode(webView) + ":" + delayMs;
         try {
+            if (webView instanceof View) {
+                if (!scheduledWebViewTitleReads.add(key)) return;
+                boolean posted = ((View) webView).postDelayed(() -> {
+                    try {
+                        publishTitleFromWebView(webView, packageName);
+                    } finally {
+                        scheduledWebViewTitleReads.remove(key);
+                    }
+                }, delayMs);
+                if (!posted) scheduledWebViewTitleReads.remove(key);
+                return;
+            }
             Method postDelayed = hookSupport.publicMethod(webView.getClass(), "postDelayed", Runnable.class, long.class);
             if (postDelayed == null) return;
             if (!scheduledWebViewTitleReads.add(key)) return;
@@ -302,16 +316,23 @@ final class LspBrowserWebViewTitleHooks {
     private void publishTitleFromWebView(Object webView, String packageName, String explicitTitle, String source) {
         try {
             Object rawTitle = explicitTitle != null && explicitTitle.trim().length() > 0 ? explicitTitle : null;
-            if (rawTitle == null) {
-                Method getTitle = hookSupport.publicMethod(webView.getClass(), "getTitle");
-                if (getTitle == null) return;
-                rawTitle = getTitle.invoke(webView);
+            Object ctx;
+            if (webView instanceof WebView) {
+                WebView view = (WebView) webView;
+                if (rawTitle == null) rawTitle = view.getTitle();
+                ctx = view.getContext();
+            } else {
+                if (rawTitle == null) {
+                    Method getTitle = hookSupport.publicMethod(webView.getClass(), "getTitle");
+                    if (getTitle == null) return;
+                    rawTitle = getTitle.invoke(webView);
+                }
+                Method getContext = hookSupport.publicMethod(webView.getClass(), "getContext");
+                if (getContext == null) return;
+                ctx = getContext.invoke(webView);
             }
             if (!(rawTitle instanceof String)) return;
             String title = (String) rawTitle;
-            Method getContext = hookSupport.publicMethod(webView.getClass(), "getContext");
-            if (getContext == null) return;
-            Object ctx = getContext.invoke(webView);
             Activity activityCtx = publisher.activityContext(ctx);
             if (activityCtx != null) {
                 publisher.publish(activityCtx, packageName, title, source);

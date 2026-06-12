@@ -49,16 +49,14 @@ final class LspBrowserTitlePublisher {
             String appLabel = host.resolveAppLabel(packageName);
             if (LspBrowserTitle.isGeneric(appLabel, clean)
                     && !LspBrowserTitle.isWebTitleSource(source)) return;
-            long now = System.currentTimeMillis();
-            if (clean.equals(lastBroadcastTitle) && now - lastTitleBroadcastAt < 1000L) return;
-            lastBroadcastTitle = clean;
-            lastTitleBroadcastAt = now;
+            boolean genericTitle = LspBrowserTitle.isGeneric(appLabel, clean);
+            if (shouldSkipDuplicate(clean)) return;
             Context sendContext = null;
             try {
                 sendContext = activity.getApplicationContext();
             } catch (Throwable ignored) {}
             if (sendContext == null) sendContext = activity;
-            publish(sendContext, packageName, clean, activity.getClass().getName(), source);
+            sendTitleBroadcast(sendContext, packageName, clean, activity.getClass().getName(), source, genericTitle);
         } catch (Throwable t) {
             host.logDebug("browser title activity publish failed: " + t.getMessage());
         }
@@ -73,25 +71,44 @@ final class LspBrowserTitlePublisher {
             String appLabel = host.resolveAppLabel(context, packageName);
             boolean genericTitle = LspBrowserTitle.isGeneric(appLabel, clean);
             if (genericTitle && !LspBrowserTitle.isWebTitleSource(source)) return;
-            Intent intent = new Intent(ACTION_BROWSER_TITLE);
-            intent.putExtra("package_name", packageName);
-            intent.putExtra("title", clean);
-            intent.putExtra("activity", safeString(activityName));
-            intent.putExtra("source", safeString(source));
-            if (genericTitle) intent.putExtra("clear_title", true);
-            String nonce = host.browserTitleNonce();
-            if (nonce.length() > 0) {
-                intent.putExtra(LspDirectConfig.KEY_BROWSER_TITLE_NONCE, nonce);
-            }
-            if (Build.VERSION.SDK_INT >= 34) {
-                BroadcastOptions options = BroadcastOptions.makeBasic();
-                options.setShareIdentityEnabled(true);
-                context.sendBroadcast(intent, null, options.toBundle());
-            } else {
-                context.sendBroadcast(intent);
-            }
+            if (shouldSkipDuplicate(clean)) return;
+            sendTitleBroadcast(context, packageName, clean, activityName, source, genericTitle);
         } catch (Throwable t) {
             host.logDebug("browser title process publish failed: " + t.getMessage());
+        }
+    }
+
+    private boolean shouldSkipDuplicate(String cleanTitle) {
+        long now = System.currentTimeMillis();
+        if (cleanTitle.equals(lastBroadcastTitle) && now - lastTitleBroadcastAt < 1000L) return true;
+        lastBroadcastTitle = cleanTitle;
+        lastTitleBroadcastAt = now;
+        return false;
+    }
+
+    private void sendTitleBroadcast(
+            Context context,
+            String packageName,
+            String cleanTitle,
+            String activityName,
+            String source,
+            boolean genericTitle) {
+        Intent intent = new Intent(ACTION_BROWSER_TITLE);
+        intent.putExtra("package_name", packageName);
+        intent.putExtra("title", cleanTitle);
+        intent.putExtra("activity", safeString(activityName));
+        intent.putExtra("source", safeString(source));
+        if (genericTitle) intent.putExtra("clear_title", true);
+        String nonce = host.browserTitleNonce();
+        if (nonce.length() > 0) {
+            intent.putExtra(LspDirectConfig.KEY_BROWSER_TITLE_NONCE, nonce);
+        }
+        if (Build.VERSION.SDK_INT >= 34) {
+            BroadcastOptions options = BroadcastOptions.makeBasic();
+            options.setShareIdentityEnabled(true);
+            context.sendBroadcast(intent, null, options.toBundle());
+        } else {
+            context.sendBroadcast(intent);
         }
     }
 
