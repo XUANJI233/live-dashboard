@@ -30,6 +30,16 @@ describe("privacy-tiers", () => {
       expect(getPrivacyTier("QQ")).toBe("hide");
     });
 
+    test("AI assistants are hide tier", () => {
+      expect(getPrivacyTier("ChatGPT")).toBe("hide");
+      expect(getPrivacyTier("Claude")).toBe("hide");
+    });
+
+    test("desktop browsers are browser tier", () => {
+      expect(getPrivacyTier("Google Chrome")).toBe("browser");
+      expect(getPrivacyTier("Microsoft Edge")).toBe("browser");
+    });
+
     test("unknown app defaults to show", () => {
       expect(getPrivacyTier("MyRandomGame")).toBe("show");
     });
@@ -53,6 +63,10 @@ describe("privacy-tiers", () => {
       // com.android.chrome is "show" by default (not in browser tier map)
       const result = processDisplayTitle("com.android.chrome", "Google");
       expect(result).toBe("Google");
+    });
+
+    test("hides sensitive browser page titles", () => {
+      expect(processDisplayTitle("Google Chrome", "Inbox - Google Chrome")).toBe("");
     });
   });
 });
