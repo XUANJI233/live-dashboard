@@ -13,6 +13,7 @@ import com.monika.dashboard.network.ReportClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,6 +36,7 @@ object DeviceCommandController {
     private const val RESULT_IGNORED = "ignored"
     private const val RESULT_EXPIRED = "expired"
     private const val VIBRATION_MS = 650L
+    private const val WS_EVENT_ACK_FALLBACK_MS = 4_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inFlightCommands = ConcurrentHashMap.newKeySet<String>()
@@ -285,7 +287,10 @@ object DeviceCommandController {
     private fun sendOrQueue(context: Context, event: JSONObject, key: String) {
         if (key.isBlank()) return
         DeviceCommandStore.putPending(context, key, event)
-        if (MessageSocketManager.sendDeviceCommandEvent(event)) return
+        if (MessageSocketManager.sendDeviceCommandEvent(event)) {
+            scheduleHttpFallback(context, key, event)
+            return
+        }
         scope.launch {
             postPendingEvent(context.applicationContext, key, event)
         }
@@ -294,13 +299,24 @@ object DeviceCommandController {
     private suspend fun flushPendingEvents(context: Context) {
         val pending = DeviceCommandStore.pendingEvents(context)
         for ((key, event) in pending) {
-            if (MessageSocketManager.sendDeviceCommandEvent(event)) continue
+            if (MessageSocketManager.sendDeviceCommandEvent(event)) {
+                scheduleHttpFallback(context, key, event)
+                continue
+            }
             postPendingEvent(context, key, event)
+        }
+    }
+
+    private fun scheduleHttpFallback(context: Context, key: String, event: JSONObject) {
+        scope.launch {
+            delay(WS_EVENT_ACK_FALLBACK_MS)
+            postPendingEvent(context.applicationContext, key, event)
         }
     }
 
     private suspend fun postPendingEvent(context: Context, key: String, event: JSONObject) {
         withContext(Dispatchers.IO) {
+            if (!DeviceCommandStore.containsPending(context, key)) return@withContext
             val settings = SettingsStore(context)
             val url = settings.serverUrl.first()
             val token = settings.getToken()
@@ -391,6 +407,12 @@ private object DeviceCommandStore {
         val pending = pendingObject(context)
         pending.remove(key)
         prefs(context).edit().putString(KEY_PENDING, pending.toString()).apply()
+    }
+
+    @Synchronized
+    fun containsPending(context: Context, key: String): Boolean {
+        if (key.isBlank()) return false
+        return pendingObject(context).has(key)
     }
 
     @Synchronized

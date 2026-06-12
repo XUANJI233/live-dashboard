@@ -11,12 +11,15 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 final class LspDeviceCommandController {
     private static final int MAX_PENDING_EVENTS = 16;
     private static final int MAX_COMPLETED_RESULTS = 80;
+    private static final long WS_EVENT_ACK_FALLBACK_MS = 4_000L;
 
     private final LspDeviceCommandHost host;
     private final LspDeviceCommandExecutor executor;
     private final ConcurrentLinkedQueue<String> pendingEvents = new ConcurrentLinkedQueue<>();
     private final ConcurrentHashMap<String, String> completedResults = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> inFlightCommands = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Boolean> wsSubmittedEvents = new ConcurrentHashMap<>();
+    private volatile boolean httpFallbackScheduled = false;
 
     LspDeviceCommandController(LspDeviceCommandHost host) {
         this.host = host;
@@ -25,13 +28,20 @@ final class LspDeviceCommandController {
 
     void flush(String serverUrl, String token) {
         if (serverUrl == null || serverUrl.length() == 0 || token == null || token.length() == 0) return;
-        if (sendPendingOverWs(serverUrl, token)) return;
+        if (sendPendingOverWs(serverUrl, token)) {
+            scheduleHttpFallback(serverUrl, token);
+            return;
+        }
+        flushOverHttp(serverUrl, token);
+    }
+
+    private void flushOverHttp(String serverUrl, String token) {
         int sent = 0;
         while (sent < MAX_PENDING_EVENTS) {
             String body = pendingEvents.peek();
             if (body == null || body.length() == 0) return;
             if (!host.postAckHttp(serverUrl, token, body)) return;
-            pendingEvents.poll();
+            removePendingBody(body);
             sent++;
         }
     }
@@ -127,7 +137,8 @@ final class LspDeviceCommandController {
             if (event == null) return;
             pendingEvents.offer(event.toString());
             while (pendingEvents.size() > MAX_PENDING_EVENTS) {
-                pendingEvents.poll();
+                String dropped = pendingEvents.poll();
+                if (dropped != null) wsSubmittedEvents.remove(eventKey(dropped));
             }
             String serverUrl = host.directServerUrl();
             String token = host.directToken();
@@ -142,16 +153,42 @@ final class LspDeviceCommandController {
 
     private boolean sendPendingOverWs(String serverUrl, String token) {
         host.ensureWsConnected(serverUrl, token);
-        boolean sentAny = false;
+        boolean hasSubmittedPending = false;
         int sent = 0;
         for (String body : pendingEvents) {
             if (body == null || body.length() == 0) continue;
             if (sent >= MAX_PENDING_EVENTS) break;
-            if (!host.sendWsText(body)) return sentAny;
-            sentAny = true;
+            String key = eventKey(body);
+            if (wsSubmittedEvents.containsKey(key)) {
+                hasSubmittedPending = true;
+                continue;
+            }
+            if (!host.sendWsText(body)) return hasSubmittedPending;
+            wsSubmittedEvents.put(key, Boolean.TRUE);
+            hasSubmittedPending = true;
             sent++;
         }
-        return sentAny;
+        return hasSubmittedPending;
+    }
+
+    private void scheduleHttpFallback(String serverUrl, String token) {
+        synchronized (this) {
+            if (httpFallbackScheduled) return;
+            httpFallbackScheduled = true;
+        }
+        Handler handler = host.uploadHandler();
+        if (handler == null) {
+            synchronized (this) {
+                httpFallbackScheduled = false;
+            }
+            return;
+        }
+        handler.postDelayed(() -> {
+            synchronized (LspDeviceCommandController.this) {
+                httpFallbackScheduled = false;
+            }
+            flushOverHttp(serverUrl, token);
+        }, WS_EVENT_ACK_FALLBACK_MS);
     }
 
     private boolean removePendingEvent(String responseType, String commandId, String resultId) {
@@ -165,19 +202,42 @@ final class LspDeviceCommandController {
                 if (LspDeviceCommandProtocol.TYPE_RECEIPT_ACK.equals(responseType)
                         && LspDeviceCommandProtocol.TYPE_RECEIPT.equals(eventType)
                         && cleanCommandId.equals(event.optString("command_id", ""))) {
-                    return pendingEvents.remove(body);
+                    return removePendingBody(body);
                 }
                 if (LspDeviceCommandProtocol.TYPE_RESULT_ACK.equals(responseType)
                         && LspDeviceCommandProtocol.TYPE_RESULT.equals(eventType)
                         && cleanCommandId.equals(event.optString("command_id", ""))
                         && cleanResultId.equals(event.optString("result_id", ""))) {
-                    return pendingEvents.remove(body);
+                    return removePendingBody(body);
                 }
             }
         } catch (Throwable t) {
             host.logDebug("remove device command event failed: " + t.getClass().getSimpleName());
         }
         return false;
+    }
+
+    private boolean removePendingBody(String body) {
+        boolean removed = pendingEvents.remove(body);
+        if (removed) wsSubmittedEvents.remove(eventKey(body));
+        return removed;
+    }
+
+    private String eventKey(String body) {
+        try {
+            return eventKey(new JSONObject(body));
+        } catch (Throwable ignored) {
+            return "raw:" + String.valueOf(body != null ? body.hashCode() : 0);
+        }
+    }
+
+    private String eventKey(JSONObject event) {
+        if (event == null) return "raw:0";
+        return event.optString("type", "")
+                + "|"
+                + event.optString("command_id", "")
+                + "|"
+                + event.optString("result_id", "");
     }
 
     private void trimCompletedResults() {
