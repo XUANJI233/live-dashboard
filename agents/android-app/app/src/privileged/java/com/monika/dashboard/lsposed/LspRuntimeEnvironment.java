@@ -1,6 +1,7 @@
 package com.monika.dashboard.lsposed;
 
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.PowerManager;
@@ -8,6 +9,7 @@ import android.os.PowerManager;
 import java.text.SimpleDateFormat;
 import java.util.Locale;
 import java.util.TimeZone;
+import java.util.concurrent.ConcurrentHashMap;
 
 final class LspRuntimeEnvironment {
     interface Host {
@@ -18,11 +20,21 @@ final class LspRuntimeEnvironment {
 
     private final LspHookSupport hookSupport;
     private final Host host;
+    private static final TimeZone UTC = TimeZone.getTimeZone("UTC");
+    private static final ThreadLocal<SimpleDateFormat> ISO_TIME_FORMAT =
+            ThreadLocal.withInitial(() -> {
+                SimpleDateFormat format =
+                        new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
+                format.setTimeZone(UTC);
+                return format;
+            });
+    private final ConcurrentHashMap<String, String> appLabelCache = new ConcurrentHashMap<>();
     private volatile String processName = "";
     private volatile boolean systemServerProcess = false;
     private volatile Handler uploadHandler;
     private HandlerThread uploadThread;
     private volatile Context cachedSystemContext = null;
+    private volatile PowerManager cachedPowerManager = null;
 
     LspRuntimeEnvironment(LspHookSupport hookSupport, Host host) {
         this.hookSupport = hookSupport;
@@ -87,9 +99,7 @@ final class LspRuntimeEnvironment {
     }
 
     String isoTime(long millis) {
-        SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
-        format.setTimeZone(TimeZone.getTimeZone("UTC"));
-        return format.format(new java.util.Date(millis));
+        return ISO_TIME_FORMAT.get().format(new java.util.Date(millis));
     }
 
     String localClock(long millis) {
@@ -101,38 +111,64 @@ final class LspRuntimeEnvironment {
     }
 
     String resolveAppLabel(String packageName) {
-        if (packageName == null || packageName.length() == 0) return null;
+        String pkg = safeString(packageName);
+        if (pkg.length() == 0) return null;
+        String cached = appLabelCache.get(pkg);
+        if (cached != null) return cached;
         try {
             Context context = systemContext();
-            if (context == null) return packageName;
-            return context.getPackageManager()
-                    .getApplicationLabel(context.getPackageManager().getApplicationInfo(packageName, 0))
-                    .toString();
+            if (context == null) return pkg;
+            String label = loadAppLabel(context, pkg);
+            appLabelCache.put(pkg, label);
+            return label;
         } catch (Throwable ignored) {
-            return packageName;
+            return pkg;
         }
     }
 
     String resolveAppLabel(Context context, String packageName) {
-        if (context == null || packageName == null || packageName.length() == 0) return packageName;
+        String pkg = safeString(packageName);
+        if (context == null || pkg.length() == 0) return packageName;
+        String cached = appLabelCache.get(pkg);
+        if (cached != null) return cached;
         try {
-            return context.getPackageManager()
-                    .getApplicationLabel(context.getPackageManager().getApplicationInfo(packageName, 0))
-                    .toString();
+            String label = loadAppLabel(context, pkg);
+            appLabelCache.put(pkg, label);
+            return label;
         } catch (Throwable ignored) {
-            return packageName;
+            return pkg;
         }
     }
 
     boolean screenInteractive() {
         try {
-            Context ctx = systemContext();
-            if (ctx == null) return true;
-            PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+            PowerManager pm = powerManager();
             if (pm == null) return true;
             return pm.isInteractive();
         } catch (Throwable t) {
             return true;
+        }
+    }
+
+    private String loadAppLabel(Context context, String packageName) throws Throwable {
+        PackageManager packageManager = context.getPackageManager();
+        String label = packageManager
+                .getApplicationLabel(packageManager.getApplicationInfo(packageName, 0))
+                .toString();
+        String clean = safeString(label);
+        return clean.length() > 0 ? clean : packageName;
+    }
+
+    private PowerManager powerManager() {
+        PowerManager cached = cachedPowerManager;
+        if (cached != null) return cached;
+        try {
+            Context ctx = systemContext();
+            PowerManager manager = ctx != null ? (PowerManager) ctx.getSystemService(Context.POWER_SERVICE) : null;
+            if (manager != null) cachedPowerManager = manager;
+            return manager;
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 
