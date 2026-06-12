@@ -7,6 +7,8 @@ import android.os.Binder;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 
 final class LspPackageOperations {
@@ -47,7 +49,11 @@ final class LspPackageOperations {
             if (ctx == null) return out;
             PackageManager pm = ctx.getPackageManager();
             if (pm == null) return out;
-            List<ApplicationInfo> apps = pm.getInstalledApplications(0);
+            List<ApplicationInfo> installed = pm.getInstalledApplications(0);
+            if (installed == null) return out;
+            ArrayList<ApplicationInfo> apps = new ArrayList<>(installed);
+            Collections.sort(apps, Comparator.comparing(
+                    app -> app != null ? safeString(app.packageName) : ""));
             for (ApplicationInfo app : apps) {
                 if (protectedPolicy.isProtectedApplication(app)) continue;
                 String label = "";

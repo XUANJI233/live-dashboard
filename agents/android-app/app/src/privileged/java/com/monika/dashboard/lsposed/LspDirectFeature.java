@@ -27,7 +27,6 @@ final class LspDirectFeature {
     private final Host host;
 
     private final LspDirectReportBuilder reportBuilder;
-    private final LspInstalledAppsReporter installedAppsReporter;
     private final LspDirectTransport transport;
     private final LspDeviceCommandController deviceCommandController;
     private final LspDirectUploader uploader;
@@ -47,7 +46,8 @@ final class LspDirectFeature {
         this.foregroundFeature = foregroundFeature;
         this.deviceControlFeature = deviceControlFeature;
         this.host = host;
-        installedAppsReporter = new LspInstalledAppsReporter(newInstalledAppsReporterHost());
+        LspInstalledAppsReporter installedAppsReporter =
+                new LspInstalledAppsReporter(newInstalledAppsReporterHost());
         reportBuilder = new LspDirectReportBuilder(
                 mediaTracker,
                 foregroundFeature.reader(),

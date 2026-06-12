@@ -241,7 +241,7 @@ LSP direct body：
 - WS 已连接后异常 EOF/close/ping/send 失败也会记录退避窗口，延迟触发下一次 snapshot/reconnect，避免服务端或边缘代理持续断开时自我放大。
 - 普通 App `MessageSocketManager` 的指数退避固定封顶到 5 分钟，并限制 attempt 计数继续增长，避免长期断网后 `1L shl reconnectAttempts` 溢出。
 - LSP 与普通 App 的设备命令 receipt/result 都是 WS 优先、HTTP 兜底：WS `send()` 成功后仍等待服务端 `device_command_*_received`，4 秒未收到且 pending 未删除时再 POST `/api/supervision/ack`，服务端账本按 `command_id`/`result_id` 去重。
-- 网络、电量、VPN、音频输出和环境光读取已集中到 `LspDeviceEnvironment`，只在构建上报 body 时触发；network/audio/sensor/telephony system service 会懒缓存，避免每轮 direct report 重复 `getSystemService()`；蜂窝网络代际在单轮上报中只读取一次并复用到 `network_type` / `cellular_generation`；环境光用短缓存和单次 listener，避免 hook 热路径持续采样。设备形态 `device_kind` 在 `LspForegroundReader` 内缓存，避免每次 direct report 重复查询 MIUI 类、资源配置和系统 feature。应用列表只在非 heartbeat-only 的完整上报中按 6 小时间隔扫描，并按包名排序后签名，避免 PackageManager 返回顺序抖动造成重复上报。
+- 网络、电量、VPN、音频输出和环境光读取已集中到 `LspDeviceEnvironment`，只在构建上报 body 时触发；network/audio/sensor/telephony system service 会懒缓存，避免每轮 direct report 重复 `getSystemService()`；蜂窝网络代际在单轮上报中只读取一次并复用到 `network_type` / `cellular_generation`；环境光用短缓存和单次 listener，避免 hook 热路径持续采样。设备形态 `device_kind` 在 `LspForegroundReader` 内缓存，避免每次 direct report 重复查询 MIUI 类、资源配置和系统 feature。应用列表只在非 heartbeat-only 的完整上报中按 6 小时间隔扫描；包读取层先按包名稳定排序再截断，上报层再次按包名签名，避免 PackageManager 返回顺序抖动造成重复上报。
 - WS 客户端现在校验 HTTP 101 状态行、限制帧大小，并对扩展长度读取做 EOF 检查，避免代理异常或资源耗尽把连接伪装成成功。
 
 仍需真机验证：
