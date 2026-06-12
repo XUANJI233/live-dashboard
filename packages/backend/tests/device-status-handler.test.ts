@@ -100,6 +100,57 @@ describe("device-status-handler", () => {
     expect(state?.extra).not.toContain("heartbeat_only");
   });
 
+  test("stores installed app snapshots but strips them from public current output", async () => {
+    const { processReportPayload } = await import("../src/services/device-status-handler");
+    const { db } = await import("../src/db");
+    const { getDeviceInstalledApps, listDeviceContexts } = await import("../src/services/device-context");
+    const { handleCurrent } = await import("../src/routes/current");
+    const device = {
+      device_id: "apps-phone",
+      device_name: "Apps Phone",
+      platform: "android" as const,
+    };
+
+    processReportPayload({
+      app_id: "com.reader",
+      window_title: "Reading",
+      extra: {
+        device: {
+          profile: "android_lsp",
+          installed_apps_updated_at: "2026-06-12T00:00:00.000Z",
+          installed_apps: [
+            { package_name: "com.example.reader", app_name: "Reader" },
+            { package_name: "com.example.reader", app_name: "Duplicate" },
+            { package_name: "com.example.video", app_name: "Video" },
+            { package_name: "", app_name: "Ignored" },
+          ],
+        },
+      },
+    }, device);
+
+    const state = db.prepare("SELECT extra FROM device_states WHERE device_id = ?").get(device.device_id) as { extra: string } | undefined;
+    expect(state?.extra).toContain("installed_apps");
+    expect(listDeviceContexts().find((item) => item.device_id === device.device_id)).toMatchObject({
+      installed_apps_count: 2,
+      installed_apps_updated_at: "2026-06-12T00:00:00.000Z",
+    });
+    expect(getDeviceInstalledApps(device.device_id)).toMatchObject({
+      found: true,
+      app_count: 2,
+      installed_apps: [
+        { package_name: "com.example.reader", app_name: "Reader" },
+        { package_name: "com.example.video", app_name: "Video" },
+      ],
+    });
+
+    const current = await handleCurrent(new Request("http://localhost/api/current"), "127.0.0.1").json() as {
+      devices: Array<{ device_id: string; extra?: { device?: Record<string, unknown> } }>;
+    };
+    const publicDevice = current.devices.find((item) => item.device_id === device.device_id);
+    expect(publicDevice?.extra?.device?.installed_apps).toBeUndefined();
+    expect(publicDevice?.extra?.device?.installed_apps_count).toBe(2);
+  });
+
   test("websocket device_status returns ack and broadcasts public device update", async () => {
     const { db } = await import("../src/db");
     const { realtimeWebSocket } = await import("../src/services/realtime");

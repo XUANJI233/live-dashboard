@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
+  getDeviceInstalledApps,
   getDeviceFrozenList,
   getTimelineContext,
   listDeviceContexts,
@@ -12,6 +13,7 @@ import {
   DateRangeSchema,
   DeviceTimelineSchema,
   FrozenListSchema,
+  InstalledAppsSchema,
   SendCommandsSchema,
   SupervisionPolicySchema,
 } from "./mcp-tool-schemas";
@@ -69,6 +71,13 @@ export function createLiveDashboardMcpServer(): McpServer {
     inputSchema: FrozenListSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(() => getDeviceFrozenList(args.device_id)));
+
+  server.registerTool("live_dashboard.get_device_installed_apps", {
+    title: "Get device installed apps",
+    description: "Return the latest non-system installed app snapshot reported by one Android LSP device.",
+    inputSchema: InstalledAppsSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(() => getDeviceInstalledApps(args.device_id)));
 
   server.registerTool("live_dashboard.send_device_commands", {
     title: "Send device commands",

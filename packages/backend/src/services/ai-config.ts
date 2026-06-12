@@ -85,6 +85,12 @@ export interface AiChatMessage {
   content: string;
 }
 
+type DeepThinkingMode = "enabled" | "disabled";
+
+interface AiCompletionOptions {
+  deepThinking?: boolean;
+}
+
 export function isAiEnvConfigured(): boolean {
   return !!(ENV_AI_API_URL && ENV_AI_API_KEY);
 }
@@ -159,7 +165,11 @@ export async function saveEncryptedAiConfigFromDevice(input: unknown, deviceToke
   return describeAiConfig();
 }
 
-export async function testEncryptedAiConfigFromDevice(input: unknown, deviceToken: string): Promise<AiConfigTestResult> {
+export async function testEncryptedAiConfigFromDevice(
+  input: unknown,
+  deviceToken: string,
+  options: AiCompletionOptions = {},
+): Promise<AiConfigTestResult> {
   if (isAiEnvConfigured()) {
     throw Object.assign(new Error("AI 配置由服务器环境变量提供，App 不能覆盖。"), { code: "AI_CONFIG_LOCKED", status: 409 });
   }
@@ -167,10 +177,13 @@ export async function testEncryptedAiConfigFromDevice(input: unknown, deviceToke
     throw Object.assign(new Error("Missing device token"), { code: "TOKEN_REQUIRED", status: 401 });
   }
   const config = await configWithReusableStoredKey(await decryptDevicePayload(input, deviceToken));
-  return testAiConfigConnection(config);
+  return testAiConfigConnection(config, options);
 }
 
-export async function testAiConfigConnection(config: Pick<AiRuntimeConfig, "apiUrl" | "apiKey" | "model">): Promise<AiConfigTestResult> {
+export async function testAiConfigConnection(
+  config: Pick<AiRuntimeConfig, "apiUrl" | "apiKey" | "model">,
+  options: AiCompletionOptions = {},
+): Promise<AiConfigTestResult> {
   const normalized: AiRuntimeConfig = {
     apiUrl: normalizeAiApiUrl(config.apiUrl),
     apiKey: config.apiKey,
@@ -199,6 +212,7 @@ export async function testAiConfigConnection(config: Pick<AiRuntimeConfig, "apiU
       maxTokens: AI_CONFIG_TEST_MAX_TOKENS,
       temperature: 0,
       timeoutMs: 20_000,
+      deepThinking: options.deepThinking,
     });
   } catch (e) {
     const detail = safeErrorMessage(e);
@@ -245,6 +259,7 @@ export async function requestAiChatCompletion(
     temperature?: number;
     timeoutMs?: number;
     middleware?: LanguageModelMiddleware | LanguageModelMiddleware[];
+    deepThinking?: boolean;
   },
 ): Promise<string> {
   const timeoutMs = normalizeAiChatTimeoutMs(options.timeoutMs);
@@ -253,7 +268,7 @@ export async function requestAiChatCompletion(
     .map((message) => message.content)
     .join("\n\n") || undefined;
   const messages = options.messages.filter((message) => message.role !== "system");
-  const providerOptions = aiProviderOptions(config);
+  const providerOptions = aiProviderOptions(config, options);
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= AI_CHAT_MAX_RETRIES; attempt += 1) {
@@ -307,6 +322,7 @@ export async function requestAiChatCompletionWithCachePriming(
     temperature?: number;
     timeoutMs?: number;
     warmupMaxTokens?: number;
+    deepThinking?: boolean;
   },
 ): Promise<string> {
   const finalUserMessage: AiChatMessage = { role: "user", content: options.finalUserMessage };
@@ -315,6 +331,7 @@ export async function requestAiChatCompletionWithCachePriming(
     maxTokens: options.maxTokens,
     temperature: options.temperature,
     timeoutMs: options.timeoutMs,
+    deepThinking: options.deepThinking,
     ...(isDeepSeekRequest(config)
       ? {
         middleware: deepSeekCachePrimingMiddleware({
@@ -337,6 +354,7 @@ export async function requestAiObjectCompletion<T>(
     temperature?: number;
     timeoutMs?: number;
     middleware?: LanguageModelMiddleware | LanguageModelMiddleware[];
+    deepThinking?: boolean;
   },
 ): Promise<T> {
   const timeoutMs = normalizeAiChatTimeoutMs(options.timeoutMs);
@@ -345,7 +363,7 @@ export async function requestAiObjectCompletion<T>(
     .map((message) => message.content)
     .join("\n\n") || undefined;
   const messages = options.messages.filter((message) => message.role !== "system");
-  const providerOptions = aiProviderOptions(config);
+  const providerOptions = aiProviderOptions(config, options);
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= AI_CHAT_MAX_RETRIES; attempt += 1) {
@@ -409,6 +427,7 @@ export async function requestAiObjectCompletionWithCachePriming<T>(
     temperature?: number;
     timeoutMs?: number;
     warmupMaxTokens?: number;
+    deepThinking?: boolean;
   },
 ): Promise<T> {
   const finalUserMessage: AiChatMessage = { role: "user", content: options.finalUserMessage };
@@ -420,6 +439,7 @@ export async function requestAiObjectCompletionWithCachePriming<T>(
     maxTokens: options.maxTokens,
     temperature: options.temperature,
     timeoutMs: options.timeoutMs,
+    deepThinking: options.deepThinking,
     ...(isDeepSeekRequest(config)
       ? {
         middleware: deepSeekCachePrimingMiddleware({
@@ -515,13 +535,20 @@ function isDeepSeekRequest(config: Pick<AiRuntimeConfig, "apiUrl" | "model">): b
     (isAiGatewayEndpoint(config.apiUrl) && providerSlugFromGatewayModel(config.model) === "deepseek");
 }
 
-function aiProviderOptions(config: Pick<AiRuntimeConfig, "apiUrl" | "model">) {
+function aiProviderOptions(
+  config: Pick<AiRuntimeConfig, "apiUrl" | "model">,
+  options: AiCompletionOptions = {},
+) {
   if (!isDeepSeekRequest(config)) return undefined;
   return {
     deepseek: {
-      thinking: { type: "enabled" },
+      thinking: { type: deepThinkingMode(options.deepThinking) },
     },
   };
+}
+
+function deepThinkingMode(value: boolean | undefined): DeepThinkingMode {
+  return value === false ? "disabled" : "enabled";
 }
 
 function normalizeAiChatTimeoutMs(value: unknown): number {

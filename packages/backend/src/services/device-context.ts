@@ -5,6 +5,7 @@ import { safeTimezoneOffset } from "./cdn";
 import { buildTimelinePromptDocument } from "./timeline-prompt";
 import {
   DEVICE_CAPABILITY_SCHEMA,
+  INSTALLED_APPS_SCHEMA,
   TIMELINE_SCHEMA,
   cleanLooseIdentifier,
   cleanText,
@@ -15,6 +16,7 @@ import {
 const MAX_TIMELINE_RANGE_DAYS = 14;
 const MAX_TIMELINE_SEGMENTS = 240;
 const MAX_FROZEN_ITEMS = 80;
+const MAX_INSTALLED_APPS = 512;
 
 const getDeviceStatesStmt = db.prepare(`
   SELECT *
@@ -70,6 +72,11 @@ export interface FrozenPackageItem {
   until: string;
 }
 
+export interface InstalledAppItem {
+  package_name: string;
+  app_name: string;
+}
+
 export interface DeviceContext {
   device_id: string;
   device_name: string;
@@ -83,6 +90,8 @@ export interface DeviceContext {
   };
   capability: DeviceCapability;
   frozen_packages: FrozenPackageItem[];
+  installed_apps_count: number;
+  installed_apps_updated_at: string;
 }
 
 export function listDeviceContexts(): DeviceContext[] {
@@ -106,6 +115,29 @@ export function getDeviceFrozenList(deviceId: string): {
     device_id: deviceId,
     found: !!device,
     frozen_packages: device?.frozen_packages ?? [],
+  };
+}
+
+export function getDeviceInstalledApps(deviceId: string): {
+  schema: typeof INSTALLED_APPS_SCHEMA;
+  device_id: string;
+  found: boolean;
+  app_count: number;
+  updated_at: string;
+  installed_apps: InstalledAppItem[];
+} {
+  const device = getDeviceContext(deviceId);
+  const row = device ? getDeviceStateStmt.get(device.device_id) as DeviceState | null : null;
+  const extra = safeJsonParseObject(row?.extra);
+  const deviceExtra = objectField(extra, "device");
+  const installedApps = installedAppItems(deviceExtra.installed_apps);
+  return {
+    schema: INSTALLED_APPS_SCHEMA,
+    device_id: deviceId,
+    found: !!device,
+    app_count: installedApps.length,
+    updated_at: cleanText(deviceExtra.installed_apps_updated_at, 40),
+    installed_apps: installedApps,
   };
 }
 
@@ -178,6 +210,8 @@ function deviceContextFromRow(row: DeviceState): DeviceContext {
     },
     capability: capabilityForDevice(row.platform, deviceExtra),
     frozen_packages: frozenPackageItems(deviceExtra.frozen_packages),
+    installed_apps_count: installedAppItems(deviceExtra.installed_apps).length,
+    installed_apps_updated_at: cleanText(deviceExtra.installed_apps_updated_at, 40),
   };
 }
 
@@ -256,6 +290,27 @@ function frozenPackageItems(value: unknown): FrozenPackageItem[] {
       until: cleanText(body.until, 40),
     });
     if (out.length >= MAX_FROZEN_ITEMS) break;
+  }
+  return out;
+}
+
+function installedAppItems(value: unknown): InstalledAppItem[] {
+  if (!Array.isArray(value)) return [];
+  const out: InstalledAppItem[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const body = item && typeof item === "object" && !Array.isArray(item)
+      ? item as Record<string, unknown>
+      : null;
+    if (!body) continue;
+    const packageName = cleanText(body.package_name, 120);
+    if (!packageName || seen.has(packageName)) continue;
+    seen.add(packageName);
+    out.push({
+      package_name: packageName,
+      app_name: cleanText(body.app_name, 100),
+    });
+    if (out.length >= MAX_INSTALLED_APPS) break;
   }
   return out;
 }

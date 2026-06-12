@@ -15,6 +15,10 @@ export const FrozenListSchema = z.object({
   device_id: z.string().min(1).max(160),
 });
 
+export const InstalledAppsSchema = z.object({
+  device_id: z.string().min(1).max(160),
+});
+
 export const SendCommandsSchema = z.object({
   request_id: z.string().min(1).max(160).optional(),
   created_by: z.enum(["mcp", "supervision"]).optional(),

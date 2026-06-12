@@ -119,9 +119,12 @@ echo "Token: $TOKEN  ← Agent 配置用"
 | `AI_API_URL` | 空 | AI 每日总结 API 地址 |
 | `AI_API_KEY` | 空 | AI API 密钥 |
 | `AI_MODEL` | `gpt-4o-mini` | AI 模型名称 |
+| `AI_PROMPTS_FILE` | `<DB_PATH目录>/ai-prompts.json` | 自定义 AI system prompt 覆盖文件；空条目继续使用内置默认 |
 | `AI_DEBUG_LOG` | `false` | 设置为 `true` 时输出 AI 总结/监督请求与回复调试日志 |
 
 AI 总结支持日总结和周总结。`GET /api/daily-summary`、`GET /api/weekly-summary` 可公开读取缓存结果；`POST /api/daily-summary`、`POST /api/weekly-summary` 会强制重新生成，`GET/POST /api/summary-settings` 用于读取和保存总结模式（温和/一般/锐评）、通用目标、计划休息、每周 7 天目标计划、日总结时间和周总结星期/时间，这些管理接口都需要 `DEVICE_TOKEN_*` Bearer token。日总结会把当前日期、星期几、当天时间线、前两天时间线和前两天 AI 评价一起发给 AI；周总结会发送 7 天完整时间线、7 天目标计划和 7 天 AI 评价。AI 返回内容按不可信输入处理，只保留安全 Markdown 子集，清理 HTML、代码块、链接、命令、脚本和控制字符后保存。服务端使用 Vercel AI SDK 的 OpenAI-compatible provider 发起非流式文本生成。
+
+服务端会自动生成 `ai-prompts.json` 模板，可覆盖 `daily_summary_system`、`weekly_summary_system`、`supervision_rules_system`、`supervision_verify_system` 四个 system prompt。字段缺失或字符串为空时使用内置默认提示词；时间线、设备能力、当前时间、最终 JSON 指令和缓存切分结构仍由服务端生成。
 
 自动总结由服务端定时器读取 `summary-settings` 触发生成；当前只负责写入服务端缓存。管理员 App 尚未实现可接收 AI 总结主动推送的订阅通道，因此不会假装“已推送到 App”。
 

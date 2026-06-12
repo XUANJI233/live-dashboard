@@ -38,6 +38,7 @@ describe("mcp control plane", () => {
     expect(body.error).toBeUndefined();
     expect(body.result?.tools?.map((tool) => tool.name)).toContain("live_dashboard.send_device_commands");
     expect(body.result?.tools?.map((tool) => tool.name)).toContain("live_dashboard.set_supervision_policy");
+    expect(body.result?.tools?.map((tool) => tool.name)).toContain("live_dashboard.get_device_installed_apps");
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
@@ -91,6 +92,46 @@ describe("mcp control plane", () => {
     expect(response.status).toBe(200);
     expect(body.error).toBeUndefined();
     expect(body.result?.structuredContent?.commands?.[0]?.delivery.status).toBe("queued");
+  });
+
+  test("returns installed app snapshots through the MCP transport", async () => {
+    const { db } = await import("../src/db");
+    const { handleMcpRequest } = await import("../src/routes/mcp");
+    insertDeviceState(db, {
+      device_id: "android-mcp-apps",
+      device_name: "Phone Apps",
+      platform: "android",
+      extra: JSON.stringify({
+        device: {
+          profile: "android_lsp",
+          installed_apps_updated_at: "2026-06-12T00:00:00.000Z",
+          installed_apps: [
+            { package_name: "com.example.video", app_name: "Video" },
+            { package_name: "com.example.chat", app_name: "Chat" },
+          ],
+        },
+      }),
+    });
+
+    const response = await handleMcpRequest(mcpRequest({
+      method: "tools/call",
+      params: {
+        name: "live_dashboard.get_device_installed_apps",
+        arguments: { device_id: "android-mcp-apps" },
+      },
+    }), { remoteAddress: "127.0.0.1" });
+    const body = await response.json() as {
+      result?: { structuredContent?: { app_count?: number; installed_apps?: Array<{ package_name: string }> } };
+      error?: unknown;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.error).toBeUndefined();
+    expect(body.result?.structuredContent?.app_count).toBe(2);
+    expect(body.result?.structuredContent?.installed_apps?.map((item) => item.package_name)).toEqual([
+      "com.example.video",
+      "com.example.chat",
+    ]);
   });
 
   test("sends supervision commands through the local AI MCP client", async () => {

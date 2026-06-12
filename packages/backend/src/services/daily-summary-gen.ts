@@ -14,6 +14,7 @@ import { logAiDebug } from "./ai-debug";
 import { safeTimezoneOffset, utcRangeForLocalDate } from "./cdn";
 import { healthContextLinesForRange } from "./health-context";
 import { formatPromptDateTime, formatPromptMinute } from "./prompt-time";
+import { promptOverride } from "./prompt-overrides";
 import { timelineJsonBlockForPrompt } from "./timeline-prompt";
 
 /**
@@ -32,6 +33,7 @@ const WEEKLY_TIMELINE_PROMPT_SEGMENT_LIMIT = 720;
 const CONTEXT_TIMELINE_PROMPT_SEGMENT_LIMIT = 160;
 const DAILY_SUMMARY_MAX_TOKENS = 8192;
 const WEEKLY_SUMMARY_MAX_TOKENS = 8192;
+const TARGET_MAX_LENGTH = 1000;
 
 export type SummaryMode = "gentle" | "normal" | "sharp";
 export type SummaryKind = "daily" | "weekly";
@@ -45,7 +47,9 @@ export interface SummarySettings {
   weekly_summary_weekday: number;
   weekly_summary_time: string;
   timezone_offset_minutes: number | null;
+  ai_deep_thinking: boolean;
   supervision_enabled: boolean;
+  supervision_include_installed_apps: boolean;
   supervision_check_mode: SupervisionCheckMode;
   supervision_check_interval_minutes: number;
   supervision_blacklist_minutes: number;
@@ -157,7 +161,13 @@ export function getSummarySettings(): SummarySettings {
       weekly_summary_weekday: normalizeWeekday(parsed.weekly_summary_weekday, 7),
       weekly_summary_time: normalizeClockTime(parsed.weekly_summary_time, "21:30"),
       timezone_offset_minutes: normalizeTimezoneOffset(parsed.timezone_offset_minutes, null),
+      ai_deep_thinking: parsed.ai_deep_thinking === undefined
+        ? true
+        : normalizeBoolean(parsed.ai_deep_thinking),
       supervision_enabled: normalizeBoolean(parsed.supervision_enabled),
+      supervision_include_installed_apps: parsed.supervision_include_installed_apps === undefined
+        ? true
+        : normalizeBoolean(parsed.supervision_include_installed_apps),
       supervision_check_mode: normalizeSupervisionCheckMode(parsed.supervision_check_mode),
       supervision_check_interval_minutes: normalizeSupervisionInterval(parsed.supervision_check_interval_minutes, 60),
       supervision_blacklist_minutes: normalizeMinuteThreshold(parsed.supervision_blacklist_minutes, 20),
@@ -215,9 +225,15 @@ export function updateSummarySettings(input: unknown): SummarySettings {
     timezone_offset_minutes: source.timezone_offset_minutes === undefined
       ? current.timezone_offset_minutes
       : normalizeTimezoneOffset(source.timezone_offset_minutes, current.timezone_offset_minutes),
+    ai_deep_thinking: source.ai_deep_thinking === undefined
+      ? current.ai_deep_thinking
+      : normalizeBoolean(source.ai_deep_thinking),
     supervision_enabled: source.supervision_enabled === undefined
       ? current.supervision_enabled
       : normalizeBoolean(source.supervision_enabled),
+    supervision_include_installed_apps: source.supervision_include_installed_apps === undefined
+      ? current.supervision_include_installed_apps
+      : normalizeBoolean(source.supervision_include_installed_apps),
     supervision_check_mode: source.supervision_check_mode === undefined
       ? current.supervision_check_mode
       : normalizeSupervisionCheckMode(source.supervision_check_mode),
@@ -442,7 +458,9 @@ function defaultSummarySettings(): SummarySettings {
     weekly_summary_weekday: 7,
     weekly_summary_time: "21:30",
     timezone_offset_minutes: null,
+    ai_deep_thinking: true,
     supervision_enabled: false,
+    supervision_include_installed_apps: true,
     supervision_check_mode: "hourly",
     supervision_check_interval_minutes: 60,
     supervision_blacklist_minutes: 20,
@@ -461,11 +479,7 @@ function defaultSummarySettings(): SummarySettings {
 
 function sanitizeTarget(value: unknown): string {
   if (typeof value !== "string") return "";
-  return value
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 240);
+  return sanitizeMultilineText(value, TARGET_MAX_LENGTH);
 }
 
 function normalizeBoolean(value: unknown): boolean {
@@ -510,7 +524,7 @@ export function normalizeSupervisionRules(value: unknown): SupervisionRules {
     blacklist_app_regex: normalizeRegexList(source.blacklist_app_regex),
     risk_app_regex: normalizeRegexList(source.risk_app_regex),
     target_app_regex: normalizeRegexList(source.target_app_regex),
-    reason: sanitizeTarget(source.reason).slice(0, 180),
+    reason: sanitizePromptText(source.reason, 180),
   };
 }
 
@@ -525,7 +539,7 @@ export function normalizeSupervisionAppTimeLimits(value: unknown): SupervisionAp
     out.push({
       app_regex: appRegex,
       limit_minutes: normalizeMinuteThreshold(source.limit_minutes, 3),
-      reason: sanitizeTarget(source.reason).slice(0, 120),
+      reason: sanitizePromptText(source.reason, 120),
     });
     if (out.length >= 12) break;
   }
@@ -623,7 +637,9 @@ function settingsForStorage(settings: SummarySettings): Omit<SummarySettings, "s
     weekly_summary_weekday: settings.weekly_summary_weekday,
     weekly_summary_time: settings.weekly_summary_time,
     timezone_offset_minutes: settings.timezone_offset_minutes,
+    ai_deep_thinking: settings.ai_deep_thinking,
     supervision_enabled: settings.supervision_enabled,
+    supervision_include_installed_apps: settings.supervision_include_installed_apps,
     supervision_check_mode: settings.supervision_check_mode,
     supervision_check_interval_minutes: settings.supervision_check_interval_minutes,
     supervision_blacklist_minutes: settings.supervision_blacklist_minutes,
@@ -780,6 +796,7 @@ async function generateSummaryText(input: {
       maxTokens,
       temperature,
       timeoutMs: AI_CHAT_TIMEOUT_MS,
+      deepThinking: input.settings.ai_deep_thinking,
     });
     let summary = sanitizeAiSummary(rawSummary, input.kind);
     logAiDebug("summary.response", {
@@ -814,6 +831,7 @@ async function generateSummaryText(input: {
         maxTokens,
         temperature: Math.min(temperature, 0.55),
         timeoutMs: AI_CHAT_TIMEOUT_MS,
+        deepThinking: input.settings.ai_deep_thinking,
       });
       summary = sanitizeAiSummary(rawSummary, input.kind);
       logAiDebug("summary.retry.response", {
@@ -841,6 +859,9 @@ async function generateSummaryText(input: {
 }
 
 function buildSystemPrompt(kind: SummaryKind, settings: SummarySettings): string {
+  const override = promptOverride(kind === "weekly" ? "weekly_summary_system" : "daily_summary_system");
+  if (override) return override;
+
   const isWeekly = kind === "weekly";
   const lengthRule = isWeekly ? "写一段120-200字的中文周总结" : "写一段60-100字的中文日总结";
   const scopeRule = isWeekly
@@ -860,7 +881,7 @@ function buildSystemPrompt(kind: SummaryKind, settings: SummarySettings): string
       ? "当天目标或休息安排在用户消息的数据区提供；如果未填写具体安排，不要虚构安排。"
       : "当天目标在用户消息的数据区提供；如果未设置目标，不要虚构目标。";
 
-  return `你是一个简洁、准确、有审美的日记助手。根据设备活动时间线，${lengthRule}。
+  const fallback = `你是一个简洁、准确、有审美的日记助手。根据设备活动时间线，${lengthRule}。
 当前模式：${MODE_LABELS[settings.mode]}。
 模式要求：${MODE_INSTRUCTIONS[settings.mode]}
 执行目的：帮助用户复盘真实时间使用、健康节奏和目标执行情况；你只负责生成总结，不执行设备控制、规则变更或外部动作。
@@ -877,6 +898,7 @@ function buildSystemPrompt(kind: SummaryKind, settings: SummarySettings): string
 - ${markdownRule}
 - 不要使用 emoji
 - 不要编造没有出现在时间线里的事件`;
+  return fallback;
 }
 
 function buildUserPrompt(
@@ -898,8 +920,8 @@ function buildUserPrompt(
   const lines: string[] = [
     `类型: ${kind === "weekly" ? "周总结" : "日总结"}`,
     kind === "weekly"
-      ? `默认目标: ${sanitizePromptText(settings.target, 240) || "未设置；每周计划空白日期不要虚构目标"}`
-      : `当天目标/计划: ${formatPlanForPrompt(settings.target, settings.planned_rest)}`,
+      ? `默认目标:\n${sanitizePromptText(settings.target, TARGET_MAX_LENGTH) || "未设置；每周计划空白日期不要虚构目标"}`
+      : `当天目标/计划:\n${formatPlanForPrompt(settings.target, settings.planned_rest)}`,
     `范围: ${periodLabel}`,
     ...(weekday && kind === "daily" ? [`星期: ${weekdayLabel(weekday)}`] : []),
     `总记录时长: ${formatMinutes(totalMinutes)}`,
@@ -926,7 +948,7 @@ function buildUserPrompt(
   if (kind === "weekly") {
     lines.push("", "本周每日计划:");
     for (const item of contextDays) {
-      const plan = item.target ? `目标：${sanitizePromptText(item.target, 240)}` : "沿用默认目标";
+      const plan = item.target ? `目标：${sanitizePromptText(item.target, TARGET_MAX_LENGTH)}` : "沿用默认目标";
       lines.push(`- ${item.date} ${item.weekday_label}: ${plan}`);
     }
     lines.push("", "每日节奏:");
@@ -960,7 +982,7 @@ function buildUserPrompt(
     for (const [index, item] of contextDays.entries()) {
       const relation = index === contextDays.length - 1 ? "昨天" : "前天";
       const plan = item.target || item.planned_rest
-        ? `${item.planned_rest ? "计划休息" : "目标"}：${sanitizePromptText(item.target, 240) || (item.planned_rest ? "未填写具体休息安排" : "未填写目标")}`
+        ? `${item.planned_rest ? "计划休息" : "目标"}：${sanitizePromptText(item.target, TARGET_MAX_LENGTH) || (item.planned_rest ? "未填写具体休息安排" : "未填写目标")}`
         : "沿用默认目标";
       lines.push(`## ${relation} ${item.date} ${item.weekday_label}`);
       lines.push(`目标/计划: ${plan}`);
@@ -1125,16 +1147,30 @@ function formatMinutes(minutes: number): string {
 }
 
 function formatPlanForPrompt(target: string, plannedRest: boolean): string {
-  const safeTarget = sanitizePromptText(target, 240);
+  const safeTarget = sanitizePromptText(target, TARGET_MAX_LENGTH);
   if (plannedRest) return `计划休息：${safeTarget || "未填写具体休息安排"}`;
   return safeTarget ? `目标：${safeTarget}` : "未设置";
 }
 
-function sanitizePromptText(value: string | null | undefined, maxLength: number): string {
+function sanitizePromptText(value: unknown, maxLength: number): string {
+  if (typeof value !== "string") return "";
+  return sanitizeMultilineText(value, maxLength)
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function sanitizeMultilineText(value: string, maxLength: number): string {
   if (!value) return "";
   return value
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 12)
+    .join("\n")
     .trim()
     .slice(0, maxLength);
 }

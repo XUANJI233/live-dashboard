@@ -51,6 +51,8 @@ export interface DeviceState {
       audio_output_type?: string;
       audio_output_name?: string;
       ambient_lux?: number;
+      installed_apps_count?: number;
+      installed_apps_updated_at?: string;
     };
     foreground?: {
       package_name?: string;

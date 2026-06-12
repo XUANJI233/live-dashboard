@@ -40,6 +40,11 @@ export interface ReportPayload {
       audio_output_type?: string;
       audio_output_name?: string;
       ambient_lux?: number;
+      installed_apps_updated_at?: string;
+      installed_apps?: Array<{
+        package_name?: string;
+        app_name?: string;
+      }>;
     };
     location?: {
       latitude?: number;

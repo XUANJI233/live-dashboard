@@ -359,7 +359,9 @@ function defaultRunner(kind: AiJobKind, payload: Record<string, unknown>, device
     }
 
     if (kind === "ai_config_test") {
-      return await testEncryptedAiConfigFromDevice(payload, deviceToken) as unknown as Record<string, unknown>;
+      return await testEncryptedAiConfigFromDevice(payload, deviceToken, {
+        deepThinking: getSummarySettings().ai_deep_thinking,
+      }) as unknown as Record<string, unknown>;
     }
 
     const settings = await refreshSupervisionRules(getSummarySettings());

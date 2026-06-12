@@ -1,6 +1,7 @@
 export const DEVICE_CAPABILITY_SCHEMA = "live_dashboard.device_capabilities.v1";
 export const TIMELINE_SCHEMA = "live_dashboard.timeline.v1";
 export const COMMAND_SCHEMA = "live_dashboard.device_commands.v1";
+export const INSTALLED_APPS_SCHEMA = "live_dashboard.installed_apps.v1";
 
 export const DELIVERY_STATUSES = ["sent", "queued", "failed", "skipped"] as const;
 export const RECEIPT_STATUSES = ["received", "rejected", "missing"] as const;

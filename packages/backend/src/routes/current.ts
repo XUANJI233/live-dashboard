@@ -35,6 +35,14 @@ function preparePublicDevices(devices: DeviceState[]) {
       delete foreground.title;
       parsedExtra = { ...parsedExtra, foreground };
     }
+    if (parsedExtra.device && typeof parsedExtra.device === "object" && !Array.isArray(parsedExtra.device)) {
+      const device = { ...(parsedExtra.device as Record<string, unknown>) };
+      if (Array.isArray(device.installed_apps)) {
+        device.installed_apps_count = device.installed_apps.length;
+      }
+      delete device.installed_apps;
+      parsedExtra = { ...parsedExtra, device };
+    }
     return { ...rest, extra: parsedExtra };
   });
 }

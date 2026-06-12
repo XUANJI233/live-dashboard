@@ -1,6 +1,6 @@
 # API Protocol Contracts
 
-更新时间：2026-06-11
+更新时间：2026-06-13
 
 本文档记录服务端、Edge Function、Web 前端、Android 普通端、Android LSP、Windows/macOS Agent 之间共享的固定字段、ID、Header 和帧类型。新增或修改通道时先更新这里，再改代码和测试。
 
@@ -59,6 +59,30 @@
 - 服务端连接 ack：
   - 设备：`{ "type": "ack", "status": "connected", "role": "device", "device_id": "..." }`
   - 访客：`{ "type": "ack", "status": "connected", "role": "viewer", "viewer_id": "..." }`
+
+## AI 设置和 Prompt
+
+`GET /api/summary-settings` 和 `POST /api/summary-settings` 使用设备 Bearer token。JSON 字段保持 `snake_case`，布尔必须是真布尔。
+
+App 保存设置时应发送：
+
+- `target`：默认目标/背景，最多 1000 字符，允许换行。
+- `weekly_plan[].target`：单日目标，最多 1000 字符，允许换行。
+- `timezone_offset_minutes`：客户端本地时区偏移，语义同 JavaScript `Date.getTimezoneOffset()`，例如 UTC+8 为 `-480`。
+- `ai_deep_thinking`：统一 AI 深度思考开关，不带 provider 名称；服务端只在当前供应商支持时映射到 provider options。
+- `supervision_include_installed_apps`：监督规则/复核是否把设备上报的非系统应用快照作为 AI 上下文，默认 `true`。
+
+服务端保存后可能返回：
+
+- `sync_status`：`applied` 或 `ignored_stale`。
+- `rules_refresh_job`：监督规则异步刷新 job；`status` 为 `queued` / `running` 时客户端应显示“规则正在生成”，不要把旧 `supervision_rules_updated_at` 当作本次完成时间。
+
+服务端 prompt 覆盖文件：
+
+- 默认路径：`AI_PROMPTS_FILE`；未设置时在 `DB_PATH` 同目录自动生成 `ai-prompts.json`。
+- 固定键：`daily_summary_system`、`weekly_summary_system`、`supervision_rules_system`、`supervision_verify_system`。
+- 字段缺失或空字符串表示使用内置默认提示词。
+- 覆盖范围只限 system prompt；时间线 JSON、设备能力/冻结列表、当前本地时间、最终任务指令和结构化 JSON schema 仍由服务端生成。
 
 ## 访客消息协议
 

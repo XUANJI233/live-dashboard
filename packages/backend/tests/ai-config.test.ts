@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { x25519 } from "@noble/curves/ed25519.js";
@@ -626,6 +626,118 @@ describe("ai-config", () => {
     }
   });
 
+  test("preserves multiline target text in summary settings", async () => {
+    const { db } = await import("../src/db");
+    const { getSummarySettings, updateSummarySettings } = await import("../src/services/daily-summary-gen");
+    db.prepare("DELETE FROM meta WHERE key = 'ai_summary_settings'").run();
+    const target = [
+      "主目标：开发 Live Dashboard",
+      "背景：监督模式需要理解 VPN、浏览器和娱乐应用之间的关系。",
+      "边界：短暂查资料可以，连续娱乐不可以。",
+    ].join("\n");
+
+    const updated = updateSummarySettings({
+      client_updated_at: "2030-01-01T00:10:30.000Z",
+      target,
+      weekly_plan: [{ weekday: 1, target: "周一：\n实现 AI 链路\n复查缓存" }],
+    });
+
+    expect(updated.target).toBe(target);
+    expect(updated.weekly_plan[0]?.target).toBe("周一：\n实现 AI 链路\n复查缓存");
+    expect(getSummarySettings().target).toBe(target);
+  });
+
+  test("uses prompt override files without changing the summary request shape", async () => {
+    const { db } = await import("../src/db");
+    const { describeAiConfig, saveEncryptedAiConfigFromDevice } = await import("../src/services/ai-config");
+    const { generateDailySummary, getSummarySettings, saveSummarySettings } = await import("../src/services/daily-summary-gen");
+    const suffix = randomHex(8);
+    const previousPromptFile = process.env.AI_PROMPTS_FILE;
+    const promptFile = join(tempDir, `ai-prompts-${suffix}.json`);
+    writeFileSync(promptFile, JSON.stringify({
+      daily_summary_system: "CUSTOM_DAILY_SYSTEM_PROMPT_KEEP_REQUEST_STRUCTURE",
+      weekly_summary_system: "",
+      supervision_rules_system: "",
+      supervision_verify_system: "",
+    }));
+    process.env.AI_PROMPTS_FILE = promptFile;
+
+    const token = `prompt-override-token-${suffix}`;
+    const encryption = (await describeAiConfig()).encryption!;
+    await saveEncryptedAiConfigFromDevice(await encryptAiConfigForServer(encryption.public_key, token, {
+      api_url: "https://api.deepseek.com/",
+      api_key: `prompt-override-key-${suffix}`,
+      model: "deepseek-chat",
+    }), token);
+    saveSummarySettings({
+      ...getSummarySettings(),
+      target: "写代码",
+      timezone_offset_minutes: -480,
+      supervision_enabled: false,
+    });
+    db.prepare(`
+      INSERT INTO activities (device_id, device_name, platform, app_id, app_name, window_title, display_title, extra, title_hash, time_bucket, started_at)
+      VALUES (?, 'Prompt Phone', 'android', 'com.microsoft.vscode', 'Code', 'project', 'project', '{}', ?, 10, ?)
+    `).run(`prompt-device-${suffix}`, `prompt-hash-${suffix}`, "2026-06-08T00:00:00.000Z");
+
+    const originalFetch = globalThis.fetch;
+    const bodies: Array<Record<string, any>> = [];
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      bodies.push(body);
+      const messagesText = JSON.stringify(body.messages);
+      expect(messagesText).toContain("CUSTOM_DAILY_SYSTEM_PROMPT_KEEP_REQUEST_STRUCTURE");
+      if (bodies.length === 1) {
+        expect(messagesText).toContain("CONTEXT_READY");
+      } else {
+        expect(body.messages.at(-1)?.content).toContain("当前生成时间:");
+      }
+      return Response.json({
+        id: `prompt-override-${bodies.length}`,
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: bodies.length === 1 ? "CONTEXT_READY" : "今天在 Code 里推进项目。" },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+      });
+    }) as typeof fetch;
+
+    try {
+      const result = await generateDailySummary({ date: "2026-06-08", tzOffsetMinutes: -480 });
+      expect(result.ok).toBe(true);
+      expect(bodies).toHaveLength(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (previousPromptFile === undefined) delete process.env.AI_PROMPTS_FILE;
+      else process.env.AI_PROMPTS_FILE = previousPromptFile;
+    }
+  });
+
+  test("creates an empty prompt override template when the file is missing", async () => {
+    const { promptOverride } = await import("../src/services/prompt-overrides");
+    const previousPromptFile = process.env.AI_PROMPTS_FILE;
+    const promptFile = join(tempDir, `ai-prompts-missing-${randomHex(8)}.json`);
+    process.env.AI_PROMPTS_FILE = promptFile;
+    try {
+      expect(existsSync(promptFile)).toBe(false);
+      expect(promptOverride("daily_summary_system")).toBeNull();
+      expect(existsSync(promptFile)).toBe(true);
+      expect(JSON.parse(readFileSync(promptFile, "utf8"))).toEqual({
+        daily_summary_system: "",
+        weekly_summary_system: "",
+        supervision_rules_system: "",
+        supervision_verify_system: "",
+      });
+    } finally {
+      if (previousPromptFile === undefined) delete process.env.AI_PROMPTS_FILE;
+      else process.env.AI_PROMPTS_FILE = previousPromptFile;
+    }
+  });
+
   test("enables DeepSeek thinking mode and forwards the requested output budget", async () => {
     const { requestAiChatCompletion } = await import("../src/services/ai-config");
     const originalFetch = globalThis.fetch;
@@ -660,6 +772,42 @@ describe("ai-config", () => {
         temperature: 0,
       });
       expect(text).toBe("{\"ok\":true}");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("honors the unified deep thinking switch when disabled", async () => {
+    const { requestAiChatCompletion } = await import("../src/services/ai-config");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      expect(body.thinking).toEqual({ type: "disabled" });
+      return Response.json({
+        id: "deep-thinking-disabled-test",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: "OK" },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+    }) as typeof fetch;
+    try {
+      const text = await requestAiChatCompletion({
+        apiUrl: "https://api.deepseek.com/",
+        apiKey: `deepseek-key-${randomHex(8)}`,
+        model: "deepseek-chat",
+      }, {
+        messages: [{ role: "user", content: "ping" }],
+        maxTokens: 8,
+        temperature: 0,
+        deepThinking: false,
+      });
+      expect(text).toBe("OK");
     } finally {
       globalThis.fetch = originalFetch;
     }

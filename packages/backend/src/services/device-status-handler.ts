@@ -10,6 +10,7 @@ import type { DeviceInfo, TimelineSegmentExtra } from "../types";
 const MAX_TITLE_LENGTH = 256;
 const MAX_SHORT_LENGTH = 64;
 const MAX_MEDIUM_LENGTH = 256;
+const MAX_INSTALLED_APPS = 512;
 const VALID_SOURCES = new Set(["normal", "root", "lsposed", "accessibility", "notification"]);
 const VALID_DEVICE_PROFILES = new Set(["android_lsp", "android_normal", "desktop_message"]);
 const DEVICE_CAPABILITY_KEYS = ["freeze", "unfreeze", "vibrate", "screen_off", "say", "risk_app_monitor", "app_time_limit"] as const;
@@ -186,6 +187,11 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (ambientLux != null) deviceExtra.ambient_lux = Math.round(ambientLux * 10) / 10;
       const frozenPackages = cleanFrozenPackages(deviceBody.frozen_packages);
       if (frozenPackages.length > 0) deviceExtra.frozen_packages = frozenPackages;
+      const installedApps = cleanInstalledApps(deviceBody.installed_apps);
+      if (installedApps.length > 0) {
+        deviceExtra.installed_apps = installedApps;
+        deviceExtra.installed_apps_updated_at = cleanTimestamp(deviceBody.installed_apps_updated_at) || startedAt;
+      }
       if (Object.keys(deviceExtra).length > 0) extra.device = deviceExtra;
     }
 
@@ -447,6 +453,26 @@ function cleanFrozenPackages(value: unknown): Record<string, unknown>[] {
     if (reason) row.reason = reason;
     out.push(row);
     if (out.length >= 8) break;
+  }
+  return out;
+}
+
+function cleanInstalledApps(value: unknown): Record<string, string>[] {
+  if (!Array.isArray(value)) return [];
+  const out: Record<string, string>[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const body = item as Record<string, unknown>;
+    const packageName = cleanString(body.package_name, MAX_SHORT_LENGTH);
+    if (!packageName || seen.has(packageName)) continue;
+    seen.add(packageName);
+    const appName = cleanString(body.app_name, MAX_SHORT_LENGTH);
+    out.push({
+      package_name: packageName,
+      ...(appName ? { app_name: appName } : {}),
+    });
+    if (out.length >= MAX_INSTALLED_APPS) break;
   }
   return out;
 }
