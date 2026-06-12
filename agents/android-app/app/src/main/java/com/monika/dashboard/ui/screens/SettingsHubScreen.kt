@@ -54,6 +54,8 @@ import com.monika.dashboard.ui.components.friendlyErrorMessage
 import com.monika.dashboard.ui.theme.Border
 import com.monika.dashboard.ui.theme.TextMuted
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -132,7 +134,9 @@ private fun SummarySettingsPane(settings: SettingsStore) {
     var dailySummaryTime by rememberSaveable { mutableStateOf("21:00") }
     var weeklySummaryWeekday by rememberSaveable { mutableIntStateOf(7) }
     var weeklySummaryTime by rememberSaveable { mutableStateOf("21:30") }
+    var aiDeepThinking by rememberSaveable { mutableStateOf(true) }
     var supervisionEnabled by rememberSaveable { mutableStateOf(false) }
+    var supervisionIncludeInstalledApps by rememberSaveable { mutableStateOf(true) }
     var supervisionCheckMode by rememberSaveable { mutableStateOf("hourly") }
     var supervisionCheckIntervalMinutes by rememberSaveable { mutableStateOf("60") }
     var supervisionBlacklistMinutes by rememberSaveable { mutableStateOf("20") }
@@ -143,8 +147,11 @@ private fun SummarySettingsPane(settings: SettingsStore) {
     var supervisionRules by remember { mutableStateOf(SupervisionRules.empty()) }
     var supervisionRulesUpdatedAt by remember { mutableStateOf<String?>(null) }
     var supervisionRulesError by remember { mutableStateOf<String?>(null) }
+    var supervisionRulesRefreshing by remember { mutableStateOf(false) }
     var unfreezeCountdown by rememberSaveable { mutableIntStateOf(0) }
     var unfreezeReady by rememberSaveable { mutableStateOf(false) }
+    var targetSectionExpanded by rememberSaveable { mutableStateOf(false) }
+    var promptSettingsExpanded by rememberSaveable { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var aiLoading by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
@@ -187,7 +194,9 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     dailySummaryTime = it.dailySummaryTime
                     weeklySummaryWeekday = it.weeklySummaryWeekday
                     weeklySummaryTime = it.weeklySummaryTime
+                    aiDeepThinking = it.aiDeepThinking
                     supervisionEnabled = it.supervisionEnabled
+                    supervisionIncludeInstalledApps = it.supervisionIncludeInstalledApps
                     supervisionCheckMode = it.supervisionCheckMode
                     supervisionCheckIntervalMinutes = it.supervisionCheckIntervalMinutes.toString()
                     supervisionBlacklistMinutes = it.supervisionBlacklistMinutes.toString()
@@ -198,6 +207,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     supervisionRules = it.supervisionRules
                     supervisionRulesUpdatedAt = it.supervisionRulesUpdatedAt
                     supervisionRulesError = it.supervisionRulesError
+                    supervisionRulesRefreshing = it.rulesRefreshJobStatus in setOf("queued", "running")
                     updatedAt = it.updatedAt
                     localEditedAt = null
                     status = "已同步服务器设置"
@@ -226,7 +236,9 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                             dailySummaryTime = dailySummaryTime,
                             weeklySummaryWeekday = weeklySummaryWeekday,
                             weeklySummaryTime = weeklySummaryTime,
+                            aiDeepThinking = aiDeepThinking,
                             supervisionEnabled = supervisionEnabled,
+                            supervisionIncludeInstalledApps = supervisionIncludeInstalledApps,
                             supervisionCheckMode = supervisionCheckMode,
                             supervisionCheckIntervalMinutes = supervisionCheckIntervalMinutes.toIntervalSetting(60),
                             supervisionBlacklistMinutes = supervisionBlacklistMinutes.toMinuteSetting(20),
@@ -248,7 +260,9 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     dailySummaryTime = it.dailySummaryTime
                     weeklySummaryWeekday = it.weeklySummaryWeekday
                     weeklySummaryTime = it.weeklySummaryTime
+                    aiDeepThinking = it.aiDeepThinking
                     supervisionEnabled = it.supervisionEnabled
+                    supervisionIncludeInstalledApps = it.supervisionIncludeInstalledApps
                     supervisionCheckMode = it.supervisionCheckMode
                     supervisionCheckIntervalMinutes = it.supervisionCheckIntervalMinutes.toString()
                     supervisionBlacklistMinutes = it.supervisionBlacklistMinutes.toString()
@@ -259,13 +273,18 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     supervisionRules = it.supervisionRules
                     supervisionRulesUpdatedAt = it.supervisionRulesUpdatedAt
                     supervisionRulesError = it.supervisionRulesError
+                    supervisionRulesRefreshing = it.rulesRefreshJobStatus in setOf("queued", "running")
                     updatedAt = it.updatedAt
                     localEditedAt = null
                     if (it.syncStatus == "ignored_stale") {
                         status = "服务器已有较新的计划，已同步最新配置"
                         Toast.makeText(context, "服务器已有较新的计划，已同步最新配置", Toast.LENGTH_LONG).show()
                     } else {
-                        status = "计划已保存并同步到服务器"
+                        status = if (supervisionRulesRefreshing) {
+                            "计划已保存，监督规则正在生成"
+                        } else {
+                            "计划已保存并同步到服务器"
+                        }
                         Toast.makeText(context, "计划已同步到服务器", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -431,45 +450,58 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     }
                 },
             )
-            OutlinedTextField(
-                value = target,
-                onValueChange = {
-                    markSummaryEdited()
-                    target = it.take(240)
-                },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text(if (plannedRest) "默认休息安排 / 近期重点" else "默认目标") },
-                minLines = 3,
-                maxLines = 5,
-                supportingText = { Text("${target.length}/240") },
+            SectionTitle(
+                title = "目标与每周计划",
+                meta = if (targetSectionExpanded) "已展开" else targetSummary(target, weeklyPlan),
             )
-            com.monika.dashboard.ui.components.PreferenceSwitchRow(
-                checked = plannedRest,
-                title = "默认按休息日评价",
-                body = "日总结按恢复、睡眠和娱乐边界评价；周总结仍按每天目标判断节奏。",
+            TextButton(
+                onClick = { targetSectionExpanded = !targetSectionExpanded },
                 enabled = !loading,
-                onChange = {
-                    markSummaryEdited()
-                    plannedRest = it
-                },
-            )
-            SectionTitle("每周计划")
-            Text(
-                text = "只填写需要覆盖默认目标的日期；空白会复用上面的默认目标。",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextMuted,
-            )
-            weeklyPlan.forEach { item ->
-                WeeklyPlanRow(
-                    item = item,
-                    enabled = !loading,
-                    onTargetChange = { value ->
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (targetSectionExpanded) "收起目标设置" else "展开目标设置")
+            }
+            if (targetSectionExpanded) {
+                OutlinedTextField(
+                    value = target,
+                    onValueChange = {
                         markSummaryEdited()
-                        weeklyPlan = weeklyPlan.map { day ->
-                            if (day.weekday == item.weekday) day.copy(target = value.take(240)) else day
-                        }
+                        target = it.take(1000)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(if (plannedRest) "默认休息安排 / 近期重点" else "默认目标") },
+                    minLines = 3,
+                    maxLines = 5,
+                    supportingText = { Text("${target.length}/1000") },
+                )
+                com.monika.dashboard.ui.components.PreferenceSwitchRow(
+                    checked = plannedRest,
+                    title = "默认按休息日评价",
+                    body = "日总结按恢复、睡眠和娱乐边界评价；周总结仍按每天目标判断节奏。",
+                    enabled = !loading,
+                    onChange = {
+                        markSummaryEdited()
+                        plannedRest = it
                     },
                 )
+                SectionTitle("每周计划")
+                Text(
+                    text = "只填写需要覆盖默认目标的日期；空白会复用上面的默认目标。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMuted,
+                )
+                weeklyPlan.forEach { item ->
+                    WeeklyPlanRow(
+                        item = item,
+                        enabled = !loading,
+                        onTargetChange = { value ->
+                            markSummaryEdited()
+                            weeklyPlan = weeklyPlan.map { day ->
+                                if (day.weekday == item.weekday) day.copy(target = value.take(1000)) else day
+                            }
+                        },
+                    )
+                }
             }
             SectionTitle("自动总结")
             Row(
@@ -507,6 +539,17 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     weeklySummaryWeekday = it + 1
                 },
             )
+            SectionTitle("AI 请求选项")
+            com.monika.dashboard.ui.components.PreferenceSwitchRow(
+                checked = aiDeepThinking,
+                title = "打开深度思考",
+                body = "使用统一 AI 开关；服务端只在当前供应商支持时转换为对应参数。",
+                enabled = !loading,
+                onChange = {
+                    markSummaryEdited()
+                    aiDeepThinking = it
+                },
+            )
             SectionTitle("监督模式")
             com.monika.dashboard.ui.components.PreferenceSwitchRow(
                 checked = supervisionEnabled,
@@ -537,6 +580,16 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     enabled = !loading,
                     label = { Text("复核间隔分钟") },
                     singleLine = true,
+                )
+                com.monika.dashboard.ui.components.PreferenceSwitchRow(
+                    checked = supervisionIncludeInstalledApps,
+                    title = "发送应用列表辅助判断",
+                    body = "只使用设备上报的非系统应用快照，帮助 AI 识别包名、VPN 和娱乐入口。",
+                    enabled = !loading,
+                    onChange = {
+                        markSummaryEdited()
+                        supervisionIncludeInstalledApps = it
+                    },
                 )
                 com.monika.dashboard.ui.components.PreferenceSwitchRow(
                     checked = supervisionVibrate,
@@ -627,13 +680,14 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     }
                 }
                 val supervisionMeta = when {
+                    supervisionRulesRefreshing -> "监督规则正在生成，完成后会更新"
                     !supervisionRulesError.isNullOrBlank() -> "规则生成失败：${supervisionRulesError.orEmpty()}"
                     !supervisionRulesUpdatedAt.isNullOrBlank() -> "规则已更新 ${formatClock(supervisionRulesUpdatedAt.orEmpty())}"
                     else -> "保存后生成监督规则"
                 }
                 StatusBlock(
                     text = supervisionMeta,
-                    tone = if (!supervisionRulesError.isNullOrBlank()) DashboardTone.Warn else DashboardTone.Neutral,
+                    tone = if (!supervisionRulesError.isNullOrBlank() && !supervisionRulesRefreshing) DashboardTone.Warn else DashboardTone.Neutral,
                 )
                 if (supervisionRules.hasContent()) {
                     SupervisionRulesView(supervisionRules)
@@ -676,12 +730,23 @@ private fun SummarySettingsPane(settings: SettingsStore) {
         }
 
         DashboardCard {
-            SectionTitle("提示词行为")
-            Text(
-                text = "模式、默认目标、休息评价和每周目标计划保存在服务器，并在管理员设备间双向同步。保存时会带上本地编辑时间，服务器保留较新的配置；公开读取只返回总结文本，不返回目标。",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextMuted,
+            SectionTitle(
+                title = "提示词设置",
+                meta = if (promptSettingsExpanded) "已展开" else "已收起",
             )
+            TextButton(
+                onClick = { promptSettingsExpanded = !promptSettingsExpanded },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (promptSettingsExpanded) "收起提示词设置" else "展开提示词设置")
+            }
+            if (promptSettingsExpanded) {
+                Text(
+                    text = "服务端可通过 ai-prompts.json 覆盖日总结、周总结、监督规则和监督复核的 system prompt；空条目继续使用内置默认。这里不改变时间线、设备能力、当前时间和缓存切分请求结构。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMuted,
+                )
+            }
         }
 
         DashboardCard {
@@ -826,7 +891,8 @@ private fun WeeklyPlanRow(
             modifier = Modifier.weight(1f),
             enabled = enabled,
             label = { Text("当天目标") },
-            singleLine = true,
+            minLines = 1,
+            maxLines = 3,
         )
     }
 }
@@ -847,8 +913,21 @@ private fun String.toIntervalSetting(fallback: Int): Int =
     toIntOrNull()?.coerceIn(30, 240) ?: fallback
 
 private fun formatClock(value: String): String =
-    runCatching { java.time.ZonedDateTime.parse(value).toLocalTime().toString().take(5) }
+    runCatching {
+        Instant.parse(value)
+            .atZone(ZoneId.systemDefault())
+            .format(DateTimeFormatter.ofPattern("HH:mm"))
+    }
         .getOrDefault(value.take(16))
+
+private fun targetSummary(target: String, weeklyPlan: List<ReportClient.SummaryPlanDay>): String {
+    val weeklyOverrides = weeklyPlan.count { it.target.isNotBlank() }
+    return when {
+        target.isBlank() && weeklyOverrides == 0 -> "未设置"
+        weeklyOverrides > 0 -> "${target.length}/1000，${weeklyOverrides}天覆盖"
+        else -> "${target.length}/1000"
+    }
+}
 
 private fun isAiStatusError(status: String?): Boolean {
     val value = status ?: return false

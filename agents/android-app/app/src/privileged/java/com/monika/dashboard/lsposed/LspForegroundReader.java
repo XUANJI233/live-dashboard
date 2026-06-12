@@ -22,6 +22,7 @@ final class LspForegroundReader {
     private volatile Object cachedAtmService = null;
     private volatile ComponentName lastKnownTopComponent = null;
     private volatile long lastKnownTopAt = 0L;
+    private volatile String cachedDeviceFormFactor = "";
 
     LspForegroundReader(LspHookSupport hookSupport, Host host, String targetPackage) {
         this.hookSupport = hookSupport;
@@ -124,6 +125,16 @@ final class LspForegroundReader {
     }
 
     String deviceFormFactor() {
+        String cached = cachedDeviceFormFactor;
+        if (cached.length() > 0) return cached;
+        String value = resolveDeviceFormFactor();
+        if ("tablet".equals(value) || host.systemContext() != null) {
+            cachedDeviceFormFactor = value;
+        }
+        return value;
+    }
+
+    private String resolveDeviceFormFactor() {
         try {
             Class<?> miuiBuild = hookSupport.findClass("miui.os.Build");
             Object isTablet = miuiBuild != null ? hookSupport.readStaticField(miuiBuild, "IS_TABLET") : null;

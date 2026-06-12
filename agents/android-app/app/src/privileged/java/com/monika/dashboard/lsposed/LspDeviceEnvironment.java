@@ -31,6 +31,10 @@ final class LspDeviceEnvironment {
     private static final long AMBIENT_LIGHT_CACHE_MS = 60_000L;
 
     private final Host host;
+    private volatile ConnectivityManager cachedConnectivityManager = null;
+    private volatile AudioManager cachedAudioManager = null;
+    private volatile SensorManager cachedSensorManager = null;
+    private volatile TelephonyManager cachedTelephonyManager = null;
     private volatile float lastAmbientLux = -1f;
     private volatile long lastAmbientLightAt = 0L;
     private volatile boolean ambientLightListenerRegistered = false;
@@ -65,9 +69,7 @@ final class LspDeviceEnvironment {
     void putNetworkExtras(JSONObject device, boolean uploadNetwork, boolean uploadVpn) {
         if (!uploadNetwork && !uploadVpn) return;
         try {
-            Context ctx = host.systemContext();
-            if (ctx == null) return;
-            ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            ConnectivityManager cm = connectivityManager();
             if (cm == null) return;
 
             boolean vpnActive = false;
@@ -80,10 +82,10 @@ final class LspDeviceEnvironment {
                 NetworkCapabilities caps = cm.getNetworkCapabilities(active);
                 if (caps != null) {
                     connected = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
-                    activeType = networkType(caps);
                     if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
                         cellularGeneration = cellularGeneration();
                     }
+                    activeType = networkType(caps, cellularGeneration);
                     vpnActive = caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
                 }
             }
@@ -110,9 +112,7 @@ final class LspDeviceEnvironment {
 
     void putAudioOutputExtras(JSONObject device) {
         try {
-            Context ctx = host.systemContext();
-            if (ctx == null) return;
-            AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+            AudioManager am = audioManager();
             if (am == null) return;
             AudioCandidate best = null;
             AudioDeviceInfo[] devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
@@ -150,9 +150,7 @@ final class LspDeviceEnvironment {
 
     boolean isNetworkConnected() {
         try {
-            Context ctx = host.systemContext();
-            if (ctx == null) return false;
-            ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            ConnectivityManager cm = connectivityManager();
             if (cm == null) return false;
             Network active = cm.getActiveNetwork();
             if (active == null) return false;
@@ -202,9 +200,7 @@ final class LspDeviceEnvironment {
     private void requestAmbientLightSample() {
         if (ambientLightListenerRegistered) return;
         try {
-            Context ctx = host.systemContext();
-            if (ctx == null) return;
-            SensorManager sm = (SensorManager) ctx.getSystemService(Context.SENSOR_SERVICE);
+            SensorManager sm = sensorManager();
             if (sm == null) return;
             Sensor sensor = sm.getDefaultSensor(Sensor.TYPE_LIGHT);
             if (sensor == null) return;
@@ -245,12 +241,11 @@ final class LspDeviceEnvironment {
         }
     }
 
-    private String networkType(NetworkCapabilities caps) {
+    private String networkType(NetworkCapabilities caps, String cellularGeneration) {
         if (caps == null) return "";
         if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "Wi-Fi";
         if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
-            String gen = cellularGeneration();
-            return gen.length() > 0 ? gen : "Cellular";
+            return cellularGeneration.length() > 0 ? cellularGeneration : "Cellular";
         }
         if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return "Ethernet";
         if (caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH)) return "Bluetooth";
@@ -261,10 +256,10 @@ final class LspDeviceEnvironment {
     @SuppressLint("MissingPermission")
     private String cellularGeneration() {
         try {
+            TelephonyManager tm = telephonyManager();
+            if (tm == null) return "";
             Context ctx = host.systemContext();
             if (ctx == null) return "";
-            TelephonyManager tm = (TelephonyManager) ctx.getSystemService(Context.TELEPHONY_SERVICE);
-            if (tm == null) return "";
             if (!hasPhoneStatePermission(ctx)) return "";
             int dataNetworkType;
             try {
@@ -313,6 +308,62 @@ final class LspDeviceEnvironment {
                     == PackageManager.PERMISSION_GRANTED;
         } catch (Throwable ignored) {
             return false;
+        }
+    }
+
+    private ConnectivityManager connectivityManager() {
+        ConnectivityManager cached = cachedConnectivityManager;
+        if (cached != null) return cached;
+        try {
+            Context ctx = host.systemContext();
+            ConnectivityManager manager = ctx != null
+                    ? (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE)
+                    : null;
+            if (manager != null) cachedConnectivityManager = manager;
+            return manager;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private AudioManager audioManager() {
+        AudioManager cached = cachedAudioManager;
+        if (cached != null) return cached;
+        try {
+            Context ctx = host.systemContext();
+            AudioManager manager = ctx != null ? (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE) : null;
+            if (manager != null) cachedAudioManager = manager;
+            return manager;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private SensorManager sensorManager() {
+        SensorManager cached = cachedSensorManager;
+        if (cached != null) return cached;
+        try {
+            Context ctx = host.systemContext();
+            SensorManager manager = ctx != null ? (SensorManager) ctx.getSystemService(Context.SENSOR_SERVICE) : null;
+            if (manager != null) cachedSensorManager = manager;
+            return manager;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private TelephonyManager telephonyManager() {
+        TelephonyManager cached = cachedTelephonyManager;
+        if (cached != null) return cached;
+        try {
+            Context ctx = host.systemContext();
+            TelephonyManager manager = ctx != null
+                    ? (TelephonyManager) ctx.getSystemService(Context.TELEPHONY_SERVICE)
+                    : null;
+            if (manager != null) cachedTelephonyManager = manager;
+            return manager;
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 

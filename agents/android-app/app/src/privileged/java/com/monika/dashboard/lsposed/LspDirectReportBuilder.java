@@ -31,6 +31,7 @@ final class LspDirectReportBuilder {
     private final LspForegroundReader foregroundReader;
     private final LspDeviceEnvironment deviceEnvironment;
     private final LspDeviceControlFeature deviceControlFeature;
+    private final LspInstalledAppsReporter installedAppsReporter;
     private final Host host;
     private volatile String lastStateSignature = "";
     private volatile long lastFullReportAt = 0L;
@@ -40,11 +41,13 @@ final class LspDirectReportBuilder {
             LspForegroundReader foregroundReader,
             LspDeviceEnvironment deviceEnvironment,
             LspDeviceControlFeature deviceControlFeature,
+            LspInstalledAppsReporter installedAppsReporter,
             Host host) {
         this.mediaTracker = mediaTracker;
         this.foregroundReader = foregroundReader;
         this.deviceEnvironment = deviceEnvironment;
         this.deviceControlFeature = deviceControlFeature;
+        this.installedAppsReporter = installedAppsReporter;
         this.host = host;
     }
 
@@ -86,11 +89,13 @@ final class LspDirectReportBuilder {
             deviceEnvironment.putNetworkExtras(device, host.uploadNetwork(), host.uploadVpn());
             deviceEnvironment.putAudioOutputExtras(device);
             deviceEnvironment.putAmbientLightExtras(device, now);
-            if (shouldSendHeartbeatOnly(now, forceRequested, media)) {
+            boolean heartbeatOnly = shouldSendHeartbeatOnly(now, forceRequested, media);
+            if (heartbeatOnly) {
                 device.put("heartbeat_only", true);
             }
             JSONArray frozen = deviceControlFeature.frozenPackagesJson(now);
             if (frozen.length() > 0) device.put("frozen_packages", frozen);
+            installedAppsReporter.putIfDue(device, now, heartbeatOnly);
             extra.put("device", device);
             extra.put("sleeping", sleeping);
             putForeground(extra, foregroundPackage);

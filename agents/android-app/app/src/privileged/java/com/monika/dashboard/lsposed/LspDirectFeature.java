@@ -27,6 +27,7 @@ final class LspDirectFeature {
     private final Host host;
 
     private final LspDirectReportBuilder reportBuilder;
+    private final LspInstalledAppsReporter installedAppsReporter;
     private final LspDirectTransport transport;
     private final LspDeviceCommandController deviceCommandController;
     private final LspDirectUploader uploader;
@@ -46,11 +47,13 @@ final class LspDirectFeature {
         this.foregroundFeature = foregroundFeature;
         this.deviceControlFeature = deviceControlFeature;
         this.host = host;
+        installedAppsReporter = new LspInstalledAppsReporter(newInstalledAppsReporterHost());
         reportBuilder = new LspDirectReportBuilder(
                 mediaTracker,
                 foregroundFeature.reader(),
                 deviceEnvironment,
                 deviceControlFeature,
+                installedAppsReporter,
                 newDirectReportBuilderHost());
         transport = new LspDirectTransport(newDirectTransportHost());
         deviceCommandController = new LspDeviceCommandController(newDeviceCommandHost());
@@ -103,6 +106,25 @@ final class LspDirectFeature {
                 host.systemContext(),
                 () -> host.remotePreferences(LspDirectConfig.PREFS_NAME),
                 forceReload);
+    }
+
+    private LspInstalledAppsReporter.Host newInstalledAppsReporterHost() {
+        return new LspInstalledAppsReporter.Host() {
+            @Override
+            public List<LspInstalledApp> installedApps() {
+                return deviceControlFeature.installedApps();
+            }
+
+            @Override
+            public String isoTime(long millis) {
+                return host.isoTime(millis);
+            }
+
+            @Override
+            public void logWarn(String message) {
+                host.logWarn(message);
+            }
+        };
     }
 
     private LspDirectReportBuilder.Host newDirectReportBuilderHost() {

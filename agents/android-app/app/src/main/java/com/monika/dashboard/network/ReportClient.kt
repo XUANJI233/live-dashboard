@@ -415,7 +415,10 @@ class ReportClient(
         val dailySummaryTime: String,
         val weeklySummaryWeekday: Int,
         val weeklySummaryTime: String,
+        val timezoneOffsetMinutes: Int?,
+        val aiDeepThinking: Boolean,
         val supervisionEnabled: Boolean,
+        val supervisionIncludeInstalledApps: Boolean,
         val supervisionCheckMode: String,
         val supervisionCheckIntervalMinutes: Int,
         val supervisionBlacklistMinutes: Int,
@@ -426,6 +429,8 @@ class ReportClient(
         val supervisionRules: SupervisionRules,
         val supervisionRulesUpdatedAt: String?,
         val supervisionRulesError: String?,
+        val rulesRefreshJobStatus: String?,
+        val rulesRefreshRequestId: String?,
         val updatedAt: String?,
         val syncStatus: String?,
     )
@@ -438,7 +443,9 @@ class ReportClient(
         val dailySummaryTime: String,
         val weeklySummaryWeekday: Int,
         val weeklySummaryTime: String,
+        val aiDeepThinking: Boolean,
         val supervisionEnabled: Boolean,
+        val supervisionIncludeInstalledApps: Boolean,
         val supervisionCheckMode: String,
         val supervisionCheckIntervalMinutes: Int,
         val supervisionBlacklistMinutes: Int,
@@ -579,13 +586,13 @@ class ReportClient(
     fun updateSummarySettings(update: SummarySettingsUpdate): Result<SummarySettings> {
         val body = JSONObject().apply {
             put("mode", update.mode)
-            put("target", update.target.take(240))
+            put("target", update.target.take(1000))
             put("planned_rest", update.plannedRest)
             put("weekly_plan", JSONArray().apply {
                 update.weeklyPlan.forEach { item ->
                     put(JSONObject().apply {
                         put("weekday", item.weekday.coerceIn(1, 7))
-                        put("target", item.target.take(240))
+                        put("target", item.target.take(1000))
                         put("planned_rest", false)
                     })
                 }
@@ -593,7 +600,10 @@ class ReportClient(
             put("daily_summary_time", update.dailySummaryTime)
             put("weekly_summary_weekday", update.weeklySummaryWeekday.coerceIn(1, 7))
             put("weekly_summary_time", update.weeklySummaryTime)
+            put("timezone_offset_minutes", clientTimezoneOffsetMinutes())
+            put("ai_deep_thinking", update.aiDeepThinking)
             put("supervision_enabled", update.supervisionEnabled)
+            put("supervision_include_installed_apps", update.supervisionIncludeInstalledApps)
             put("supervision_check_mode", update.supervisionCheckMode)
             put("supervision_check_interval_minutes", update.supervisionCheckIntervalMinutes.coerceIn(30, 240))
             put("supervision_blacklist_minutes", update.supervisionBlacklistMinutes.coerceIn(1, 55))
@@ -962,7 +972,14 @@ class ReportClient(
                         dailySummaryTime = json.optString("daily_summary_time", "21:00"),
                         weeklySummaryWeekday = json.optInt("weekly_summary_weekday", 7).coerceIn(1, 7),
                         weeklySummaryTime = json.optString("weekly_summary_time", "21:30"),
+                        timezoneOffsetMinutes = if (json.has("timezone_offset_minutes") && !json.isNull("timezone_offset_minutes")) {
+                            json.optInt("timezone_offset_minutes").coerceIn(-14 * 60, 14 * 60)
+                        } else {
+                            null
+                        },
+                        aiDeepThinking = json.optBoolean("ai_deep_thinking", true),
                         supervisionEnabled = json.optBoolean("supervision_enabled", false),
+                        supervisionIncludeInstalledApps = json.optBoolean("supervision_include_installed_apps", true),
                         supervisionCheckMode = json.optString("supervision_check_mode", "hourly"),
                         supervisionCheckIntervalMinutes = json.optInt("supervision_check_interval_minutes", 60).coerceIn(30, 240),
                         supervisionBlacklistMinutes = json.optInt("supervision_blacklist_minutes", 20).coerceIn(1, 55),
@@ -973,6 +990,10 @@ class ReportClient(
                         supervisionRules = parseSupervisionRules(json.optJSONObject("supervision_rules")),
                         supervisionRulesUpdatedAt = json.optString("supervision_rules_updated_at").takeIf { value -> value.isNotBlank() && value != "null" },
                         supervisionRulesError = json.optString("supervision_rules_error").takeIf { value -> value.isNotBlank() && value != "null" },
+                        rulesRefreshJobStatus = json.optJSONObject("rules_refresh_job")?.optString("status")
+                            ?.takeIf { value -> value.isNotBlank() && value != "null" },
+                        rulesRefreshRequestId = json.optJSONObject("rules_refresh_job")?.optString("request_id")
+                            ?.takeIf { value -> value.isNotBlank() && value != "null" },
                         updatedAt = json.optString("updated_at").takeIf { value -> value.isNotBlank() && value != "null" },
                         syncStatus = json.optString("sync_status").takeIf { value -> value.isNotBlank() && value != "null" },
                     ),
