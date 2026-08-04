@@ -29,9 +29,9 @@ export default function DatePicker({ selectedDate, onChange }: Props) {
   return (
     <div className="flex items-center gap-2 flex-wrap">
       <button
-        className="btn-glass"
+        className="pill-btn h-8 min-w-8 justify-center px-2 py-1"
         onClick={() => onChange(offsetDate(selectedDate, -1))}
-          aria-label="Previous day"
+        aria-label="Previous day"
       >
         &larr;
       </button>
@@ -43,7 +43,7 @@ export default function DatePicker({ selectedDate, onChange }: Props) {
       </span>
 
       <button
-        className="btn-glass"
+        className="pill-btn h-8 min-w-8 justify-center px-2 py-1"
         onClick={() => onChange(offsetDate(selectedDate, 1))}
         disabled={isToday}
         aria-label="Next day"
@@ -53,7 +53,7 @@ export default function DatePicker({ selectedDate, onChange }: Props) {
 
       {!isToday && (
         <button
-          className="btn-glass text-[var(--color-accent)]"
+          className="pill-btn px-3 py-1 text-[var(--color-accent)]"
           onClick={() => onChange(today)}
         >
           回到今天

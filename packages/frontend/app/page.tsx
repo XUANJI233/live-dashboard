@@ -26,9 +26,14 @@ export default function Home() {
   );
 }
 
+function clientTodayStr(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function HomeInner() {
   const { displayName } = useConfig();
-  const { current, timeline, selectedDate, changeDate, loading, error, viewerCount, wsConnected } = useDashboard();
+  const { current, timeline, serverTime, selectedDate, changeDate, loading, error, viewerCount, wsConnected } = useDashboard();
 
   // Selected device for CurrentStatus bubble
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
@@ -157,16 +162,21 @@ function HomeInner() {
     return () => { document.body.classList.remove("night-mode"); };
   }, [allOffline]);
 
+  const isTodaySelected = selectedDate === clientTodayStr();
   const refreshText = wsConnected
-    ? "实时通道已连接，时间线每 30 秒补一次"
-    : "实时通道暂未连上，正在用 15 秒刷新兜底";
+    ? isTodaySelected
+      ? "实时通道已连接，时间线随设备事件刷新"
+      : "正在查看历史时间线"
+    : isTodaySelected
+      ? "实时通道暂未连上，正在用 15 秒刷新兜底"
+      : "正在查看历史时间线";
 
   return (
     <>
       <main className="relative z-10 max-w-6xl mx-auto px-4 py-8">
         <div className="flex flex-col gap-4 lg:flex-row">
         <div className="flex-1 min-w-0">
-      <Header serverTime={current?.server_time} viewerCount={viewerCount} />
+      <Header serverTime={serverTime || current?.server_time} viewerCount={viewerCount} />
 
       {/* Error banner */}
       {error && (
@@ -290,7 +300,7 @@ function HomeInner() {
 
       {/* Footer */}
       <footer className="mt-12 pt-4 separator-dashed text-center">
-            <p className="text-[10px] text-[var(--color-text-muted)]">
+        <p suppressHydrationWarning className="text-[10px] text-[var(--color-text-muted)]">
           {displayName} 现在在做什么 · {refreshText} · 喵~
         </p>
       </footer>

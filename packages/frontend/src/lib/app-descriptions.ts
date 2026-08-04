@@ -1094,9 +1094,9 @@ const expandedDescriptionGroups: ExpandedDescriptionGroup[] = [
   {
     names: ADULT_APP_NAMES,
     templates: [
-      (n) => `正在${n}里浏览成人向内容喵~`,
-      (n) => `正在用${n}管理成人向收藏喵~`,
-      (n) => `正在玩${n}的成人向剧情喵~`,
+      () => "正在浏览不方便展开的私密内容喵~",
+      () => "正在整理需要低调显示的内容喵~",
+      () => "正在查看只保留概括的私密内容喵~",
       (n) => `正在${n}上低调探索内容库喵~`,
     ],
   },
@@ -2031,18 +2031,18 @@ const personalizedDescriptions: Record<string, string> = {
   "Live2D Cubism": "正在Live2D里给角色绑骨喵~",
   "Ren'Py": "正在Ren'Py里跑视觉小说喵~",
 
-  "FANZA Games": "正在FANZA Games里挑成人向游戏喵~",
+  "FANZA Games": "正在FANZA Games里浏览私密内容喵~",
   "DMM Game Player": "正在DMM Game Player里启动日系游戏喵~",
   "DLsite Nest": "正在DLsite Nest里管理同人作品喵~",
   "DLsite Play": "正在DLsite Play里浏览同人内容喵~",
-  Nutaku: "正在Nutaku里逛成人向游戏库喵~",
+  Nutaku: "正在Nutaku里浏览私密内容库喵~",
   "JAST USA": "正在JAST USA里看视觉小说收藏喵~",
   MangaGamer: "正在MangaGamer里翻译系视觉小说喵~",
   Denpasoft: "正在Denpasoft里逛绅士向商店喵~",
-  FAKKU: "正在FAKKU里浏览成人漫画库喵~",
+  FAKKU: "正在FAKKU里浏览私密图文库喵~",
   Iwara: "正在Iwara里看舞蹈视频喵~",
   "E-Hentai": "正在E-Hentai里翻图册喵~",
-  nhentai: "正在nhentai里按编号找本子喵~",
+  nhentai: "正在nhentai里按编号找图册喵~",
   "Hitomi Downloader": "正在Hitomi Downloader里整理下载队列喵~",
   "Hydrus Network": "正在Hydrus里给图片收藏打标签喵~",
   "Honey Select 2": "正在Honey Select 2里捏角色场景喵~",
@@ -2051,7 +2051,7 @@ const personalizedDescriptions: Record<string, string> = {
   "VR Kanojo": "正在VR Kanojo里体验VR互动喵~",
   "HuniePop": "正在HuniePop里玩三消约会喵~",
   "HuniePop 2": "正在HuniePop 2里连三消喵~",
-  Subverse: "正在Subverse里跑太空成人向剧情喵~",
+  Subverse: "正在Subverse里跑太空剧情喵~",
   "Action Taimanin": "正在Action Taimanin里打动作关卡喵~",
   "Rance X": "正在Rance X里推进老牌RPG剧情喵~",
   Evenicle: "正在Evenicle里跑奇幻RPG冒险喵~",
@@ -2062,6 +2062,7 @@ for (const [name, description] of Object.entries(personalizedDescriptions)) {
 }
 
 const DEFAULT_DESCRIPTION = "暂时看不到具体活动喵~";
+const DIRECT_DEFAULT_DESCRIPTION = "暂时看不到具体活动喵~";
 const NSFW_MASKED_DESCRIPTION = "正在处理一点不方便展开的私密内容喵~";
 const ADULT_APP_NAME_SET = new Set(ADULT_APP_NAMES.map((name) => name.toLowerCase()));
 const ADULT_APP_ID_SET = new Set([
@@ -2113,6 +2114,82 @@ const UNKNOWN_APP_NAMES = new Set(["unknown", "未知", "null", "undefined"]);
 function withCuteSuffix(text: string): string {
   const cleaned = text.trim().replace(/[~～。.!！]+$/g, "");
   return cleaned.endsWith("喵") ? `${cleaned}~` : `${cleaned}喵~`;
+}
+
+function toPlainSentence(text: string): string {
+  return text.trim().replace(/[~～。.!！]+$/g, "").replace(/喵/g, "").trim();
+}
+
+const DIRECT_STYLE_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/水群|灌水/g, "聊天"],
+  [/摸鱼/g, "浏览内容"],
+  [/冲浪/g, "浏览网页"],
+  [/疯狂写bug/g, "写代码"],
+  [/搞事情/g, "操作"],
+  [/开小灶/g, "运行"],
+  [/整活/g, "看内容"],
+  [/宇宙/g, "内容"],
+  [/今日份/g, "当前"],
+  [/小事/g, "事务"],
+  [/小东西/g, "内容"],
+];
+
+const UNFILTERED_BEHAVIOR_DETAILS = [
+  "正在浏览不方便展开的私密内容喵~",
+  "正在查看需要私密处理的内容喵~",
+  "正在整理不适合公开展开的内容喵~",
+  "正在把这段活动保持为低调显示喵~",
+];
+
+const UNFILTERED_ACTIVITY_DETAILS: Array<[RegExp, string[]]> = [];
+
+function stableIndex(value: string, size: number): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return hash % size;
+}
+
+function toDirectStyleSentence(text: string): string {
+  let cleaned = toPlainSentence(text);
+  for (const [pattern, replacement] of DIRECT_STYLE_REPLACEMENTS) {
+    cleaned = cleaned.replace(pattern, replacement);
+  }
+  return cleaned.replace(/\s+/g, " ").trim();
+}
+
+function pickStable(values: string[], seed: string, salt: string): string {
+  return values[stableIndex(`${seed}:${salt}`, values.length)];
+}
+
+function buildUnfilteredActivityDetail(seed: string, appLower?: string): string {
+  const activity = pickStableActivity(seed, appLower);
+  const behavior = pickStable(UNFILTERED_BEHAVIOR_DETAILS, seed, "behavior");
+  return `${activity}，${behavior}`;
+}
+
+function pickStableActivity(seed: string, appLower?: string): string {
+  const appActivities = appLower ? unfilteredAppActivityDetails.get(appLower) : undefined;
+  if (appActivities?.length) return pickStable(appActivities, seed, "activity-app");
+
+  const normalized = seed.toLowerCase();
+  const matched = UNFILTERED_ACTIVITY_DETAILS.find(([pattern]) => pattern.test(normalized));
+  if (matched) return pickStable(matched[1], seed, "activity");
+
+  return pickStable([
+    "前台内容会按私密活动低调展示",
+    "页面细节不会在公开仪表盘展开",
+    "当前活动只保留概括描述",
+    "这段内容会避免暴露具体标题",
+  ], seed, "activity-default");
+}
+
+function withUnfilteredPersona(text: string, seed: string, appLower?: string): string {
+  const cleaned = toDirectStyleSentence(text);
+  if (!cleaned) return DIRECT_DEFAULT_DESCRIPTION;
+  const detailSeed = `${seed || cleaned}:${cleaned}`;
+  return `${cleaned}，${buildUnfilteredActivityDetail(detailSeed, appLower)}`;
 }
 
 function normalizeDisplayTitle(appName: string, displayTitle?: string): string {
@@ -2174,12 +2251,34 @@ const _musicAppNames = new Set([
 // When displayTitle is available, use a richer template with the title embedded.
 
 type TitleTemplate = (displayTitle: string) => string;
+type DirectStyleTemplate = {
+  plain: (appName: string) => string;
+  titled: (appName: string, displayTitle: string) => string;
+};
 
 const titleTemplates = new Map<string, TitleTemplate>();
+const directStyleTemplates = new Map<string, DirectStyleTemplate>();
+const unfilteredAppActivityDetails = new Map<string, string[]>();
 
 function registerTemplate(names: string[], template: TitleTemplate) {
   for (const n of names) {
     titleTemplates.set(n.toLowerCase(), template);
+  }
+}
+
+function registerDirectStyle(
+  names: string[],
+  plain: DirectStyleTemplate["plain"],
+  titled: DirectStyleTemplate["titled"],
+) {
+  for (const n of names) {
+    directStyleTemplates.set(n.toLowerCase(), { plain, titled });
+  }
+}
+
+function registerUnfilteredActivity(names: string[], details: string[]) {
+  for (const n of names) {
+    unfilteredAppActivityDetails.set(n.toLowerCase(), details);
   }
 }
 
@@ -2612,6 +2711,389 @@ registerTemplate(
   (t) => `正在用浏览器看「${t}」喵~`
 );
 
+registerDirectStyle(
+  ["Telegram", "QQ", "TIM", "微信", "WeChat", "Discord", "Line", "Slack", "飞书", "Lark", "企业微信", "钉钉", "Signal", "WhatsApp", "Messenger", "KakaoTalk", "Zalo", "Mumble", "TeamSpeak", "TT语音", "Soul", "陌陌", "探探"],
+  (app) => `正在用${app}聊天和收发消息`,
+  (app, title) => `正在用${app}处理「${title}」`
+);
+registerDirectStyle(
+  ["ChatGPT", "Claude", "Gemini", "Copilot", "Microsoft Copilot", "DeepSeek", "Kimi", "豆包", "通义千问", "文心一言", "Poe", "Perplexity", "讯飞星火", "智谱清言", "元宝", "NotebookLM"],
+  (app) => `正在用${app}问答、检索或生成内容`,
+  (app, title) => `正在用${app}处理「${title}」`
+);
+registerDirectStyle(
+  ["Microsoft Edge", "Google Chrome", "Chrome", "Firefox", "Safari", "Opera", "Arc", "Brave", "Vivaldi", "浏览器", "小米浏览器", "Samsung Internet", "DuckDuckGo", "Via", "Kiwi Browser", "Quark", "UC Browser", "HeyTap Browser", "Vivo Browser", "Huawei Browser", "QQ浏览器", "夸克浏览器", "搜狗浏览器", "360安全浏览器", "360极速浏览器"],
+  (app) => `正在用${app}浏览网页`,
+  (app, title) => `正在用${app}浏览「${title}」`
+);
+registerDirectStyle(
+  ["YouTube", "哔哩哔哩", "bilibili", "Netflix", "爱奇艺", "优酷", "优酷视频", "腾讯视频", "芒果TV", "咪咕视频", "西瓜视频", "快手", "快手极速版", "AcFun", "好看视频", "央视频", "抖音", "抖音火山版", "Twitch", "斗鱼", "虎牙", "VLC", "PotPlayer", "mpv"],
+  (app) => `正在用${app}观看视频或直播`,
+  (app, title) => `正在用${app}观看「${title}」`
+);
+registerDirectStyle(
+  ["Spotify", "网易云音乐", "QQ音乐", "酷狗音乐", "Apple Music", "YouTube Music", "酷我音乐", "Amazon Music", "AIMP", "喜马拉雅", "蜻蜓FM", "荔枝", "懒人听书", "猫耳FM", "番茄畅听", "汽水音乐", "咪咕音乐", "波点音乐", "全民K歌", "唱吧"],
+  (app) => `正在用${app}播放音频内容`,
+  (app, title) => `正在用${app}播放「${title}」`
+);
+registerDirectStyle(
+  ["VS Code", "Visual Studio Code", "Visual Studio", "IntelliJ IDEA", "PyCharm", "WebStorm", "GoLand", "JetBrains Rider", "DataGrip", "Android Studio", "Cursor", "Windsurf", "Zed", "CLion", "RustRover", "HBuilderX", "Vim", "Neovim", "Emacs", "Notepad++", "DevEco Studio", "微信开发者工具"],
+  (app) => `正在用${app}写代码或调试项目`,
+  (app, title) => `正在用${app}处理「${title}」`
+);
+registerDirectStyle(
+  ["Docker Desktop", "GitHub Desktop", "Postman", "DBeaver", "Navicat", "Insomnia", "GitKraken", "Sourcetree", "Apifox", "YApi", "ApiPost", "Bruno", "Hoppscotch", "Windows Terminal", "终端", "Terminal", "PowerShell", "命令提示符", "Command Prompt", "iTerm2", "Termux", "阿里云", "腾讯云", "华为云", "火山引擎", "宝塔面板", "1Panel"],
+  (app) => `正在用${app}处理开发、接口或运维任务`,
+  (app, title) => `正在用${app}处理「${title}」`
+);
+registerDirectStyle(
+  ["Word", "Microsoft Word", "Excel", "Microsoft Excel", "PowerPoint", "Microsoft PowerPoint", "OneNote", "Notion", "Obsidian", "Typora", "WPS Office", "WPS", "Google Docs", "腾讯文档", "金山文档", "石墨文档", "飞书文档", "语雀", "幕布", "有道云笔记", "印象笔记", "滴答清单", "番茄ToDo", "Teambition", "TAPD", "PingCode", "ONES", "禅道", "问卷星", "金数据", "简道云", "明道云", "维格表", "飞书多维表格"],
+  (app) => `正在用${app}处理文档、表格或任务`,
+  (app, title) => `正在用${app}处理「${title}」`
+);
+registerDirectStyle(
+  ["Figma", "Photoshop", "Adobe Photoshop", "Illustrator", "Adobe Illustrator", "Premiere Pro", "Adobe Premiere Pro", "After Effects", "Adobe After Effects", "Blender", "DaVinci Resolve", "剪映", "CapCut", "Lightroom", "Adobe Lightroom", "SAI", "Clip Studio Paint", "MediBang", "Krita", "美图秀秀", "醒图", "轻颜相机", "秒剪", "快影", "必剪"],
+  (app) => `正在用${app}编辑图片、视频或设计稿`,
+  (app, title) => `正在用${app}编辑「${title}」`
+);
+registerDirectStyle(
+  ["淘宝", "天猫", "京东", "京喜", "拼多多", "唯品会", "得物", "闲鱼", "转转", "1688", "盒马", "叮咚买菜", "美团", "美团外卖", "饿了么", "大众点评", "菜鸟", "顺丰速运", "京东快递", "中通快递", "圆通速递", "韵达快递", "申通快递", "千牛", "抖店", "京麦", "拼多多商家版"],
+  (app) => `正在用${app}购物、点餐、查订单或处理店铺`,
+  (app, title) => `正在用${app}查看「${title}」`
+);
+registerDirectStyle(
+  ["高德地图", "百度地图", "腾讯地图", "滴滴出行", "花小猪打车", "T3出行", "曹操出行", "哈啰", "同程旅行", "去哪儿旅行", "飞猪", "携程", "携程旅行", "铁路12306", "航旅纵横", "货拉拉", "神州租车", "一嗨租车"],
+  (app) => `正在用${app}查路线、车票、航班或出行服务`,
+  (app, title) => `正在用${app}处理「${title}」`
+);
+registerDirectStyle(
+  ["云闪付", "数字人民币", "中国工商银行", "中国建设银行", "中国银行", "中国农业银行", "交通银行", "招商银行", "京东金融", "蚂蚁财富", "天天基金", "同花顺", "东方财富", "雪球", "掌上生活", "买单吧", "发现精彩", "浦大喜奔", "动卡空间", "建行生活"],
+  (app) => `正在用${app}处理支付、银行或金融信息`,
+  (app, title) => `正在用${app}查看「${title}」`
+);
+registerDirectStyle(
+  ["国家政务服务平台", "个人所得税", "交管12123", "国家医保服务平台", "掌上12333", "电子社保卡", "随申办", "浙里办", "粤省事", "国家反诈中心", "中国移动", "中国联通", "中国电信", "网上国网", "南网在线", "北京一卡通", "上海交通卡", "津心办", "爱山东", "赣服通", "天府通办", "苏周到", "我的南京", "楚税通", "爱企查", "天眼查", "企查查", "启信宝"],
+  (app) => `正在用${app}处理政务、账单或实名服务`,
+  (app, title) => `正在用${app}处理「${title}」`
+);
+registerDirectStyle(
+  ["学习通", "雨课堂", "智慧树", "中国大学MOOC", "学堂在线", "网易云课堂", "猿辅导", "作业帮", "粉笔", "百词斩", "墨墨背单词", "不背单词", "有道词典", "欧路词典", "驾考宝典", "LeetCode", "Coursera", "edX", "Udemy", "Duolingo", "Anki"],
+  (app) => `正在用${app}学习、刷题或查资料`,
+  (app, title) => `正在用${app}学习「${title}」`
+);
+registerDirectStyle(
+  ["火绒安全", "360安全卫士", "腾讯电脑管家", "鲁大师", "Everything", "PowerToys", "Snipaste", "ShareX", "7-Zip", "WinRAR", "Rufus", "Ventoy", "VirtualBox", "VMware Workstation", "ToDesk", "向日葵", "AnyDesk", "RustDesk", "百度网盘", "阿里云盘", "夸克网盘", "坚果云", "腾讯微云", "天翼云盘", "迅雷", "qBittorrent"],
+  (app) => `正在用${app}管理系统、文件、网络或设备`,
+  (app, title) => `正在用${app}处理「${title}」`
+);
+registerDirectStyle(
+  ["好大夫在线", "丁香医生", "京东健康", "阿里健康", "Keep", "咕咚"],
+  (app) => `正在用${app}查看健康、问诊或运动信息`,
+  (app, title) => `正在用${app}查看「${title}」`
+);
+registerDirectStyle(
+  ["贝壳找房", "链家", "安居客", "自如"],
+  (app) => `正在用${app}看房源、租房或小区信息`,
+  (app, title) => `正在用${app}查看「${title}」`
+);
+registerDirectStyle(
+  ["BOSS直聘", "智联招聘", "前程无忧", "猎聘", "拉勾招聘", "脉脉"],
+  (app) => `正在用${app}看岗位、简历或职场消息`,
+  (app, title) => `正在用${app}查看「${title}」`
+);
+registerDirectStyle(
+  ["蔚来", "理想汽车", "小鹏汽车", "比亚迪汽车", "极氪", "平安好车主", "途虎养车", "特来电", "星星充电"],
+  (app) => `正在用${app}查看车辆、保养或充电信息`,
+  (app, title) => `正在用${app}查看「${title}」`
+);
+registerDirectStyle(
+  ["米家", "华为智慧生活", "天猫精灵", "美的美居", "海尔智家"],
+  (app) => `正在用${app}控制智能家居和设备状态`,
+  (app, title) => `正在用${app}查看「${title}」`
+);
+registerDirectStyle(
+  ["Steam", "Epic Games", "GOG Galaxy", "Xbox", "EA App", "Ubisoft Connect", "Battle.net", "原神", "Genshin Impact", "崩坏：星穹铁道", "Honkai: Star Rail", "王者荣耀", "和平精英", "英雄联盟", "League of Legends", "明日方舟", "绝区零", "鸣潮", "三角洲行动", "萤火突击", "金铲铲之战", "英雄联盟手游", "蛋仔派对", "逆水寒手游", "SteamVR", "雷电模拟器", "MuMu模拟器", "夜神模拟器"],
+  (app) => `正在用${app}玩游戏或管理游戏内容`,
+  (app, title) => `正在用${app}玩「${title}」`
+);
+registerDirectStyle(
+  ["Kindle", "微信读书", "QQ阅读", "起点读书", "番茄小说", "七猫免费小说", "掌阅", "书旗小说", "晋江小说阅读", "快看漫画", "腾讯动漫", "哔哩哔哩漫画", "Medium", "Substack", "Feedly"],
+  (app) => `正在用${app}阅读书籍、文章或漫画`,
+  (app, title) => `正在用${app}阅读「${title}」`
+);
+registerDirectStyle(
+  ADULT_APP_NAMES,
+  () => "正在浏览不方便展开的私密内容",
+  () => "正在浏览不方便展开的私密内容"
+);
+registerDirectStyle(
+  ["微信", "WeChat"],
+  () => "正在微信里回消息、看小窗和朋友圈动态",
+  (_app, title) => `正在微信里处理「${title}」这条消息或动态`
+);
+registerDirectStyle(
+  ["QQ", "TIM"],
+  (app) => `正在${app}里看群聊、私聊和空间提醒`,
+  (app, title) => `正在${app}里回「${title}」`
+);
+registerDirectStyle(
+  ["Telegram"],
+  () => "正在Telegram里看频道、私聊和群组消息",
+  (_app, title) => `正在Telegram里看「${title}」`
+);
+registerDirectStyle(
+  ["Discord"],
+  () => "正在Discord里切服务器、看频道和语音房",
+  (_app, title) => `正在Discord里处理「${title}」`
+);
+registerDirectStyle(
+  ["Google Chrome", "Chrome"],
+  () => "正在Chrome里翻网页、开标签页和搜索内容",
+  (_app, title) => `正在Chrome里浏览「${title}」`
+);
+registerDirectStyle(
+  ["Microsoft Edge"],
+  () => "正在Edge里浏览网页、查资料和切侧边栏",
+  (_app, title) => `正在Edge里打开「${title}」`
+);
+registerDirectStyle(
+  ["哔哩哔哩", "bilibili"],
+  () => "正在B站看视频、翻弹幕和刷动态",
+  (_app, title) => `正在B站看「${title}」`
+);
+registerDirectStyle(
+  ["抖音"],
+  () => "正在抖音里刷短视频、看评论和直播",
+  (_app, title) => `正在抖音刷「${title}」`
+);
+registerDirectStyle(
+  ["快手", "快手极速版"],
+  (app) => `正在${app}里刷短视频、看直播和评论`,
+  (app, title) => `正在${app}看「${title}」`
+);
+registerDirectStyle(
+  ["网易云音乐"],
+  () => "正在网易云音乐里听歌、看评论和切歌单",
+  (_app, title) => `正在网易云音乐听「${title}」`
+);
+registerDirectStyle(
+  ["QQ音乐"],
+  () => "正在QQ音乐里听歌、翻歌单和看歌词",
+  (_app, title) => `正在QQ音乐听「${title}」`
+);
+registerDirectStyle(
+  ["猫耳FM"],
+  () => "正在猫耳FM里听广播剧、看弹幕和追声音更新",
+  (_app, title) => `正在猫耳FM听「${title}」`
+);
+registerDirectStyle(
+  ["淘宝", "天猫"],
+  (app) => `正在${app}里翻购物车、看商品和比价格`,
+  (app, title) => `正在${app}看「${title}」`
+);
+registerDirectStyle(
+  ["京东"],
+  () => "正在京东里看自营商品、物流和购物车",
+  (_app, title) => `正在京东查看「${title}」`
+);
+registerDirectStyle(
+  ["拼多多"],
+  () => "正在拼多多里翻商品、看活动和订单",
+  (_app, title) => `正在拼多多看「${title}」`
+);
+registerDirectStyle(
+  ["美团", "美团外卖"],
+  (app) => `正在${app}里选店、看菜单和等外卖`,
+  (app, title) => `正在${app}看「${title}」`
+);
+registerDirectStyle(
+  ["饿了么"],
+  () => "正在饿了么里点外卖、看骑手和优惠",
+  (_app, title) => `正在饿了么看「${title}」`
+);
+registerDirectStyle(
+  ["高德地图"],
+  () => "正在高德地图里规划路线、看导航和路况",
+  (_app, title) => `正在高德地图规划「${title}」`
+);
+registerDirectStyle(
+  ["百度地图"],
+  () => "正在百度地图里查路线、地点和周边",
+  (_app, title) => `正在百度地图查看「${title}」`
+);
+registerDirectStyle(
+  ["铁路12306"],
+  () => "正在12306里查车票、候补和订单",
+  (_app, title) => `正在12306处理「${title}」`
+);
+registerDirectStyle(
+  ["支付宝"],
+  () => "正在支付宝里付账、看账单和处理生活服务",
+  (_app, title) => `正在支付宝处理「${title}」`
+);
+registerDirectStyle(
+  ["个人所得税"],
+  () => "正在个人所得税App里看申报、扣除和税务记录",
+  (_app, title) => `正在个人所得税App处理「${title}」`
+);
+registerDirectStyle(
+  ["交管12123"],
+  () => "正在交管12123里处理车辆、驾照和违章事项",
+  (_app, title) => `正在交管12123处理「${title}」`
+);
+registerDirectStyle(
+  ["BOSS直聘"],
+  () => "正在BOSS直聘里看岗位、回招聘消息和改简历",
+  (_app, title) => `正在BOSS直聘看「${title}」`
+);
+registerDirectStyle(
+  ["脉脉"],
+  () => "正在脉脉里看职场动态、人脉和机会",
+  (_app, title) => `正在脉脉看「${title}」`
+);
+registerDirectStyle(
+  ["小红书"],
+  () => "正在小红书里刷笔记、看评论和收藏灵感",
+  (_app, title) => `正在小红书看「${title}」`
+);
+registerDirectStyle(
+  ["微博"],
+  () => "正在微博里看热搜、评论和博文",
+  (_app, title) => `正在微博看「${title}」`
+);
+registerDirectStyle(
+  ["知乎"],
+  () => "正在知乎里看回答、问题和评论区",
+  (_app, title) => `正在知乎看「${title}」`
+);
+registerDirectStyle(
+  ["VS Code", "Visual Studio Code"],
+  () => "正在VS Code里改代码、看终端和处理报错",
+  (_app, title) => `正在VS Code里处理「${title}」`
+);
+registerDirectStyle(
+  ["Cursor"],
+  () => "正在Cursor里让AI看代码、改文件和跑上下文",
+  (_app, title) => `正在Cursor里处理「${title}」`
+);
+registerDirectStyle(
+  ["GitHub"],
+  () => "正在GitHub里看仓库、issue和代码变更",
+  (_app, title) => `正在GitHub看「${title}」`
+);
+registerDirectStyle(
+  ["Apifox"],
+  () => "正在Apifox里看接口、调请求和写文档",
+  (_app, title) => `正在Apifox处理「${title}」`
+);
+registerDirectStyle(
+  ["阿里云"],
+  () => "正在阿里云里看ECS、日志和云资源",
+  (_app, title) => `正在阿里云处理「${title}」`
+);
+registerDirectStyle(
+  ["腾讯会议"],
+  () => "正在腾讯会议里听会、看共享屏和聊天区",
+  (_app, title) => `正在腾讯会议里开「${title}」`
+);
+registerDirectStyle(
+  ["飞书", "Lark"],
+  (app) => `正在${app}里看消息、文档和任务`,
+  (app, title) => `正在${app}处理「${title}」`
+);
+registerDirectStyle(
+  ["钉钉"],
+  () => "正在钉钉里看工作消息、会议和审批",
+  (_app, title) => `正在钉钉处理「${title}」`
+);
+registerDirectStyle(
+  ["腾讯文档"],
+  () => "正在腾讯文档里改共享文档和表格",
+  (_app, title) => `正在腾讯文档编辑「${title}」`
+);
+registerDirectStyle(
+  ["金山文档", "WPS", "WPS Office"],
+  (app) => `正在${app}里写文档、改表格和看批注`,
+  (app, title) => `正在${app}处理「${title}」`
+);
+registerDirectStyle(
+  ["醒图"],
+  () => "正在醒图里修照片、调滤镜和处理人像",
+  (_app, title) => `正在醒图编辑「${title}」`
+);
+registerDirectStyle(
+  ["剪映", "CapCut"],
+  (app) => `正在${app}里剪视频、卡点和调字幕`,
+  (app, title) => `正在${app}剪「${title}」`
+);
+registerDirectStyle(
+  ["Figma"],
+  () => "正在Figma里改画板、组件和标注",
+  (_app, title) => `正在Figma处理「${title}」`
+);
+registerDirectStyle(
+  ["Steam"],
+  () => "正在Steam里看游戏库、商店和下载队列",
+  (_app, title) => `正在Steam玩或查看「${title}」`
+);
+registerDirectStyle(
+  ["王者荣耀"],
+  () => "正在王者荣耀里排位、看战绩和开局",
+  (_app, title) => `正在王者荣耀玩「${title}」`
+);
+registerDirectStyle(
+  ["原神", "Genshin Impact"],
+  () => "正在原神里跑地图、清体力和看任务",
+  (_app, title) => `正在原神处理「${title}」`
+);
+registerDirectStyle(
+  ["三角洲行动"],
+  () => "正在三角洲行动里进战局、搜物资和撤离",
+  (_app, title) => `正在三角洲行动玩「${title}」`
+);
+registerDirectStyle(
+  ["网易云游戏", "腾讯先锋"],
+  (app) => `正在${app}里云启动游戏和排队进入`,
+  (app, title) => `正在${app}玩「${title}」`
+);
+
+function getUnfilteredAppDescription(
+  appName: string,
+  appLower: string,
+  displayTitle: string,
+  music?: { title?: string; artist?: string; app?: string },
+): string {
+  const seed = `${appName}:${displayTitle || music?.title || ""}`;
+
+  if (music?.title) {
+    const artist = music.artist ? ` - ${music.artist}` : "";
+    return withUnfilteredPersona(`正在用${appName}播放「${music.title}${artist}」`, seed, appLower);
+  }
+
+  const directTemplate = directStyleTemplates.get(appLower);
+  if (directTemplate) {
+    const direct = displayTitle
+      ? directTemplate.titled(appName, displayTitle)
+      : directTemplate.plain(appName);
+    return withUnfilteredPersona(direct, seed, appLower);
+  }
+
+  if (displayTitle) {
+    return withUnfilteredPersona(`正在用${appName}查看「${displayTitle}」`, seed, appLower);
+  }
+
+  const knownDescription = lowerIndex.get(appLower);
+  if (knownDescription) {
+    return withUnfilteredPersona(knownDescription, seed, appLower);
+  }
+
+  if (!UNKNOWN_APP_NAMES.has(appLower)) {
+    return withUnfilteredPersona(`正在用${appName}`, seed, appLower);
+  }
+
+  return DIRECT_DEFAULT_DESCRIPTION;
+}
+
 export function getAppDescription(
   appName: string,
   displayTitle?: string,
@@ -2620,13 +3102,17 @@ export function getAppDescription(
 ): string {
   const normalizedAppName = appName.trim();
   if (!normalizedAppName) return DEFAULT_DESCRIPTION;
-  if (options?.nsfwFilterEnabled !== false && shouldMaskAppDescription(normalizedAppName, options?.appId, displayTitle)) {
+  const shouldMask = shouldMaskAppDescription(normalizedAppName, options?.appId, displayTitle);
+  if (options?.nsfwFilterEnabled !== false && shouldMask) {
     return NSFW_MASKED_DESCRIPTION;
   }
 
   const appLower = normalizedAppName.toLowerCase();
   const isMusicAppForeground = _musicAppNames.has(appLower);
   const title = normalizeDisplayTitle(normalizedAppName, displayTitle);
+  if (options?.nsfwFilterEnabled === false && shouldMask) {
+    return NSFW_MASKED_DESCRIPTION;
+  }
 
   // Base description (with or without display title)
   let base: string | undefined;
