@@ -38,6 +38,21 @@ public class LspDeviceCommandControllerTest {
         assertEquals(2, host.httpBodies.size());
     }
 
+    @Test
+    public void appliesScreenOffCommandWhenRequested() throws Exception {
+        FakeHost host = new FakeHost();
+        LspDeviceCommandController controller = new LspDeviceCommandController(host);
+
+        controller.handleCommand(screenOffCommand(), "test");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals(1, host.screenOffCalls);
+        JSONObject result = new JSONObject(host.wsBodies.get(1));
+        assertEquals("applied", result.getString("status"));
+        assertEquals("screen_off", result.getJSONArray("actions").getJSONObject(0).getString("action"));
+        assertEquals("applied", result.getJSONArray("actions").getJSONObject(0).getString("status"));
+    }
+
     private static JSONObject command() throws Exception {
         return new JSONObject()
                 .put("type", LspDeviceCommandProtocol.TYPE_COMMAND)
@@ -48,10 +63,21 @@ public class LspDeviceCommandControllerTest {
                         .put("say", "hello"));
     }
 
+    private static JSONObject screenOffCommand() throws Exception {
+        return new JSONObject()
+                .put("type", LspDeviceCommandProtocol.TYPE_COMMAND)
+                .put("request_id", "req_screen")
+                .put("command_id", "cmd_screen")
+                .put("payload", new JSONObject()
+                        .put("kind", LspDeviceCommandProtocol.KIND_SUPERVISION)
+                        .put("screen_off", true));
+    }
+
     private static final class FakeHost implements LspDeviceCommandHost {
         final Handler handler = new Handler(Looper.getMainLooper());
         final List<String> wsBodies = new ArrayList<>();
         final List<String> httpBodies = new ArrayList<>();
+        int screenOffCalls = 0;
 
         @Override
         public Handler uploadHandler() {
@@ -148,6 +174,12 @@ public class LspDeviceCommandControllerTest {
 
         @Override
         public boolean vibrate(long durationMs) {
+            return true;
+        }
+
+        @Override
+        public boolean screenOff() {
+            screenOffCalls++;
             return true;
         }
 

@@ -455,6 +455,11 @@ final class LspDirectFeature {
             }
 
             @Override
+            public boolean screenOff() {
+                return deviceControlFeature.screenOff();
+            }
+
+            @Override
             public void requestDirectUpload() {
                 requestUpload(true);
             }

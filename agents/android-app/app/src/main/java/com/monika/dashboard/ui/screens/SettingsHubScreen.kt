@@ -128,6 +128,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var mode by rememberSaveable { mutableStateOf("normal") }
+    var modeLocked by rememberSaveable { mutableStateOf(true) }
     var target by rememberSaveable { mutableStateOf("") }
     var plannedRest by rememberSaveable { mutableStateOf(false) }
     var weeklyPlan by remember { mutableStateOf(defaultSummaryPlan()) }
@@ -137,9 +138,10 @@ private fun SummarySettingsPane(settings: SettingsStore) {
     var aiDeepThinking by rememberSaveable { mutableStateOf(true) }
     var supervisionEnabled by rememberSaveable { mutableStateOf(false) }
     var supervisionIncludeInstalledApps by rememberSaveable { mutableStateOf(true) }
-    var supervisionCheckMode by rememberSaveable { mutableStateOf("hourly") }
+    var supervisionHeuristicTriggers by rememberSaveable { mutableStateOf(false) }
     var supervisionCheckIntervalMinutes by rememberSaveable { mutableStateOf("60") }
     var supervisionBlacklistMinutes by rememberSaveable { mutableStateOf("20") }
+    var supervisionRiskTriggerMinutes by rememberSaveable { mutableStateOf("3") }
     var supervisionTargetMinMinutes by rememberSaveable { mutableStateOf("25") }
     var supervisionVibrate by rememberSaveable { mutableStateOf(true) }
     var supervisionSkipWatchSleep by rememberSaveable { mutableStateOf(true) }
@@ -188,6 +190,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
             result
                 .onSuccess {
                     mode = it.mode
+                    modeLocked = it.modeLocked
                     target = it.target
                     plannedRest = it.plannedRest
                     weeklyPlan = it.weeklyPlan
@@ -197,9 +200,10 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     aiDeepThinking = it.aiDeepThinking
                     supervisionEnabled = it.supervisionEnabled
                     supervisionIncludeInstalledApps = it.supervisionIncludeInstalledApps
-                    supervisionCheckMode = it.supervisionCheckMode
+                    supervisionHeuristicTriggers = it.supervisionHeuristicTriggers
                     supervisionCheckIntervalMinutes = it.supervisionCheckIntervalMinutes.toString()
                     supervisionBlacklistMinutes = it.supervisionBlacklistMinutes.toString()
+                    supervisionRiskTriggerMinutes = it.supervisionRiskTriggerMinutes.toString()
                     supervisionTargetMinMinutes = it.supervisionTargetMinMinutes.toString()
                     supervisionVibrate = it.supervisionVibrate
                     supervisionSkipWatchSleep = it.supervisionSkipWatchSleep
@@ -239,9 +243,11 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                             aiDeepThinking = aiDeepThinking,
                             supervisionEnabled = supervisionEnabled,
                             supervisionIncludeInstalledApps = supervisionIncludeInstalledApps,
-                            supervisionCheckMode = supervisionCheckMode,
+                            supervisionHeuristicTriggers = supervisionHeuristicTriggers,
+                            supervisionCheckMode = "hourly",
                             supervisionCheckIntervalMinutes = supervisionCheckIntervalMinutes.toIntervalSetting(60),
                             supervisionBlacklistMinutes = supervisionBlacklistMinutes.toMinuteSetting(20),
+                            supervisionRiskTriggerMinutes = supervisionRiskTriggerMinutes.toMinuteSetting(3),
                             supervisionTargetMinMinutes = supervisionTargetMinMinutes.toMinuteSetting(25),
                             supervisionVibrate = supervisionVibrate,
                             supervisionSkipWatchSleep = supervisionSkipWatchSleep,
@@ -254,6 +260,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
             result
                 .onSuccess {
                     mode = it.mode
+                    modeLocked = it.modeLocked
                     target = it.target
                     plannedRest = it.plannedRest
                     weeklyPlan = it.weeklyPlan
@@ -263,9 +270,10 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     aiDeepThinking = it.aiDeepThinking
                     supervisionEnabled = it.supervisionEnabled
                     supervisionIncludeInstalledApps = it.supervisionIncludeInstalledApps
-                    supervisionCheckMode = it.supervisionCheckMode
+                    supervisionHeuristicTriggers = it.supervisionHeuristicTriggers
                     supervisionCheckIntervalMinutes = it.supervisionCheckIntervalMinutes.toString()
                     supervisionBlacklistMinutes = it.supervisionBlacklistMinutes.toString()
+                    supervisionRiskTriggerMinutes = it.supervisionRiskTriggerMinutes.toString()
                     supervisionTargetMinMinutes = it.supervisionTargetMinMinutes.toString()
                     supervisionVibrate = it.supervisionVibrate
                     supervisionSkipWatchSleep = it.supervisionSkipWatchSleep
@@ -434,22 +442,29 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 title = "AI 总结",
                 meta = updatedAt?.let { "已更新" } ?: if (loading) "同步中" else null,
             )
-            SegmentedControl(
-                options = listOf("温和", "一般", "锐评"),
-                selectedIndex = when (mode) {
-                    "gentle" -> 0
-                    "sharp" -> 2
-                    else -> 1
-                },
-                onSelect = {
-                    markSummaryEdited()
-                    mode = when (it) {
-                        0 -> "gentle"
-                        2 -> "sharp"
-                        else -> "normal"
-                    }
-                },
-            )
+            if (modeLocked) {
+                StatusBlock(
+                    text = "评价强度由服务端控制：${summaryModeLabel(mode)}",
+                    tone = DashboardTone.Neutral,
+                )
+            } else {
+                SegmentedControl(
+                    options = listOf("温和", "一般", "锐评"),
+                    selectedIndex = when (mode) {
+                        "gentle" -> 0
+                        "sharp" -> 2
+                        else -> 1
+                    },
+                    onSelect = {
+                        markSummaryEdited()
+                        mode = when (it) {
+                            0 -> "gentle"
+                            2 -> "sharp"
+                            else -> "normal"
+                        }
+                    },
+                )
+            }
             SectionTitle(
                 title = "目标与每周计划",
                 meta = if (targetSectionExpanded) "已展开" else targetSummary(target, weeklyPlan),
@@ -554,7 +569,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
             com.monika.dashboard.ui.components.PreferenceSwitchRow(
                 checked = supervisionEnabled,
                 title = "偏离目标时主动提醒",
-                body = "保存计划时生成应用匹配规则；之后按间隔定时复核，或在阈值触发时由 AI 复核。",
+                body = "保存计划时生成应用匹配规则；之后定时复核和阈值触发会并行运行。",
                 enabled = !loading,
                 onChange = {
                     markSummaryEdited()
@@ -562,14 +577,6 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 },
             )
             if (supervisionEnabled) {
-                SegmentedControl(
-                    options = listOf("定时复核", "阈值触发"),
-                    selectedIndex = if (supervisionCheckMode == "triggered") 1 else 0,
-                    onSelect = {
-                        markSummaryEdited()
-                        supervisionCheckMode = if (it == 1) "triggered" else "hourly"
-                    },
-                )
                 OutlinedTextField(
                     value = supervisionCheckIntervalMinutes,
                     onValueChange = {
@@ -589,6 +596,16 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     onChange = {
                         markSummaryEdited()
                         supervisionIncludeInstalledApps = it
+                    },
+                )
+                com.monika.dashboard.ui.components.PreferenceSwitchRow(
+                    checked = supervisionHeuristicTriggers,
+                    title = "启发式提前复核",
+                    body = "命中风险/黑名单且目标活动很低时提前让 AI 判断；会增加 AI 请求和 token 用量。",
+                    enabled = !loading,
+                    onChange = {
+                        markSummaryEdited()
+                        supervisionHeuristicTriggers = it
                     },
                 )
                 com.monika.dashboard.ui.components.PreferenceSwitchRow(
@@ -650,34 +667,43 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                         )
                     }
                 }
-                if (supervisionCheckMode == "triggered") {
-                    Row(
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OutlinedTextField(
+                        value = supervisionBlacklistMinutes,
+                        onValueChange = {
+                            markSummaryEdited()
+                            supervisionBlacklistMinutes = it.filter { ch -> ch.isDigit() }.take(2)
+                        },
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = supervisionBlacklistMinutes,
-                            onValueChange = {
-                                markSummaryEdited()
-                                supervisionBlacklistMinutes = it.filter { ch -> ch.isDigit() }.take(2)
-                            },
-                            modifier = Modifier.weight(1f),
-                            enabled = !loading,
-                            label = { Text("黑名单分钟") },
-                            singleLine = true,
-                        )
-                        OutlinedTextField(
-                            value = supervisionTargetMinMinutes,
-                            onValueChange = {
-                                markSummaryEdited()
-                                supervisionTargetMinMinutes = it.filter { ch -> ch.isDigit() }.take(2)
-                            },
-                            modifier = Modifier.weight(1f),
-                            enabled = !loading,
-                            label = { Text("目标低于分钟") },
-                            singleLine = true,
-                        )
-                    }
+                        enabled = !loading,
+                        label = { Text("黑名单触发分钟") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = supervisionRiskTriggerMinutes,
+                        onValueChange = {
+                            markSummaryEdited()
+                            supervisionRiskTriggerMinutes = it.filter { ch -> ch.isDigit() }.take(2)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !loading,
+                        label = { Text("风险触发分钟") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = supervisionTargetMinMinutes,
+                        onValueChange = {
+                            markSummaryEdited()
+                            supervisionTargetMinMinutes = it.filter { ch -> ch.isDigit() }.take(2)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !loading,
+                        label = { Text("目标不足触发分钟") },
+                        singleLine = true,
+                    )
                 }
                 val supervisionMeta = when {
                     supervisionRulesRefreshing -> "监督规则正在生成，完成后会更新"
@@ -902,6 +928,13 @@ private fun defaultSummaryPlan(): List<ReportClient.SummaryPlanDay> =
 
 private fun weekdayLabel(weekday: Int): String =
     listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")[(weekday - 1).coerceIn(0, 6)]
+
+private fun summaryModeLabel(mode: String): String =
+    when (mode) {
+        "gentle" -> "温和"
+        "sharp" -> "锐评"
+        else -> "一般"
+    }
 
 private fun normalizeClockInput(value: String): String =
     value.filter { it.isDigit() || it == ':' }.take(5)

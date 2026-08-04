@@ -27,6 +27,7 @@ interface LspDeviceCommandHost {
     LspFreezeResult freezePackage(String packageName, String reason, long now, long until);
     boolean postSayNotification(String commandId, String text);
     boolean vibrate(long durationMs);
+    boolean screenOff();
     void requestDirectUpload();
     boolean applySupervisionPolicy(JSONObject payload);
     void finishPendingSupervisionReview();

@@ -409,6 +409,7 @@ class ReportClient(
 
     data class SummarySettings(
         val mode: String,
+        val modeLocked: Boolean,
         val target: String,
         val plannedRest: Boolean,
         val weeklyPlan: List<SummaryPlanDay>,
@@ -419,9 +420,11 @@ class ReportClient(
         val aiDeepThinking: Boolean,
         val supervisionEnabled: Boolean,
         val supervisionIncludeInstalledApps: Boolean,
+        val supervisionHeuristicTriggers: Boolean,
         val supervisionCheckMode: String,
         val supervisionCheckIntervalMinutes: Int,
         val supervisionBlacklistMinutes: Int,
+        val supervisionRiskTriggerMinutes: Int,
         val supervisionTargetMinMinutes: Int,
         val supervisionVibrate: Boolean,
         val supervisionSkipWatchSleep: Boolean,
@@ -446,9 +449,11 @@ class ReportClient(
         val aiDeepThinking: Boolean,
         val supervisionEnabled: Boolean,
         val supervisionIncludeInstalledApps: Boolean,
+        val supervisionHeuristicTriggers: Boolean,
         val supervisionCheckMode: String,
         val supervisionCheckIntervalMinutes: Int,
         val supervisionBlacklistMinutes: Int,
+        val supervisionRiskTriggerMinutes: Int,
         val supervisionTargetMinMinutes: Int,
         val supervisionVibrate: Boolean,
         val supervisionSkipWatchSleep: Boolean,
@@ -604,9 +609,11 @@ class ReportClient(
             put("ai_deep_thinking", update.aiDeepThinking)
             put("supervision_enabled", update.supervisionEnabled)
             put("supervision_include_installed_apps", update.supervisionIncludeInstalledApps)
+            put("supervision_heuristic_triggers", update.supervisionHeuristicTriggers)
             put("supervision_check_mode", update.supervisionCheckMode)
             put("supervision_check_interval_minutes", update.supervisionCheckIntervalMinutes.coerceIn(30, 240))
             put("supervision_blacklist_minutes", update.supervisionBlacklistMinutes.coerceIn(1, 55))
+            put("supervision_risk_trigger_minutes", update.supervisionRiskTriggerMinutes.coerceIn(1, 55))
             put("supervision_target_min_minutes", update.supervisionTargetMinMinutes.coerceIn(1, 55))
             put("supervision_vibrate", update.supervisionVibrate)
             put("supervision_skip_watch_sleep", update.supervisionSkipWatchSleep)
@@ -966,6 +973,7 @@ class ReportClient(
                 Result.success(
                     SummarySettings(
                         mode = json.optString("mode", "normal"),
+                        modeLocked = json.optBoolean("mode_locked", true),
                         target = json.optString("target", ""),
                         plannedRest = json.optBoolean("planned_rest", false),
                         weeklyPlan = parseSummaryPlan(json.optJSONArray("weekly_plan")),
@@ -980,9 +988,11 @@ class ReportClient(
                         aiDeepThinking = json.optBoolean("ai_deep_thinking", true),
                         supervisionEnabled = json.optBoolean("supervision_enabled", false),
                         supervisionIncludeInstalledApps = json.optBoolean("supervision_include_installed_apps", true),
+                        supervisionHeuristicTriggers = json.optBoolean("supervision_heuristic_triggers", false),
                         supervisionCheckMode = json.optString("supervision_check_mode", "hourly"),
                         supervisionCheckIntervalMinutes = json.optInt("supervision_check_interval_minutes", 60).coerceIn(30, 240),
                         supervisionBlacklistMinutes = json.optInt("supervision_blacklist_minutes", 20).coerceIn(1, 55),
+                        supervisionRiskTriggerMinutes = json.optInt("supervision_risk_trigger_minutes", 3).coerceIn(1, 55),
                         supervisionTargetMinMinutes = json.optInt("supervision_target_min_minutes", 25).coerceIn(1, 55),
                         supervisionVibrate = json.optBoolean("supervision_vibrate", true),
                         supervisionSkipWatchSleep = json.optBoolean("supervision_skip_watch_sleep", true),

@@ -15,11 +15,13 @@ final class LspDeviceFeedback {
     }
 
     private final LspNotificationCenter notificationCenter;
+    private final LspScreenController screenController;
     private final Host host;
 
     LspDeviceFeedback(LspNotificationCenter notificationCenter, Host host) {
         this.notificationCenter = notificationCenter;
         this.host = host;
+        this.screenController = new LspScreenController(newScreenControllerHost(host));
     }
 
     void postSupervisionFreeze(String packageName, String appName, String reason, long until) {
@@ -69,6 +71,14 @@ final class LspDeviceFeedback {
         }
     }
 
+    boolean screenOffSupported() {
+        return screenController.supported();
+    }
+
+    boolean screenOff() {
+        return screenController.screenOff();
+    }
+
     void cancelSupervisionFreeze(String packageName) {
         try {
             Context ctx = host.systemContext();
@@ -77,5 +87,19 @@ final class LspDeviceFeedback {
         } catch (Throwable t) {
             host.logDebug("cancel supervision freeze notification skipped: " + t.getClass().getSimpleName());
         }
+    }
+
+    private LspScreenController.Host newScreenControllerHost(Host host) {
+        return new LspScreenController.Host() {
+            @Override
+            public Context systemContext() {
+                return host.systemContext();
+            }
+
+            @Override
+            public void logDebug(String message) {
+                host.logDebug(message);
+            }
+        };
     }
 }

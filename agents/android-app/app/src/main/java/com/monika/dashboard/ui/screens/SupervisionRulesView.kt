@@ -49,9 +49,12 @@ private fun SupervisionRuleLine(label: String, values: List<String>) {
             color = TextMuted,
         )
         Text(
-            text = values.joinToString("   "),
+            text = values.take(6).joinToString("\n") { "• $it" } + overflowLabel(values.size),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface,
         )
     }
 }
+
+private fun overflowLabel(size: Int): String =
+    if (size > 6) "\n• 另有 ${size - 6} 条" else ""

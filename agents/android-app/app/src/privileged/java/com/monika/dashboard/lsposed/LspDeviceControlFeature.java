@@ -83,6 +83,14 @@ final class LspDeviceControlFeature {
         return feedback.vibrate(durationMs);
     }
 
+    boolean screenOffSupported() {
+        return feedback.screenOffSupported();
+    }
+
+    boolean screenOff() {
+        return feedback.screenOff();
+    }
+
     void evaluateSupervision(long now) {
         supervisionCoordinator.evaluate(now);
     }

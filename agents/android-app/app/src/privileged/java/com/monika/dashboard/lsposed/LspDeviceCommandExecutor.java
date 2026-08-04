@@ -39,8 +39,13 @@ final class LspDeviceCommandExecutor {
         Counts counts = new Counts();
         String reason = LspDeviceCommandProtocol.reason(payload, payload.optString("say", ""));
         if (LspDeviceCommandProtocol.strictBoolean(payload, "screen_off", false)) {
-            actions.put(action("screen_off", "unsupported", "screen_off_not_supported"));
-            counts.unsupported++;
+            if (host.screenOff()) {
+                actions.put(action("screen_off", "applied", source));
+                counts.applied++;
+            } else {
+                actions.put(action("screen_off", "failed", "screen_off_failed"));
+                counts.failed++;
+            }
         }
 
         String say = LspDeviceCommandProtocol.safeString(payload.optString("say", ""));
