@@ -5,6 +5,9 @@ const EDGE_MODE = /^true$/i.test(process.env.EDGE_MODE || "");
 import { issueViewerToken, issuePowChallenge, verifyPowSolution, getTlsFingerprint, isLocalIp, edgeViewerIdentity } from "../services/viewer-auth";
 import { noStore } from "../services/cdn";
 import { hmacTitle } from "../db";
+import { readJsonObjectRequest } from "../services/request-body";
+
+const MAX_VIEWER_TOKEN_JSON_BYTES = 32 * 1024;
 
 // GET /api/pow/challenge — issue a PoW challenge
 export function handlePowChallenge(req: Request, ipHint: string): Response {
@@ -26,12 +29,9 @@ export function handlePowChallenge(req: Request, ipHint: string): Response {
 
 // POST /api/token/issue — require PoW + JA4 for non-local IPs (skip in edge/CDN mode)
 export async function handleViewerTokenIssue(req: Request, ipHint: string): Promise<Response> {
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const parsed = await readJsonObjectRequest(req, { maxBytes: MAX_VIEWER_TOKEN_JSON_BYTES });
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
 
   const ipKnown = ipHint && ipHint !== "unknown";
 
@@ -53,14 +53,14 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
   // PoW verification: required for non-local IPs with known IP.
   // Skip PoW only when the request is actually signed by the edge.
   if (!POW_DISABLED && !(EDGE_MODE && edgeTrusted) && ipKnown && !isLocalIp(ipHint)) {
-    let pow_challenge = body.pow_challenge;
-    let pow_nonce = body.pow_nonce;
+    let pow_challenge = typeof body.pow_challenge === "string" ? body.pow_challenge : "";
+    let pow_nonce = typeof body.pow_nonce === "string" ? body.pow_nonce : "";
     let pow_last_hash = "";
     // Support new memory-PoW result format (pow_result JSON with nonce + lastHash)
-    if (!pow_nonce && body.pow_result) {
+    if (!pow_nonce && typeof body.pow_result === "string") {
       try {
         const r = JSON.parse(body.pow_result);
-        pow_nonce = r.nonce;
+        pow_nonce = typeof r.nonce === "string" ? r.nonce : "";
         pow_last_hash = typeof r.lastHash === "string" ? r.lastHash : "";
       } catch {}
     }
@@ -73,7 +73,7 @@ export async function handleViewerTokenIssue(req: Request, ipHint: string): Prom
     }
   }
 
-  const issued = issueViewerToken(body.fingerprint, ipHint);
+  const issued = issueViewerToken(typeof body.fingerprint === "string" ? body.fingerprint : "", ipHint);
   if (!issued.token) {
     return Response.json({ error: issued.error || "token issue failed" }, { status: issued.status || 400 });
   }

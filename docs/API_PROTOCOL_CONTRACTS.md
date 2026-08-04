@@ -71,9 +71,15 @@ App 保存设置时应发送：
 - `timezone_offset_minutes`：客户端本地时区偏移，语义同 JavaScript `Date.getTimezoneOffset()`，例如 UTC+8 为 `-480`。
 - `ai_deep_thinking`：统一 AI 深度思考开关，不带 provider 名称；服务端只在当前供应商支持时映射到 provider options。
 - `supervision_include_installed_apps`：监督规则/复核是否把设备上报的非系统应用快照作为 AI 上下文，默认 `true`。
+- `supervision_heuristic_triggers`：是否允许服务端在硬阈值前按黑名单/风险占比启发式提前复核。默认 `false`，开启后可能增加 AI 请求和 token 用量。
+- `supervision_blacklist_minutes` / `supervision_risk_trigger_minutes` / `supervision_target_min_minutes`：监督硬触发阈值。启发式开关开启时，服务端可在硬阈值前按黑名单/风险占比提前复核，但仍必须由 AI 做最终判断。
+- `mode`：服务端会忽略 App 提交的该字段；总结/监督语气只能由服务端环境变量 `AI_SUMMARY_MODE` 或 MCP 工具 `live_dashboard.set_summary_mode` 控制，防止手机端切换绕过监管。
+- 服务端发给 AI 的当前时间以用户本地时间优先展示，同时附带 UTC ISO 和 `timezone_offset_minutes`，避免模型误用部署机时区。
+- 监督 AI 的定时复核与条件触发并行：定时复核按 `supervision_check_interval_minutes` 运行；LSP 风险/黑名单/目标不足触发可以在定时复核之间额外发起复核。`supervision_check_mode` 仅保留兼容旧客户端语义，不应被理解为二选一调度开关。
 
 服务端保存后可能返回：
 
+- `mode_locked`：固定为 `true`，表示 App 不能修改总结/监督语气。
 - `sync_status`：`applied` 或 `ignored_stale`。
 - `rules_refresh_job`：监督规则异步刷新 job；`status` 为 `queued` / `running` 时客户端应显示“规则正在生成”，不要把旧 `supervision_rules_updated_at` 当作本次完成时间。
 
@@ -329,7 +335,7 @@ HTTP `/api/report` 与 WS `device_status.payload` 共享上报主体核心字段
 
 能力 profile：
 
-- `android_lsp`：可上报冻结列表，可支持 `freeze`、`unfreeze`、`vibrate`、`say`、`risk_app_monitor`、`app_time_limit`；`screen_off` 当前固定为 `false`。
+- `android_lsp`：可上报冻结列表，可支持 `freeze`、`unfreeze`、`vibrate`、`say`、`screen_off`、`risk_app_monitor`、`app_time_limit`；其中 `screen_off` 必须由新端侧显式上报为 `true` 才会下发。
 - `android_normal`：可 `vibrate`、`say`，不能冻结/解冻。
 - `desktop_message`：只支持 `say`。
 - `unsupported`：所有能力为 `false`。
@@ -344,20 +350,42 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
 }
 ```
 
-## MCP 本地控制面
+## MCP 控制面
 
 - 路径：`/api/mcp`。
-- 只接受 loopback 来源；公网、Edge、CDN 不应代理或暴露该路径。
+- 主服务 `/api/mcp` 默认关闭远程访问；公网、Edge、CDN 不应在未设置 `MCP_REMOTE_ENABLED=true` 和 token 时代理或暴露该路径。
+- 本机控制器可连接独立 listener `http://127.0.0.1:${MCP_PORT || 3031}/api/mcp`，推荐携带 `Authorization: Bearer <MCP_SERVER_TOKEN>`。
+- 未配置 token 的 loopback 独立 listener 只在 `MCP_LOOPBACK_TOKENLESS_ENABLED=true` 时放行；该开关仅用于可信单用户本地开发。
+- Docker 宿主机本地控制器访问独立 MCP listener 时，应设置 `MCP_HOST=0.0.0.0`、`MCP_LOCAL_NETWORK_ENABLED=true`、`MCP_SERVER_TOKEN=<强随机值>`，并只把 `${MCP_PORT}` 映射到宿主机 `127.0.0.1`。
+- 远程 OpenClaw/Hermes 连接需显式设置 `MCP_REMOTE_ENABLED=true`，且必须设置 `MCP_SERVER_TOKEN` 或 `MCP_ADMIN_TOKEN`。远程客户端使用主服务 `https://<host>/api/mcp` 和 `Authorization: Bearer <token>`。
 - 传输：无会话、JSON response 的 Streamable HTTP；只接受 `POST`。
-- 可选 Header：`Authorization: Bearer <MCP_SERVER_TOKEN>`。未设置 token 时仅依赖 loopback。
+- Header：`Authorization: Bearer <MCP_SERVER_TOKEN>`。仅显式开启 `MCP_LOOPBACK_TOKENLESS_ENABLED=true` 的本机开发环境可省略。
 - MCP 工具名固定：
   - `live_dashboard.list_devices`
   - `live_dashboard.get_all_device_timeline`
   - `live_dashboard.get_device_timeline`
   - `live_dashboard.get_device_frozen_list`
+  - `live_dashboard.get_device_installed_apps`
   - `live_dashboard.send_device_commands`
   - `live_dashboard.set_supervision_policy`
   - `live_dashboard.get_command_status`
+  - `live_dashboard.get_service_settings`
+  - `live_dashboard.update_service_settings`
+  - `live_dashboard.set_summary_mode`
+  - `live_dashboard.get_controller_persona`
+  - `live_dashboard.update_controller_persona`
+  - `live_dashboard.get_controller_memory_feed`
+  - `live_dashboard.save_controller_summary`
+  - `live_dashboard.start_ai_job`
+  - `live_dashboard.get_ai_job`
+  - `live_dashboard.run_supervision_check`
+- `live_dashboard.send_device_commands` 只用于一次性设备动作：提醒文本、震动、息屏、即时冻结/解冻；服务端会按设备显式上报能力裁剪。
+- `live_dashboard.set_supervision_policy` 只用于持久监督策略：风险应用 AI 触发规则、触发分钟数和应用限时；不要用于一次性提醒、一次性冻结/解冻或普通聊天消息。
+- `live_dashboard.update_service_settings` 只接受 snake_case 字段和真布尔，不接受手机端同义 camelCase。`live_dashboard.set_summary_mode` 是服务端控制语气的唯一远程工具；如果 `AI_SUMMARY_MODE` 环境变量存在，则环境变量优先。
+- `live_dashboard.update_controller_persona` 用于同步 OpenClaw/Hermes 人设或附属关系。字段全部为 snake_case：`enabled`、`controller`（`openclaw` / `hermes` / `custom`）、`controller_name`、`persona`、`relationship`、`style_notes`。同步内容会加入日/周总结和监督 system prompt，使服务口吻保持控制器一致；它不能覆盖安全、隐私、JSON schema、输出格式或设备能力约束。
+- `live_dashboard.get_controller_memory_feed` 用于把公开/私聊消息、设备回复、服务端下发的提醒/控制命令以及已保存的日/周总结回流给 OpenClaw/Hermes。字段：`since`、`cursor`、`limit`、`include_messages`、`include_summaries`、`include_device_commands`，布尔必须是真布尔。分页应优先传回上次响应的 `next_cursor`；只用 `next_since` 可能重复同一时间戳事件，不能保证无重复。
+- 推荐由 OpenClaw/Hermes 读取 memory feed 后自行整理长期记忆和总结，再调用 `live_dashboard.save_controller_summary` 写回服务端。`save_controller_summary` 字段：`kind`（`daily_summary` / `weekly_summary`）、`date`、`week_start`、`summary`、`mode`、`target`；服务端仍会清洗 HTML、链接、脚本、命令和控制字符。
+- `live_dashboard.start_ai_job` 用于启动日总结、周总结、监督规则刷新或监督复核；`live_dashboard.get_ai_job` 按 `request_id` 查询状态；`live_dashboard.run_supervision_check` 会排队一个 `supervision_check` job 并立即返回，不同步等待 AI，默认按 `source="report"` 运行以避免推进定时监督节流。
 
 ## AI 结构化响应字段
 

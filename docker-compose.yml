@@ -25,6 +25,15 @@ services:
       - AI_API_URL=${AI_API_URL:-}
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_MODEL=${AI_MODEL:-gpt-4o-mini}
+      - MCP_PORT=${MCP_PORT:-3031}
+      - MCP_HOST=${MCP_HOST:-127.0.0.1}
+      - MCP_LOOPBACK_TOKENLESS_ENABLED=${MCP_LOOPBACK_TOKENLESS_ENABLED:-false}
+      - MCP_LOCAL_NETWORK_ENABLED=${MCP_LOCAL_NETWORK_ENABLED:-false}
+      - MCP_REMOTE_ENABLED=${MCP_REMOTE_ENABLED:-false}
+      - MCP_SERVER_TOKEN=${MCP_SERVER_TOKEN:-}
+      - MCP_ADMIN_TOKEN=${MCP_ADMIN_TOKEN:-}
+    ports:
+      - "127.0.0.1:${MCP_PORT:-3031}:${MCP_PORT:-3031}"
     volumes:
       - dashboard_data:/data
     networks:

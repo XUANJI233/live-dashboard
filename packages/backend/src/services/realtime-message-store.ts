@@ -77,7 +77,7 @@ const getDeviceMessageHistory = db.prepare(`
   LEFT JOIN viewer_remarks r ON m.device_id = r.device_id AND m.viewer_id = r.viewer_id
   WHERE (m.device_id = ? OR m.device_id = '__broadcast__')
     AND m.kind IN ('private', 'reply')
-    AND (? = '' OR datetime(m.created_at) > datetime(?))
+    AND (? = '' OR m.created_at > ?)
   ORDER BY m.created_at ASC
   LIMIT 500
 `);
@@ -90,7 +90,7 @@ const getViewerMessageHistory = db.prepare(`
       (direction = 'device' AND kind = 'reply')
       OR (direction = 'viewer' AND kind = 'private')
     )
-    AND (? = '' OR datetime(created_at) > datetime(?))
+    AND (? = '' OR created_at > ?)
   ORDER BY created_at ASC
   LIMIT 100
 `);
@@ -111,11 +111,11 @@ const getRecentPublicMessages = db.prepare(`
     SELECT id, device_id, viewer_id, viewer_name, text, created_at, kind
     FROM visitor_messages
     WHERE (kind = 'public' OR kind = 'public_reply')
-      AND datetime(created_at) >= datetime(?)
-    ORDER BY datetime(created_at) DESC
+      AND created_at >= ?
+    ORDER BY created_at DESC
     LIMIT 200
   )
-  ORDER BY datetime(created_at) ASC
+  ORDER BY created_at ASC
 `);
 
 const getMessageTargetDevices = db.prepare(`

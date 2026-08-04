@@ -7,6 +7,7 @@ const tempDir = mkdtempSync(join(tmpdir(), "live-ai-jobs-"));
 process.env.DB_PATH = join(tempDir, "test.db");
 process.env.HASH_SECRET = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
 process.env.DEVICE_TOKEN_1 = "ai-job-token:ai-job-device:AI Job Android:android";
+process.env.AI_JOB_MAX_CONCURRENCY = "2";
 delete process.env.AI_API_URL;
 delete process.env.AI_API_KEY;
 
@@ -130,6 +131,67 @@ describe("ai jobs", () => {
     expect(pollBody.found).toBe(true);
     expect(pollBody.job?.request_id).toBe("req_http_daily");
   });
+
+  test("rejects device-submitted supervision checks", async () => {
+    const { getAiJob } = await import("../src/services/ai-jobs");
+    const { handleAiJobSubmit } = await import("../src/routes/ai-jobs");
+    const response = await handleAiJobSubmit(new Request("http://localhost/api/ai-jobs", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer ai-job-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        request_id: "req_device_supervision_forbidden",
+        kind: "supervision_check",
+        payload: { force: true, at: "2026-06-13T00:00:00.000Z" },
+      }),
+    }));
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "supervision_check jobs can only be started by the MCP control plane",
+      code: "AI_JOB_KIND_FORBIDDEN",
+    });
+    expect(getAiJob("req_device_supervision_forbidden")).toBeNull();
+  });
+
+  test("rejects oversized AI job stream bodies without content-length", async () => {
+    const { handleAiJobSubmit } = await import("../src/routes/ai-jobs");
+    const response = await handleAiJobSubmit(streamingJsonRequest(" ".repeat(129 * 1024)));
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({ error: "Request too large" });
+  });
+
+  test("limits concurrent AI job runners", async () => {
+    const { getAiJob, submitAiJob } = await import("../src/services/ai-jobs");
+    let running = 0;
+    let peak = 0;
+    const requestIds: string[] = [];
+
+    for (let index = 0; index < 5; index += 1) {
+      const submitted = submitAiJob({
+        requestId: `req_concurrency_${index}`,
+        kind: "daily_summary",
+        payload: { date: `2026-07-${String(index + 1).padStart(2, "0")}`, tz: 0 },
+        device: testDevice,
+        deviceToken: "ai-job-token",
+        runner: async () => {
+          running += 1;
+          peak = Math.max(peak, running);
+          await Bun.sleep(40);
+          running -= 1;
+          return { ok: true, summary: `done ${index}` };
+        },
+      });
+      requestIds.push(submitted.job.request_id);
+    }
+
+    await Promise.all(requestIds.map((requestId) => waitForJob(requestId, () => getAiJob(requestId))));
+    expect(peak).toBeLessThanOrEqual(2);
+    expect(peak).toBeGreaterThan(1);
+  });
 });
 
 const testDevice = {
@@ -149,4 +211,22 @@ async function waitForJob<T extends { status: string } | null>(
     await Bun.sleep(10);
   }
   throw new Error(`timed out waiting for ${requestId}`);
+}
+
+function streamingJsonRequest(body: string): Request {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(body));
+      controller.close();
+    },
+  });
+  return new Request("http://localhost/api/ai-jobs", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer ai-job-token",
+      "Content-Type": "application/json",
+    },
+    body: stream,
+    duplex: "half",
+  } as RequestInit & { duplex: "half" });
 }

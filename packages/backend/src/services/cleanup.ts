@@ -1,5 +1,21 @@
-import { cleanupExpiredMessages, cleanupOldActivities, cleanupOldAiJobs, cleanupOldDeviceCommandResults, cleanupOldDeviceCommands, cleanupOldLocations, cleanupOldSummaries, cleanupOldWeeklySummaries, markOfflineDevices, optimizeDatabase } from "../db";
-import { generateDailySummary, generateWeeklySummary, getSummarySettings, isoWeekday } from "./daily-summary-gen";
+import {
+  cleanupExpiredMessages,
+  cleanupOldActivities,
+  cleanupOldAiJobs,
+  cleanupOldDeviceCommandResults,
+  cleanupOldDeviceCommands,
+  cleanupOldLocations,
+  cleanupOldSummaries,
+  cleanupOldWeeklySummaries,
+  getDailySummary,
+  getWeeklySummary,
+  markOfflineDevices,
+  optimizeDatabase,
+} from "../db";
+import type { DeviceInfo } from "../types";
+import { getSummarySettings } from "./daily-summary-gen";
+import { submitAiJob } from "./ai-jobs";
+import { collectDueSummaryJobs, initialSummaryScheduleState } from "./summary-scheduler";
 import { runSupervisionTick } from "./supervision";
 
 // Cleanup old activities + old summaries every hour
@@ -87,26 +103,26 @@ const offlineTimer = setInterval(() => {
 offlineTimer.unref();
 
 // AI summaries — check every minute, trigger according to server-synced settings.
-let lastDailySummaryDate = "";
-let lastWeeklySummaryKey = "";
+let summaryScheduleState = initialSummaryScheduleState();
 const summaryTimer = setInterval(() => {
   const now = new Date();
   const settings = getSummarySettings();
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-  const clock = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-  if (settings.daily_summary_time && clock === settings.daily_summary_time && today !== lastDailySummaryDate) {
-    lastDailySummaryDate = today;
-    generateDailySummary({ date: today }).catch((e) => console.error("[cleanup] AI daily summary failed:", e));
-  }
-  const weeklyKey = `${today}:${settings.weekly_summary_weekday}:${settings.weekly_summary_time}`;
-  if (
-    settings.weekly_summary_time &&
-    clock === settings.weekly_summary_time &&
-    isoWeekday(today) === settings.weekly_summary_weekday &&
-    weeklyKey !== lastWeeklySummaryKey
-  ) {
-    lastWeeklySummaryKey = weeklyKey;
-    generateWeeklySummary({ date: today }).catch((e) => console.error("[cleanup] AI weekly summary failed:", e));
+  const scheduled = collectDueSummaryJobs(now, settings, summaryScheduleState);
+  summaryScheduleState = scheduled.state;
+  for (const job of scheduled.jobs) {
+    if (job.kind === "daily") {
+      if (hasStoredSummary("daily", job.date)) continue;
+      queueScheduledSummaryJob("daily_summary", {
+        date: job.date,
+        tz_offset_minutes: job.tzOffsetMinutes,
+      });
+    } else {
+      if (hasStoredSummary("weekly", job.weekStart)) continue;
+      queueScheduledSummaryJob("weekly_summary", {
+        week_start: job.weekStart,
+        tz_offset_minutes: job.tzOffsetMinutes,
+      });
+    }
   }
 }, 60_000);
 summaryTimer.unref();
@@ -117,3 +133,35 @@ const supervisionTimer = setInterval(() => {
 supervisionTimer.unref();
 
 console.log("[cleanup] Scheduled: hourly cleanup, 60s offline check, configurable AI summaries, AI supervision");
+
+function hasStoredSummary(kind: "daily" | "weekly", key: string): boolean {
+  const row = (kind === "daily"
+    ? getDailySummary.get(key)
+    : getWeeklySummary.get(key)) as { generated_at?: string; summary?: string } | null;
+  return Boolean(row?.generated_at || row?.summary);
+}
+
+const schedulerDevice: DeviceInfo = {
+  device_id: "__server_scheduler__",
+  device_name: "Live Dashboard Scheduler",
+  platform: "windows",
+};
+
+function queueScheduledSummaryJob(
+  kind: "daily_summary" | "weekly_summary",
+  payload: Record<string, unknown>,
+): void {
+  try {
+    const submitted = submitAiJob({
+      kind,
+      payload,
+      device: schedulerDevice,
+      deviceToken: "",
+    });
+    if (!submitted.attached) {
+      console.log(`[cleanup] Queued ${kind} AI job ${submitted.job.request_id}`);
+    }
+  } catch (e) {
+    console.error(`[cleanup] ${kind} AI job queue failed:`, e);
+  }
+}

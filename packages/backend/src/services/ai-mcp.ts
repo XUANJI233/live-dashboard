@@ -99,7 +99,7 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
 async function localMcpFetch(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> {
   const { handleMcpRequest } = await import("../routes/mcp");
   const request = requestFromFetchArgs(input, init);
-  return handleMcpRequest(request, { remoteAddress: MCP_HOST });
+  return handleMcpRequest(request, { remoteAddress: MCP_HOST, internalRequest: true });
 }
 
 function requestFromFetchArgs(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Request {

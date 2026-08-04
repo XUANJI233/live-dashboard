@@ -1,5 +1,6 @@
 import { authenticateToken } from "../middleware/auth";
 import { db } from "../db";
+import { readJsonObjectRequest } from "../services/request-body";
 
 /**
  * Accepts health data in the format sent by health-connect-webhook
@@ -20,6 +21,7 @@ import { db } from "../db";
  */
 
 const MAX_RECORDS = 2000;
+const MAX_HEALTH_WEBHOOK_JSON_BYTES = 1024 * 1024;
 
 const insertHealthRecord = db.prepare(`
   INSERT INTO health_records (device_id, type, value, unit, recorded_at, end_time)
@@ -58,16 +60,9 @@ export async function handleHealthWebhook(req: Request): Promise<Response> {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
-  }
-
-  if (typeof body !== "object" || body === null) {
-    return Response.json({ error: "Invalid payload" }, { status: 400 });
-  }
+  const parsed = await readJsonObjectRequest(req, { maxBytes: MAX_HEALTH_WEBHOOK_JSON_BYTES });
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
 
   const records: ToInsert[] = [];
   const deviceId = device.device_id;

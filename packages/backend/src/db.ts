@@ -321,6 +321,11 @@ db.run(`
   ON visitor_messages(kind, created_at)
 `);
 
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_visitor_messages_created
+  ON visitor_messages(created_at)
+`);
+
 // ── Device command ledger (MCP/server-side control plane) ──
 
 db.run(`
@@ -373,6 +378,11 @@ db.run(`
 db.run(`
   CREATE INDEX IF NOT EXISTS idx_device_commands_expires
   ON device_commands(expires_at)
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_device_commands_issued
+  ON device_commands(issued_at)
 `);
 
 db.run(`
@@ -442,6 +452,11 @@ if (!columnExists("daily_summaries", "target")) {
   db.run("ALTER TABLE daily_summaries ADD COLUMN target TEXT NOT NULL DEFAULT ''");
 }
 
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_daily_summaries_generated
+  ON daily_summaries(generated_at)
+`);
+
 // Weekly summaries table (AI-generated)
 db.run(`
   CREATE TABLE IF NOT EXISTS weekly_summaries (
@@ -452,6 +467,11 @@ db.run(`
     target TEXT NOT NULL DEFAULT '',
     generated_at TEXT DEFAULT (datetime('now'))
   )
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_weekly_summaries_generated
+  ON weekly_summaries(generated_at)
 `);
 
 optimizeDatabase(true);

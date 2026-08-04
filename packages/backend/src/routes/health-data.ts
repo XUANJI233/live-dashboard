@@ -3,8 +3,10 @@ import { db } from "../db";
 import { verifyViewerToken, viewerTokenFromRequest, edgeViewerIdentity, viewerTokenRateLimit } from "../services/viewer-auth";
 import type { HealthRecord } from "../types";
 import { isLiveHourWindow, normalizeHourWindow, noStore, safeTimezoneOffset, utcRangeForLocalDate, utcRangeForLocalHourWindow, windowMatchesDate, withCdnHeaders } from "../services/cdn";
+import { readJsonObjectRequest } from "../services/request-body";
 
 const MAX_RECORDS_PER_REQUEST = 1500; // supports full day of minute-level heart rate data (1440 max)
+const MAX_HEALTH_DATA_JSON_BYTES = 1024 * 1024;
 const VALID_TYPES = new Set([
   "heart_rate", "resting_heart_rate", "heart_rate_variability",
   "steps", "distance", "exercise", "sleep",
@@ -41,12 +43,9 @@ export async function handleHealthData(req: Request): Promise<Response> {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const parsed = await readJsonObjectRequest(req, { maxBytes: MAX_HEALTH_DATA_JSON_BYTES });
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
 
   if (!Array.isArray(body.records) || body.records.length === 0) {
     return Response.json({ error: "records array required" }, { status: 400 });

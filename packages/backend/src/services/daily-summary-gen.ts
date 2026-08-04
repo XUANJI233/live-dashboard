@@ -16,6 +16,7 @@ import { healthContextLinesForRange } from "./health-context";
 import { formatPromptDateTime, formatPromptMinute } from "./prompt-time";
 import { promptOverride } from "./prompt-overrides";
 import { timelineJsonBlockForPrompt } from "./timeline-prompt";
+import { withControllerPersonaPrompt } from "./controller-persona";
 
 /**
  * AI Summary Generator
@@ -40,6 +41,7 @@ export type SummaryKind = "daily" | "weekly";
 
 export interface SummarySettings {
   mode: SummaryMode;
+  mode_locked: boolean;
   target: string;
   planned_rest: boolean;
   weekly_plan: SummaryPlanDay[];
@@ -50,6 +52,7 @@ export interface SummarySettings {
   ai_deep_thinking: boolean;
   supervision_enabled: boolean;
   supervision_include_installed_apps: boolean;
+  supervision_heuristic_triggers: boolean;
   supervision_check_mode: SupervisionCheckMode;
   supervision_check_interval_minutes: number;
   supervision_blacklist_minutes: number;
@@ -153,7 +156,8 @@ export function getSummarySettings(): SummarySettings {
   try {
     const parsed = JSON.parse(raw) as Partial<SummarySettings>;
     return {
-      mode: normalizeSummaryMode(parsed.mode),
+      mode: configuredSummaryMode() ?? normalizeSummaryMode(parsed.mode),
+      mode_locked: true,
       target: sanitizeTarget(parsed.target),
       planned_rest: normalizeBoolean(parsed.planned_rest),
       weekly_plan: normalizeWeeklyPlan(parsed.weekly_plan),
@@ -168,6 +172,9 @@ export function getSummarySettings(): SummarySettings {
       supervision_include_installed_apps: parsed.supervision_include_installed_apps === undefined
         ? true
         : normalizeBoolean(parsed.supervision_include_installed_apps),
+      supervision_heuristic_triggers: parsed.supervision_heuristic_triggers === undefined
+        ? false
+        : normalizeBoolean(parsed.supervision_heuristic_triggers),
       supervision_check_mode: normalizeSupervisionCheckMode(parsed.supervision_check_mode),
       supervision_check_interval_minutes: normalizeSupervisionInterval(parsed.supervision_check_interval_minutes, 60),
       supervision_blacklist_minutes: normalizeMinuteThreshold(parsed.supervision_blacklist_minutes, 20),
@@ -205,7 +212,8 @@ export function updateSummarySettings(input: unknown): SummarySettings {
   }
 
   const next: SummarySettings = {
-    mode: source.mode === undefined ? current.mode : normalizeSummaryMode(source.mode),
+    mode: current.mode,
+    mode_locked: true,
     target: source.target === undefined ? current.target : sanitizeTarget(source.target),
     planned_rest: source.planned_rest === undefined
       ? current.planned_rest
@@ -234,6 +242,9 @@ export function updateSummarySettings(input: unknown): SummarySettings {
     supervision_include_installed_apps: source.supervision_include_installed_apps === undefined
       ? current.supervision_include_installed_apps
       : normalizeBoolean(source.supervision_include_installed_apps),
+    supervision_heuristic_triggers: source.supervision_heuristic_triggers === undefined
+      ? current.supervision_heuristic_triggers
+      : normalizeBoolean(source.supervision_heuristic_triggers),
     supervision_check_mode: source.supervision_check_mode === undefined
       ? current.supervision_check_mode
       : normalizeSupervisionCheckMode(source.supervision_check_mode),
@@ -322,6 +333,17 @@ export function effectiveSupervisionPolicySnapshot(settings = getSummarySettings
 
 export function saveSummarySettings(settings: SummarySettings): SummarySettings {
   metaSet(SUMMARY_SETTINGS_KEY, JSON.stringify(settingsForStorage(settings)));
+  return getSummarySettings();
+}
+
+export function setServerSummaryMode(mode: unknown): SummarySettings {
+  const current = getSummarySettings();
+  const next: SummarySettings = {
+    ...current,
+    mode: configuredSummaryMode() ?? normalizeSummaryMode(mode),
+    updated_at: new Date().toISOString(),
+  };
+  metaSet(SUMMARY_SETTINGS_KEY, JSON.stringify(settingsForStorage(next)));
   return getSummarySettings();
 }
 
@@ -450,7 +472,8 @@ export function validDateString(value: unknown): value is string {
 
 function defaultSummarySettings(): SummarySettings {
   return {
-    mode: "normal",
+    mode: configuredSummaryMode() ?? "normal",
+    mode_locked: true,
     target: "",
     planned_rest: false,
     weekly_plan: defaultWeeklyPlan(),
@@ -461,6 +484,7 @@ function defaultSummarySettings(): SummarySettings {
     ai_deep_thinking: true,
     supervision_enabled: false,
     supervision_include_installed_apps: true,
+    supervision_heuristic_triggers: false,
     supervision_check_mode: "hourly",
     supervision_check_interval_minutes: 60,
     supervision_blacklist_minutes: 20,
@@ -627,7 +651,7 @@ function timestampMs(value: string | null | undefined): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-function settingsForStorage(settings: SummarySettings): Omit<SummarySettings, "sync_status"> {
+function settingsForStorage(settings: SummarySettings): Omit<SummarySettings, "sync_status" | "mode_locked"> {
   return {
     mode: settings.mode,
     target: settings.target,
@@ -640,6 +664,7 @@ function settingsForStorage(settings: SummarySettings): Omit<SummarySettings, "s
     ai_deep_thinking: settings.ai_deep_thinking,
     supervision_enabled: settings.supervision_enabled,
     supervision_include_installed_apps: settings.supervision_include_installed_apps,
+    supervision_heuristic_triggers: settings.supervision_heuristic_triggers,
     supervision_check_mode: settings.supervision_check_mode,
     supervision_check_interval_minutes: settings.supervision_check_interval_minutes,
     supervision_blacklist_minutes: settings.supervision_blacklist_minutes,
@@ -654,6 +679,11 @@ function settingsForStorage(settings: SummarySettings): Omit<SummarySettings, "s
     supervision_rules_error: settings.supervision_rules_error,
     updated_at: settings.updated_at,
   };
+}
+
+function configuredSummaryMode(): SummaryMode | null {
+  const raw = process.env.AI_SUMMARY_MODE?.trim();
+  return raw ? normalizeSummaryMode(raw) : null;
 }
 
 export function normalizeWeekday(value: unknown, fallback = 1): number {
@@ -860,7 +890,7 @@ async function generateSummaryText(input: {
 
 function buildSystemPrompt(kind: SummaryKind, settings: SummarySettings): string {
   const override = promptOverride(kind === "weekly" ? "weekly_summary_system" : "daily_summary_system");
-  if (override) return override;
+  if (override) return withControllerPersonaPrompt(override);
 
   const isWeekly = kind === "weekly";
   const lengthRule = isWeekly ? "写一段120-200字的中文周总结" : "写一段60-100字的中文日总结";
@@ -898,7 +928,7 @@ function buildSystemPrompt(kind: SummaryKind, settings: SummarySettings): string
 - ${markdownRule}
 - 不要使用 emoji
 - 不要编造没有出现在时间线里的事件`;
-  return fallback;
+  return withControllerPersonaPrompt(fallback);
 }
 
 function buildUserPrompt(
@@ -1012,7 +1042,7 @@ function segmentsForTimelinePrompt(segments: TimelineSegment[], kind: SummaryKin
   return segments.slice(0, limit);
 }
 
-function sanitizeAiSummary(value: string, kind: SummaryKind): string {
+export function sanitizeAiSummary(value: string, kind: SummaryKind): string {
   const maxLength = kind === "weekly" ? 900 : 520;
   const safe = value
     .replace(/```[\s\S]*?```/g, " ")

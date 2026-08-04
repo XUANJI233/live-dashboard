@@ -2,8 +2,9 @@ import { safeTimezoneOffset } from "./cdn";
 
 export function formatPromptDateTime(value: Date | string, tzOffsetMinutes: number): string {
   const date = dateFromValue(value) ?? new Date();
-  const offset = timezoneOffsetLabel(tzOffsetMinutes);
-  return `${date.toISOString()}（本地 ${localDateTimeStringForOffset(date, tzOffsetMinutes)}，${offset}）`;
+  const safeOffset = safeTimezoneOffset(tzOffsetMinutes);
+  const offset = timezoneOffsetLabel(safeOffset);
+  return `本地 ${localDateTimeStringForOffset(date, safeOffset)}（${offset}，ISO ${date.toISOString()}，timezone_offset_minutes=${safeOffset}）`;
 }
 
 export function formatPromptMinute(value: Date | string, tzOffsetMinutes: number): string {
@@ -15,6 +16,11 @@ export function formatPromptMinute(value: Date | string, tzOffsetMinutes: number
 export function localDateStringForOffset(date: Date, tzOffsetMinutes: number): string {
   const local = localDateForOffset(date, tzOffsetMinutes);
   return `${local.getUTCFullYear()}-${String(local.getUTCMonth() + 1).padStart(2, "0")}-${String(local.getUTCDate()).padStart(2, "0")}`;
+}
+
+export function localClockStringForOffset(date: Date, tzOffsetMinutes: number): string {
+  const local = localDateForOffset(date, tzOffsetMinutes);
+  return `${String(local.getUTCHours()).padStart(2, "0")}:${String(local.getUTCMinutes()).padStart(2, "0")}`;
 }
 
 function localDateTimeStringForOffset(date: Date, tzOffsetMinutes: number, includeSeconds = true): string {

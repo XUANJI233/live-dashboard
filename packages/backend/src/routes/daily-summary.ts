@@ -12,6 +12,9 @@ import {
 } from "../services/daily-summary-gen";
 import { syncCurrentSupervisionPolicyToCapableDevices } from "../services/supervision-policy-control";
 import { aiJobInputErrorResponse, submitAiJobFromClient } from "../services/ai-jobs";
+import { readJsonObjectRequest, type JsonObjectRead } from "../services/request-body";
+
+const MAX_SUMMARY_JSON_BYTES = 128 * 1024;
 
 interface DailySummaryRow {
   date: string;
@@ -50,7 +53,9 @@ export async function handleDailySummaryRefresh(req: Request, url: URL): Promise
   const device = authenticateToken(req.headers.get("authorization"));
   if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = await readJsonObject(req);
+  const parsed = await readJsonObject(req);
+  if (!parsed.ok) return noStore(parsed.response, ["daily-summary-refresh"]);
+  const body = parsed.body;
   const date = pickDate(url, body, "date");
   if (!validDateString(date)) {
     return noStore(Response.json({ error: "Missing or invalid date (YYYY-MM-DD)" }, { status: 400 }), ["daily-summary-refresh"]);
@@ -91,7 +96,9 @@ export async function handleWeeklySummaryRefresh(req: Request, url: URL): Promis
   const device = authenticateToken(req.headers.get("authorization"));
   if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = await readJsonObject(req);
+  const parsed = await readJsonObject(req);
+  if (!parsed.ok) return noStore(parsed.response, ["weekly-summary-refresh"]);
+  const body = parsed.body;
   const weekStart = normalizeWeekParam(url, body);
   if (!weekStart) {
     return noStore(Response.json({ error: "Missing or invalid date/week_start (YYYY-MM-DD)" }, { status: 400 }), ["weekly-summary-refresh"]);
@@ -119,7 +126,9 @@ export function handleSummarySettings(req: Request): Response {
 export async function handleSummarySettingsUpdate(req: Request): Promise<Response> {
   const device = authenticateToken(req.headers.get("authorization"));
   if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
-  const body = await readJsonObject(req);
+  const parsed = await readJsonObject(req);
+  if (!parsed.ok) return noStore(parsed.response, ["summary-settings"]);
+  const body = parsed.body;
   const settings = updateSummarySettings(body);
   let rulesRefreshJob: unknown = null;
   if (settings.sync_status === "applied" && settings.supervision_enabled) {
@@ -149,7 +158,9 @@ export async function handleAiConfigUpdate(req: Request): Promise<Response> {
   const unauthorized = requireAdmin(req);
   if (unauthorized) return unauthorized;
   const token = extractBearerToken(req.headers.get("authorization"));
-  const body = await readJsonObject(req);
+  const parsed = await readJsonObject(req);
+  if (!parsed.ok) return noStore(parsed.response, ["ai-config"]);
+  const body = parsed.body;
   try {
     const config = await saveEncryptedAiConfigFromDevice(body, token);
     return noStore(Response.json(config), ["ai-config"]);
@@ -169,7 +180,9 @@ export async function handleAiConfigTest(req: Request): Promise<Response> {
   const device = authenticateToken(req.headers.get("authorization"));
   if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
   const token = extractBearerToken(req.headers.get("authorization"));
-  const body = await readJsonObject(req);
+  const parsed = await readJsonObject(req);
+  if (!parsed.ok) return noStore(parsed.response, ["ai-config"]);
+  const body = parsed.body;
   try {
     const submitted = submitAiJobFromClient({
       request_id: body.request_id,
@@ -192,13 +205,11 @@ function requireAdmin(req: Request): Response | null {
   return null;
 }
 
-async function readJsonObject(req: Request): Promise<Record<string, unknown>> {
-  try {
-    const body = await req.json();
-    return body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
+async function readJsonObject(req: Request): Promise<JsonObjectRead> {
+  return readJsonObjectRequest(req, {
+    maxBytes: MAX_SUMMARY_JSON_BYTES,
+    emptyObjectOnInvalid: true,
+  });
 }
 
 function publicDailySummary(row: DailySummaryRow) {

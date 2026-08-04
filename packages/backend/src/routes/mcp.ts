@@ -1,11 +1,27 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createLiveDashboardMcpServer } from "../services/mcp-server";
+import { readLimitedRequestText } from "../services/request-body";
 
 const MCP_MAX_REQUEST_BYTES = 256 * 1024;
 
-export async function handleMcpRequest(req: Request, options: { remoteAddress?: string | null } = {}): Promise<Response> {
-  if (!isLocalMcpRequest(req, options.remoteAddress ?? null)) {
-    return noStoreJson({ error: "local_mcp_only" }, 403);
+export async function handleMcpRequest(req: Request, options: {
+  remoteAddress?: string | null;
+  localListener?: boolean;
+  publicEndpoint?: boolean;
+  internalRequest?: boolean;
+} = {}): Promise<Response> {
+  const access = mcpAccess({
+    remoteAddress: options.remoteAddress ?? null,
+    localListener: options.localListener === true,
+    publicEndpoint: options.publicEndpoint === true,
+    internalRequest: options.internalRequest === true,
+  });
+  if (!access.allowed) {
+    return noStoreJson({ error: access.error }, access.status);
+  }
+  if (!options.internalRequest) {
+    const browserGuard = browserMcpGuard(req);
+    if (!browserGuard.allowed) return noStoreJson({ error: browserGuard.error }, browserGuard.status);
   }
   if (!isAuthorizedMcpRequest(req)) {
     return noStoreJson({ error: "unauthorized" }, 401);
@@ -20,8 +36,8 @@ export async function handleMcpRequest(req: Request, options: { remoteAddress?: 
       },
     });
   }
-  const contentLength = Number(req.headers.get("content-length") || "0");
-  if (Number.isFinite(contentLength) && contentLength > MCP_MAX_REQUEST_BYTES) {
+  const body = await readLimitedRequestText(req, MCP_MAX_REQUEST_BYTES, { error: "request_too_large" });
+  if (!body.ok) {
     return noStoreJson({ error: "request_too_large" }, 413);
   }
 
@@ -32,7 +48,14 @@ export async function handleMcpRequest(req: Request, options: { remoteAddress?: 
   });
   try {
     await server.connect(transport);
-    const response = await transport.handleRequest(req);
+    const headers = new Headers(req.headers);
+    headers.delete("content-length");
+    const boundedReq = new Request(req.url, {
+      method: req.method,
+      headers,
+      body: body.text,
+    });
+    const response = await transport.handleRequest(boundedReq);
     response.headers.set("Cache-Control", "no-store");
     response.headers.set("X-Content-Type-Options", "nosniff");
     return response;
@@ -41,9 +64,71 @@ export async function handleMcpRequest(req: Request, options: { remoteAddress?: 
   }
 }
 
-export function isLocalMcpRequest(req: Request, remoteAddress?: string | null): boolean {
+export function isLocalMcpRequest(remoteAddress?: string | null): boolean {
   if (remoteAddress) return isLoopbackAddress(remoteAddress);
   return false;
+}
+
+export function isRemoteMcpEnabled(): boolean {
+  return /^true$/i.test(process.env.MCP_REMOTE_ENABLED || "");
+}
+
+export function mcpRequiresEdgeBypass(): boolean {
+  return isRemoteMcpEnabled() && !!mcpToken();
+}
+
+export function isLocalNetworkMcpEnabled(): boolean {
+  return /^true$/i.test(process.env.MCP_LOCAL_NETWORK_ENABLED || "");
+}
+
+export function isLoopbackTokenlessMcpEnabled(): boolean {
+  return /^true$/i.test(process.env.MCP_LOOPBACK_TOKENLESS_ENABLED || "");
+}
+
+function mcpAccess(input: {
+  remoteAddress: string | null;
+  localListener: boolean;
+  publicEndpoint: boolean;
+  internalRequest: boolean;
+}): {
+  allowed: boolean;
+  error: string;
+  status: number;
+} {
+  if (input.internalRequest) return { allowed: true, error: "", status: 200 };
+  if (input.publicEndpoint) {
+    if (!isRemoteMcpEnabled()) return { allowed: false, error: "remote_mcp_disabled", status: 403 };
+    if (!mcpToken()) return { allowed: false, error: "remote_mcp_token_required", status: 403 };
+    return { allowed: true, error: "", status: 200 };
+  }
+  if (input.localListener && isLocalMcpRequest(input.remoteAddress)) {
+    if (!mcpToken() && !isLoopbackTokenlessMcpEnabled()) {
+      return { allowed: false, error: "local_mcp_token_required", status: 403 };
+    }
+    return { allowed: true, error: "", status: 200 };
+  }
+  if (input.localListener && isLocalNetworkMcpEnabled()) {
+    if (!mcpToken()) return { allowed: false, error: "local_network_mcp_token_required", status: 403 };
+    return { allowed: true, error: "", status: 200 };
+  }
+  if (!isRemoteMcpEnabled()) return { allowed: false, error: "local_mcp_only", status: 403 };
+  if (!mcpToken()) return { allowed: false, error: "remote_mcp_token_required", status: 403 };
+  return { allowed: true, error: "", status: 200 };
+}
+
+function browserMcpGuard(req: Request): { allowed: boolean; error: string; status: number } {
+  if (req.headers.get("origin")) return { allowed: false, error: "browser_origin_not_allowed", status: 403 };
+  if (req.method === "POST") {
+    if (!isJsonContentType(req.headers.get("content-type"))) {
+      return { allowed: false, error: "invalid_content_type", status: 415 };
+    }
+  }
+  return { allowed: true, error: "", status: 200 };
+}
+
+function isJsonContentType(value: string | null): boolean {
+  const mediaType = (value || "").split(";", 1)[0]!.trim().toLowerCase();
+  return mediaType === "application/json" || mediaType.endsWith("+json");
 }
 
 function isAuthorizedMcpRequest(req: Request): boolean {

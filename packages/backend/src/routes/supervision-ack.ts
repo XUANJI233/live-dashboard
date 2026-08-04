@@ -3,6 +3,7 @@ import {
   receiveDeviceCommandReceipt,
   receiveDeviceCommandResult,
 } from "../services/supervision-ack";
+import { readJsonObjectRequest } from "../services/request-body";
 
 const MAX_ACK_REQUEST_BYTES = 32 * 1024;
 
@@ -10,21 +11,14 @@ export async function handleSupervisionAck(req: Request): Promise<Response> {
   const device = authenticateToken(req.headers.get("authorization"));
   if (!device) return Response.json({ error: "Unauthorized", received: false }, { status: 401 });
 
-  const length = Number(req.headers.get("content-length") || 0);
-  if (Number.isFinite(length) && length > MAX_ACK_REQUEST_BYTES) {
-    return Response.json({ error: "Request too large", received: false }, { status: 413 });
-  }
+  const parsed = await readJsonObjectRequest(req, {
+    maxBytes: MAX_ACK_REQUEST_BYTES,
+    tooLargeBody: { error: "Request too large", received: false },
+  });
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
 
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON", received: false }, { status: 400 });
-  }
-
-  const bodyType = body && typeof body === "object" && !Array.isArray(body)
-    ? (body as Record<string, unknown>).type
-    : "";
+  const bodyType = body.type;
   if (bodyType === "device_command_receipt") {
     const receipt = receiveDeviceCommandReceipt(body, device);
     return Response.json(

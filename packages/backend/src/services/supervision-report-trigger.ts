@@ -16,14 +16,15 @@ function supervisionCandidateFromReport(
 ): SupervisionReportCandidate | null {
   const extra = plainObject(body.extra);
   const deviceExtra = plainObject(extra?.device);
-  if (deviceExtra?.supervision_check_requested !== true) return null;
+  const requested = deviceExtra?.supervision_check_requested === true;
+  if (!requested && deviceExtra?.heartbeat_only === true) return null;
 
   const foreground = plainObject(extra?.foreground);
   const appId = cleanText(body.app_id) || cleanText(foreground?.package_name);
   if (!appId) return null;
 
   return {
-    requested: true,
+    requested,
     deviceId: device.device_id,
     deviceName: device.device_name,
     platform: device.platform,

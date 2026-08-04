@@ -182,6 +182,7 @@ describe("ai-config", () => {
       supervision_check_mode: "triggered",
       supervision_check_interval_minutes: 5,
       supervision_blacklist_minutes: 99,
+      supervision_heuristic_triggers: true,
       supervision_target_min_minutes: 0,
       supervision_vibrate: false,
       supervision_skip_watch_sleep: false,
@@ -193,6 +194,7 @@ describe("ai-config", () => {
     expect(supervised.supervision_check_mode).toBe("triggered");
     expect(supervised.supervision_check_interval_minutes).toBe(30);
     expect(supervised.supervision_blacklist_minutes).toBe(55);
+    expect(supervised.supervision_heuristic_triggers).toBe(true);
     expect(supervised.supervision_target_min_minutes).toBe(1);
     expect(supervised.supervision_vibrate).toBe(false);
     expect(supervised.supervision_skip_watch_sleep).toBe(false);
@@ -201,11 +203,13 @@ describe("ai-config", () => {
     const numericFlags = updateSummarySettings({
       planned_rest: 1,
       supervision_enabled: 1,
+      supervision_heuristic_triggers: 1,
       supervision_vibrate: 1,
       client_updated_at: "2026-06-07T13:00:00.000Z",
     });
     expect(numericFlags.planned_rest).toBe(false);
     expect(numericFlags.supervision_enabled).toBe(false);
+    expect(numericFlags.supervision_heuristic_triggers).toBe(false);
     expect(numericFlags.supervision_vibrate).toBe(false);
   });
 
@@ -217,6 +221,7 @@ describe("ai-config", () => {
     const camelCase = updateSummarySettings({
       plannedRest: true,
       supervisionEnabled: true,
+      supervisionHeuristicTriggers: true,
       supervisionVibrate: false,
       supervisionLspFreeze: true,
       timezoneOffsetMinutes: -480,
@@ -225,6 +230,7 @@ describe("ai-config", () => {
     });
     expect(camelCase.planned_rest).toBe(false);
     expect(camelCase.supervision_enabled).toBe(false);
+    expect(camelCase.supervision_heuristic_triggers).toBe(false);
     expect(camelCase.supervision_vibrate).toBe(true);
     expect(camelCase.supervision_lsp_freeze).toBe(false);
     expect(camelCase.timezone_offset_minutes).toBeNull();
@@ -234,6 +240,7 @@ describe("ai-config", () => {
     const explicitOnly = updateSummarySettings({
       planned_rest: "true",
       supervision_enabled: "true",
+      supervision_heuristic_triggers: "true",
       supervision_vibrate: "true",
       supervision_lsp_freeze: "true",
       supervision_check_mode: "threshold",
@@ -241,9 +248,46 @@ describe("ai-config", () => {
     });
     expect(explicitOnly.planned_rest).toBe(false);
     expect(explicitOnly.supervision_enabled).toBe(false);
+    expect(explicitOnly.supervision_heuristic_triggers).toBe(false);
     expect(explicitOnly.supervision_vibrate).toBe(false);
     expect(explicitOnly.supervision_lsp_freeze).toBe(false);
     expect(explicitOnly.supervision_check_mode).toBe("hourly");
+  });
+
+  test("keeps summary tone under server control", async () => {
+    const { db } = await import("../src/db");
+    const { getSummarySettings, updateSummarySettings } = await import("../src/services/daily-summary-gen");
+    const previousMode = process.env.AI_SUMMARY_MODE;
+
+    try {
+      delete process.env.AI_SUMMARY_MODE;
+      db.prepare("DELETE FROM meta WHERE key = 'ai_summary_settings'").run();
+
+      expect(getSummarySettings().mode_locked).toBe(true);
+      const ignored = updateSummarySettings({
+        mode: "sharp",
+        target: "phone cannot change tone",
+        client_updated_at: "2030-01-01T00:00:00.000Z",
+      });
+      expect(ignored.mode).toBe("normal");
+      expect(ignored.mode_locked).toBe(true);
+      expect(getSummarySettings().mode).toBe("normal");
+
+      process.env.AI_SUMMARY_MODE = "sharp";
+      expect(getSummarySettings().mode).toBe("sharp");
+      const overridden = updateSummarySettings({
+        mode: "gentle",
+        target: "server decides tone",
+        client_updated_at: "2030-01-01T00:01:00.000Z",
+      });
+      expect(overridden.mode).toBe("sharp");
+      expect(overridden.mode_locked).toBe(true);
+      expect(overridden.target).toBe("server decides tone");
+    } finally {
+      if (previousMode === undefined) delete process.env.AI_SUMMARY_MODE;
+      else process.env.AI_SUMMARY_MODE = previousMode;
+      db.prepare("DELETE FROM meta WHERE key = 'ai_summary_settings'").run();
+    }
   });
 
   test("preserves bounded LSPosed frozen package records in device extras", async () => {
@@ -1483,7 +1527,19 @@ describe("ai-config", () => {
       VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 1)
     `);
     insertDevice.run(lspId, "LSP Android", "android", "com.zhiliaoapp.musically", "TikTok", "TikTok", checkedAt.toISOString(), JSON.stringify({
-      device: { profile: "android_lsp", frozen_packages: [] },
+      device: {
+        profile: "android_lsp",
+        capabilities: {
+          freeze: true,
+          unfreeze: true,
+          vibrate: true,
+          screen_off: true,
+          say: true,
+          risk_app_monitor: true,
+          app_time_limit: true,
+        },
+        frozen_packages: [],
+      },
     }));
     insertDevice.run(normalId, "Normal Android", "android", "com.example.game", "Game", "Game", checkedAt.toISOString(), JSON.stringify({
       device: { profile: "android_normal", frozen_packages: [] },
@@ -1572,7 +1628,7 @@ describe("ai-config", () => {
 
     const lspPayload = payloadByDevice.get(lspId)!;
     expect(lspPayload.vibrate).toBe(true);
-    expect(lspPayload.screen_off).toBe(false);
+    expect(lspPayload.screen_off).toBe(true);
     expect(lspPayload.freeze_commands).toEqual(["com\\.zhiliaoapp\\.musically", "VPN"]);
     expect(lspPayload.unfreeze_commands).toEqual([]);
     expect("freeze" in lspPayload).toBe(false);

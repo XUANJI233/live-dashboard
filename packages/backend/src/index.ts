@@ -57,6 +57,8 @@ import { verifyViewerToken, viewerTokenFromRequest } from "./services/viewer-aut
 import { injectSiteConfig } from "./services/site-config";
 import { startLocalMcpServer } from "./services/mcp-local-server";
 import { recoverInterruptedAiJobs } from "./services/ai-jobs";
+import { handleMcpRequest, mcpRequiresEdgeBypass } from "./routes/mcp";
+import { readJsonObjectRequest } from "./services/request-body";
 
 // Start scheduled cleanup tasks (import triggers setInterval registration)
 import "./services/cleanup";
@@ -73,6 +75,7 @@ const STATIC_ROOT = resolve(process.env.STATIC_DIR || "./public");
 import { hmacTitle } from "./db";
 
 const REQUIRE_EDGE = /^true$/i.test(process.env.REQUIRE_EDGE || "");
+const MAX_PUSH_SUBSCRIPTION_JSON_BYTES = 32 * 1024;
 
 // Cache realpath of static root at startup (avoids per-request sync IO)
 let REAL_STATIC_ROOT = "";
@@ -120,7 +123,7 @@ const server = Bun.serve<WsData>({
     const isWs = req.headers.get("upgrade")?.toLowerCase() === "websocket" || pathname === "/api/ws";
     // 只对 API 路径检查边缘签名，静态文件不受影响
     const isApi = pathname.startsWith("/api/");
-    if (REQUIRE_EDGE && isApi && pathname !== "/api/health" && req.method !== "OPTIONS" && !isWs) {
+    if (REQUIRE_EDGE && isApi && pathname !== "/api/health" && req.method !== "OPTIONS" && !isWs && !(pathname === "/api/mcp" && mcpRequiresEdgeBypass())) {
       const edgeSig = req.headers.get("x-edge-internal");
       if (!edgeSig) {
         return Response.json({ error: "必须通过边缘函数访问" }, { status: 403 });
@@ -274,6 +277,11 @@ const server = Bun.serve<WsData>({
         response = await handleAiJobSubmit(req);
       } else if (pathname === "/api/ai-jobs" && req.method === "GET") {
         response = handleAiJobQuery(req, url);
+      } else if (pathname === "/api/mcp") {
+        response = await handleMcpRequest(req, {
+          remoteAddress: server.requestIP(req)?.address ?? null,
+          publicEndpoint: true,
+        });
       } else if (pathname === "/api/location" && req.method === "GET") {
         response = handleLocationQuery(url, req);
       } else if (pathname === "/api/messages" && req.method === "GET") {
@@ -312,12 +320,16 @@ const server = Bun.serve<WsData>({
         const viewer = verifyViewerToken(viewerTokenFromRequest(req));
         if (!viewer) response = Response.json({ error: "Viewer token required" }, { status: 403 });
         else {
-          const body = await req.json().catch(() => null);
-          if (isPushSubscriptionBody(body)) {
-            saveSubscription(viewer.viewerId, body);
-            response = Response.json({ ok: true });
-          } else {
-            response = Response.json({ error: "subscription required" }, { status: 400 });
+          const parsed = await readJsonObjectRequest(req, { maxBytes: MAX_PUSH_SUBSCRIPTION_JSON_BYTES });
+          if (!parsed.ok) response = parsed.response;
+          else {
+            const body = parsed.body;
+            if (isPushSubscriptionBody(body)) {
+              saveSubscription(viewer.viewerId, body);
+              response = Response.json({ ok: true });
+            } else {
+              response = Response.json({ error: "subscription required" }, { status: 400 });
+            }
           }
         }
       } else if (pathname === "/api/push/unsubscribe" && req.method === "POST") {

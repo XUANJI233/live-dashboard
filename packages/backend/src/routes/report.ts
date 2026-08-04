@@ -2,6 +2,9 @@ import { authenticateToken } from "../middleware/auth";
 import { processReportPayload, ReportPayloadError } from "../services/device-status-handler";
 import { syncCurrentSupervisionPolicyForDevice } from "../services/supervision-policy-control";
 import { requestSupervisionCheckFromReportPayload } from "../services/supervision-report-trigger";
+import { readJsonObjectRequest } from "../services/request-body";
+
+const MAX_REPORT_JSON_BYTES = 1024 * 1024;
 
 /**
  * v1 HTTP report endpoint — legacy path still used by older clients
@@ -14,16 +17,9 @@ export async function handleReport(req: Request): Promise<Response> {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
-  }
-
-  if (typeof body !== "object" || Array.isArray(body) || body === null) {
-    return Response.json({ error: "Invalid payload" }, { status: 400 });
-  }
+  const parsed = await readJsonObjectRequest(req, { maxBytes: MAX_REPORT_JSON_BYTES });
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
 
   const appId = typeof body.app_id === "string" ? body.app_id.trim() : "";
   const sleeping = body.extra && typeof body.extra === "object" && !Array.isArray(body.extra)

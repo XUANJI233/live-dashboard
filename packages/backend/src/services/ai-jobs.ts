@@ -13,16 +13,19 @@ import { refreshSupervisionRules } from "./supervision";
 import {
   cleanIdentifier,
   generatedRequestId,
+  normalizeIsoTimestamp,
   safeJsonParseObject,
 } from "./mcp-contracts";
 
 const JOB_PAYLOAD_MAX_BYTES = 96 * 1024;
 const JOB_RESULT_MAX_BYTES = 96 * 1024;
 const JOB_ERROR_MAX_BYTES = 4096;
+const DEFAULT_MAX_CONCURRENT_AI_JOBS = 2;
 const ACTIVE_STATUSES = new Set<AiJobStatus>(["queued", "running"]);
 const FINISHED_STATUSES = new Set<AiJobStatus>(["succeeded", "failed"]);
 
-export const AI_JOB_KINDS = ["daily_summary", "weekly_summary", "ai_config_test", "supervision_rules_refresh"] as const;
+export const AI_JOB_KINDS = ["daily_summary", "weekly_summary", "ai_config_test", "supervision_rules_refresh", "supervision_check"] as const;
+const CLIENT_AI_JOB_KINDS: ReadonlySet<AiJobKind> = new Set(["daily_summary", "weekly_summary", "ai_config_test", "supervision_rules_refresh"]);
 
 export type AiJobKind = typeof AI_JOB_KINDS[number];
 export type AiJobStatus = "queued" | "running" | "succeeded" | "failed";
@@ -154,7 +157,11 @@ const resetFailedStmt = db.prepare(`
 `);
 
 const activeRunners = new Map<string, AiJobRunner>();
+const queuedRunIds: string[] = [];
+const queuedRunIdSet = new Set<string>();
+const runningRunIds = new Set<string>();
 let notifier: AiJobNotifier | null = null;
+let drainScheduled = false;
 
 export function setAiJobNotifier(next: AiJobNotifier): void {
   notifier = next;
@@ -178,7 +185,10 @@ export function submitAiJobFromClient(
   const body = objectRecord(input);
   const kind = normalizeAiJobKind(body.kind ?? body.job_kind);
   if (!kind) {
-    throw new AiJobInputError("kind must be daily_summary, weekly_summary, ai_config_test, or supervision_rules_refresh", "AI_JOB_KIND_INVALID", 400);
+    throw new AiJobInputError("kind must be daily_summary, weekly_summary, ai_config_test, supervision_rules_refresh, or supervision_check", "AI_JOB_KIND_INVALID", 400);
+  }
+  if (!CLIENT_AI_JOB_KINDS.has(kind)) {
+    throw new AiJobInputError("supervision_check jobs can only be started by the MCP control plane", "AI_JOB_KIND_FORBIDDEN", 403);
   }
   const payload = objectRecord(body.payload);
   return submitAiJob({
@@ -296,10 +306,34 @@ function maybeAttachRunner(row: AiJobRow, runner: AiJobRunner): void {
 }
 
 function scheduleJobRun(requestId: string): void {
+  if (queuedRunIdSet.has(requestId) || runningRunIds.has(requestId)) return;
+  queuedRunIdSet.add(requestId);
+  queuedRunIds.push(requestId);
+  scheduleQueueDrain();
+}
+
+function scheduleQueueDrain(): void {
+  if (drainScheduled) return;
+  drainScheduled = true;
   const timer = setTimeout(() => {
-    void runAiJob(requestId);
+    drainScheduled = false;
+    drainJobQueue();
   }, 0);
   timer.unref?.();
+}
+
+function drainJobQueue(): void {
+  const maxConcurrent = maxConcurrentAiJobs();
+  while (runningRunIds.size < maxConcurrent && queuedRunIds.length > 0) {
+    const requestId = queuedRunIds.shift()!;
+    queuedRunIdSet.delete(requestId);
+    if (!activeRunners.has(requestId)) continue;
+    runningRunIds.add(requestId);
+    void runAiJob(requestId).finally(() => {
+      runningRunIds.delete(requestId);
+      drainJobQueue();
+    });
+  }
 }
 
 async function runAiJob(requestId: string): Promise<void> {
@@ -324,6 +358,14 @@ async function runAiJob(requestId: string): Promise<void> {
     activeRunners.delete(requestId);
     notifyRow(requestId);
   }
+}
+
+function maxConcurrentAiJobs(): number {
+  const raw = process.env.AI_JOB_MAX_CONCURRENCY || "";
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= 16
+    ? parsed
+    : DEFAULT_MAX_CONCURRENT_AI_JOBS;
 }
 
 function defaultRunner(kind: AiJobKind, payload: Record<string, unknown>, deviceToken: string): AiJobRunner {
@@ -361,6 +403,14 @@ function defaultRunner(kind: AiJobKind, payload: Record<string, unknown>, device
     if (kind === "ai_config_test") {
       return await testEncryptedAiConfigFromDevice(payload, deviceToken, {
         deepThinking: getSummarySettings().ai_deep_thinking,
+      }) as unknown as Record<string, unknown>;
+    }
+
+    if (kind === "supervision_check") {
+      const { runSupervisionTick } = await import("./supervision");
+      return await runSupervisionTick(new Date(String(payload.at)), {
+        force: payload.force !== false,
+        source: payload.source === "scheduled" ? "scheduled" : "report",
       }) as unknown as Record<string, unknown>;
     }
 
@@ -410,6 +460,16 @@ function normalizeJobPayload(kind: AiJobKind, payload: Record<string, unknown>, 
     return {
       payload,
       jobKey: `ai_config_test:${device.device_id}:${sha256Hex(stablePayload)}`,
+    };
+  }
+
+  if (kind === "supervision_check") {
+    const at = normalizeIsoTimestamp(payload.at) || new Date().toISOString();
+    const source = payload.source === "scheduled" ? "scheduled" : "report";
+    const force = payload.force !== false;
+    return {
+      payload: { at, source, force },
+      jobKey: `supervision_check:${source}:force=${force}:${at}`,
     };
   }
 

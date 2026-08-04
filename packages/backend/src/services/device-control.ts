@@ -122,21 +122,22 @@ function normalizeCommandPayload(command: DeviceCommandRequest, device: DeviceCo
   const requestedSay = cleanText(command.say, 500);
   const requestedScreenOff = command.screen_off === true;
 
-  if (requestedScreenOff) notes.push("screen_off_not_supported");
-
   const freezeCommands = device && deviceSupportsCommand(device, "freeze") ? requestedFreeze : [];
   const unfreezeCommands = device && deviceSupportsCommand(device, "unfreeze") ? requestedUnfreeze : [];
   const vibrate = !!device && deviceSupportsCommand(device, "vibrate") && requestedVibrate;
   const say = device && deviceSupportsCommand(device, "say") ? requestedSay : "";
+  const screenOff = !!device && deviceSupportsCommand(device, "screen_off") && requestedScreenOff;
 
   if (requestedFreeze.length > 0 && freezeCommands.length === 0) notes.push("freeze_not_supported");
   if (requestedUnfreeze.length > 0 && unfreezeCommands.length === 0) notes.push("unfreeze_not_supported");
   if (requestedVibrate && !vibrate) notes.push("vibrate_not_supported");
   if (requestedSay && !say) notes.push("say_not_supported");
+  if (requestedScreenOff && !screenOff) notes.push("screen_off_not_supported");
 
   const hasAction = freezeCommands.length > 0 ||
     unfreezeCommands.length > 0 ||
     vibrate ||
+    screenOff ||
     !!say;
   const requestedAny = requestedFreeze.length > 0 ||
     requestedUnfreeze.length > 0 ||
@@ -149,7 +150,7 @@ function normalizeCommandPayload(command: DeviceCommandRequest, device: DeviceCo
       freeze_commands: freezeCommands,
       unfreeze_commands: unfreezeCommands,
       vibrate,
-      screen_off: false,
+      screen_off: screenOff,
       say,
       notes,
     },

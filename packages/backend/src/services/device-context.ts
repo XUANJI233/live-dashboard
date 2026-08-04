@@ -15,6 +15,7 @@ import {
 
 const MAX_TIMELINE_RANGE_DAYS = 14;
 const MAX_TIMELINE_SEGMENTS = 240;
+const MAX_TIMELINE_ACTIVITY_ROWS = 2_000;
 const MAX_FROZEN_ITEMS = 80;
 const MAX_INSTALLED_APPS = 512;
 
@@ -34,15 +35,25 @@ const getDeviceStateStmt = db.prepare(`
 
 const getActivitiesForRangeStmt = db.prepare(`
   SELECT *
-  FROM activities
-  WHERE started_at >= ? AND started_at < ?
+  FROM (
+    SELECT *
+    FROM activities
+    WHERE started_at >= ? AND started_at < ?
+    ORDER BY started_at DESC
+    LIMIT ?
+  )
   ORDER BY started_at ASC
 `);
 
 const getDeviceActivitiesForRangeStmt = db.prepare(`
   SELECT *
-  FROM activities
-  WHERE device_id = ? AND started_at >= ? AND started_at < ?
+  FROM (
+    SELECT *
+    FROM activities
+    WHERE device_id = ? AND started_at >= ? AND started_at < ?
+    ORDER BY started_at DESC
+    LIMIT ?
+  )
   ORDER BY started_at ASC
 `);
 
@@ -165,13 +176,14 @@ export function getTimelineContext(options: {
   }
 
   const deviceId = options.deviceId ? cleanLooseIdentifier(options.deviceId, 160) : "";
+  const limit = clampInteger(options.limit, 1, MAX_TIMELINE_SEGMENTS, MAX_TIMELINE_SEGMENTS);
+  const rowLimit = Math.min(MAX_TIMELINE_ACTIVITY_ROWS, Math.max(100, limit * 4));
   const rows = deviceId
-    ? getDeviceActivitiesForRangeStmt.all(deviceId, new Date(startMs).toISOString(), new Date(endMs).toISOString()) as ActivityRecord[]
-    : getActivitiesForRangeStmt.all(new Date(startMs).toISOString(), new Date(endMs).toISOString()) as ActivityRecord[];
+    ? getDeviceActivitiesForRangeStmt.all(deviceId, new Date(startMs).toISOString(), new Date(endMs).toISOString(), rowLimit) as ActivityRecord[]
+    : getActivitiesForRangeStmt.all(new Date(startMs).toISOString(), new Date(endMs).toISOString(), rowLimit) as ActivityRecord[];
 
   const segments = buildTimelineSegments(rows, { openLast: false })
     .filter((segment) => segment.duration_seconds > 0);
-  const limit = clampInteger(options.limit, 1, MAX_TIMELINE_SEGMENTS, MAX_TIMELINE_SEGMENTS);
   const visibleSegments = segments.length > limit ? segments.slice(-limit) : segments;
 
   return {
@@ -181,7 +193,7 @@ export function getTimelineContext(options: {
       end: new Date(endMs).toISOString(),
     },
     device_id: deviceId || null,
-    truncated: segments.length > visibleSegments.length,
+    truncated: segments.length > visibleSegments.length || rows.length >= rowLimit,
     segment_count: visibleSegments.length,
     timeline: buildTimelinePromptDocument(visibleSegments, {
       label: deviceId ? "device_timeline" : "all_device_timeline",
@@ -241,7 +253,7 @@ function capabilityProfile(platform: string, deviceExtra: Record<string, unknown
 
 function defaultCapabilities(profile: DeviceCapabilityProfile): DeviceCapabilityFlags {
   if (profile === "android_lsp") {
-    return { freeze: true, unfreeze: true, vibrate: true, screen_off: false, say: true, risk_app_monitor: true, app_time_limit: true };
+    return { freeze: true, unfreeze: true, vibrate: true, screen_off: true, say: true, risk_app_monitor: true, app_time_limit: true };
   }
   if (profile === "android_normal") {
     return { freeze: false, unfreeze: false, vibrate: true, screen_off: false, say: true, risk_app_monitor: false, app_time_limit: false };
@@ -258,7 +270,7 @@ function boundedCapabilities(maxCapabilities: DeviceCapabilityFlags, reported: R
     freeze: capabilityFlag(maxCapabilities.freeze, reported.freeze, hasReportedCapabilities),
     unfreeze: capabilityFlag(maxCapabilities.unfreeze, reported.unfreeze, hasReportedCapabilities),
     vibrate: capabilityFlag(maxCapabilities.vibrate, reported.vibrate, hasReportedCapabilities),
-    screen_off: false,
+    screen_off: reportedCapabilityFlag(maxCapabilities.screen_off, reported.screen_off),
     say: capabilityFlag(maxCapabilities.say, reported.say, hasReportedCapabilities),
     risk_app_monitor: capabilityFlag(maxCapabilities.risk_app_monitor, reported.risk_app_monitor, hasReportedCapabilities),
     app_time_limit: capabilityFlag(maxCapabilities.app_time_limit, reported.app_time_limit, hasReportedCapabilities),
@@ -268,6 +280,10 @@ function boundedCapabilities(maxCapabilities: DeviceCapabilityFlags, reported: R
 function capabilityFlag(maxSupported: boolean, reported: unknown, hasReportedCapabilities: boolean): boolean {
   if (!maxSupported) return false;
   return hasReportedCapabilities ? reported === true : true;
+}
+
+function reportedCapabilityFlag(maxSupported: boolean, reported: unknown): boolean {
+  return maxSupported && reported === true;
 }
 
 function frozenPackageItems(value: unknown): FrozenPackageItem[] {

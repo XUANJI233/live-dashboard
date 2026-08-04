@@ -8,13 +8,31 @@ import {
 } from "./device-context";
 import { getCommandStatuses } from "./device-command-ledger";
 import { sendDeviceCommands } from "./device-control";
+import { getControllerPersona, updateControllerPersona } from "./controller-persona";
+import { getControllerMemoryFeed, saveControllerSummary } from "./controller-memory";
 import {
+  getServiceAiJob,
+  getServiceSettings,
+  runServiceSupervisionCheck,
+  setServiceSummaryMode,
+  startServiceAiJob,
+  updateServiceSettings,
+} from "./mcp-admin";
+import {
+  AiJobStatusSchema,
   CommandStatusSchema,
+  ControllerMemoryFeedSchema,
+  ControllerPersonaUpdateSchema,
   DateRangeSchema,
   DeviceTimelineSchema,
   FrozenListSchema,
   InstalledAppsSchema,
+  RunSupervisionCheckSchema,
+  SaveControllerSummarySchema,
   SendCommandsSchema,
+  ServiceSettingsUpdateSchema,
+  SetSummaryModeSchema,
+  StartAiJobSchema,
   SupervisionPolicySchema,
 } from "./mcp-tool-schemas";
 import { setAndSendSupervisionPolicy } from "./supervision-policy-control";
@@ -26,6 +44,12 @@ export function createLiveDashboardMcpServer(): McpServer {
   }, {
     instructions: [
       "Live Dashboard MCP exposes local-only device context and control tools.",
+      "Read-only tools inspect dashboard state; they never change settings or device state.",
+      "live_dashboard.send_device_commands is only for immediate one-shot device actions such as say, vibrate, screen_off, freeze, or unfreeze.",
+      "live_dashboard.set_supervision_policy is only for persistent Android LSP monitoring rules, risk-app AI trigger thresholds, and app time limits; do not use it for one-time reminders, one-time freezes, or chat messages.",
+      "OpenClaw/Hermes controllers may use service settings and AI job tools for server-side administration; the phone app cannot change the locked summary tone.",
+      "OpenClaw/Hermes controllers may sync their persona or subordinate relationship so summaries, supervision, and reminders keep the same voice without overriding safety, privacy, schema, or device capability rules.",
+      "Prefer letting OpenClaw/Hermes process memory and summaries: use get_controller_memory_feed to ingest sent messages, replies, device reminders, and saved summaries, then save_controller_summary when the controller has produced the authoritative summary.",
       "Use command_id to query delivery, receipt, and execution status after sending commands.",
       "Tool results translate transport failures into delivery/receipt/result states instead of exposing raw socket errors.",
     ].join(" "),
@@ -81,14 +105,14 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.send_device_commands", {
     title: "Send device commands",
-    description: "Send per-device supervision commands after capability filtering. Returns AI-visible command_id values for status queries.",
+    description: "Immediate one-shot device action tool. Use only to send current supervision/reminder actions to specific devices: say, vibrate, screen_off, freeze_commands, or unfreeze_commands. Do not use for persistent risk-app policy, app time limits, or changing supervision settings. Returns command_id values for status queries.",
     inputSchema: SendCommandsSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   }, async (args) => stableToolResult(() => sendDeviceCommands(args)));
 
   server.registerTool("live_dashboard.set_supervision_policy", {
     title: "Set supervision policy",
-    description: "Persist and send risk-app AI trigger policy and independent app time-limit freeze policy to Android LSP devices.",
+    description: "Persistent policy-setting tool. Use only when the user explicitly wants to save/update Android LSP risk-app monitoring rules, AI trigger thresholds, or app time limits. Do not use for one-time freeze/unfreeze, vibration, say/reminder messages, or ordinary supervision decisions.",
     inputSchema: SupervisionPolicySchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   }, async (args) => stableToolResult(() => setAndSendSupervisionPolicy(args)));
@@ -108,6 +132,80 @@ export function createLiveDashboardMcpServer(): McpServer {
     });
   }));
 
+  server.registerTool("live_dashboard.get_service_settings", {
+    title: "Get service settings",
+    description: "Return server-side summary, AI request, and supervision settings. Use this before changing policy or triggering AI jobs.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async () => stableToolResult(() => getServiceSettings()));
+
+  server.registerTool("live_dashboard.update_service_settings", {
+    title: "Update service settings",
+    description: "Server-side settings update for OpenClaw/Hermes controllers. Uses snake_case fields and true/false booleans. Does not allow phone-style summary mode changes; use set_summary_mode for server-controlled tone.",
+    inputSchema: ServiceSettingsUpdateSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  }, async (args) => stableToolResult(() => updateServiceSettings(args)));
+
+  server.registerTool("live_dashboard.set_summary_mode", {
+    title: "Set summary mode",
+    description: "Set the server-controlled summary/supervision tone: gentle, normal, or sharp. Phone settings updates cannot override this value; AI_SUMMARY_MODE environment variable overrides this tool.",
+    inputSchema: SetSummaryModeSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(() => setServiceSummaryMode(args)));
+
+  server.registerTool("live_dashboard.get_controller_persona", {
+    title: "Get controller persona",
+    description: "Return the synced OpenClaw/Hermes controller persona and subordinate/affiliate relationship used to align AI summaries, supervision, and reminders.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async () => stableToolResult(() => ({
+    generated_at: new Date().toISOString(),
+    persona: getControllerPersona(),
+  })));
+
+  server.registerTool("live_dashboard.update_controller_persona", {
+    title: "Update controller persona",
+    description: "Sync OpenClaw/Hermes persona or subordinate relationship into Live Dashboard. This guides summary/supervision/reminder voice, but cannot override security, privacy, JSON schema, or device capability constraints.",
+    inputSchema: ControllerPersonaUpdateSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(() => ({
+    ok: true,
+    persona: updateControllerPersona(args),
+  })));
+
+  server.registerTool("live_dashboard.get_controller_memory_feed", {
+    title: "Get controller memory feed",
+    description: "Return a chronological feed of sent/received messages, device reminders/commands, and saved summaries for OpenClaw/Hermes memory ingestion. This is preferred over letting the service invent long-term memory itself.",
+    inputSchema: ControllerMemoryFeedSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(() => getControllerMemoryFeed(args)));
+
+  server.registerTool("live_dashboard.save_controller_summary", {
+    title: "Save controller summary",
+    description: "Persist an OpenClaw/Hermes-processed daily or weekly summary as the authoritative service summary, keeping memory and style consistent with the controlling agent.",
+    inputSchema: SaveControllerSummarySchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(() => saveControllerSummary(args)));
+
+  server.registerTool("live_dashboard.start_ai_job", {
+    title: "Start AI job",
+    description: "Start a daily summary, weekly summary, supervision rules refresh, or supervision check job and return the job request_id. Use get_ai_job to monitor completion.",
+    inputSchema: StartAiJobSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(() => startServiceAiJob(args)));
+
+  server.registerTool("live_dashboard.get_ai_job", {
+    title: "Get AI job",
+    description: "Read AI job status/result by request_id.",
+    inputSchema: AiJobStatusSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(() => getServiceAiJob(args)));
+
+  server.registerTool("live_dashboard.run_supervision_check", {
+    title: "Run supervision check",
+    description: "Queue an immediate supervision review using saved rules, timeline context, and device capabilities. Returns quickly with an AI job request_id; use get_ai_job to monitor completion.",
+    inputSchema: RunSupervisionCheckSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  }, async (args) => stableToolResult(() => runServiceSupervisionCheck(args)));
+
   return server;
 }
 
@@ -118,9 +216,9 @@ function toolResult(value: Record<string, unknown>): CallToolResult {
   };
 }
 
-function stableToolResult(build: () => unknown): CallToolResult {
+async function stableToolResult(build: () => unknown | Promise<unknown>): Promise<CallToolResult> {
   try {
-    const value = build();
+    const value = await build();
     return toolResult(objectResult(value));
   } catch (error) {
     const code = error instanceof Error && stableErrorCode(error.message)
