@@ -11,6 +11,8 @@ import {
 } from "./daily-summary-gen";
 import { syncCurrentSupervisionPolicyToCapableDevices } from "./supervision-policy-control";
 import type { SupervisionRunSource } from "./supervision-trigger-plan";
+import { hermesControllerEnabled, liveInternalAiEnabled } from "./controller-mode";
+import { controllerWebhookEnabled } from "./controller-webhook";
 
 const MCP_CONTROLLER_DEVICE: DeviceInfo = {
   device_id: "__mcp__",
@@ -22,6 +24,11 @@ export function getServiceSettings(): Record<string, unknown> {
   const settings = getSummarySettings();
   return {
     generated_at: new Date().toISOString(),
+    controller_mode: {
+      hermes_enabled: hermesControllerEnabled(),
+      internal_ai_enabled: liveInternalAiEnabled(),
+      webhook_enabled: controllerWebhookEnabled(),
+    },
     settings,
     summary_mode_control: {
       locked: true,
@@ -67,6 +74,7 @@ export function startServiceAiJob(input: {
   source?: unknown;
   at?: unknown;
 }): Record<string, unknown> {
+  if (hermesControllerEnabled()) throw new Error("hermes_controller_active");
   const kind = normalizeAiJobKind(input.kind);
   if (!kind) throw new Error("invalid_ai_job_kind");
   const payload = jobPayload(kind, input);

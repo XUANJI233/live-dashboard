@@ -1,0 +1,1 @@
+Load the `live-mentor` skill and run `mode=daily` for the current UTC+08:00 calendar day. Hermes must generate and save the authoritative summary; do not invoke Live AI. Return `[SILENT]` only when there is no meaningful data.

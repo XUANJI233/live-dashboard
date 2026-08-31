@@ -16,6 +16,7 @@ import {
   normalizeIsoTimestamp,
   safeJsonParseObject,
 } from "./mcp-contracts";
+import { hermesControllerEnabled } from "./controller-mode";
 
 const JOB_PAYLOAD_MAX_BYTES = 96 * 1024;
 const JOB_RESULT_MAX_BYTES = 96 * 1024;
@@ -26,6 +27,12 @@ const FINISHED_STATUSES = new Set<AiJobStatus>(["succeeded", "failed"]);
 
 export const AI_JOB_KINDS = ["daily_summary", "weekly_summary", "ai_config_test", "supervision_rules_refresh", "supervision_check"] as const;
 const CLIENT_AI_JOB_KINDS: ReadonlySet<AiJobKind> = new Set(["daily_summary", "weekly_summary", "ai_config_test", "supervision_rules_refresh"]);
+const LIVE_INTERNAL_AI_JOB_KINDS: ReadonlySet<AiJobKind> = new Set([
+  "daily_summary",
+  "weekly_summary",
+  "supervision_rules_refresh",
+  "supervision_check",
+]);
 
 export type AiJobKind = typeof AI_JOB_KINDS[number];
 export type AiJobStatus = "queued" | "running" | "succeeded" | "failed";
@@ -209,6 +216,13 @@ export function submitAiJob(input: {
   deviceToken: string;
   runner?: AiJobRunner;
 }): AiJobSubmitResult {
+  if (hermesControllerEnabled() && LIVE_INTERNAL_AI_JOB_KINDS.has(input.kind)) {
+    throw new AiJobInputError(
+      "Live AI work is managed by Hermes while HERMES_CONTROLLER_ENABLED=true",
+      "AI_JOB_MANAGED_BY_HERMES",
+      409,
+    );
+  }
   const normalized = normalizeJobPayload(input.kind, input.payload, input.device);
   const payloadText = jsonStringifyBounded(normalized.payload, JOB_PAYLOAD_MAX_BYTES);
   if (!payloadText) {

@@ -17,6 +17,7 @@ import { formatPromptDateTime, formatPromptMinute } from "./prompt-time";
 import { promptOverride } from "./prompt-overrides";
 import { timelineJsonBlockForPrompt } from "./timeline-prompt";
 import { withControllerPersonaPrompt } from "./controller-persona";
+import { hermesControllerEnabled } from "./controller-mode";
 
 /**
  * AI Summary Generator
@@ -358,6 +359,15 @@ export async function generateDailySummary(options: {
   date?: string;
   tzOffsetMinutes?: number;
 } = {}): Promise<SummaryGenerationResult> {
+  if (hermesControllerEnabled()) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: "hermes_controller_active",
+      kind: "daily",
+      ...(validDateString(options.date) ? { date: options.date } : {}),
+    };
+  }
   const baseSettings = rememberSummaryTimezoneOffset(options.tzOffsetMinutes);
   const tzOffsetMinutes = summaryTimezoneOffset(baseSettings, options.tzOffsetMinutes);
   const date = validDateString(options.date) ? options.date! : todayStr(tzOffsetMinutes);
@@ -404,6 +414,15 @@ export async function generateWeeklySummary(options: {
   weekStart?: string;
   tzOffsetMinutes?: number;
 } = {}): Promise<SummaryGenerationResult> {
+  if (hermesControllerEnabled()) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: "hermes_controller_active",
+      kind: "weekly",
+      ...(validDateString(options.weekStart) ? { week_start: options.weekStart } : {}),
+    };
+  }
   const baseSettings = rememberSummaryTimezoneOffset(options.tzOffsetMinutes);
   const tzOffsetMinutes = summaryTimezoneOffset(baseSettings, options.tzOffsetMinutes);
   const weekStart = validDateString(options.weekStart)

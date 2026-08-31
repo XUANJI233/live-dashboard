@@ -1,0 +1,1 @@
+Load the `live-mentor` skill and run `mode=memory`. Synchronize the Live controller feed from the saved cursor or cutover time, curate only user-confirmed durable facts, and return exactly `[SILENT]`.

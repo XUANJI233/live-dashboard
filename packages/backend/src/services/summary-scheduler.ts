@@ -1,5 +1,6 @@
 import { isoWeekday, startOfWeek, summaryTimezoneOffset, type SummarySettings } from "./daily-summary-gen";
 import { localClockStringForOffset, localDateStringForOffset } from "./prompt-time";
+import { hermesControllerEnabled } from "./controller-mode";
 
 export interface SummaryScheduleState {
   lastDailySummaryDate: string;
@@ -22,6 +23,7 @@ export function collectDueSummaryJobs(
   settings: SummarySettings,
   state: SummaryScheduleState,
 ): { jobs: ScheduledSummaryJob[]; state: SummaryScheduleState } {
+  if (hermesControllerEnabled()) return { jobs: [], state };
   const tzOffsetMinutes = summaryTimezoneOffset(settings);
   const today = localDateStringForOffset(now, tzOffsetMinutes);
   const clock = localClockStringForOffset(now, tzOffsetMinutes);

@@ -18,11 +18,10 @@ import { getDeviceInstalledApps, listDeviceContexts, type InstalledAppItem } fro
 import { formatPromptDateTime, formatPromptMinute, localDateStringForOffset } from "./prompt-time";
 import { promptOverride } from "./prompt-overrides";
 import { cleanIdentifier } from "./mcp-contracts";
+import { hermesControllerEnabled } from "./controller-mode";
 import { withControllerPersonaPrompt } from "./controller-persona";
 import {
   CONTROLLER_EVENT_SCHEMA,
-  controllerWebhookDueDeviceIds,
-  controllerWebhookEnabled,
   controllerWebhookEventId,
   notifyControllerEvent,
 } from "./controller-webhook";
@@ -40,6 +39,7 @@ import {
   supervisionTriggerDecision,
   supervisionWindowMinutes,
   type SupervisionRunSource,
+  type SupervisionTriggerDecision,
 } from "./supervision-trigger-plan";
 import { timelineJsonBlockForPrompt } from "./timeline-prompt";
 import type { FlexibleSchema } from "ai";
@@ -48,7 +48,6 @@ const LEGACY_LAST_AI_CHECK_AT_KEY = "supervision_last_ai_check_at";
 const LAST_SCHEDULED_AI_CHECK_AT_KEY = "supervision_last_scheduled_ai_check_at";
 const LAST_TRIGGERED_AI_CHECK_AT_KEY = "supervision_last_triggered_ai_check_at";
 const LAST_ALERT_AT_KEY = "supervision_last_alert_at";
-const LAST_CONTROLLER_WEBHOOK_AT_KEY_PREFIX = "supervision_last_controller_webhook_at";
 const LAST_REPORT_TRIGGER_AT_KEY = "supervision_last_report_trigger_at";
 const SUPERVISION_HISTORY_KEY = "supervision_recent_history";
 const MAX_REGEX_COUNT = 12;
@@ -109,6 +108,7 @@ const getRecentActivityRows = db.prepare(`
 
 export async function refreshSupervisionRules(settings = getSummarySettings()): Promise<SummarySettings> {
   if (!settings.supervision_enabled) return settings;
+  if (hermesControllerEnabled()) return settings;
 
   const aiConfig = await getAiRuntimeConfig();
   if (!aiConfig) {
@@ -203,6 +203,39 @@ export async function runSupervisionTick(
     return { ok: true, ran: false, reason: "trigger_not_met", source, checked_at: checkedAt };
   }
 
+  if (hermesControllerEnabled()) {
+    markAiCheckStarted(source, now);
+    const deviceIds = supervisionDeviceContexts()
+      .map((device) => cleanIdentifier(device.device_id))
+      .filter(Boolean);
+    if (deviceIds.length === 0) {
+      return { ok: true, ran: false, reason: "no_controller_devices", source, checked_at: checkedAt };
+    }
+    const reasonCodes = controllerTriggerReasonCodes(source, triggers);
+    const delivery = await notifyControllerEvent({
+      schema: CONTROLLER_EVENT_SCHEMA,
+      v: 1,
+      event_id: controllerWebhookEventId(
+        deviceIds,
+        now,
+        Math.min(settings.supervision_check_interval_minutes, 60),
+      ),
+      event_type: "supervision.review_requested",
+      occurred_at: checkedAt,
+      source,
+      device_ids: deviceIds,
+      reason_codes: reasonCodes,
+    });
+    return {
+      ok: delivery.sent,
+      ran: true,
+      reason: delivery.sent ? "hermes_review_requested" : "hermes_review_not_delivered",
+      source,
+      checked_at: checkedAt,
+      ai_checked: false,
+    };
+  }
+
   supervisionInFlight = true;
   markAiCheckStarted(source, now);
   try {
@@ -241,54 +274,6 @@ export async function runSupervisionTick(
       stats,
     });
     const deviceCapabilities = supervisionDeviceCapabilityMap();
-    if (decision.deviated && controllerWebhookEnabled()) {
-      const knownDeviatedDeviceIds = Array.from(new Set(
-        decision.device_decisions
-          .filter((item) => item.deviated)
-          .map((item) => item.device_id)
-          .filter((deviceId) => deviceCapabilities.has(deviceId)),
-      ));
-      const deviatedDeviceIds = knownDeviatedDeviceIds
-        .map((deviceId) => cleanIdentifier(deviceId))
-        .filter(Boolean);
-      const omittedInvalidDeviceId = deviatedDeviceIds.length < knownDeviatedDeviceIds.length;
-      if (omittedInvalidDeviceId) {
-        console.warn("[controller-webhook] omitted supervision event device ids that violate the protocol");
-      }
-      const cooldownMinutes = Math.min(settings.supervision_check_interval_minutes, 60);
-      const deviceIds = controllerWebhookDueDeviceIds(
-        deviatedDeviceIds,
-        now,
-        cooldownMinutes,
-        (deviceId) => metaGet(controllerWebhookMetaKey(deviceId)),
-      );
-      for (const deviceId of deviceIds) {
-        metaSet(controllerWebhookMetaKey(deviceId), checkedAt);
-      }
-      if (deviceIds.length > 0) {
-        void notifyControllerEvent({
-          schema: CONTROLLER_EVENT_SCHEMA,
-          v: 1,
-          event_id: controllerWebhookEventId(deviceIds, now, cooldownMinutes),
-          event_type: "supervision.deviation_detected",
-          occurred_at: checkedAt,
-          source,
-          device_ids: deviceIds,
-          reason_codes: [
-            "deviation_confirmed",
-            ...(omittedInvalidDeviceId ? ["invalid_device_id_omitted"] : []),
-          ],
-        }).then((delivery) => {
-          if (delivery.enabled && !delivery.sent) {
-            for (const deviceId of deviceIds) {
-              const key = controllerWebhookMetaKey(deviceId);
-              if (metaGet(key) === checkedAt) metaSet(key, "");
-            }
-            console.warn(`[controller-webhook] supervision event not delivered: ${delivery.reason || "unknown"}`);
-          }
-        });
-      }
-    }
     const deliverableDecisions = decision.device_decisions
       .map((item) => constrainDecisionForCapability(item, deviceCapabilities.get(item.device_id), settings))
       .filter((item): item is SupervisionCommandDecision => !!item)
@@ -331,8 +316,32 @@ export function requestSupervisionCheckForReport(candidate: SupervisionReportCan
   if (!isReportTriggerDue(now)) return false;
 
   const rules = compileRules(settings.supervision_rules);
-  if (!matchesReportCandidate(candidate, rules)) return false;
+  const ruleMatched = matchesReportCandidate(candidate, rules);
+  if (!candidate.requested && !ruleMatched) return false;
 
+  if (hermesControllerEnabled()) {
+    const deviceId = cleanIdentifier(candidate.deviceId);
+    if (!deviceId) {
+      console.warn("[controller-webhook] ignored a supervision candidate with an invalid device id");
+      return false;
+    }
+    metaSet(LAST_REPORT_TRIGGER_AT_KEY, now.toISOString());
+    void notifyControllerEvent({
+      schema: CONTROLLER_EVENT_SCHEMA,
+      v: 1,
+      event_id: controllerWebhookEventId([deviceId], now, 1),
+      event_type: "supervision.review_requested",
+      occurred_at: now.toISOString(),
+      source: "report",
+      device_ids: [deviceId],
+      reason_codes: [candidate.requested ? "device_requested" : "rule_match"],
+    }).then((delivery) => {
+      if (!delivery.sent) {
+        console.warn(`[controller-webhook] Hermes review request not delivered: ${delivery.reason || "unknown"}`);
+      }
+    });
+    return true;
+  }
   metaSet(LAST_REPORT_TRIGGER_AT_KEY, now.toISOString());
   scheduleReportTriggeredCheck(now);
   return true;
@@ -358,6 +367,19 @@ function isScheduledAiCheckDue(settings: SummarySettings, now: Date): boolean {
   const last = timestampMs(metaGet(LAST_SCHEDULED_AI_CHECK_AT_KEY)) ?? timestampMs(metaGet(LEGACY_LAST_AI_CHECK_AT_KEY));
   if (last === null) return true;
   return now.getTime() - last >= settings.supervision_check_interval_minutes * 60_000;
+}
+
+function controllerTriggerReasonCodes(
+  source: SupervisionRunSource,
+  decision: SupervisionTriggerDecision,
+): string[] {
+  const reasons: string[] = [];
+  if (source === "scheduled") reasons.push("scheduled_check");
+  if (decision.blacklistTriggered) reasons.push("blacklist_threshold");
+  if (decision.riskTriggered) reasons.push("risk_threshold");
+  if (decision.targetTriggered) reasons.push("target_shortfall");
+  if (decision.heuristicTriggered) reasons.push("heuristic_candidate");
+  return reasons.length > 0 ? reasons : ["rule_match"];
 }
 
 function markAiCheckStarted(source: SupervisionRunSource, now: Date): void {
@@ -387,10 +409,6 @@ function matchesReportCandidate(candidate: SupervisionReportCandidate, rules: Co
   if (!text) return false;
   if (rules.whitelist.some((rule) => rule.test(text))) return false;
   return rules.blacklist.some((rule) => rule.test(text)) || rules.risk.some((rule) => rule.test(text));
-}
-
-function controllerWebhookMetaKey(deviceId: string): string {
-  return `${LAST_CONTROLLER_WEBHOOK_AT_KEY_PREFIX}:${deviceId}`;
 }
 
 function supervisionReportText(candidate: SupervisionReportCandidate): string {

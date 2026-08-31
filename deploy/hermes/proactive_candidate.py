@@ -91,6 +91,9 @@ def _save_state(path: Path, state: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    if os.environ.get("HERMES_CONTROLLER_ENABLED", "").strip().lower() != "true":
+        print(NO_CANDIDATE)
+        return 0
     path = _state_path()
     state, output = evaluate_candidate(
         _load_state(path),

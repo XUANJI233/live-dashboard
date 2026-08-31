@@ -20,6 +20,35 @@ describe("ai jobs", () => {
     }
   });
 
+  test("rejects Live-owned AI work before enqueue while Hermes controls the service", async () => {
+    const { submitAiJob } = await import("../src/services/ai-jobs");
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
+    try {
+      for (const kind of ["daily_summary", "weekly_summary", "supervision_rules_refresh", "supervision_check"] as const) {
+        let caught: unknown;
+        try {
+          submitAiJob({
+            requestId: `req_hermes_${kind}`,
+            kind,
+            payload: kind === "weekly_summary"
+              ? { week_start: "2026-06-08" }
+              : kind === "daily_summary"
+                ? { date: "2026-06-11" }
+                : {},
+            device: testDevice,
+            deviceToken: "ai-job-token",
+            runner: async () => ({ ok: true }),
+          });
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toMatchObject({ code: "AI_JOB_MANAGED_BY_HERMES", status: 409 });
+      }
+    } finally {
+      delete process.env.HERMES_CONTROLLER_ENABLED;
+    }
+  });
+
   test("attaches duplicate submits by kind and job_key without double-running", async () => {
     const { getAiJob, submitAiJob } = await import("../src/services/ai-jobs");
     let runs = 0;

@@ -13,6 +13,10 @@ from typing import Any
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 SAFE_REASON = re.compile(r"^[a-z][a-z0-9_.:-]{0,79}$")
+SUPPORTED_EVENT_TYPES = {
+    "supervision.review_requested",
+    "supervision.deviation_detected",
+}
 
 
 def _validated_event(payload: object) -> dict[str, Any] | None:
@@ -20,7 +24,8 @@ def _validated_event(payload: object) -> dict[str, Any] | None:
         return None
     if payload.get("schema") != "live_dashboard.controller_event.v1" or payload.get("v") != 1:
         return None
-    if payload.get("event_type") != "supervision.deviation_detected":
+    event_type = payload.get("event_type")
+    if event_type not in SUPPORTED_EVENT_TYPES:
         return None
     event_id = payload.get("event_id")
     occurred_at = payload.get("occurred_at")
@@ -49,7 +54,7 @@ def _validated_event(payload: object) -> dict[str, Any] | None:
         "schema": "live_dashboard.controller_event.v1",
         "v": 1,
         "event_id": event_id,
-        "event_type": "supervision.deviation_detected",
+        "event_type": event_type,
         "occurred_at": occurred_at,
         "source": source,
         "device_ids": device_ids,
@@ -66,6 +71,8 @@ def _event_from_stdin() -> dict[str, Any] | None:
 
 
 def main() -> int:
+    if os.environ.get("HERMES_CONTROLLER_ENABLED", "").strip().lower() != "true":
+        return 0
     event = _event_from_stdin()
     job_id = os.environ.get("HERMES_LIVE_SUPERVISION_JOB_ID", "").strip()
     if not event or not job_id:

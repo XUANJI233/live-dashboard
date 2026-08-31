@@ -13,6 +13,7 @@ import {
 import { syncCurrentSupervisionPolicyToCapableDevices } from "../services/supervision-policy-control";
 import { aiJobInputErrorResponse, submitAiJobFromClient } from "../services/ai-jobs";
 import { readJsonObjectRequest, type JsonObjectRead } from "../services/request-body";
+import { hermesControllerEnabled } from "../services/controller-mode";
 
 const MAX_SUMMARY_JSON_BYTES = 128 * 1024;
 
@@ -131,7 +132,7 @@ export async function handleSummarySettingsUpdate(req: Request): Promise<Respons
   const body = parsed.body;
   const settings = updateSummarySettings(body);
   let rulesRefreshJob: unknown = null;
-  if (settings.sync_status === "applied" && settings.supervision_enabled) {
+  if (settings.sync_status === "applied" && settings.supervision_enabled && !hermesControllerEnabled()) {
     try {
       rulesRefreshJob = submitAiJobFromClient({
         request_id: body.request_id,

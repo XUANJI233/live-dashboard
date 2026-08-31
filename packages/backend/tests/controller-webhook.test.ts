@@ -5,6 +5,7 @@ const originalFetch = globalThis.fetch;
 const originalAbortSignalTimeout = AbortSignal.timeout;
 const originalHashSecret = process.env.HASH_SECRET;
 const configKeys = [
+  "HERMES_CONTROLLER_ENABLED",
   "CONTROLLER_WEBHOOK_ENABLED",
   "CONTROLLER_WEBHOOK_URL",
   "CONTROLLER_WEBHOOK_SECRET",
@@ -14,11 +15,11 @@ const event = {
   schema: "live_dashboard.controller_event.v1" as const,
   v: 1 as const,
   event_id: "supervision:2026-08-31T12:00:00.000Z",
-  event_type: "supervision.deviation_detected" as const,
+  event_type: "supervision.review_requested" as const,
   occurred_at: "2026-08-31T12:00:00.000Z",
   source: "report" as const,
   device_ids: ["android-main"],
-  reason_codes: ["deviation_confirmed"],
+  reason_codes: ["device_requested"],
 };
 
 afterEach(() => {
@@ -30,25 +31,15 @@ afterEach(() => {
 });
 
 describe("controller webhook", () => {
-  test("applies notification cooldown per device", async () => {
-    const { controllerWebhookDueDeviceIds, controllerWebhookEventId } = await import("../src/services/controller-webhook");
+  test("builds a stable event id for one device set and cooldown bucket", async () => {
+    const { controllerWebhookEventId } = await import("../src/services/controller-webhook");
     const now = new Date("2026-08-31T12:00:00.000Z");
-    const lastByDevice = new Map([
-      ["android-a", "2026-08-31T11:55:00.000Z"],
-      ["android-c", "2026-08-31T10:00:00.000Z"],
-    ]);
-
-    expect(controllerWebhookDueDeviceIds(
-      ["android-a", "android-b", "android-c", "android-b"],
-      now,
-      60,
-      (deviceId) => lastByDevice.get(deviceId) || null,
-    )).toEqual(["android-b", "android-c"]);
     expect(controllerWebhookEventId(["android-b", "android-c"], now, 60))
       .toBe(controllerWebhookEventId(["android-c", "android-b"], new Date("2026-08-31T12:30:00.000Z"), 60));
   });
 
   test("rejects a controller secret reused from another trust domain", async () => {
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
     process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
     process.env.CONTROLLER_WEBHOOK_URL = "http://host.docker.internal:8644/webhooks/live-supervision";
     process.env.CONTROLLER_WEBHOOK_SECRET = "shared-secret";
@@ -67,6 +58,7 @@ describe("controller webhook", () => {
   });
 
   test("stays offline unless explicitly enabled", async () => {
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
     let called = false;
     globalThis.fetch = (async () => {
       called = true;
@@ -80,7 +72,26 @@ describe("controller webhook", () => {
     expect(called).toBe(false);
   });
 
+  test("stays offline when Hermes controller mode is inactive", async () => {
+    process.env.HERMES_CONTROLLER_ENABLED = "false";
+    process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_URL = "http://host.docker.internal:8644/webhooks/live-supervision";
+    process.env.CONTROLLER_WEBHOOK_SECRET = "controller-webhook-test-secret";
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response(null, { status: 202 });
+    }) as unknown as typeof fetch;
+
+    const { notifyControllerEvent } = await import("../src/services/controller-webhook");
+    const result = await notifyControllerEvent(event);
+
+    expect(result).toEqual({ enabled: false, sent: false, reason: "controller_inactive" });
+    expect(called).toBe(false);
+  });
+
   test("sends the minimal event with Hermes generic HMAC V2", async () => {
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
     process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
     process.env.CONTROLLER_WEBHOOK_URL = "http://host.docker.internal:8644/webhooks/live-supervision";
     process.env.CONTROLLER_WEBHOOK_SECRET = "controller-webhook-test-secret";
@@ -113,6 +124,7 @@ describe("controller webhook", () => {
   });
 
   test("bounds delivery time and contains HTTP failures", async () => {
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
     process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
     process.env.CONTROLLER_WEBHOOK_URL = "http://host.docker.internal:8644/webhooks/live-supervision";
     process.env.CONTROLLER_WEBHOOK_SECRET = "do-not-leak-this-secret";

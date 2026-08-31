@@ -20,7 +20,7 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
             "schema": "live_dashboard.controller_event.v1",
             "v": 1,
             "event_id": "supervision:494677:0123456789abcdefabcd",
-            "event_type": "supervision.deviation_detected",
+            "event_type": "supervision.review_requested",
             "occurred_at": "2026-08-31T12:00:00.000Z",
             "source": "report",
             "device_ids": ["android-main"],
@@ -34,7 +34,7 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
             "schema": "live_dashboard.controller_event.v1",
             "v": 1,
             "event_id": "supervision:494677:0123456789abcdefabcd",
-            "event_type": "supervision.deviation_detected",
+            "event_type": "supervision.review_requested",
             "occurred_at": "2026-08-31T12:00:00.000Z",
             "source": "scheduled",
             "device_ids": ["android-main"],
@@ -60,7 +60,7 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
             "schema": "live_dashboard.controller_event.v1",
             "v": 1,
             "event_id": "supervision:494677:0123456789abcdefabcd",
-            "event_type": "supervision.deviation_detected",
+            "event_type": "supervision.review_requested",
             "occurred_at": "2026-08-31T12:00:00.000Z",
             "source": "report",
             "device_ids": ["android-main"],
@@ -75,7 +75,9 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
         MODULE._event_from_stdin = lambda: event
         try:
             with patch.dict(sys.modules, {"cron.jobs": jobs, "cron.notepad": notepad}), patch.dict(
-                os.environ, {"HERMES_LIVE_SUPERVISION_JOB_ID": "job-1"}, clear=False
+                os.environ,
+                {"HERMES_LIVE_SUPERVISION_JOB_ID": "job-1", "HERMES_CONTROLLER_ENABLED": "true"},
+                clear=False,
             ):
                 self.assertEqual(MODULE.main(), 0)
         finally:
@@ -83,6 +85,28 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
 
         self.assertEqual(notes[0][0:2], ("job-1", "last_live_event"))
         self.assertEqual(__import__("json").loads(notes[0][2]), event)
+
+    def test_does_not_reenable_the_job_when_controller_mode_is_off(self):
+        original_reader = MODULE._event_from_stdin
+        MODULE._event_from_stdin = lambda: {
+            "schema": "live_dashboard.controller_event.v1",
+            "v": 1,
+            "event_id": "supervision:494677:0123456789abcdefabcd",
+            "event_type": "supervision.review_requested",
+            "occurred_at": "2026-08-31T12:00:00.000Z",
+            "source": "report",
+            "device_ids": ["android-main"],
+            "reason_codes": ["device_requested"],
+        }
+        try:
+            with patch.dict(
+                os.environ,
+                {"HERMES_LIVE_SUPERVISION_JOB_ID": "job-1", "HERMES_CONTROLLER_ENABLED": "false"},
+                clear=False,
+            ):
+                self.assertEqual(MODULE.main(), 0)
+        finally:
+            MODULE._event_from_stdin = original_reader
 
 
 if __name__ == "__main__":

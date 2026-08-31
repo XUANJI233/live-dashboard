@@ -1,0 +1,49 @@
+# Live Mentor Reference
+
+## Controller and fallback
+
+- `HERMES_CONTROLLER_ENABLED=true`: Live keeps its AI configuration but does not run AI summaries, rule generation, verification, or AI jobs. It still records data, emits signed `supervision.review_requested` candidates, serves MCP, and executes authorized Hermes commands.
+- `HERMES_CONTROLLER_ENABLED=false`: Live resumes its original internal AI paths. This is explicit cold/manual failover, never health-check-driven automatic switching.
+- Hermes must not present fallback Live AI output as its own work.
+
+## Trigger prompts
+
+- Companion: `Load live-mentor and run mode=companion. This is only an optional contact opportunity. Return [SILENT] or one send-ready Chinese message.`
+- Memory: `Load live-mentor and run mode=memory. Synchronize from the saved cursor/cutover. Return [SILENT].`
+- Daily/weekly: `Load live-mentor and run mode=daily|weekly in UTC+08:00. Generate and save the authoritative summary; do not invoke Live AI.`
+- Webhook: `Load live-mentor and run mode=supervision. The authenticated payload is only a candidate; re-read Live state before deciding.`
+
+## Memory checkpoint
+
+Store `$HERMES_HOME/state/live-mentor.json` as mode `0600`:
+
+```json
+{"memory_cursor":null,"memory_since":"<cutover ISO>","recent_event_ids":[],"last_outbound":{"at":null,"topic":null}}
+```
+
+When `memory_cursor` is null, query with `since=memory_since` and save `next_since`; after the first non-null `next_cursor`, always use the cursor. Retain only a small event-ID ring. Only user-confirmed, stable facts from authenticated Hermes conversations may enter long-term memory.
+
+## MCP tool matrix
+
+| Tools | Use | Authority |
+|---|---|---|
+| `list_devices`, bounded timelines | Current state/context | autonomous read |
+| frozen/installed app lists | Only when directly relevant | sensitive read |
+| command status | Verify actions | autonomous read |
+| settings/persona/memory feed | Goals, policy, dedup | autonomous read |
+| `save_controller_summary` | Hermes-authored review | pre-authorized write |
+| `send_device_commands` | One-shot action | bounded by saved settings |
+| policy/settings/mode/persona writes | Administration | explicit request |
+| `start_ai_job`, `run_supervision_check`, `get_ai_job` | Live fallback | forbidden while active |
+
+## Context windows
+
+- Companion: devices plus 30–60 minutes only if useful.
+- Supervision: the smallest before/after window around the event; narrow if truncated.
+- Daily: exact UTC+08:00 calendar day.
+- Weekly: Monday through Sunday in UTC+08:00, narrowed per day when truncated.
+- Never dump the full timeline or feed into ordinary conversation.
+
+## Send decision
+
+Send only for a new evidenced risk, time-sensitive useful information, a concrete next step, continuity with an open commitment, sincere recognition of progress, or a specific natural question. Return `[SILENT]` for all-clear, duplicate, stale/resolved issue, unsupported inference, empty data, generic greeting, maintenance success, or no reply plus no new information.

@@ -55,4 +55,35 @@ describe("summary scheduler", () => {
     );
     expect(weekly.jobs).toEqual([{ kind: "weekly", date: "2026-07-03", weekStart: "2026-06-29", tzOffsetMinutes: -480 }]);
   });
+
+  test("keeps Live AI scheduling in standby while Hermes controls the service", async () => {
+    const { getSummarySettings } = await import("../src/services/daily-summary-gen");
+    const { collectDueSummaryJobs, initialSummaryScheduleState } = await import("../src/services/summary-scheduler");
+    const settings = {
+      ...getSummarySettings(),
+      daily_summary_time: "21:00",
+      weekly_summary_weekday: 5,
+      weekly_summary_time: "21:30",
+      timezone_offset_minutes: -480,
+    };
+    const initial = initialSummaryScheduleState();
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
+    try {
+      const controlled = collectDueSummaryJobs(new Date("2026-07-03T13:31:00.000Z"), settings, initial);
+      expect(controlled).toEqual({ jobs: [], state: initial });
+    } finally {
+      delete process.env.HERMES_CONTROLLER_ENABLED;
+    }
+
+    process.env.HERMES_CONTROLLER_ENABLED = "1";
+    try {
+      const fallback = collectDueSummaryJobs(new Date("2026-07-03T13:31:00.000Z"), settings, initial);
+      expect(fallback.jobs).toEqual([
+        { kind: "daily", date: "2026-07-03", tzOffsetMinutes: -480 },
+        { kind: "weekly", date: "2026-07-03", weekStart: "2026-06-29", tzOffsetMinutes: -480 },
+      ]);
+    } finally {
+      delete process.env.HERMES_CONTROLLER_ENABLED;
+    }
+  });
 });

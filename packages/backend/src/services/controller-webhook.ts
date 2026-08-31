@@ -1,4 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
+import { hermesControllerEnabled } from "./controller-mode";
 
 export const CONTROLLER_EVENT_SCHEMA = "live_dashboard.controller_event.v1" as const;
 
@@ -6,7 +7,7 @@ export interface ControllerEvent {
   schema: typeof CONTROLLER_EVENT_SCHEMA;
   v: 1;
   event_id: string;
-  event_type: "supervision.deviation_detected";
+  event_type: "supervision.deviation_detected" | "supervision.review_requested";
   occurred_at: string;
   source: "scheduled" | "report";
   device_ids: string[];
@@ -24,23 +25,6 @@ export function controllerWebhookEnabled(): boolean {
   return /^true$/i.test(process.env.CONTROLLER_WEBHOOK_ENABLED || "");
 }
 
-export function controllerWebhookDueDeviceIds(
-  deviceIds: string[],
-  now: Date,
-  cooldownMinutes: number,
-  lastNotificationAt: (deviceId: string) => string | null,
-): string[] {
-  const cooldownMs = Math.max(1, cooldownMinutes) * 60_000;
-  const due: string[] = [];
-  for (const deviceId of Array.from(new Set(deviceIds.filter(Boolean)))) {
-    const lastMs = Date.parse(lastNotificationAt(deviceId) || "");
-    if (!Number.isFinite(lastMs) || now.getTime() - lastMs >= cooldownMs) {
-      due.push(deviceId);
-    }
-  }
-  return due;
-}
-
 export function controllerWebhookEventId(deviceIds: string[], now: Date, cooldownMinutes: number): string {
   const bucketMs = Math.max(1, cooldownMinutes) * 60_000;
   const bucket = Math.floor(now.getTime() / bucketMs);
@@ -50,6 +34,9 @@ export function controllerWebhookEventId(deviceIds: string[], now: Date, cooldow
 }
 
 export async function notifyControllerEvent(event: ControllerEvent): Promise<ControllerWebhookDelivery> {
+  if (!hermesControllerEnabled()) {
+    return { enabled: false, sent: false, reason: "controller_inactive" };
+  }
   if (!controllerWebhookEnabled()) {
     return { enabled: false, sent: false, reason: "disabled" };
   }
