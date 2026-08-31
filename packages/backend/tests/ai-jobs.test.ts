@@ -21,7 +21,7 @@ describe("ai jobs", () => {
   });
 
   test("rejects Live-owned AI work before enqueue while Hermes controls the service", async () => {
-    const { submitAiJob } = await import("../src/services/ai-jobs");
+    const { getAiJob, submitAiJob } = await import("../src/services/ai-jobs");
     process.env.HERMES_CONTROLLER_ENABLED = "true";
     try {
       for (const kind of ["daily_summary", "weekly_summary", "supervision_rules_refresh", "supervision_check"] as const) {
@@ -44,6 +44,22 @@ describe("ai jobs", () => {
         }
         expect(caught).toMatchObject({ code: "AI_JOB_MANAGED_BY_HERMES", status: 409 });
       }
+
+      let configTestRuns = 0;
+      const configTest = submitAiJob({
+        requestId: "req_hermes_ai_config_test",
+        kind: "ai_config_test",
+        payload: { endpoint: "fallback-check" },
+        device: testDevice,
+        deviceToken: "ai-job-token",
+        runner: async () => {
+          configTestRuns += 1;
+          return { ok: true };
+        },
+      });
+      const configTestDone = await waitForJob(configTest.job.request_id, () => getAiJob(configTest.job.request_id));
+      expect(configTestDone.status).toBe("succeeded");
+      expect(configTestRuns).toBe(1);
     } finally {
       delete process.env.HERMES_CONTROLLER_ENABLED;
     }
