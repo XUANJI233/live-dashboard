@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import sys
 from datetime import datetime
 from typing import Any
@@ -66,28 +65,20 @@ def _event_from_stdin() -> dict[str, Any] | None:
     return _validated_event(payload)
 
 
-def _run_cli(*args: str) -> bool:
-    completed = subprocess.run(
-        [sys.executable, "-m", "hermes_cli.main", *args],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=20,
-        check=False,
-    )
-    return completed.returncode == 0
-
-
 def main() -> int:
     event = _event_from_stdin()
     job_id = os.environ.get("HERMES_LIVE_SUPERVISION_JOB_ID", "").strip()
     if not event or not job_id:
         return 1
     compact = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
-    if not _run_cli("cron", "notepad", job_id, "set", "last_live_event", compact):
-        return 1
-    if not _run_cli("cron", "run", job_id):
+    try:
+        from cron.jobs import trigger_job
+        from cron.notepad import set_note
+
+        set_note(job_id, "last_live_event", compact)
+        if trigger_job(job_id) is None:
+            return 1
+    except Exception:
         return 1
     return 0
 

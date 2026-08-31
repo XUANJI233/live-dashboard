@@ -1,6 +1,10 @@
 import importlib.util
+import os
+import sys
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).parents[1] / "trigger_live_supervision.py"
@@ -50,6 +54,35 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
         for value in invalid:
             with self.subTest(value=value):
                 self.assertIsNone(MODULE._validated_event(value))
+
+    def test_persists_the_event_and_requests_the_existing_job_without_a_nested_cli(self):
+        event = {
+            "schema": "live_dashboard.controller_event.v1",
+            "v": 1,
+            "event_id": "supervision:494677:0123456789abcdefabcd",
+            "event_type": "supervision.deviation_detected",
+            "occurred_at": "2026-08-31T12:00:00.000Z",
+            "source": "report",
+            "device_ids": ["android-main"],
+            "reason_codes": ["deviation_confirmed"],
+        }
+        notes = []
+        jobs = types.ModuleType("cron.jobs")
+        notepad = types.ModuleType("cron.notepad")
+        jobs.trigger_job = lambda job_id: {"id": job_id}
+        notepad.set_note = lambda job_id, key, value: notes.append((job_id, key, value))
+        original_reader = MODULE._event_from_stdin
+        MODULE._event_from_stdin = lambda: event
+        try:
+            with patch.dict(sys.modules, {"cron.jobs": jobs, "cron.notepad": notepad}), patch.dict(
+                os.environ, {"HERMES_LIVE_SUPERVISION_JOB_ID": "job-1"}, clear=False
+            ):
+                self.assertEqual(MODULE.main(), 0)
+        finally:
+            MODULE._event_from_stdin = original_reader
+
+        self.assertEqual(notes[0][0:2], ("job-1", "last_live_event"))
+        self.assertEqual(__import__("json").loads(notes[0][2]), event)
 
 
 if __name__ == "__main__":
