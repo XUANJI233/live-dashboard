@@ -32,6 +32,11 @@ services:
       - MCP_REMOTE_ENABLED=${MCP_REMOTE_ENABLED:-false}
       - MCP_SERVER_TOKEN=${MCP_SERVER_TOKEN:-}
       - MCP_ADMIN_TOKEN=${MCP_ADMIN_TOKEN:-}
+      - CONTROLLER_WEBHOOK_ENABLED=${CONTROLLER_WEBHOOK_ENABLED:-false}
+      - CONTROLLER_WEBHOOK_URL=${CONTROLLER_WEBHOOK_URL:-}
+      - CONTROLLER_WEBHOOK_SECRET=${CONTROLLER_WEBHOOK_SECRET:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:${MCP_PORT:-3031}:${MCP_PORT:-3031}"
     volumes:

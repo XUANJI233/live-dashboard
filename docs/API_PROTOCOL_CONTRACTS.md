@@ -24,6 +24,9 @@
 | `X-Edge-Signature` | Edge -> 源站 | `HASH_SECRET` 对 `edge:<viewer_id>` 的 HMAC。 |
 | `X-Edge-Cache` | Edge -> 浏览器 | 边缘缓存状态调试头。 |
 | `Cache-Tag` / `ESA-Cache-Tag` | 源站/Edge -> 浏览器/CDN | ESA 标签刷新使用；两个头保持同值或同语义。 |
+| `X-Webhook-Timestamp` | Live -> Hermes | Unix 秒时间戳；与原始 JSON body 一起参与控制器 Webhook V2 HMAC。 |
+| `X-Webhook-Signature-V2` | Live -> Hermes | `HMAC-SHA256(secret,"<timestamp>.<raw_body>")` 十六进制签名，防止伪造和重放。 |
+| `X-Request-ID` | Live -> Hermes | 稳定控制器事件 ID；Hermes 用于 Webhook 幂等去重。 |
 
 ## 保留 ID 和哨兵值
 
@@ -386,6 +389,30 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
 - `live_dashboard.get_controller_memory_feed` 用于把公开/私聊消息、设备回复、服务端下发的提醒/控制命令以及已保存的日/周总结回流给 OpenClaw/Hermes。字段：`since`、`cursor`、`limit`、`include_messages`、`include_summaries`、`include_device_commands`，布尔必须是真布尔。分页应优先传回上次响应的 `next_cursor`；只用 `next_since` 可能重复同一时间戳事件，不能保证无重复。
 - 推荐由 OpenClaw/Hermes 读取 memory feed 后自行整理长期记忆和总结，再调用 `live_dashboard.save_controller_summary` 写回服务端。`save_controller_summary` 字段：`kind`（`daily_summary` / `weekly_summary`）、`date`、`week_start`、`summary`、`mode`、`target`；服务端仍会清洗 HTML、链接、脚本、命令和控制字符。
 - `live_dashboard.start_ai_job` 用于启动日总结、周总结、监督规则刷新或监督复核；`live_dashboard.get_ai_job` 按 `request_id` 查询状态；`live_dashboard.run_supervision_check` 会排队一个 `supervision_check` job 并立即返回，不同步等待 AI，默认按 `source="report"` 运行以避免推进定时监督节流。
+
+## 控制器出站 Webhook
+
+Live 可把已经确认的高价值监督异常作为最小事件发送给同机 Hermes。该出口默认关闭；只有 `CONTROLLER_WEBHOOK_ENABLED=true` 且同时配置 URL 与独立 secret 时才联网。Webhook secret 不能复用 `HASH_SECRET`、设备 token 或 MCP token。
+
+当前事件 schema：
+
+```json
+{
+  "schema": "live_dashboard.controller_event.v1",
+  "event_id": "supervision:2026-06-11T10:00:00.000Z",
+  "event_type": "supervision.deviation_detected",
+  "occurred_at": "2026-06-11T10:00:00.000Z",
+  "source": "scheduled",
+  "device_ids": ["android-phone"],
+  "reason_codes": ["deviation_confirmed"]
+}
+```
+
+- 正常、已恢复、无时间线、未达触发条件或 AI 判定失败都不发送该事件。
+- Payload 只携带稳定元数据，不携带原始窗口标题、时间线、AI 自由文本、token 或密钥；Hermes 收到后必须通过 MCP 读取必要的最小时间窗并自行复核。
+- 事件使用上述 V2 HMAC headers；Hermes 应把 `X-Request-ID` 作为幂等键。
+- 同一监督异常遵循独立控制器通知冷却，不复用设备命令的 `supervision_last_alert_at`，避免两条节流链互相抑制。
+- Docker 内的 Live 访问宿主 Hermes 时使用仅宿主/容器可达地址；不要把 Hermes Webhook 端口代理到公网。
 
 ## AI 结构化响应字段
 

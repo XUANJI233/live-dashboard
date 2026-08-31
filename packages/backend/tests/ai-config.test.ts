@@ -1220,7 +1220,17 @@ describe("ai-config", () => {
     `).run(deviceId, `hash-${suffix}`, new Date(checkedAt.getTime() - 20 * 60_000).toISOString());
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const controllerWebhookUrl = "https://controller-unfreeze.example/webhooks/live-supervision";
+    process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_URL = controllerWebhookUrl;
+    process.env.CONTROLLER_WEBHOOK_SECRET = `controller-unfreeze-secret-${suffix}`;
+    let controllerWebhookCalls = 0;
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+      if (url === controllerWebhookUrl) {
+        controllerWebhookCalls += 1;
+        return Response.json({ status: "accepted" }, { status: 202 });
+      }
       const body = JSON.parse(String(init?.body || "{}"));
       expect(body.messages.at(-1)?.content).toContain("监督复核 JSON");
       expect(JSON.stringify(body.messages)).toContain("设备能力与当前已冻结列表 JSON");
@@ -1256,7 +1266,11 @@ describe("ai-config", () => {
       await runSupervisionTick(checkedAt, { force: true });
     } finally {
       globalThis.fetch = originalFetch;
+      delete process.env.CONTROLLER_WEBHOOK_ENABLED;
+      delete process.env.CONTROLLER_WEBHOOK_URL;
+      delete process.env.CONTROLLER_WEBHOOK_SECRET;
     }
+    expect(controllerWebhookCalls).toBe(0);
 
     const row = db.prepare(`
       SELECT payload
@@ -1389,7 +1403,7 @@ describe("ai-config", () => {
       model: "gpt-4o-mini",
     }), token);
 
-    db.prepare("DELETE FROM meta WHERE key IN ('supervision_last_alert_at', 'supervision_last_ai_check_at')").run();
+    db.prepare("DELETE FROM meta WHERE key IN ('supervision_last_alert_at', 'supervision_last_ai_check_at', 'supervision_last_controller_webhook_at')").run();
     saveSummarySettings({
       ...getSummarySettings(),
       target: "写代码",
@@ -1423,7 +1437,17 @@ describe("ai-config", () => {
     `).run(deviceId, `hash-freeze-${suffix}`, new Date(checkedAt.getTime() - 35 * 60_000).toISOString());
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const controllerWebhookUrl = "https://controller-freeze.example/webhooks/live-supervision";
+    process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_URL = controllerWebhookUrl;
+    process.env.CONTROLLER_WEBHOOK_SECRET = `controller-freeze-secret-${suffix}`;
+    const controllerEvents: Record<string, unknown>[] = [];
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+      if (url === controllerWebhookUrl) {
+        controllerEvents.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
+        return Response.json({ status: "accepted" }, { status: 202 });
+      }
       const body = JSON.parse(String(init?.body || "{}"));
       expect(JSON.stringify(body.messages)).toContain("新增时间线 JSON");
       return Response.json({
@@ -1456,9 +1480,24 @@ describe("ai-config", () => {
 
     try {
       await runSupervisionTick(checkedAt, { force: true });
+      await runSupervisionTick(new Date(checkedAt.getTime() + 5 * 60_000), { force: true });
     } finally {
       globalThis.fetch = originalFetch;
+      delete process.env.CONTROLLER_WEBHOOK_ENABLED;
+      delete process.env.CONTROLLER_WEBHOOK_URL;
+      delete process.env.CONTROLLER_WEBHOOK_SECRET;
     }
+
+    expect(controllerEvents).toHaveLength(1);
+    expect(controllerEvents[0]).toEqual({
+      schema: "live_dashboard.controller_event.v1",
+      event_id: `supervision:${checkedAt.toISOString()}`,
+      event_type: "supervision.deviation_detected",
+      occurred_at: checkedAt.toISOString(),
+      source: "scheduled",
+      device_ids: [deviceId],
+      reason_codes: ["deviation_confirmed"],
+    });
 
     const row = db.prepare(`
       SELECT payload

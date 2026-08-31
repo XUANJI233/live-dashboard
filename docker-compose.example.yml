@@ -28,6 +28,11 @@ services:
       - AI_API_URL=${AI_API_URL:-}
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_MODEL=${AI_MODEL:-gpt-4o-mini}
+      - CONTROLLER_WEBHOOK_ENABLED=${CONTROLLER_WEBHOOK_ENABLED:-false}
+      - CONTROLLER_WEBHOOK_URL=${CONTROLLER_WEBHOOK_URL:-}
+      - CONTROLLER_WEBHOOK_SECRET=${CONTROLLER_WEBHOOK_SECRET:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - dashboard_data:/data
     mem_limit: 128m

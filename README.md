@@ -128,10 +128,15 @@ echo "Token: $TOKEN  ← Agent 配置用"
 | `MCP_LOCAL_NETWORK_ENABLED` | `false` | 允许非 loopback 来源访问独立 MCP listener；必须同时设置 `MCP_SERVER_TOKEN` 或 `MCP_ADMIN_TOKEN`，用于 Docker 宿主机本地代理场景 |
 | `MCP_REMOTE_ENABLED` | `false` | 设置为 `true` 时在主服务 `/api/mcp` 暴露给 OpenClaw/Hermes 等远程 MCP 客户端；必须同时设置 `MCP_SERVER_TOKEN` 或 `MCP_ADMIN_TOKEN` |
 | `MCP_SERVER_TOKEN` / `MCP_ADMIN_TOKEN` | 空 | MCP Bearer token；本机/远程控制器都推荐设置，远程 MCP 必须设置 |
+| `CONTROLLER_WEBHOOK_ENABLED` | `false` | 显式设为 `true` 才允许 Live 向外部控制器发送高价值监督事件 |
+| `CONTROLLER_WEBHOOK_URL` | 空 | Hermes Webhook URL；同机 Docker 可用 `http://host.docker.internal:8644/webhooks/live-supervision` |
+| `CONTROLLER_WEBHOOK_SECRET` | 空 | 独立随机 HMAC secret；禁止复用站点、设备或 MCP 密钥 |
 
 AI 总结支持日总结和周总结。`GET /api/daily-summary`、`GET /api/weekly-summary` 可公开读取缓存结果；`POST /api/daily-summary`、`POST /api/weekly-summary` 会强制重新生成，`GET/POST /api/summary-settings` 用于读取和保存通用目标、计划休息、每周 7 天目标计划、日总结时间和周总结星期/时间，这些管理接口都需要 `DEVICE_TOKEN_*` Bearer token。总结/监督语气（温和/一般/锐评）由服务端控制：可用 `AI_SUMMARY_MODE` 固定，或通过 MCP 的 `live_dashboard.set_summary_mode` 由 OpenClaw/Hermes 等服务端控制器调整，App 端提交的 `mode` 会被忽略。日总结会把当前日期、星期几、当天时间线、前两天时间线和前两天 AI 评价一起发给 AI；周总结会发送 7 天完整时间线、7 天目标计划和 7 天 AI 评价。AI 返回内容按不可信输入处理，只保留安全 Markdown 子集，清理 HTML、代码块、链接、命令、脚本和控制字符后保存。服务端使用 Vercel AI SDK 的 OpenAI-compatible provider 发起非流式文本生成。
 
 服务端内置 MCP 控制面。本机默认监听 `127.0.0.1:${MCP_PORT || 3031}/api/mcp`，供本机 agent 使用，建议配置 `MCP_SERVER_TOKEN` 并让控制器携带 `Authorization: Bearer <MCP_SERVER_TOKEN>`；只有显式设置 `MCP_LOOPBACK_TOKENLESS_ENABLED=true` 时，未配置 token 的 loopback 本地开发才会被放行。Docker 宿主机本地控制器需要访问独立 MCP listener 时，可把 compose 里的 `MCP_HOST` 设为 `0.0.0.0`、`MCP_LOCAL_NETWORK_ENABLED=true`，并配置 `MCP_SERVER_TOKEN`，端口仍只映射到宿主机 `127.0.0.1`。如果需要让 OpenClaw/Hermes 这类远程 MCP 客户端接管服务，设置 `MCP_REMOTE_ENABLED=true` 并配置 `MCP_SERVER_TOKEN`，然后把客户端连接到 `https://你的域名/api/mcp`，Header 使用 `Authorization: Bearer <MCP_SERVER_TOKEN>`。远程 MCP 工具可以读取设备/时间线/冻结列表/应用列表、下发设备命令、设置持久监督策略、读取/更新服务端设置、设置服务端总结语气、同步 OpenClaw/Hermes 人设或附属关系、读取控制器记忆 feed、保存控制器处理后的日/周总结、启动/查询 AI job 和触发监督复核。同步的人设会进入日/周总结与监督 system prompt，用于保持口吻一致，但会作为不可信数据引用，不能覆盖安全、隐私、JSON schema 或设备能力约束。推荐由 OpenClaw/Hermes 读取 `live_dashboard.get_controller_memory_feed` 后自行整理长期记忆和总结，再用 `live_dashboard.save_controller_summary` 写回服务端，这样记忆更完整、风格更一致；分页时优先使用 `next_cursor`，避免同一时间戳的大量事件漏读。`live_dashboard.run_supervision_check` 会快速排入 `supervision_check` AI job 并返回 `request_id`，控制器再用 `live_dashboard.get_ai_job` 查询结果，避免远程 MCP 被边缘超时打断。
+
+可选的控制器出站 Webhook 只发送已经确认的监督异常元数据，不发送原始标题、时间线或 AI 自由文本。Live 使用 `X-Webhook-Timestamp` 与 `X-Webhook-Signature-V2` 对原始 JSON body 做 Hermes Generic HMAC V2 签名，并用稳定 `X-Request-ID` 去重；Hermes 收到后再通过 MCP 读取必要的最小时间窗复核。Docker 部署需要 `host.docker.internal:host-gateway` 映射，Hermes Webhook 应只绑定宿主/容器可达地址，不应通过 Nginx 或防火墙暴露到公网。
 
 服务端会自动生成 `ai-prompts.json` 模板，可覆盖 `daily_summary_system`、`weekly_summary_system`、`supervision_rules_system`、`supervision_verify_system` 四个 system prompt。字段缺失或字符串为空时使用内置默认提示词；时间线、设备能力、当前时间、最终 JSON 指令和缓存切分结构仍由服务端生成。
 
