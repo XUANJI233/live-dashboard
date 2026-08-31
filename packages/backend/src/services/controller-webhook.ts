@@ -1,9 +1,10 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 
 export const CONTROLLER_EVENT_SCHEMA = "live_dashboard.controller_event.v1" as const;
 
 export interface ControllerEvent {
   schema: typeof CONTROLLER_EVENT_SCHEMA;
+  v: 1;
   event_id: string;
   event_type: "supervision.deviation_detected";
   occurred_at: string;
@@ -23,6 +24,31 @@ export function controllerWebhookEnabled(): boolean {
   return /^true$/i.test(process.env.CONTROLLER_WEBHOOK_ENABLED || "");
 }
 
+export function controllerWebhookDueDeviceIds(
+  deviceIds: string[],
+  now: Date,
+  cooldownMinutes: number,
+  lastNotificationAt: (deviceId: string) => string | null,
+): string[] {
+  const cooldownMs = Math.max(1, cooldownMinutes) * 60_000;
+  const due: string[] = [];
+  for (const deviceId of Array.from(new Set(deviceIds.filter(Boolean)))) {
+    const lastMs = Date.parse(lastNotificationAt(deviceId) || "");
+    if (!Number.isFinite(lastMs) || now.getTime() - lastMs >= cooldownMs) {
+      due.push(deviceId);
+    }
+  }
+  return due;
+}
+
+export function controllerWebhookEventId(deviceIds: string[], now: Date, cooldownMinutes: number): string {
+  const bucketMs = Math.max(1, cooldownMinutes) * 60_000;
+  const bucket = Math.floor(now.getTime() / bucketMs);
+  const devices = Array.from(new Set(deviceIds.filter(Boolean))).sort().join("\n");
+  const digest = createHash("sha256").update(devices).digest("hex").slice(0, 20);
+  return `supervision:${bucket}:${digest}`;
+}
+
 export async function notifyControllerEvent(event: ControllerEvent): Promise<ControllerWebhookDelivery> {
   if (!controllerWebhookEnabled()) {
     return { enabled: false, sent: false, reason: "disabled" };
@@ -33,6 +59,9 @@ export async function notifyControllerEvent(event: ControllerEvent): Promise<Con
   if (!url || !secret) {
     return { enabled: true, sent: false, reason: "not_configured" };
   }
+  if (reusedControllerSecret(secret)) {
+    return { enabled: true, sent: false, reason: "secret_reused" };
+  }
 
   const body = JSON.stringify(event);
   const timestamp = String(Math.floor(Date.now() / 1000));
@@ -40,22 +69,41 @@ export async function notifyControllerEvent(event: ControllerEvent): Promise<Con
     .update(`${timestamp}.${body}`)
     .digest("hex");
 
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Request-ID": event.event_id,
-        "X-Webhook-Timestamp": timestamp,
-        "X-Webhook-Signature-V2": signature,
-      },
-      body,
-      signal: AbortSignal.timeout(3_000),
-    });
-    return response.ok
-      ? { enabled: true, sent: true, status: response.status }
-      : { enabled: true, sent: false, status: response.status, reason: `http_${response.status}` };
-  } catch {
-    return { enabled: true, sent: false, reason: "request_failed" };
+  let failure: ControllerWebhookDelivery = { enabled: true, sent: false, reason: "request_failed" };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Request-ID": event.event_id,
+          "X-Webhook-Timestamp": timestamp,
+          "X-Webhook-Signature-V2": signature,
+        },
+        body,
+        signal: AbortSignal.timeout(3_000),
+      });
+      if (response.ok) return { enabled: true, sent: true, status: response.status };
+      failure = { enabled: true, sent: false, status: response.status, reason: `http_${response.status}` };
+      if (response.status < 500) break;
+    } catch {
+      failure = { enabled: true, sent: false, reason: "request_failed" };
+    }
   }
+  return failure;
+}
+
+function reusedControllerSecret(secret: string): boolean {
+  const forbidden = new Set<string>();
+  for (const key of ["HASH_SECRET", "MCP_SERVER_TOKEN", "MCP_ADMIN_TOKEN"]) {
+    const value = process.env[key] || "";
+    if (value) forbidden.add(value);
+  }
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!key.startsWith("DEVICE_TOKEN_") || !value) continue;
+    forbidden.add(value);
+    const token = value.split(":", 1)[0];
+    if (token) forbidden.add(token);
+  }
+  return forbidden.has(secret);
 }

@@ -20,7 +20,9 @@ import { promptOverride } from "./prompt-overrides";
 import { withControllerPersonaPrompt } from "./controller-persona";
 import {
   CONTROLLER_EVENT_SCHEMA,
+  controllerWebhookDueDeviceIds,
   controllerWebhookEnabled,
+  controllerWebhookEventId,
   notifyControllerEvent,
 } from "./controller-webhook";
 import {
@@ -45,7 +47,7 @@ const LEGACY_LAST_AI_CHECK_AT_KEY = "supervision_last_ai_check_at";
 const LAST_SCHEDULED_AI_CHECK_AT_KEY = "supervision_last_scheduled_ai_check_at";
 const LAST_TRIGGERED_AI_CHECK_AT_KEY = "supervision_last_triggered_ai_check_at";
 const LAST_ALERT_AT_KEY = "supervision_last_alert_at";
-const LAST_CONTROLLER_WEBHOOK_AT_KEY = "supervision_last_controller_webhook_at";
+const LAST_CONTROLLER_WEBHOOK_AT_KEY_PREFIX = "supervision_last_controller_webhook_at";
 const LAST_REPORT_TRIGGER_AT_KEY = "supervision_last_report_trigger_at";
 const SUPERVISION_HISTORY_KEY = "supervision_recent_history";
 const MAX_REGEX_COUNT = 12;
@@ -237,32 +239,45 @@ export async function runSupervisionTick(
       unfreeze_commands: decision.unfreeze_commands,
       stats,
     });
-    if (decision.deviated && controllerWebhookEnabled() && isControllerWebhookDue(settings, now)) {
-      const deviceIds = Array.from(new Set(
+    const deviceCapabilities = supervisionDeviceCapabilityMap();
+    if (decision.deviated && controllerWebhookEnabled()) {
+      const deviatedDeviceIds = Array.from(new Set(
         decision.device_decisions
           .filter((item) => item.deviated)
           .map((item) => item.device_id)
-          .filter(Boolean),
+          .filter((deviceId) => deviceCapabilities.has(deviceId)),
       ));
-      metaSet(LAST_CONTROLLER_WEBHOOK_AT_KEY, checkedAt);
-      void notifyControllerEvent({
-        schema: CONTROLLER_EVENT_SCHEMA,
-        event_id: `supervision:${checkedAt}`,
-        event_type: "supervision.deviation_detected",
-        occurred_at: checkedAt,
-        source,
-        device_ids: deviceIds,
-        reason_codes: ["deviation_confirmed"],
-      }).then((delivery) => {
-        if (delivery.enabled && !delivery.sent) {
-          if (metaGet(LAST_CONTROLLER_WEBHOOK_AT_KEY) === checkedAt) {
-            metaSet(LAST_CONTROLLER_WEBHOOK_AT_KEY, "");
+      const cooldownMinutes = Math.min(settings.supervision_check_interval_minutes, 60);
+      const deviceIds = controllerWebhookDueDeviceIds(
+        deviatedDeviceIds,
+        now,
+        cooldownMinutes,
+        (deviceId) => metaGet(controllerWebhookMetaKey(deviceId)),
+      );
+      for (const deviceId of deviceIds) {
+        metaSet(controllerWebhookMetaKey(deviceId), checkedAt);
+      }
+      if (deviceIds.length > 0) {
+        void notifyControllerEvent({
+          schema: CONTROLLER_EVENT_SCHEMA,
+          v: 1,
+          event_id: controllerWebhookEventId(deviceIds, now, cooldownMinutes),
+          event_type: "supervision.deviation_detected",
+          occurred_at: checkedAt,
+          source,
+          device_ids: deviceIds,
+          reason_codes: ["deviation_confirmed"],
+        }).then((delivery) => {
+          if (delivery.enabled && !delivery.sent) {
+            for (const deviceId of deviceIds) {
+              const key = controllerWebhookMetaKey(deviceId);
+              if (metaGet(key) === checkedAt) metaSet(key, "");
+            }
+            console.warn(`[controller-webhook] supervision event not delivered: ${delivery.reason || "unknown"}`);
           }
-          console.warn(`[controller-webhook] supervision event not delivered: ${delivery.reason || "unknown"}`);
-        }
-      });
+        });
+      }
     }
-    const deviceCapabilities = supervisionDeviceCapabilityMap();
     const deliverableDecisions = decision.device_decisions
       .map((item) => constrainDecisionForCapability(item, deviceCapabilities.get(item.device_id), settings))
       .filter((item): item is SupervisionCommandDecision => !!item)
@@ -363,11 +378,8 @@ function matchesReportCandidate(candidate: SupervisionReportCandidate, rules: Co
   return rules.blacklist.some((rule) => rule.test(text)) || rules.risk.some((rule) => rule.test(text));
 }
 
-function isControllerWebhookDue(settings: SummarySettings, now: Date): boolean {
-  const last = timestampMs(metaGet(LAST_CONTROLLER_WEBHOOK_AT_KEY));
-  if (last === null) return true;
-  const minInterval = Math.min(settings.supervision_check_interval_minutes, 60);
-  return now.getTime() - last >= minInterval * 60_000;
+function controllerWebhookMetaKey(deviceId: string): string {
+  return `${LAST_CONTROLLER_WEBHOOK_AT_KEY_PREFIX}:${deviceId}`;
 }
 
 function supervisionReportText(candidate: SupervisionReportCandidate): string {

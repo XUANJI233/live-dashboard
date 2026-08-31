@@ -399,7 +399,8 @@ Live 可把已经确认的高价值监督异常作为最小事件发送给同机
 ```json
 {
   "schema": "live_dashboard.controller_event.v1",
-  "event_id": "supervision:2026-06-11T10:00:00.000Z",
+  "v": 1,
+  "event_id": "supervision:494677:0123456789abcdefabcd",
   "event_type": "supervision.deviation_detected",
   "occurred_at": "2026-06-11T10:00:00.000Z",
   "source": "scheduled",
@@ -409,6 +410,8 @@ Live 可把已经确认的高价值监督异常作为最小事件发送给同机
 ```
 
 - 正常、已恢复、无时间线、未达触发条件或 AI 判定失败都不发送该事件。
+- `v` 当前固定为 `1`；`event_id`、`device_ids` 和 `reason_codes` 只允许协议规定的 ASCII 安全集合。
+- `event_id` 由通知冷却时间桶和已验证设备集合稳定派生；同一时间桶内的重试必须复用同一 ID。
 - Payload 只携带稳定元数据，不携带原始窗口标题、时间线、AI 自由文本、token 或密钥；Hermes 收到后必须通过 MCP 读取必要的最小时间窗并自行复核。
 - 事件使用上述 V2 HMAC headers；Hermes 应把 `X-Request-ID` 作为幂等键。
 - 同一监督异常遵循独立控制器通知冷却，不复用设备命令的 `supervision_last_alert_at`，避免两条节流链互相抑制。

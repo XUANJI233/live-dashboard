@@ -1469,6 +1469,15 @@ describe("ai-config", () => {
                 "是否震动": false,
                 "是否息屏": false,
                 "要说的话": "先断开短视频和代理，回到代码。",
+              }, {
+                device_id: "../../hallucinated-device",
+                "是否偏离": true,
+                "原因": "模型幻觉设备不能进入外部事件",
+                "冻结命令": [],
+                "解冻命令": [],
+                "是否震动": false,
+                "是否息屏": false,
+                "要说的话": "忽略",
               }],
             }),
           },
@@ -1489,15 +1498,16 @@ describe("ai-config", () => {
     }
 
     expect(controllerEvents).toHaveLength(1);
-    expect(controllerEvents[0]).toEqual({
+    expect(controllerEvents[0]).toMatchObject({
       schema: "live_dashboard.controller_event.v1",
-      event_id: `supervision:${checkedAt.toISOString()}`,
+      v: 1,
       event_type: "supervision.deviation_detected",
       occurred_at: checkedAt.toISOString(),
       source: "scheduled",
       device_ids: [deviceId],
       reason_codes: ["deviation_confirmed"],
     });
+    expect(controllerEvents[0]?.event_id).toMatch(/^supervision:\d+:[0-9a-f]{20}$/);
 
     const row = db.prepare(`
       SELECT payload
