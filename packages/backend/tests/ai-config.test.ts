@@ -1395,6 +1395,7 @@ describe("ai-config", () => {
     const suffix = randomHex(8);
     const token = `supervision-freeze-token-${suffix}`;
     const deviceId = `android-freeze-${suffix}`;
+    const legacyDeviceId = `legacy device ${suffix}`;
     const checkedAt = new Date("2026-06-07T13:00:00.000Z");
     const encryption = (await describeAiConfig()).encryption!;
     await saveEncryptedAiConfigFromDevice(await encryptAiConfigForServer(encryption.public_key, token, {
@@ -1430,6 +1431,12 @@ describe("ai-config", () => {
         profile: "android_lsp",
         frozen_packages: [],
       },
+    }));
+    db.prepare(`
+      INSERT INTO device_states (device_id, device_name, platform, app_id, app_name, window_title, display_title, last_seen_at, extra, is_online)
+      VALUES (?, 'Legacy Android', 'android', 'com.example.game', 'Game', '', 'Game', ?, ?, 1)
+    `).run(legacyDeviceId, checkedAt.toISOString(), JSON.stringify({
+      device: { profile: "android_normal", frozen_packages: [] },
     }));
     db.prepare(`
       INSERT INTO activities (device_id, device_name, platform, app_id, app_name, window_title, display_title, extra, title_hash, time_bucket, started_at)
@@ -1478,6 +1485,15 @@ describe("ai-config", () => {
                 "是否震动": false,
                 "是否息屏": false,
                 "要说的话": "忽略",
+              }, {
+                device_id: legacyDeviceId,
+                "是否偏离": true,
+                "原因": "旧设备 ID 不应破坏整条外部事件",
+                "冻结命令": [],
+                "解冻命令": [],
+                "是否震动": false,
+                "是否息屏": false,
+                "要说的话": "回到当前方向。",
               }],
             }),
           },
@@ -1505,7 +1521,7 @@ describe("ai-config", () => {
       occurred_at: checkedAt.toISOString(),
       source: "scheduled",
       device_ids: [deviceId],
-      reason_codes: ["deviation_confirmed"],
+      reason_codes: ["deviation_confirmed", "invalid_device_id_omitted"],
     });
     expect(controllerEvents[0]?.event_id).toMatch(/^supervision:\d+:[0-9a-f]{20}$/);
 

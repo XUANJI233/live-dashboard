@@ -17,6 +17,7 @@ import { healthContextLinesForRange, trustedWatchSleepingAt } from "./health-con
 import { getDeviceInstalledApps, listDeviceContexts, type InstalledAppItem } from "./device-context";
 import { formatPromptDateTime, formatPromptMinute, localDateStringForOffset } from "./prompt-time";
 import { promptOverride } from "./prompt-overrides";
+import { cleanIdentifier } from "./mcp-contracts";
 import { withControllerPersonaPrompt } from "./controller-persona";
 import {
   CONTROLLER_EVENT_SCHEMA,
@@ -241,12 +242,19 @@ export async function runSupervisionTick(
     });
     const deviceCapabilities = supervisionDeviceCapabilityMap();
     if (decision.deviated && controllerWebhookEnabled()) {
-      const deviatedDeviceIds = Array.from(new Set(
+      const knownDeviatedDeviceIds = Array.from(new Set(
         decision.device_decisions
           .filter((item) => item.deviated)
           .map((item) => item.device_id)
           .filter((deviceId) => deviceCapabilities.has(deviceId)),
       ));
+      const deviatedDeviceIds = knownDeviatedDeviceIds
+        .map((deviceId) => cleanIdentifier(deviceId))
+        .filter(Boolean);
+      const omittedInvalidDeviceId = deviatedDeviceIds.length < knownDeviatedDeviceIds.length;
+      if (omittedInvalidDeviceId) {
+        console.warn("[controller-webhook] omitted supervision event device ids that violate the protocol");
+      }
       const cooldownMinutes = Math.min(settings.supervision_check_interval_minutes, 60);
       const deviceIds = controllerWebhookDueDeviceIds(
         deviatedDeviceIds,
@@ -266,7 +274,10 @@ export async function runSupervisionTick(
           occurred_at: checkedAt,
           source,
           device_ids: deviceIds,
-          reason_codes: ["deviation_confirmed"],
+          reason_codes: [
+            "deviation_confirmed",
+            ...(omittedInvalidDeviceId ? ["invalid_device_id_omitted"] : []),
+          ],
         }).then((delivery) => {
           if (delivery.enabled && !delivery.sent) {
             for (const deviceId of deviceIds) {
