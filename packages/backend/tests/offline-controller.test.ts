@@ -162,6 +162,52 @@ describe("offline controller events", () => {
     }
   });
 
+  test("serializes concurrent outbox flushes so Hermes sees one event once", async () => {
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_URL = "https://controller.example/webhooks/live-supervision";
+    process.env.CONTROLLER_WEBHOOK_SECRET = "independent-concurrent-controller-secret";
+    const { db } = await import("../src/db");
+    const { enqueueControllerEvent, flushControllerEvents } = await import("../src/services/controller-event-outbox");
+    const event = {
+      schema: "live_dashboard.controller_event.v1" as const,
+      v: 1 as const,
+      event_id: "supervision:concurrent-flush:test",
+      event_type: "supervision.review_requested" as const,
+      occurred_at: "2026-09-01T04:30:00.000Z",
+      source: "scheduled" as const,
+      device_ids: ["android-main"],
+      reason_codes: ["scheduled_check"],
+    };
+    const originalFetch = globalThis.fetch;
+    let requests = 0;
+    globalThis.fetch = (async () => {
+      requests += 1;
+      await Bun.sleep(20);
+      return Response.json({
+        status: "accepted",
+        ack: {
+          schema: "live_dashboard.controller_ack.v1",
+          v: 1,
+          event_id: event.event_id,
+          accepted: true,
+        },
+      }, { status: 202 });
+    }) as unknown as typeof fetch;
+
+    try {
+      enqueueControllerEvent(event);
+      await Promise.all([
+        flushControllerEvents(new Date("2026-09-01T04:30:00.000Z")),
+        flushControllerEvents(new Date("2026-09-01T04:30:01.000Z")),
+      ]);
+      expect(requests).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      db.prepare("DELETE FROM controller_event_outbox WHERE event_id = ?").run(event.event_id);
+    }
+  });
+
   test("lets a websocket close become a durable offline event only after its heartbeat grace", async () => {
     process.env.HERMES_CONTROLLER_ENABLED = "true";
     process.env.CONTROLLER_WEBHOOK_ENABLED = "true";

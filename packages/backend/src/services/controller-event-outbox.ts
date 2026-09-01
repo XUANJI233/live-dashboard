@@ -62,6 +62,7 @@ const pendingControllerEventCount = db.prepare(`
 const controllerEventState = db.prepare(`
   SELECT delivered_at FROM controller_event_outbox WHERE event_id = ?
 `);
+let flushInFlight: Promise<ControllerEventFlushResult> | null = null;
 
 export function enqueueControllerEvent(event: ControllerEvent, createdAt = event.occurred_at): boolean {
   if (!validatedControllerEvent(event) || Number.isNaN(Date.parse(createdAt))) return false;
@@ -69,7 +70,18 @@ export function enqueueControllerEvent(event: ControllerEvent, createdAt = event
   return true;
 }
 
-export async function flushControllerEvents(now = new Date()): Promise<ControllerEventFlushResult> {
+export function flushControllerEvents(now = new Date()): Promise<ControllerEventFlushResult> {
+  if (flushInFlight) return flushInFlight;
+  const run = flushControllerEventsOnce(now);
+  flushInFlight = run;
+  const clear = () => {
+    if (flushInFlight === run) flushInFlight = null;
+  };
+  void run.then(clear, clear);
+  return run;
+}
+
+async function flushControllerEventsOnce(now: Date): Promise<ControllerEventFlushResult> {
   const attemptedAt = validIsoTimestamp(now);
   const deliveredIds: string[] = [];
   const pending = pendingControllerEvents.all(MAX_EVENTS_PER_FLUSH) as OutboxRow[];
