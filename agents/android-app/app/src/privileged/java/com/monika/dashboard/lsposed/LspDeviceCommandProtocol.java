@@ -84,6 +84,26 @@ final class LspDeviceCommandProtocol {
         return false;
     }
 
+    static boolean matchesAnyField(List<Pattern> patterns, String... values) {
+        if (patterns == null || patterns.isEmpty() || values == null) return false;
+        for (Pattern pattern : patterns) {
+            if (matchesField(pattern, values)) return true;
+        }
+        return false;
+    }
+
+    static boolean matchesField(Pattern pattern, String... values) {
+        if (pattern == null || values == null) return false;
+        for (String value : values) {
+            String clean = safeString(value);
+            if (clean.length() == 0) continue;
+            try {
+                if (pattern.matcher(clean).find()) return true;
+            } catch (Throwable ignored) {}
+        }
+        return false;
+    }
+
     static void put(JSONObject target, String key, Object value) {
         try {
             target.put(key, value);

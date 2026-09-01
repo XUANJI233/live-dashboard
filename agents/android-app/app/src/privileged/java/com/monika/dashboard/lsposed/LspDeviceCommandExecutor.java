@@ -170,10 +170,11 @@ final class LspDeviceCommandExecutor {
     private LinkedHashSet<String> resolveFreezeTargets(JSONArray commands, List<Pattern> patterns) {
         LinkedHashSet<String> targets = new LinkedHashSet<>();
         String foregroundPackage = LspDeviceCommandProtocol.safeString(host.foregroundPackage());
-        String currentText = foregroundPackage + " "
-                + LspDeviceCommandProtocol.safeString(host.foregroundApp()) + " "
-                + LspDeviceCommandProtocol.safeString(host.foregroundTitle());
-        if (foregroundPackage.length() > 0 && LspDeviceCommandProtocol.matchesAny(patterns, currentText)) {
+        if (foregroundPackage.length() > 0 && LspDeviceCommandProtocol.matchesAnyField(
+                patterns,
+                foregroundPackage,
+                host.foregroundApp(),
+                host.foregroundTitle())) {
             targets.add(foregroundPackage);
         }
         for (int i = 0; i < commands.length(); i++) {
@@ -183,8 +184,7 @@ final class LspDeviceCommandExecutor {
         }
         for (LspInstalledApp app : host.installedApps()) {
             if (app == null || app.packageName == null || app.packageName.length() == 0) continue;
-            String text = app.packageName + " " + LspDeviceCommandProtocol.safeString(app.label);
-            if (LspDeviceCommandProtocol.matchesAny(patterns, text)) {
+            if (LspDeviceCommandProtocol.matchesAnyField(patterns, app.packageName, app.label)) {
                 targets.add(app.packageName);
                 if (targets.size() >= 12) break;
             }
@@ -193,10 +193,11 @@ final class LspDeviceCommandExecutor {
     }
 
     private boolean matchesFrozen(LspFrozenPackage frozen, List<Pattern> patterns) {
-        String text = LspDeviceCommandProtocol.safeString(frozen.packageName) + " "
-                + LspDeviceCommandProtocol.safeString(frozen.appName) + " "
-                + LspDeviceCommandProtocol.safeString(frozen.reason);
-        return LspDeviceCommandProtocol.matchesAny(patterns, text);
+        return LspDeviceCommandProtocol.matchesAnyField(
+                patterns,
+                frozen.packageName,
+                frozen.appName,
+                frozen.reason);
     }
 
     private boolean commandsContainPendingReview(JSONArray commands) {

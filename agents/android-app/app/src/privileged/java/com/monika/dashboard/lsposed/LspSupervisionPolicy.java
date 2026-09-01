@@ -32,7 +32,8 @@ final class LspSupervisionPolicy {
     private int riskTriggerMinutes = DEFAULT_RISK_TRIGGER_MINUTES;
     private String policySignature = "";
     private String currentPackage = "";
-    private String currentText = "";
+    private String currentAppName = "";
+    private String currentTitle = "";
     private long currentStartedAt = 0L;
     private long lastRiskRequestAt = 0L;
     private boolean reviewRequestPending = false;
@@ -102,15 +103,16 @@ final class LspSupervisionPolicy {
             boolean protectedPackage) {
         resetDailyIfNeeded(now);
         String pkg = cleanPackage(packageName);
-        String text = foregroundText(pkg, appName, title);
-        updateCurrentUsage(pkg, text, now);
+        String cleanAppName = LspDeviceCommandProtocol.safeString(appName);
+        String cleanTitle = LspDeviceCommandProtocol.safeString(title);
+        updateCurrentUsage(pkg, cleanAppName, cleanTitle, now);
         Decision decision = new Decision();
         if (protectedPackage || pkg.length() == 0 || "idle".equals(pkg) || "sleeping".equals(pkg)) {
             return decision;
         }
 
         long activeTotalMs = activeTotalMs(pkg, now);
-        TimeLimitRule limitRule = matchingLimitRule(text);
+        TimeLimitRule limitRule = matchingLimitRule(pkg, cleanAppName, cleanTitle);
         if (limitRule != null
                 && activeTotalMs >= limitRule.limitMinutes * 60_000L
                 && !limitFrozenPackages.contains(pkg)) {
@@ -121,7 +123,8 @@ final class LspSupervisionPolicy {
                     : "app_time_limit_exceeded";
         }
 
-        boolean riskMatch = LspDeviceCommandProtocol.matchesAny(riskPatterns, text);
+        boolean riskMatch = LspDeviceCommandProtocol.matchesAnyField(
+                riskPatterns, pkg, cleanAppName, cleanTitle);
         if (riskMatch
                 && activeTotalMs >= riskTriggerMinutes * 60_000L
                 && !pendingRiskPackages.contains(pkg)
@@ -150,21 +153,24 @@ final class LspSupervisionPolicy {
         reviewRequestPending = false;
     }
 
-    private void updateCurrentUsage(String pkg, String text, long now) {
+    private void updateCurrentUsage(String pkg, String appName, String title, long now) {
         if (pkg.length() == 0 || "idle".equals(pkg) || "sleeping".equals(pkg)) {
             commitCurrent(now);
             currentPackage = "";
-            currentText = "";
+            currentAppName = "";
+            currentTitle = "";
             currentStartedAt = 0L;
             return;
         }
         if (!pkg.equals(currentPackage)) {
             commitCurrent(now);
             currentPackage = pkg;
-            currentText = text;
+            currentAppName = appName;
+            currentTitle = title;
             currentStartedAt = now;
         } else {
-            currentText = text;
+            currentAppName = appName;
+            currentTitle = title;
             if (currentStartedAt <= 0L) currentStartedAt = now;
         }
     }
@@ -189,7 +195,8 @@ final class LspSupervisionPolicy {
         long total = activeTotalMs(currentPackage, now);
         long best = Long.MAX_VALUE;
         if (!pendingRiskPackages.contains(currentPackage)
-                && LspDeviceCommandProtocol.matchesAny(riskPatterns, currentText)) {
+                && LspDeviceCommandProtocol.matchesAnyField(
+                        riskPatterns, currentPackage, currentAppName, currentTitle)) {
             long remainingToThreshold = riskTriggerMinutes * 60_000L - total;
             if (remainingToThreshold > 0L) {
                 best = Math.min(best, remainingToThreshold);
@@ -198,7 +205,7 @@ final class LspSupervisionPolicy {
                 best = Math.min(best, remainingCooldown > 0L ? remainingCooldown : MIN_CHECK_DELAY_MS);
             }
         }
-        TimeLimitRule limitRule = matchingLimitRule(currentText);
+        TimeLimitRule limitRule = matchingLimitRule(currentPackage, currentAppName, currentTitle);
         if (limitRule != null && !limitFrozenPackages.contains(currentPackage)) {
             best = Math.min(best, limitRule.limitMinutes * 60_000L - total);
         }
@@ -232,10 +239,11 @@ final class LspSupervisionPolicy {
         return remaining;
     }
 
-    private TimeLimitRule matchingLimitRule(String text) {
+    private TimeLimitRule matchingLimitRule(String packageName, String appName, String title) {
         for (TimeLimitRule rule : timeLimitRules) {
             try {
-                if (rule.pattern.matcher(text).find()) return rule;
+                if (LspDeviceCommandProtocol.matchesField(
+                        rule.pattern, packageName, appName, title)) return rule;
             } catch (Throwable ignored) {}
         }
         return null;
@@ -251,7 +259,8 @@ final class LspSupervisionPolicy {
         lastRiskRequestAtByPackage.clear();
         reviewRequestPending = false;
         currentPackage = "";
-        currentText = "";
+        currentAppName = "";
+        currentTitle = "";
         currentStartedAt = 0L;
     }
 
@@ -271,12 +280,6 @@ final class LspSupervisionPolicy {
     private String cleanPackage(String value) {
         String clean = LspDeviceCommandProtocol.safeString(value);
         return clean.length() > 160 ? clean.substring(0, 160) : clean;
-    }
-
-    private String foregroundText(String pkg, String appName, String title) {
-        return cleanPackage(pkg) + " "
-                + LspDeviceCommandProtocol.safeString(appName) + " "
-                + LspDeviceCommandProtocol.safeString(title);
     }
 
     private String policySignature(List<Pattern> risk, List<TimeLimitRule> limits, int riskMinutes) {

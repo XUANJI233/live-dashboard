@@ -54,6 +54,26 @@ public class LspSupervisionPolicyTest {
     }
 
     @Test
+    public void anchoredPackageRiskPatternMatchesPackageField() throws Exception {
+        LspSupervisionPolicy policy = new LspSupervisionPolicy();
+        policy.applyPolicy(policyJson(
+                new JSONArray().put("^com\\.ztgame\\.yyzy$"),
+                3,
+                new JSONArray()));
+
+        policy.evaluate("com.ztgame.yyzy", "月圆之夜", "正在用月圆之夜", NOW, false);
+        LspSupervisionPolicy.Decision triggered = policy.evaluate(
+                "com.ztgame.yyzy",
+                "月圆之夜",
+                "正在用月圆之夜",
+                NOW + 3 * 60_000L + 1L,
+                false);
+
+        assertEquals("com.ztgame.yyzy", triggered.riskReviewPackage);
+        assertTrue(policy.shouldRequestReviewForReport());
+    }
+
+    @Test
     public void timeLimitFreezesWithoutRequestingRiskReview() throws Exception {
         LspSupervisionPolicy policy = new LspSupervisionPolicy();
         policy.applyPolicy(policyJson(
