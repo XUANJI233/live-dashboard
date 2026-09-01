@@ -8,6 +8,8 @@ These assets make Hermes the conversational controller while Live Dashboard rema
 - `prompts/supervision.md`: event-triggered review; normal/duplicate/low-confidence cases stay silent.
 - `prompts/companion.md`: rate-limited proactive opportunity where speaking is the default when grounded context exists.
 - `proactive_candidate.py`: persistent 30-minute probability gate; unchanged output suppresses the agent entirely.
+- `followup_candidate.py`: reawakens Hermes every five minutes after a successful proactive Weixin output until a later user reply (12-hour stale-root bound).
+- `hermes-gateway-strict-skills.conf`: forces the complete strict persona stack into every Weixin DM session instead of relying on implicit skill selection.
 - `trigger_live_supervision.py`: authenticated webhook filter that stores the minimal event in the supervision cron notepad and requests an attached cron run. It prints no stdout so the webhook route itself never starts a second agent session.
 
 Production secrets and job IDs are not stored here. Deploy the script under the Hermes profile `scripts/` directory, keep configuration files mode `0600`, bind the Hermes webhook only to the Docker bridge, and use an independent random HMAC secret.
