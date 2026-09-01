@@ -100,6 +100,44 @@ describe("device-status-handler", () => {
     expect(state?.extra).not.toContain("heartbeat_only");
   });
 
+  test("full LSP reports clear stale frozen packages while heartbeats preserve them", async () => {
+    const { processReportPayload } = await import("../src/services/device-status-handler");
+    const { db } = await import("../src/db");
+    const device = {
+      device_id: "frozen-state-phone",
+      device_name: "Phone",
+      platform: "android" as const,
+    };
+
+    processReportPayload({
+      app_id: "com.reader",
+      window_title: "Reading",
+      extra: {
+        device: {
+          profile: "android_lsp",
+          frozen_packages: [{ package_name: "com.example.game", mode: "suspended" }],
+        },
+      },
+    }, device);
+    processReportPayload({
+      app_id: "com.reader",
+      window_title: "Reading",
+      extra: { device: { profile: "android_lsp", heartbeat_only: true } },
+    }, device);
+
+    let state = db.prepare("SELECT extra FROM device_states WHERE device_id = ?").get(device.device_id) as { extra: string };
+    expect(JSON.parse(state.extra).device.frozen_packages).toHaveLength(1);
+
+    processReportPayload({
+      app_id: "com.reader",
+      window_title: "Reading chapter 2",
+      extra: { device: { profile: "android_lsp" } },
+    }, device);
+
+    state = db.prepare("SELECT extra FROM device_states WHERE device_id = ?").get(device.device_id) as { extra: string };
+    expect(JSON.parse(state.extra).device.frozen_packages).toBeUndefined();
+  });
+
   test("stores installed app snapshots but strips them from public current output", async () => {
     const { processReportPayload } = await import("../src/services/device-status-handler");
     const { db } = await import("../src/db");

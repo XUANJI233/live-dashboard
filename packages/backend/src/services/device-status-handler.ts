@@ -186,7 +186,7 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       const ambientLux = cleanFiniteNumber(deviceBody.ambient_lux, 0, 200_000);
       if (ambientLux != null) deviceExtra.ambient_lux = Math.round(ambientLux * 10) / 10;
       const frozenPackages = cleanFrozenPackages(deviceBody.frozen_packages);
-      if (frozenPackages.length > 0) deviceExtra.frozen_packages = frozenPackages;
+      if (Array.isArray(deviceBody.frozen_packages)) deviceExtra.frozen_packages = frozenPackages;
       const installedApps = cleanInstalledApps(deviceBody.installed_apps);
       if (installedApps.length > 0) {
         deviceExtra.installed_apps = installedApps;
@@ -429,6 +429,11 @@ function mergeStableDeviceExtra(deviceId: string, extra: Record<string, unknown>
   extra.device = { ...previousDevice, ...currentDevice };
   if (typeof currentDevice.heartbeat_only !== "boolean") {
     delete (extra.device as Record<string, unknown>).heartbeat_only;
+  }
+  const profile = currentDevice.profile || previousDevice.profile;
+  const fullLspSnapshot = profile === "android_lsp" && currentDevice.heartbeat_only !== true;
+  if (fullLspSnapshot && !Object.hasOwn(currentDevice, "frozen_packages")) {
+    delete (extra.device as Record<string, unknown>).frozen_packages;
   }
 }
 
