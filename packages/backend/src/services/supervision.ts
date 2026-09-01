@@ -23,8 +23,12 @@ import { withControllerPersonaPrompt } from "./controller-persona";
 import {
   CONTROLLER_EVENT_SCHEMA,
   controllerWebhookEventId,
-  notifyControllerEvent,
 } from "./controller-webhook";
+import {
+  controllerEventDelivered,
+  enqueueControllerEvent,
+  flushControllerEvents,
+} from "./controller-event-outbox";
 import {
   parseDecisionResponse,
   parseRulesResponse,
@@ -212,24 +216,30 @@ export async function runSupervisionTick(
       return { ok: true, ran: false, reason: "no_controller_devices", source, checked_at: checkedAt };
     }
     const reasonCodes = controllerTriggerReasonCodes(source, triggers);
-    const delivery = await notifyControllerEvent({
+    const eventId = controllerWebhookEventId(
+      deviceIds,
+      now,
+      Math.min(settings.supervision_check_interval_minutes, 60),
+    );
+    const queued = enqueueControllerEvent({
       schema: CONTROLLER_EVENT_SCHEMA,
       v: 1,
-      event_id: controllerWebhookEventId(
-        deviceIds,
-        now,
-        Math.min(settings.supervision_check_interval_minutes, 60),
-      ),
+      event_id: eventId,
       event_type: "supervision.review_requested",
       occurred_at: checkedAt,
       source,
       device_ids: deviceIds,
       reason_codes: reasonCodes,
-    });
+    }, checkedAt);
+    if (!queued) {
+      return { ok: false, ran: false, reason: "controller_event_invalid", source, checked_at: checkedAt };
+    }
+    await flushControllerEvents(now);
+    const delivered = controllerEventDelivered(eventId);
     return {
-      ok: delivery.sent,
+      ok: true,
       ran: true,
-      reason: delivery.sent ? "hermes_review_requested" : "hermes_review_not_delivered",
+      reason: delivered ? "hermes_review_requested" : "hermes_review_queued",
       source,
       checked_at: checkedAt,
       ai_checked: false,
@@ -325,19 +335,23 @@ export function requestSupervisionCheckForReport(candidate: SupervisionReportCan
       console.warn("[controller-webhook] ignored a supervision candidate with an invalid device id");
       return false;
     }
-    metaSet(LAST_REPORT_TRIGGER_AT_KEY, now.toISOString());
-    void notifyControllerEvent({
+    const occurredAt = now.toISOString();
+    const eventId = controllerWebhookEventId([deviceId], now, 1);
+    const queued = enqueueControllerEvent({
       schema: CONTROLLER_EVENT_SCHEMA,
       v: 1,
-      event_id: controllerWebhookEventId([deviceId], now, 1),
+      event_id: eventId,
       event_type: "supervision.review_requested",
-      occurred_at: now.toISOString(),
+      occurred_at: occurredAt,
       source: "report",
       device_ids: [deviceId],
       reason_codes: [candidate.requested ? "device_requested" : "rule_match"],
-    }).then((delivery) => {
-      if (!delivery.sent) {
-        console.warn(`[controller-webhook] Hermes review request not delivered: ${delivery.reason || "unknown"}`);
+    }, occurredAt);
+    if (!queued) return false;
+    metaSet(LAST_REPORT_TRIGGER_AT_KEY, occurredAt);
+    void flushControllerEvents(now).then(() => {
+      if (!controllerEventDelivered(eventId)) {
+        console.warn(`[controller-webhook] Hermes review request queued for retry: ${eventId}`);
       }
     });
     return true;

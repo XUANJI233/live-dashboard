@@ -1,8 +1,11 @@
 import importlib.util
+import io
+import json
 import os
 import sys
 import types
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -95,12 +98,25 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
                 {"HERMES_LIVE_SUPERVISION_JOB_ID": "job-1", "HERMES_CONTROLLER_ENABLED": "true"},
                 clear=False,
             ):
-                self.assertEqual(MODULE.main(), 0)
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(MODULE.main(), 0)
         finally:
             MODULE._event_from_stdin = original_reader
 
         self.assertEqual(notes[0][0:2], ("job-1", "last_live_event"))
-        self.assertEqual(__import__("json").loads(notes[0][2]), event)
+        self.assertEqual(json.loads(notes[0][2]), event)
+        ack_wrapper = json.loads(output.getvalue())
+        self.assertTrue(ack_wrapper["__hermes_ignore__"])
+        self.assertEqual(
+            ack_wrapper["__hermes_ack__"],
+            {
+                "schema": "live_dashboard.controller_ack.v1",
+                "v": 1,
+                "event_id": event["event_id"],
+                "accepted": True,
+            },
+        )
 
     def test_injects_offline_event_as_a_transient_ai_prompt(self):
         event = {
@@ -161,7 +177,7 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
                 {"HERMES_LIVE_SUPERVISION_JOB_ID": "job-1", "HERMES_CONTROLLER_ENABLED": "false"},
                 clear=False,
             ):
-                self.assertEqual(MODULE.main(), 0)
+                self.assertEqual(MODULE.main(), 1)
         finally:
             MODULE._event_from_stdin = original_reader
 

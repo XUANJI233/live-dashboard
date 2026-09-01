@@ -2,6 +2,7 @@ import { createHash, createHmac } from "node:crypto";
 import { hermesControllerEnabled } from "./controller-mode";
 
 export const CONTROLLER_EVENT_SCHEMA = "live_dashboard.controller_event.v1" as const;
+export const CONTROLLER_ACK_SCHEMA = "live_dashboard.controller_ack.v1" as const;
 
 export interface ControllerEvent {
   schema: typeof CONTROLLER_EVENT_SCHEMA;
@@ -70,7 +71,13 @@ export async function notifyControllerEvent(event: ControllerEvent): Promise<Con
         body,
         signal: AbortSignal.timeout(3_000),
       });
-      if (response.ok) return { enabled: true, sent: true, status: response.status };
+      if (response.ok) {
+        if (await responseHasControllerAck(response, event.event_id)) {
+          return { enabled: true, sent: true, status: response.status };
+        }
+        failure = { enabled: true, sent: false, status: response.status, reason: "invalid_ack" };
+        continue;
+      }
       failure = { enabled: true, sent: false, status: response.status, reason: `http_${response.status}` };
       if (response.status < 500) break;
     } catch {
@@ -78,6 +85,26 @@ export async function notifyControllerEvent(event: ControllerEvent): Promise<Con
     }
   }
   return failure;
+}
+
+async function responseHasControllerAck(response: Response, eventId: string): Promise<boolean> {
+  const contentLength = Number(response.headers.get("content-length") || "0");
+  if (Number.isFinite(contentLength) && contentLength > 4_096) return false;
+  try {
+    const text = await response.text();
+    if (text.length > 4_096) return false;
+    const value = JSON.parse(text) as {
+      status?: unknown;
+      ack?: { schema?: unknown; v?: unknown; event_id?: unknown; accepted?: unknown };
+    };
+    return value.status === "accepted"
+      && value.ack?.schema === CONTROLLER_ACK_SCHEMA
+      && value.ack?.v === 1
+      && value.ack?.event_id === eventId
+      && value.ack?.accepted === true;
+  } catch {
+    return false;
+  }
 }
 
 function reusedControllerSecret(secret: string): boolean {

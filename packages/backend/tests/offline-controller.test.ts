@@ -42,11 +42,22 @@ describe("offline controller events", () => {
     const requests: Array<{ headers: Headers; event: Record<string, unknown> }> = [];
     let accept = false;
     globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const event = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
       requests.push({
         headers: new Headers(init?.headers),
-        event: JSON.parse(String(init?.body || "{}")) as Record<string, unknown>,
+        event,
       });
-      return new Response(null, { status: accept ? 202 : 503 });
+      return accept
+        ? Response.json({
+            status: "accepted",
+            ack: {
+              schema: "live_dashboard.controller_ack.v1",
+              v: 1,
+              event_id: event.event_id,
+              accepted: true,
+            },
+          }, { status: 202 })
+        : new Response(null, { status: 503 });
     }) as typeof fetch;
 
     try {
@@ -93,6 +104,64 @@ describe("offline controller events", () => {
     expect(state.is_online).toBe(0);
   });
 
+  test("durably retries a supervision review until Hermes returns the matching ack", async () => {
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_URL = "https://controller.example/webhooks/live-supervision";
+    process.env.CONTROLLER_WEBHOOK_SECRET = "independent-supervision-controller-secret";
+    const { db } = await import("../src/db");
+    const {
+      controllerEventDelivered,
+      enqueueControllerEvent,
+      flushControllerEvents,
+    } = await import("../src/services/controller-event-outbox");
+    const event = {
+      schema: "live_dashboard.controller_event.v1" as const,
+      v: 1 as const,
+      event_id: "supervision:durable-review:test",
+      event_type: "supervision.review_requested" as const,
+      occurred_at: "2026-09-01T04:00:00.000Z",
+      source: "report" as const,
+      device_ids: ["android-main"],
+      reason_codes: ["rule_match"],
+    };
+    const originalFetch = globalThis.fetch;
+    let validAck = false;
+    let requests = 0;
+    globalThis.fetch = (async () => {
+      requests += 1;
+      return validAck
+        ? Response.json({
+            status: "accepted",
+            ack: {
+              schema: "live_dashboard.controller_ack.v1",
+              v: 1,
+              event_id: event.event_id,
+              accepted: true,
+            },
+          }, { status: 202 })
+        : Response.json({ status: "ignored", reason: "script" }, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      expect(enqueueControllerEvent(event)).toBe(true);
+      const first = await flushControllerEvents(new Date("2026-09-01T04:00:00.000Z"));
+      expect(first.delivered_ids).toEqual([]);
+      expect(first.pending).toBeGreaterThanOrEqual(1);
+      expect(controllerEventDelivered(event.event_id)).toBe(false);
+      expect(requests).toBe(3);
+
+      validAck = true;
+      const second = await flushControllerEvents(new Date("2026-09-01T04:01:00.000Z"));
+      expect(second.delivered_ids).toContain(event.event_id);
+      expect(controllerEventDelivered(event.event_id)).toBe(true);
+      expect(requests).toBe(4);
+    } finally {
+      globalThis.fetch = originalFetch;
+      db.prepare("DELETE FROM controller_event_outbox WHERE event_id = ?").run(event.event_id);
+    }
+  });
+
   test("lets a websocket close become a durable offline event only after its heartbeat grace", async () => {
     process.env.HERMES_CONTROLLER_ENABLED = "true";
     process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
@@ -123,8 +192,17 @@ describe("offline controller events", () => {
     const originalFetch = globalThis.fetch;
     const requests: Array<Record<string, unknown>> = [];
     globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-      requests.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
-      return new Response(null, { status: 202 });
+      const event = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+      requests.push(event);
+      return Response.json({
+        status: "accepted",
+        ack: {
+          schema: "live_dashboard.controller_ack.v1",
+          v: 1,
+          event_id: event.event_id,
+          accepted: true,
+        },
+      }, { status: 202 });
     }) as typeof fetch;
 
     try {

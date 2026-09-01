@@ -1248,7 +1248,16 @@ describe("ai-config", () => {
       const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
       if (url === controllerWebhookUrl) {
         controllerWebhookCalls += 1;
-        return Response.json({ status: "accepted" }, { status: 202 });
+        const event = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        return Response.json({
+          status: "accepted",
+          ack: {
+            schema: "live_dashboard.controller_ack.v1",
+            v: 1,
+            event_id: event.event_id,
+            accepted: true,
+          },
+        }, { status: 202 });
       }
       const body = JSON.parse(String(init?.body || "{}"));
       expect(body.messages.at(-1)?.content).toContain("监督复核 JSON");
@@ -1464,8 +1473,17 @@ describe("ai-config", () => {
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
       if (url === controllerWebhookUrl) {
-        controllerEvents.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
-        return Response.json({ status: "accepted" }, { status: 202 });
+        const event = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        controllerEvents.push(event);
+        return Response.json({
+          status: "accepted",
+          ack: {
+            schema: "live_dashboard.controller_ack.v1",
+            v: 1,
+            event_id: event.event_id,
+            accepted: true,
+          },
+        }, { status: 202 });
       }
       const body = JSON.parse(String(init?.body || "{}"));
       expect(JSON.stringify(body.messages)).toContain("新增时间线 JSON");

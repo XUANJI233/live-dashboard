@@ -103,8 +103,16 @@ describe("controller webhook", () => {
       requestUrl = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
       requestBody = String(init?.body || "");
       requestHeaders = new Headers(init?.headers);
-      return Response.json({ status: "accepted" }, { status: 202 });
-    }) as typeof fetch;
+      return Response.json({
+        status: "accepted",
+        ack: {
+          schema: "live_dashboard.controller_ack.v1",
+          v: 1,
+          event_id: event.event_id,
+          accepted: true,
+        },
+      }, { status: 202 });
+    }) as unknown as typeof fetch;
 
     const { notifyControllerEvent } = await import("../src/services/controller-webhook");
     const result = await notifyControllerEvent(event);
@@ -121,6 +129,24 @@ describe("controller webhook", () => {
       .update(`${timestamp}.${requestBody}`)
       .digest("hex");
     expect(requestHeaders.get("x-webhook-signature-v2")).toBe(expectedSignature);
+  });
+
+  test("rejects a generic 2xx response without the matching durable ack", async () => {
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_URL = "http://host.docker.internal:8644/webhooks/live-supervision";
+    process.env.CONTROLLER_WEBHOOK_SECRET = "controller-webhook-test-secret";
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      attempts += 1;
+      return Response.json({ status: "ignored", reason: "script" }, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const { notifyControllerEvent } = await import("../src/services/controller-webhook");
+    const result = await notifyControllerEvent(event);
+
+    expect(attempts).toBe(3);
+    expect(result).toEqual({ enabled: true, sent: false, status: 200, reason: "invalid_ack" });
   });
 
   test("bounds delivery time and contains HTTP failures", async () => {

@@ -18,6 +18,7 @@ SUPPORTED_EVENT_TYPES = {
     "supervision.review_requested",
     "supervision.deviation_detected",
 }
+ACK_SCHEMA = "live_dashboard.controller_ack.v1"
 
 
 def _validated_event(payload: object) -> dict[str, Any] | None:
@@ -87,7 +88,7 @@ def _offline_extra_prompt(event: dict[str, Any]) -> str:
 
 def main() -> int:
     if os.environ.get("HERMES_CONTROLLER_ENABLED", "").strip().lower() != "true":
-        return 0
+        return 1
     event = _event_from_stdin()
     if not event:
         return 1
@@ -106,6 +107,21 @@ def main() -> int:
             return 1
     except Exception:
         return 1
+    print(
+        json.dumps(
+            {
+                "__hermes_ignore__": True,
+                "__hermes_ack__": {
+                    "schema": ACK_SCHEMA,
+                    "v": 1,
+                    "event_id": event["event_id"],
+                    "accepted": True,
+                },
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
     return 0
 
 

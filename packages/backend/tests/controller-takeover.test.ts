@@ -45,8 +45,17 @@ describe("Hermes controller takeover", () => {
     const originalFetch = globalThis.fetch;
     const events: Record<string, unknown>[] = [];
     globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-      events.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
-      return Response.json({ status: "accepted" }, { status: 202 });
+      const event = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+      events.push(event);
+      return Response.json({
+        status: "accepted",
+        ack: {
+          schema: "live_dashboard.controller_ack.v1",
+          v: 1,
+          event_id: event.event_id,
+          accepted: true,
+        },
+      }, { status: 202 });
     }) as typeof fetch;
     try {
       const accepted = requestSupervisionCheckFromReportPayload({
@@ -129,8 +138,17 @@ describe("Hermes controller takeover", () => {
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
       expect(url).toBe(process.env.CONTROLLER_WEBHOOK_URL!);
-      events.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
-      return Response.json({ status: "accepted" }, { status: 202 });
+      const event = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+      events.push(event);
+      return Response.json({
+        status: "accepted",
+        ack: {
+          schema: "live_dashboard.controller_ack.v1",
+          v: 1,
+          event_id: event.event_id,
+          accepted: true,
+        },
+      }, { status: 202 });
     }) as typeof fetch;
     try {
       const result = await runSupervisionTick(now, { source: "scheduled" });
