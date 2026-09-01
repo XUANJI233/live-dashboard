@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import sqlite3
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -107,6 +108,33 @@ def test_discovers_only_successfully_delivered_non_silent_source(tmp_path):
     assert outbound_at == path.stat().st_mtime
 
 
+def test_cron_delivery_echo_is_not_treated_as_weixin_reply(tmp_path):
+    database = tmp_path / "state.db"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, chat_type TEXT);
+        CREATE TABLE messages (
+          id INTEGER PRIMARY KEY,
+          session_id TEXT,
+          role TEXT,
+          content TEXT,
+          timestamp REAL,
+          active INTEGER
+        );
+        INSERT INTO sessions VALUES ('dm', 'weixin', 'dm');
+        INSERT INTO messages(session_id,role,content,timestamp,active)
+        VALUES ('dm','user','真实回复',900,1);
+        INSERT INTO messages(session_id,role,content,timestamp,active)
+        VALUES ('dm','user','[Cron delivery: live-daily-summary]\n自动消息',1100,1);
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    assert MODULE.latest_weixin_user_message(database) == 900
+
+
 class FollowupCandidateUnittest(unittest.TestCase):
     def test_wake_cadence(self):
         test_wakes_every_five_minutes_until_reply()
@@ -126,3 +154,7 @@ class FollowupCandidateUnittest(unittest.TestCase):
     def test_output_discovery(self):
         with TemporaryDirectory() as directory:
             test_discovers_only_successfully_delivered_non_silent_source(Path(directory))
+
+    def test_cron_delivery_echo_filter(self):
+        with TemporaryDirectory() as directory:
+            test_cron_delivery_echo_is_not_treated_as_weixin_reply(Path(directory))

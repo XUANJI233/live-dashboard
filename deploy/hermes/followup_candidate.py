@@ -117,7 +117,8 @@ def latest_weixin_user_message(database_path: Path) -> float | None:
             "SELECT MAX(messages.timestamp) "
             "FROM messages JOIN sessions ON sessions.id = messages.session_id "
             "WHERE sessions.source = 'weixin' AND messages.role = 'user' "
-            "AND messages.active = 1"
+            "AND messages.active = 1 "
+            "AND substr(ltrim(COALESCE(messages.content, '')), 1, 15) != '[Cron delivery:'"
         ).fetchone()
         connection.close()
     except sqlite3.Error:

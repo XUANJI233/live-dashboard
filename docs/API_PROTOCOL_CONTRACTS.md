@@ -241,14 +241,14 @@ WS 帧 `viewer_message` 与 HTTP `POST /api/messages/public`、`POST /api/messag
 - `v` 当前固定为 `1`。
 - `created_by` 只能是 `mcp` 或 `supervision`。
 - `payload.kind` 只能是 `supervision` 或 `supervision_policy`。
-- `freeze_commands` / `unfreeze_commands` 是应用名或包名正则数组。
+- `freeze_commands` / `unfreeze_commands` 是应用名或包名正则数组；客户端必须分别匹配包名、应用名和标题，不能只匹配三者拼接串，因此 `^com\\.example\\.app$` 必须能精确命中包名。
 - `vibrate` / `screen_off` 必须是真布尔。
 - `say` 是设备要展示/播报的话。
 - `notes` 是服务端能力裁剪说明，例如 `freeze_not_supported`。
 
 策略命令额外字段：
 
-- `risk_app_regex`：风险应用 AI 复核触发名单。
+- `risk_app_regex`：风险应用 AI 复核触发名单，匹配语义与冻结命令一致，分别作用于包名、应用名和标题。
 - `risk_trigger_minutes`：风险名单中任一应用累计使用多少分钟触发 AI 监督。
 - `app_time_limits`：独立限时冻结策略，元素为 `{ "app_regex": "...", "limit_minutes": 10, "reason": "..." }`。
 
