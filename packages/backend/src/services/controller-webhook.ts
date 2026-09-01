@@ -7,7 +7,7 @@ export interface ControllerEvent {
   schema: typeof CONTROLLER_EVENT_SCHEMA;
   v: 1;
   event_id: string;
-  event_type: "supervision.deviation_detected" | "supervision.review_requested";
+  event_type: "device.offline" | "supervision.deviation_detected" | "supervision.review_requested";
   occurred_at: string;
   source: "scheduled" | "report";
   device_ids: string[];

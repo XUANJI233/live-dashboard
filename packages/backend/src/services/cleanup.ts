@@ -2,6 +2,7 @@ import {
   cleanupExpiredMessages,
   cleanupOldActivities,
   cleanupOldAiJobs,
+  cleanupOldControllerEvents,
   cleanupOldDeviceCommandResults,
   cleanupOldDeviceCommands,
   cleanupOldLocations,
@@ -9,7 +10,6 @@ import {
   cleanupOldWeeklySummaries,
   getDailySummary,
   getWeeklySummary,
-  markOfflineDevices,
   optimizeDatabase,
 } from "../db";
 import type { DeviceInfo } from "../types";
@@ -17,6 +17,7 @@ import { getSummarySettings } from "./daily-summary-gen";
 import { submitAiJob } from "./ai-jobs";
 import { collectDueSummaryJobs, initialSummaryScheduleState } from "./summary-scheduler";
 import { runSupervisionTick } from "./supervision";
+import { checkOfflineDevices } from "./offline-controller";
 
 // Cleanup old activities + old summaries every hour
 const hourlyCleanupTimer = setInterval(() => {
@@ -67,6 +68,15 @@ const hourlyCleanupTimer = setInterval(() => {
   }
 
   try {
+    const controllerEventResult = cleanupOldControllerEvents.run();
+    if (controllerEventResult.changes > 0) {
+      console.log(`[cleanup] Deleted ${controllerEventResult.changes} delivered controller events`);
+    }
+  } catch (e) {
+    console.error("[cleanup] Controller event cleanup failed:", e);
+  }
+
+  try {
     const summaryResult = cleanupOldSummaries.run();
     if (summaryResult.changes > 0) {
       console.log(`[cleanup] Deleted ${summaryResult.changes} old daily summaries`);
@@ -93,12 +103,20 @@ const hourlyCleanupTimer = setInterval(() => {
 hourlyCleanupTimer.unref();
 
 // Mark offline devices every 60 seconds
+let offlineCheckRunning = false;
 const offlineTimer = setInterval(() => {
-  try {
-    markOfflineDevices.run();
-  } catch {
-    // silent
-  }
+  if (offlineCheckRunning) return;
+  offlineCheckRunning = true;
+  checkOfflineDevices()
+    .then((result) => {
+      if (result.pending > 0) {
+        console.warn(`[offline-controller] ${result.pending} controller event(s) pending delivery`);
+      }
+    })
+    .catch((error) => console.error("[offline-controller] device offline check failed:", error))
+    .finally(() => {
+      offlineCheckRunning = false;
+    });
 }, 60_000);
 offlineTimer.unref();
 

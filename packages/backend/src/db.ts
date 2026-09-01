@@ -97,6 +97,7 @@ db.run(`
 const KNOWN_TABLES = new Set([
   "activities",
   "device_states",
+  "controller_event_outbox",
   "device_messages",
   "device_commands",
   "device_command_results",
@@ -352,6 +353,25 @@ db.run(`
   )
 `);
 
+// Durable controller-event outbox. State transitions and event creation share
+// one SQLite transaction so a temporary controller outage cannot lose alerts.
+db.run(`
+  CREATE TABLE IF NOT EXISTS controller_event_outbox (
+    event_id TEXT PRIMARY KEY,
+    event_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT DEFAULT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TEXT DEFAULT NULL,
+    last_error TEXT NOT NULL DEFAULT ''
+  )
+`);
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_controller_event_outbox_pending
+  ON controller_event_outbox(created_at)
+  WHERE delivered_at IS NULL
+`);
+
 addColumnIfMissing("device_commands", "message_id", "message_id TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("device_commands", "delivery_status", "delivery_status TEXT NOT NULL DEFAULT 'queued'");
 addColumnIfMissing("device_commands", "delivery_reason", "delivery_reason TEXT NOT NULL DEFAULT ''");
@@ -546,10 +566,26 @@ export const markOfflineDevices = db.prepare(`
            END
          ) || ' minutes'
        ))
+  RETURNING device_id, last_seen_at
 `);
 
 export const cleanupOldActivities = db.prepare(`
   DELETE FROM activities WHERE created_at < datetime('now', '-7 days')
+`);
+
+export const cleanupOldControllerEvents = db.prepare(`
+  DELETE FROM controller_event_outbox
+  WHERE delivered_at IS NOT NULL
+  AND (
+    datetime(delivered_at) < datetime('now', '-14 days')
+    OR event_id NOT IN (
+      SELECT event_id
+      FROM controller_event_outbox
+      WHERE delivered_at IS NOT NULL
+      ORDER BY datetime(delivered_at) DESC, event_id DESC
+      LIMIT 1000
+    )
+  )
 `);
 
 export const cleanupExpiredMessages = db.prepare(`
