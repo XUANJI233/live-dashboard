@@ -1,7 +1,6 @@
 import { authenticateToken, extractBearerToken } from "../middleware/auth";
 import { verifyViewerToken, viewerTokenFromRequest, edgeViewerIdentity } from "./viewer-auth";
 import { setAiJobNotifier } from "./ai-jobs";
-import { transitionDeviceOffline } from "./offline-controller";
 import { realtimeSocketHub, sendJson } from "./realtime-socket-hub";
 import { deliverQueuedMessages } from "./realtime-message-delivery";
 import {
@@ -75,8 +74,9 @@ export const realtimeWebSocket = {
     if (ws.data.role === "device") {
       if (realtimeSocketHub.getDeviceSocket(ws.data.id) !== ws) return;
       realtimeSocketHub.removeDevice(ws);
-      // Keep the dashboard transition and the durable controller event atomic.
-      try { transitionDeviceOffline(ws.data.id); } catch { /* ignore */ }
+      // Keep the database state online during the heartbeat grace period. The
+      // scheduled timeout owns the eventual offline transition and durable
+      // controller event, so a quick reconnect cannot masquerade as a timeout.
     } else {
       realtimeSocketHub.removeViewer(ws.data.id, ws);
     }

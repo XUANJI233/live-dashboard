@@ -21,7 +21,7 @@ Store `$HERMES_HOME/state/live-mentor.json` as mode `0600`:
 {"memory_cursor":null,"memory_since":"<cutover ISO>","recent_event_ids":[],"last_outbound":{"at":null,"topic":null}}
 ```
 
-When `memory_cursor` is null, query with `since=memory_since` and save `next_since`; after the first non-null `next_cursor`, always use the cursor. Retain only a small event-ID ring. Only user-confirmed, stable facts from authenticated Hermes conversations may enter long-term memory.
+When `memory_cursor` is null, query with `since=memory_since` and save `next_since`; after the first non-null `next_cursor`, always use the cursor. Retain only a small event-ID ring. Only user-confirmed, stable facts from authenticated Hermes conversations may enter general long-term memory. A strict-study private ledger may retain explicitly labelled provisional hypotheses with evidence, counterevidence, confidence, and a next verification step; never promote them into facts or third-party memory without confirmation.
 
 ## MCP tool matrix
 

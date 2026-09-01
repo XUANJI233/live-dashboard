@@ -35,6 +35,28 @@ class ProactiveCandidateTest(unittest.TestCase):
         self.assertNotEqual(accepted, '{"candidate_id":"none"}')
         self.assertEqual(accepted_state["day_count"], 1)
 
+    def test_daytime_probability_boundary_is_pinned(self):
+        daytime = datetime(2026, 9, 1, 9, 0, tzinfo=TZ)
+        _, accepted = MODULE.evaluate_candidate({}, daytime, 0.499999)
+        _, rejected = MODULE.evaluate_candidate({}, daytime, 0.5)
+
+        self.assertNotEqual(accepted, '{"candidate_id":"none"}')
+        self.assertEqual(rejected, '{"candidate_id":"none"}')
+
+    def test_cooldown_boundary_is_ninety_minutes(self):
+        state, first = MODULE.evaluate_candidate(
+            {}, datetime(2026, 9, 1, 9, 0, tzinfo=TZ), 0.0
+        )
+        state, before = MODULE.evaluate_candidate(
+            state, datetime(2026, 9, 1, 10, 0, tzinfo=TZ), 0.0
+        )
+        state, boundary = MODULE.evaluate_candidate(
+            state, datetime(2026, 9, 1, 10, 30, tzinfo=TZ), 0.0
+        )
+
+        self.assertEqual(before, first)
+        self.assertNotEqual(boundary, first)
+
     def test_allows_more_than_three_well_spaced_daytime_candidates(self):
         state = {}
         outputs = []
@@ -46,6 +68,24 @@ class ProactiveCandidateTest(unittest.TestCase):
 
         self.assertEqual(len(set(outputs)), 6)
         self.assertEqual(state["day_count"], 6)
+
+        state, seventh = MODULE.evaluate_candidate(
+            state, datetime(2026, 9, 1, 20, 0, tzinfo=TZ), 0.0
+        )
+        self.assertEqual(seventh, outputs[-1])
+        self.assertEqual(state["day_count"], 6)
+
+    def test_one_slot_never_redraws_after_rejection(self):
+        state, first = MODULE.evaluate_candidate(
+            {}, datetime(2026, 9, 1, 9, 0, tzinfo=TZ), 1.0
+        )
+        state, second = MODULE.evaluate_candidate(
+            state, datetime(2026, 9, 1, 9, 5, tzinfo=TZ), 0.0
+        )
+
+        self.assertEqual(first, '{"candidate_id":"none"}')
+        self.assertEqual(second, first)
+        self.assertEqual(state["day_count"], 0)
 
 
 if __name__ == "__main__":

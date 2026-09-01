@@ -91,12 +91,15 @@ def _save_state(path: Path, state: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    if os.environ.get("HERMES_CONTROLLER_ENABLED", "").strip().lower() != "true":
-        print(NO_CANDIDATE)
-        return 0
     path = _state_path()
+    state = _load_state(path)
+    if os.environ.get("HERMES_CONTROLLER_ENABLED", "").strip().lower() != "true":
+        # Keep the monitor output stable while controller mode is paused. A
+        # transition to the sentinel would itself look like a new candidate.
+        print(_output_for(state.get("last_candidate_id")))
+        return 0
     state, output = evaluate_candidate(
-        _load_state(path),
+        state,
         datetime.now(TIMEZONE),
         random.SystemRandom().random(),
     )

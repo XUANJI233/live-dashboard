@@ -93,7 +93,7 @@ describe("offline controller events", () => {
     expect(state.is_online).toBe(0);
   });
 
-  test("durably queues a device offline event when its websocket closes", async () => {
+  test("lets a websocket close become a durable offline event only after its heartbeat grace", async () => {
     process.env.HERMES_CONTROLLER_ENABLED = "true";
     process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
     process.env.CONTROLLER_WEBHOOK_URL = "https://controller.example/webhooks/live-supervision";
@@ -130,13 +130,20 @@ describe("offline controller events", () => {
     try {
       realtimeWebSocket.open(deviceWs as any);
       realtimeWebSocket.close(deviceWs as any);
+
+      const afterClose = db.prepare("SELECT is_online FROM device_states WHERE device_id = ?")
+        .get(deviceId) as { is_online: number } | undefined;
+      expect(afterClose?.is_online).toBe(1);
+
+      db.prepare("UPDATE device_states SET last_seen_at = datetime('now', '-10 minutes') WHERE device_id = ?")
+        .run(deviceId);
       const result = await checkOfflineDevices(new Date("2026-09-01T03:10:00.000Z"));
 
       const state = db.prepare("SELECT is_online FROM device_states WHERE device_id = ?")
         .get(deviceId) as { is_online: number } | undefined;
 
       expect(state?.is_online).toBe(0);
-      expect(result).toMatchObject({ transitioned: [], delivered: 1, pending: 0 });
+      expect(result).toMatchObject({ transitioned: [deviceId], delivered: 1, pending: 0 });
       expect(requests).toHaveLength(1);
       expect(requests[0]).toMatchObject({
         schema: "live_dashboard.controller_event.v1",
