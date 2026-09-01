@@ -119,6 +119,10 @@ final class LspDeviceControlFeature {
         return supervisionCoordinator.applyPolicy(payload);
     }
 
+    boolean restoreSupervisionPolicy() {
+        return supervisionCoordinator.restorePolicy();
+    }
+
     void finishPendingSupervisionReview() {
         supervisionCoordinator.finishPendingReview();
     }

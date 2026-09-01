@@ -74,6 +74,26 @@ final class LspSupervisionPolicy {
         return true;
     }
 
+    synchronized JSONObject persistentSnapshot() {
+        JSONArray riskArray = new JSONArray();
+        for (Pattern pattern : riskPatterns) {
+            riskArray.put(pattern.pattern());
+        }
+        JSONArray limits = new JSONArray();
+        for (TimeLimitRule rule : timeLimitRules) {
+            JSONObject item = new JSONObject();
+            LspDeviceCommandProtocol.put(item, "app_regex", rule.pattern.pattern());
+            LspDeviceCommandProtocol.put(item, "limit_minutes", rule.limitMinutes);
+            LspDeviceCommandProtocol.put(item, "reason", rule.reason);
+            limits.put(item);
+        }
+        JSONObject snapshot = new JSONObject();
+        LspDeviceCommandProtocol.put(snapshot, "risk_app_regex", riskArray);
+        LspDeviceCommandProtocol.put(snapshot, "risk_trigger_minutes", riskTriggerMinutes);
+        LspDeviceCommandProtocol.put(snapshot, "app_time_limits", limits);
+        return snapshot;
+    }
+
     synchronized Decision evaluate(
             String packageName,
             String appName,

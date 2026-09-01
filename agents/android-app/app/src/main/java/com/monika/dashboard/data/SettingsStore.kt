@@ -184,18 +184,34 @@ class SettingsStore(private val context: Context) {
 
     fun getToken(): String? {
         val prefs = encryptedPrefs ?: return null
-        return prefs.getString("token", null)
+        val stored = prefs.getString("token", null) ?: return null
+        val normalized = normalizeDeviceTokenInput(stored)
+        if (normalized != stored) {
+            prefs.edit().putString("token", normalized).commit()
+        }
+        return normalized
     }
 
     fun setToken(token: String): Boolean {
         val prefs = encryptedPrefs ?: return false
-        return prefs.edit().putString("token", token).commit()
+        return prefs.edit().putString("token", normalizeDeviceTokenInput(token)).commit()
     }
 
     companion object {
         fun maskToken(token: String): String {
             if (token.length <= 4) return "****"
             return token.take(4) + "***"
+        }
+
+        fun normalizeDeviceTokenInput(value: String): String {
+            val trimmed = value.trim()
+            val parts = trimmed.split(':')
+            val looksLikeDeviceTokenRecord = parts.size >= 4 &&
+                parts.first().trim().isNotEmpty() &&
+                parts[1].trim().isNotEmpty() &&
+                parts.subList(2, parts.lastIndex).joinToString(":").trim().isNotEmpty() &&
+                parts.last().trim() in setOf("windows", "android", "macos", "zepp")
+            return if (looksLikeDeviceTokenRecord) parts.first().trim() else trimmed
         }
 
         fun validateUrl(url: String): Boolean {

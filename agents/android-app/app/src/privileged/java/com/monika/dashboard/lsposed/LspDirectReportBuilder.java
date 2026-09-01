@@ -22,9 +22,6 @@ final class LspDirectReportBuilder {
         void logWarn(String message);
     }
 
-    private static final String OFFLINE_TIMEOUT_FIELD = "offline_timeout_minutes";
-    private static final int MAX_REPORTED_OFFLINE_TIMEOUT_MINUTES = 60;
-    private static final int REPORTED_OFFLINE_TIMEOUT_GRACE_MINUTES = 2;
     private static final long DIRECT_FULL_STATE_INTERVAL_MS = 5 * 60_000L;
 
     private final LspMediaTracker mediaTracker;
@@ -77,9 +74,13 @@ final class LspDirectReportBuilder {
             device.put("last_sample_at", host.isoTime(now));
             device.put("energy_policy", "system_server_direct");
             device.put("min_interval_ms", Math.max(host.minDirectUploadMs(), host.directIntervalMs()));
-            if (sleeping) {
-                device.put(OFFLINE_TIMEOUT_FIELD, directOfflineTimeoutMinutes());
-            }
+            device.put(
+                    LspDirectOfflineTimeoutPolicy.FIELD,
+                    LspDirectOfflineTimeoutPolicy.forReport(
+                            sleeping,
+                            host.heartbeatMs(),
+                            host.minDirectUploadMs(),
+                            host.directIntervalMs()));
             if (host.supervisionCheckRequested()) {
                 device.put("supervision_check_requested", true);
             }
@@ -143,13 +144,6 @@ final class LspDirectReportBuilder {
             capabilities.put("app_time_limit", true);
         } catch (Throwable ignored) {}
         return capabilities;
-    }
-
-    private int directOfflineTimeoutMinutes() {
-        long cadenceMs = Math.max(host.heartbeatMs(), Math.max(host.minDirectUploadMs(), host.directIntervalMs()));
-        long cadenceMinutes = Math.max(1L, (cadenceMs + 59_999L) / 60_000L);
-        long timeoutMinutes = cadenceMinutes + REPORTED_OFFLINE_TIMEOUT_GRACE_MINUTES;
-        return (int) Math.min(MAX_REPORTED_OFFLINE_TIMEOUT_MINUTES, timeoutMinutes);
     }
 
     private boolean shouldSendHeartbeatOnly(long now, boolean forceRequested, LspMediaTracker.Snapshot media) {

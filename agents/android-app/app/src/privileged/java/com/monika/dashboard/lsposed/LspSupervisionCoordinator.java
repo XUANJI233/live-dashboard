@@ -30,6 +30,7 @@ final class LspSupervisionCoordinator {
     private static final int DAILY_UNFREEZE_HOUR = 3;
 
     private final LspSupervisionPolicy policy = new LspSupervisionPolicy();
+    private final LspSupervisionPolicyStore policyStore = new LspSupervisionPolicyStore();
     private final Host host;
     private volatile long policyCheckDueAt = 0L;
     private volatile boolean dailyFreezeCleanupScheduled = false;
@@ -44,8 +45,19 @@ final class LspSupervisionCoordinator {
 
     boolean applyPolicy(JSONObject payload) {
         boolean applied = policy.applyPolicy(payload);
-        if (applied) evaluate(System.currentTimeMillis());
+        if (applied) {
+            policyStore.save(host.systemContext(), policy.persistentSnapshot());
+            evaluate(System.currentTimeMillis());
+        }
         return applied;
+    }
+
+    boolean restorePolicy() {
+        JSONObject stored = policyStore.load(host.systemContext());
+        if (stored == null) return false;
+        boolean restored = policy.applyPolicy(stored);
+        if (restored) host.logDebug("restored persisted supervision policy");
+        return restored;
     }
 
     void finishPendingReview() {
