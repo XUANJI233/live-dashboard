@@ -17,16 +17,17 @@ COOLDOWN_SECONDS = 90 * 60
 DAILY_CANDIDATE_LIMIT = 6
 NORMAL_PROBABILITY = 0.50
 QUIET_PROBABILITY = 0.05
-NO_CANDIDATE = '{"candidate_id":"none"}'
+NO_CANDIDATE = '{"selected_this_run":false}'
 
 
 def evaluate_candidate(state: dict[str, Any], now: datetime, draw: float) -> tuple[dict[str, Any], str]:
     local = now.astimezone(TIMEZONE)
     slot = int(local.timestamp()) // SLOT_SECONDS
     current = dict(state) if isinstance(state, dict) else {}
-    output = _output_for(current.get("last_candidate_id"))
     if current.get("last_slot") == slot:
-        return current, output
+        if current.get("last_candidate_slot") == slot:
+            return current, _output_for(current.get("last_candidate_id"))
+        return current, NO_CANDIDATE
 
     current["last_slot"] = slot
     day = local.date().isoformat()
@@ -37,14 +38,15 @@ def evaluate_candidate(state: dict[str, Any], now: datetime, draw: float) -> tup
     count = int(current.get("day_count") or 0)
     last_at = _epoch(current.get("last_candidate_at"))
     if count >= DAILY_CANDIDATE_LIMIT or (last_at and local.timestamp() - last_at < COOLDOWN_SECONDS):
-        return current, output
+        return current, NO_CANDIDATE
 
     probability = QUIET_PROBABILITY if _quiet_time(local) else NORMAL_PROBABILITY
     if not 0 <= draw < probability:
-        return current, output
+        return current, NO_CANDIDATE
 
     candidate_id = f"{day}:{slot}"
     current["last_candidate_id"] = candidate_id
+    current["last_candidate_slot"] = slot
     current["last_candidate_at"] = int(local.timestamp())
     current["day_count"] = count + 1
     return current, _output_for(candidate_id)
@@ -65,7 +67,10 @@ def _epoch(value: object) -> int:
 def _output_for(candidate_id: object) -> str:
     if not isinstance(candidate_id, str) or not candidate_id:
         return NO_CANDIDATE
-    return json.dumps({"candidate_id": candidate_id}, separators=(",", ":"))
+    return json.dumps(
+        {"selected_this_run": True, "candidate_id": candidate_id},
+        separators=(",", ":"),
+    )
 
 
 def _state_path() -> Path:
@@ -91,13 +96,11 @@ def _save_state(path: Path, state: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    if os.environ.get("HERMES_CONTROLLER_ENABLED", "").strip().lower() != "true":
+        print(NO_CANDIDATE)
+        return 0
     path = _state_path()
     state = _load_state(path)
-    if os.environ.get("HERMES_CONTROLLER_ENABLED", "").strip().lower() != "true":
-        # Keep the monitor output stable while controller mode is paused. A
-        # transition to the sentinel would itself look like a new candidate.
-        print(_output_for(state.get("last_candidate_id")))
-        return 0
     state, output = evaluate_candidate(
         state,
         datetime.now(TIMEZONE),
