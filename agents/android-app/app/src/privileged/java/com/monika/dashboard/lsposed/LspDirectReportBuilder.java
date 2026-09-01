@@ -95,7 +95,7 @@ final class LspDirectReportBuilder {
                 device.put("heartbeat_only", true);
             }
             JSONArray frozen = deviceControlFeature.frozenPackagesJson(now);
-            if (frozen.length() > 0) device.put("frozen_packages", frozen);
+            device.put("frozen_packages", frozen);
             installedAppsReporter.putIfDue(device, now, heartbeatOnly);
             extra.put("device", device);
             extra.put("sleeping", sleeping);
