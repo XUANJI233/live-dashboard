@@ -17,8 +17,8 @@ class ProactiveCandidateTest(unittest.TestCase):
         state = {}
         state, first = MODULE.evaluate_candidate(state, datetime(2026, 9, 1, 9, 0, tzinfo=TZ), 0.0)
         state, cooldown = MODULE.evaluate_candidate(state, datetime(2026, 9, 1, 9, 30, tzinfo=TZ), 0.0)
-        state, rejected = MODULE.evaluate_candidate(state, datetime(2026, 9, 1, 12, 0, tzinfo=TZ), 1.0)
-        state, second = MODULE.evaluate_candidate(state, datetime(2026, 9, 1, 12, 30, tzinfo=TZ), 0.0)
+        state, rejected = MODULE.evaluate_candidate(state, datetime(2026, 9, 1, 10, 30, tzinfo=TZ), 1.0)
+        state, second = MODULE.evaluate_candidate(state, datetime(2026, 9, 1, 11, 0, tzinfo=TZ), 0.0)
 
         self.assertNotEqual(first, '{"candidate_id":"none"}')
         self.assertEqual(cooldown, first)
@@ -28,12 +28,24 @@ class ProactiveCandidateTest(unittest.TestCase):
 
     def test_quiet_hours_lower_probability_without_forbidding_contact(self):
         quiet = datetime(2026, 9, 1, 23, 30, tzinfo=TZ)
-        _, rejected = MODULE.evaluate_candidate({}, quiet, 0.04)
-        accepted_state, accepted = MODULE.evaluate_candidate({}, quiet, 0.02)
+        _, rejected = MODULE.evaluate_candidate({}, quiet, 0.06)
+        accepted_state, accepted = MODULE.evaluate_candidate({}, quiet, 0.04)
 
         self.assertEqual(rejected, '{"candidate_id":"none"}')
         self.assertNotEqual(accepted, '{"candidate_id":"none"}')
         self.assertEqual(accepted_state["day_count"], 1)
+
+    def test_allows_more_than_three_well_spaced_daytime_candidates(self):
+        state = {}
+        outputs = []
+        for hour in (8, 10, 12, 14, 16, 18):
+            state, output = MODULE.evaluate_candidate(
+                state, datetime(2026, 9, 1, hour, 0, tzinfo=TZ), 0.0
+            )
+            outputs.append(output)
+
+        self.assertEqual(len(set(outputs)), 6)
+        self.assertEqual(state["day_count"], 6)
 
 
 if __name__ == "__main__":

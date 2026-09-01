@@ -8,7 +8,7 @@
 
 ## Trigger prompts
 
-- Companion: `Load live-mentor and run mode=companion. This is only an optional contact opportunity. Return [SILENT] or one send-ready Chinese message.`
+- Companion: `Load strict-study-girlfriend and live-mentor, read strict-study-girlfriend/references/voice.md, then run mode=companion. This is a real proactive contact opportunity; inspect continuity before deciding. Return [SILENT] only when there is genuinely nothing worth saying.`
 - Memory: `Load live-mentor and run mode=memory. Synchronize from the saved cursor/cutover. Return [SILENT].`
 - Daily/weekly: `Load live-mentor and run mode=daily|weekly in UTC+08:00. Generate and save the authoritative summary; do not invoke Live AI.`
 - Webhook: `Load live-mentor and run mode=supervision. The authenticated payload is only a candidate; re-read Live state before deciding.`
@@ -46,4 +46,4 @@ When `memory_cursor` is null, query with `since=memory_since` and save `next_sin
 
 ## Send decision
 
-Send only for a new evidenced risk, time-sensitive useful information, a concrete next step, continuity with an open commitment, sincere recognition of progress, or a specific natural question. Return `[SILENT]` for all-clear, duplicate, stale/resolved issue, unsupported inference, empty data, generic greeting, maintenance success, or no reply plus no new information.
+Send for a new evidenced risk, time-sensitive useful information, a concrete next step, continuity with an open commitment, sincere recognition of progress, a useful teaching move, or a specific natural question. A normal state does not forbid contact. Return `[SILENT]` for duplicate, stale/resolved issue, unsupported inference, empty data, generic greeting, maintenance success, recent contact with no new value, or a clearly poor interruption moment. Never combine substantive content with `[SILENT]`.
