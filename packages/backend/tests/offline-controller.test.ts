@@ -93,6 +93,68 @@ describe("offline controller events", () => {
     expect(state.is_online).toBe(0);
   });
 
+  test("durably queues a device offline event when its websocket closes", async () => {
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_URL = "https://controller.example/webhooks/live-supervision";
+    process.env.CONTROLLER_WEBHOOK_SECRET = "independent-offline-controller-secret";
+
+    const { db } = await import("../src/db");
+    const { checkOfflineDevices } = await import("../src/services/offline-controller");
+    const { realtimeWebSocket } = await import("../src/services/realtime");
+    const deviceId = "ws-offline-outbox";
+    db.prepare(`
+      INSERT INTO device_states (
+        device_id, device_name, platform, app_id, app_name, window_title,
+        display_title, last_seen_at, extra, is_online
+      ) VALUES (?, 'Phone', 'android', 'com.reader', 'Reader',
+        'Reading', 'Reading', datetime('now'), '{}', 1)
+    `).run(deviceId);
+
+    const deviceWs = {
+      data: {
+        role: "device",
+        id: deviceId,
+        device: { device_id: deviceId, device_name: "Phone", platform: "android" },
+      },
+      send() {},
+    };
+
+    const originalFetch = globalThis.fetch;
+    const requests: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      requests.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+
+    try {
+      realtimeWebSocket.open(deviceWs as any);
+      realtimeWebSocket.close(deviceWs as any);
+      const result = await checkOfflineDevices(new Date("2026-09-01T03:10:00.000Z"));
+
+      const state = db.prepare("SELECT is_online FROM device_states WHERE device_id = ?")
+        .get(deviceId) as { is_online: number } | undefined;
+
+      expect(state?.is_online).toBe(0);
+      expect(result).toMatchObject({ transitioned: [], delivered: 1, pending: 0 });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({
+        schema: "live_dashboard.controller_event.v1",
+        v: 1,
+        event_type: "device.offline",
+        source: "scheduled",
+        device_ids: [deviceId],
+        reason_codes: ["heartbeat_timeout"],
+      });
+      expect(typeof requests[0]?.event_id).toBe("string");
+      expect(Number.isNaN(Date.parse(String(requests[0]?.occurred_at)))).toBeFalse();
+    } finally {
+      globalThis.fetch = originalFetch;
+      db.prepare("DELETE FROM controller_event_outbox WHERE event_json LIKE ?")
+        .run(`%${deviceId}%`);
+    }
+  });
+
   test("bounds delivered outbox history without deleting pending events", async () => {
     const { cleanupOldControllerEvents, db } = await import("../src/db");
     const insert = db.prepare(`

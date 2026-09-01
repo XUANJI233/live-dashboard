@@ -1,7 +1,7 @@
-import { db } from "../db";
 import { authenticateToken, extractBearerToken } from "../middleware/auth";
 import { verifyViewerToken, viewerTokenFromRequest, edgeViewerIdentity } from "./viewer-auth";
 import { setAiJobNotifier } from "./ai-jobs";
+import { transitionDeviceOffline } from "./offline-controller";
 import { realtimeSocketHub, sendJson } from "./realtime-socket-hub";
 import { deliverQueuedMessages } from "./realtime-message-delivery";
 import {
@@ -14,12 +14,6 @@ import type { WsData } from "./realtime-types";
 import type { ServerWebSocket } from "bun";
 
 export type { WsData } from "./realtime-types";
-
-// ── Prepared statement: mark a single device offline immediately ──
-const markDeviceOffline = db.prepare(`
-  UPDATE device_states SET is_online = 0
-  WHERE device_id = ? AND is_online = 1
-`);
 
 setAiJobNotifier((job) => {
   realtimeSocketHub.broadcastDevicePayload({ type: "ai_job_update", job }, { messageCapableOnly: true });
@@ -79,9 +73,10 @@ export const realtimeWebSocket = {
 
   close(ws: ServerWebSocket<WsData>) {
     if (ws.data.role === "device") {
+      if (realtimeSocketHub.getDeviceSocket(ws.data.id) !== ws) return;
       realtimeSocketHub.removeDevice(ws);
-      // Immediately mark device offline so dashboard reflects disconnection
-      try { markDeviceOffline.run(ws.data.id); } catch { /* ignore */ }
+      // Keep the dashboard transition and the durable controller event atomic.
+      try { transitionDeviceOffline(ws.data.id); } catch { /* ignore */ }
     } else {
       realtimeSocketHub.removeViewer(ws.data.id, ws);
     }

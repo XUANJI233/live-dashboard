@@ -34,6 +34,12 @@ const enqueueControllerEvent = db.prepare(`
   VALUES (?, ?, ?)
 `);
 
+const markDeviceOffline = db.prepare(`
+  UPDATE device_states SET is_online = 0
+  WHERE device_id = ? AND is_online = 1
+  RETURNING device_id, last_seen_at
+`);
+
 const pendingControllerEvents = db.prepare(`
   SELECT event_id, event_json
   FROM controller_event_outbox
@@ -63,7 +69,27 @@ const pendingControllerEventCount = db.prepare(`
 
 const transitionAndQueueOfflineEvents = db.transaction((occurredAt: string, shouldQueue: boolean) => {
   const rows = markOfflineDevices.all() as OfflineTransitionRow[];
-  if (!shouldQueue || rows.length === 0) return rows;
+  queueOfflineEvents(rows, occurredAt, shouldQueue);
+  return rows;
+});
+
+const transitionAndQueueDeviceOffline = db.transaction((
+  deviceId: string,
+  occurredAt: string,
+  shouldQueue: boolean,
+) => {
+  const row = markDeviceOffline.get(deviceId) as OfflineTransitionRow | null;
+  if (!row) return null;
+  queueOfflineEvents([row], occurredAt, shouldQueue);
+  return row;
+});
+
+function queueOfflineEvents(
+  rows: OfflineTransitionRow[],
+  occurredAt: string,
+  shouldQueue: boolean,
+): void {
+  if (!shouldQueue || rows.length === 0) return;
 
   const safeRows = rows
     .map((row) => ({
@@ -87,8 +113,17 @@ const transitionAndQueueOfflineEvents = db.transaction((occurredAt: string, shou
     };
     enqueueControllerEvent.run(event.event_id, JSON.stringify(event), occurredAt);
   }
-  return rows;
-});
+}
+
+/**
+ * Mark one currently connected device offline and atomically enqueue the same
+ * durable controller event used by the scheduled timeout transition.
+ */
+export function transitionDeviceOffline(deviceId: string, now = new Date()): boolean {
+  const occurredAt = validIsoTimestamp(now);
+  const controllerActive = hermesControllerEnabled() && controllerWebhookEnabled();
+  return Boolean(transitionAndQueueDeviceOffline(deviceId, occurredAt, controllerActive));
+}
 
 /**
  * Mark newly stale devices offline, durably enqueue one minimal controller
