@@ -220,7 +220,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     supervisionRules = it.supervisionRules
                     supervisionRulesUpdatedAt = it.supervisionRulesUpdatedAt
                     supervisionRulesError = it.supervisionRulesError
-                    supervisionRulesRefreshing = it.rulesRefreshJobStatus in setOf("queued", "running")
+                    supervisionRulesRefreshing = it.rulesRefreshJobStatus in setOf("queued", "running", "delegated")
                     updatedAt = it.updatedAt
                     localEditedAt = null
                     status = "已同步服务器设置"
@@ -288,7 +288,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     supervisionRules = it.supervisionRules
                     supervisionRulesUpdatedAt = it.supervisionRulesUpdatedAt
                     supervisionRulesError = it.supervisionRulesError
-                    supervisionRulesRefreshing = it.rulesRefreshJobStatus in setOf("queued", "running")
+                    supervisionRulesRefreshing = it.rulesRefreshJobStatus in setOf("queued", "running", "delegated")
                     updatedAt = it.updatedAt
                     localEditedAt = null
                     if (it.syncStatus == "ignored_stale") {
