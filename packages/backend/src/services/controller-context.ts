@@ -1,0 +1,88 @@
+import { safeTimezoneOffset, utcRangeForLocalDate } from "./cdn";
+import { getControllerMemoryFeed } from "./controller-memory";
+import { getControllerPersona } from "./controller-persona";
+import { controllerRestState, listDeviceContexts, getTimelineContext } from "./device-context";
+import {
+  addDays,
+  getSummarySettings,
+  startOfWeek,
+  validDateString,
+} from "./daily-summary-gen";
+import { hermesControllerEnabled } from "./controller-mode";
+
+export type ControllerContextMode = "supervision" | "companion" | "followup" | "memory" | "policy" | "daily" | "weekly";
+
+export function getControllerContext(input: {
+  mode: ControllerContextMode;
+  date?: string;
+  week_start?: string;
+  timezone_offset_minutes?: number;
+  device_id?: string;
+  window_minutes?: number;
+}): Record<string, unknown> {
+  const settings = getSummarySettings();
+  const timezoneOffset = safeTimezoneOffset(
+    input.timezone_offset_minutes ?? settings.timezone_offset_minutes ?? -480,
+  );
+  const range = contextRange(input, timezoneOffset, settings.supervision_check_interval_minutes);
+  const devices = listDeviceContexts();
+  return {
+    schema: "live_dashboard.controller_context.v1",
+    generated_at: new Date().toISOString(),
+    mode: input.mode,
+    controller_active: hermesControllerEnabled(),
+    settings,
+    persona: getControllerPersona(),
+    rest_state: controllerRestState(devices),
+    devices,
+    timeline: getTimelineContext({
+      start: range.start,
+      end: range.end,
+      deviceId: input.device_id,
+      limit: input.mode === "daily" || input.mode === "weekly" ? 96 : 40,
+      timezoneOffsetMinutes: timezoneOffset,
+    }),
+    recent_events: getControllerMemoryFeed({
+      limit: input.mode === "memory" ? 40 : 24,
+      include_messages: true,
+      include_summaries: true,
+      include_device_commands: input.mode === "supervision" || input.mode === "policy",
+    }),
+  };
+}
+
+function contextRange(
+  input: {
+    mode: ControllerContextMode;
+    date?: string;
+    week_start?: string;
+    window_minutes?: number;
+  },
+  timezoneOffset: number,
+  reviewIntervalMinutes: number,
+): { start: string; end: string } {
+  if (input.mode === "daily") {
+    const date = validDateString(input.date) ? input.date! : localDate(new Date(), timezoneOffset);
+    const range = utcRangeForLocalDate(date, timezoneOffset);
+    if (range) return range;
+  }
+  if (input.mode === "weekly") {
+    const date = validDateString(input.week_start)
+      ? startOfWeek(input.week_start!)
+      : startOfWeek(localDate(new Date(), timezoneOffset));
+    const start = utcRangeForLocalDate(date, timezoneOffset);
+    const end = utcRangeForLocalDate(addDays(date, 7), timezoneOffset);
+    if (start && end) return { start: start.start, end: end.start };
+  }
+  const end = new Date();
+  const requested = Number.isInteger(input.window_minutes) ? input.window_minutes! : Math.max(60, reviewIntervalMinutes);
+  const minutes = Math.min(24 * 60, Math.max(15, requested));
+  return {
+    start: new Date(end.getTime() - minutes * 60_000).toISOString(),
+    end: end.toISOString(),
+  };
+}
+
+function localDate(now: Date, timezoneOffset: number): string {
+  return new Date(now.getTime() - timezoneOffset * 60_000).toISOString().slice(0, 10);
+}

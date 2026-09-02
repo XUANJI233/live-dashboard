@@ -1,4 +1,5 @@
-import { db, markInterruptedAiJobsFailed } from "../db";
+import { db, getDailySummary, getWeeklySummary, markInterruptedAiJobsFailed } from "../db";
+import { randomUUID } from "node:crypto";
 import type { DeviceInfo } from "../types";
 import { safeTimezoneOffset } from "./cdn";
 import {
@@ -17,26 +18,22 @@ import {
   safeJsonParseObject,
 } from "./mcp-contracts";
 import { hermesControllerEnabled } from "./controller-mode";
+import { delegateAiJobToHermes } from "./controller-ai-delegation";
+import { completedAiJob, type AiJobRunner } from "./ai-job-runner";
 
 const JOB_PAYLOAD_MAX_BYTES = 96 * 1024;
 const JOB_RESULT_MAX_BYTES = 96 * 1024;
 const JOB_ERROR_MAX_BYTES = 4096;
 const DEFAULT_MAX_CONCURRENT_AI_JOBS = 2;
-const ACTIVE_STATUSES = new Set<AiJobStatus>(["queued", "running"]);
+const ACTIVE_STATUSES = new Set<AiJobStatus>(["queued", "running", "delegated", "processing"]);
 const FINISHED_STATUSES = new Set<AiJobStatus>(["succeeded", "failed"]);
 
 export const AI_JOB_KINDS = ["daily_summary", "weekly_summary", "ai_config_test", "supervision_rules_refresh", "supervision_check"] as const;
 const CLIENT_AI_JOB_KINDS: ReadonlySet<AiJobKind> = new Set(["daily_summary", "weekly_summary", "ai_config_test", "supervision_rules_refresh"]);
-const LIVE_INTERNAL_AI_JOB_KINDS: ReadonlySet<AiJobKind> = new Set([
-  "daily_summary",
-  "weekly_summary",
-  "supervision_rules_refresh",
-  "supervision_check",
-]);
 
 export type AiJobKind = typeof AI_JOB_KINDS[number];
-export type AiJobStatus = "queued" | "running" | "succeeded" | "failed";
-export type AiJobRunner = () => Promise<Record<string, unknown>>;
+export type AiJobStatus = "queued" | "running" | "delegated" | "processing" | "succeeded" | "failed";
+export type { AiJobRunner } from "./ai-job-runner";
 export type AiJobNotifier = (job: PublicAiJob) => void;
 
 export interface PublicAiJob {
@@ -124,6 +121,29 @@ const getJobByKindKeyStmt = db.prepare(`
   LIMIT 1
 `);
 
+const listDelegatedJobsStmt = db.prepare(`
+  SELECT * FROM ai_jobs
+  WHERE status = 'delegated'
+  ORDER BY created_at, request_id
+  LIMIT ?
+`);
+
+const delegatedJobCountStmt = db.prepare(`
+  SELECT COUNT(*) AS count FROM ai_jobs WHERE status = 'delegated'
+`);
+
+const releaseExpiredProcessingJobsStmt = db.prepare(`
+  UPDATE ai_jobs
+  SET status = 'delegated', result = '', updated_at = ?
+  WHERE status = 'processing' AND datetime(updated_at) < datetime(?)
+`);
+
+const claimDelegatedJobStmt = db.prepare(`
+  UPDATE ai_jobs
+  SET status = 'processing', result = ?, updated_at = ?
+  WHERE request_id = ? AND status = 'delegated'
+`);
+
 const updateRunningStmt = db.prepare(`
   UPDATE ai_jobs
   SET status = 'running',
@@ -140,6 +160,28 @@ const updateSucceededStmt = db.prepare(`
       finished_at = ?,
       updated_at = ?
   WHERE request_id = ?
+`);
+
+const updateDelegatedStmt = db.prepare(`
+  UPDATE ai_jobs
+  SET status = 'delegated', result = ?, error = '', updated_at = ?
+  WHERE request_id = ? AND status = 'running'
+`);
+
+const completeDelegatedSucceededStmt = db.prepare(`
+  UPDATE ai_jobs
+  SET status = 'succeeded', result = ?, error = '', finished_at = ?, updated_at = ?
+  WHERE request_id = ? AND status = 'processing'
+    AND json_extract(result, '$.claim_token') = ?
+    AND datetime(json_extract(result, '$.lease_expires_at')) >= datetime(?)
+`);
+
+const completeDelegatedFailedStmt = db.prepare(`
+  UPDATE ai_jobs
+  SET status = 'failed', error = ?, finished_at = ?, updated_at = ?
+  WHERE request_id = ? AND status = 'processing'
+    AND json_extract(result, '$.claim_token') = ?
+    AND datetime(json_extract(result, '$.lease_expires_at')) >= datetime(?)
 `);
 
 const updateFailedStmt = db.prepare(`
@@ -216,13 +258,7 @@ export function submitAiJob(input: {
   deviceToken: string;
   runner?: AiJobRunner;
 }): AiJobSubmitResult {
-  if (hermesControllerEnabled() && LIVE_INTERNAL_AI_JOB_KINDS.has(input.kind)) {
-    throw new AiJobInputError(
-      "Live AI work is managed by Hermes while HERMES_CONTROLLER_ENABLED=true",
-      "AI_JOB_MANAGED_BY_HERMES",
-      409,
-    );
-  }
+  const managedByHermes = hermesControllerEnabled();
   const normalized = normalizeJobPayload(input.kind, input.payload, input.device);
   const payloadText = jsonStringifyBounded(normalized.payload, JOB_PAYLOAD_MAX_BYTES);
   if (!payloadText) {
@@ -230,6 +266,14 @@ export function submitAiJob(input: {
   }
 
   const clientRequestId = cleanIdentifier(input.requestId) || generatedRequestId();
+  const runnerForJob = (jobRequestId: string): AiJobRunner => managedByHermes
+    ? () => delegateAiJobToHermes({
+      requestId: jobRequestId,
+      kind: input.kind,
+      payload: normalized.payload,
+      device: input.device,
+    })
+    : input.runner ?? defaultRunner(input.kind, normalized.payload, input.deviceToken);
   let requestId = clientRequestId;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const now = new Date().toISOString();
@@ -243,7 +287,7 @@ export function submitAiJob(input: {
       now,
     );
     if (insert.changes > 0) {
-      const runner = input.runner ?? defaultRunner(input.kind, normalized.payload, input.deviceToken);
+      const runner = runnerForJob(requestId);
       activeRunners.set(requestId, runner);
       const job = publicJob(getJobRow(requestId)!);
       notify(job);
@@ -253,11 +297,14 @@ export function submitAiJob(input: {
 
     const byKindKey = getJobByKindKey(input.kind, normalized.jobKey);
     if (byKindKey) {
-      const runner = input.runner ?? defaultRunner(input.kind, normalized.payload, input.deviceToken);
+      const runner = runnerForJob(byKindKey.request_id);
       const job = byKindKey.status === "failed"
         ? restartFailedJob(byKindKey, payloadText, runner)
         : byKindKey;
       maybeAttachRunner(job, runner);
+      if (managedByHermes && job.status === "delegated") {
+        void runner().catch(() => undefined);
+      }
       return {
         accepted: true,
         attached: true,
@@ -295,6 +342,132 @@ export function getAiJob(requestId: unknown): PublicAiJob | null {
   return row ? publicJob(row) : null;
 }
 
+export function listDelegatedAiJobs(limit = 20): Array<Record<string, unknown>> {
+  const bounded = Math.min(100, Math.max(1, Math.trunc(limit)));
+  return (listDelegatedJobsStmt.all(bounded) as AiJobRow[]).map(delegatedRequest);
+}
+
+export function claimDelegatedAiJobs(input: { owner_id: unknown; limit?: unknown }): {
+  requests: Array<Record<string, unknown>>;
+  remaining: number;
+  has_more: boolean;
+} {
+  const ownerId = cleanIdentifier(input.owner_id);
+  if (!ownerId) throw new AiJobInputError("Invalid Hermes claim owner", "AI_JOB_CLAIM_OWNER_INVALID", 400);
+  const rawLimit = typeof input.limit === "number" ? input.limit : Number(input.limit ?? 20);
+  const limit = Math.min(20, Math.max(1, Number.isInteger(rawLimit) ? rawLimit : 20));
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const leaseExpiresAt = new Date(now.getTime() + 30 * 60_000).toISOString();
+  const staleBefore = new Date(now.getTime() - 30 * 60_000).toISOString();
+  const requests = db.transaction(() => {
+    releaseExpiredProcessingJobsStmt.run(nowIso, staleBefore);
+    const claimed: Array<Record<string, unknown>> = [];
+    for (const row of listDelegatedJobsStmt.all(limit) as AiJobRow[]) {
+      const claimToken = `claim_${randomUUID()}`;
+      const lease = jsonStringifyBounded({
+        managed_by: "hermes",
+        claim_owner: ownerId,
+        claim_token: claimToken,
+        lease_expires_at: leaseExpiresAt,
+      }, JOB_RESULT_MAX_BYTES);
+      if (claimDelegatedJobStmt.run(lease, nowIso, row.request_id).changes > 0) {
+        claimed.push({
+          ...delegatedRequest(row),
+          claim_token: claimToken,
+          lease_expires_at: leaseExpiresAt,
+        });
+      }
+    }
+    return claimed;
+  })();
+  const remaining = (delegatedJobCountStmt.get() as { count: number }).count;
+  return { requests, remaining, has_more: remaining > 0 };
+}
+
+export function completeDelegatedAiJob(input: {
+  request_id: unknown;
+  claim_token: unknown;
+  outcome: "succeeded" | "failed" | "skipped";
+  detail?: unknown;
+}): PublicAiJob {
+  const requestId = cleanIdentifier(input.request_id);
+  const claimToken = cleanIdentifier(input.claim_token);
+  const row = requestId ? getJobRow(requestId) : null;
+  if (!row) throw new AiJobInputError("Delegated AI job not found", "AI_JOB_NOT_FOUND", 404);
+  if (!claimToken) throw new AiJobInputError("Invalid Hermes claim token", "AI_JOB_CLAIM_TOKEN_INVALID", 400);
+  if (FINISHED_STATUSES.has(row.status)) return publicJob(row);
+  if (row.status !== "processing") {
+    throw new AiJobInputError("AI job is not claimed by Hermes", "AI_JOB_NOT_PROCESSING", 409);
+  }
+  const now = new Date().toISOString();
+  const detail = typeof input.detail === "string" ? input.detail.trim().slice(0, 1000) : "";
+  let update: { changes: number };
+  if (input.outcome === "failed") {
+    update = completeDelegatedFailedStmt.run(jsonStringifyBounded({
+      code: "HERMES_AI_JOB_FAILED",
+      message: detail || "Hermes did not complete the delegated AI job",
+      retryable: true,
+    }, JOB_ERROR_MAX_BYTES), now, now, requestId, claimToken, now);
+  } else {
+    update = completeDelegatedSucceededStmt.run(
+      jsonStringifyBounded(controllerCompletionResult(row, input.outcome, detail), JOB_RESULT_MAX_BYTES),
+      now,
+      now,
+      requestId,
+      claimToken,
+      now,
+    );
+  }
+  if (update.changes === 0) {
+    const current = getJobRow(requestId)!;
+    if (FINISHED_STATUSES.has(current.status)) return publicJob(current);
+    throw new AiJobInputError("Hermes claim token is stale or does not own this request", "AI_JOB_CLAIM_MISMATCH", 409);
+  }
+  notifyRow(requestId);
+  return publicJob(getJobRow(requestId)!);
+}
+
+function delegatedRequest(row: AiJobRow): Record<string, unknown> {
+  return {
+    request_id: row.request_id,
+    kind: row.job_kind,
+    device_id: row.device_id,
+    payload: safeJsonParseObject(row.payload),
+    delegated_at: row.updated_at,
+    created_at: row.created_at,
+  };
+}
+
+function controllerCompletionResult(
+  row: AiJobRow,
+  outcome: "succeeded" | "skipped",
+  detail: string,
+): Record<string, unknown> {
+  if (outcome === "succeeded") {
+    const payload = safeJsonParseObject(row.payload);
+    if (row.job_kind === "daily_summary") {
+      const saved = getDailySummary.get(String(payload.date || "")) as Record<string, unknown> | null;
+      if (!saved) throw new AiJobInputError("Hermes daily summary was not saved", "HERMES_RESULT_NOT_SAVED", 409);
+      return saved;
+    }
+    if (row.job_kind === "weekly_summary") {
+      const saved = getWeeklySummary.get(String(payload.week_start || "")) as Record<string, unknown> | null;
+      if (!saved) throw new AiJobInputError("Hermes weekly summary was not saved", "HERMES_RESULT_NOT_SAVED", 409);
+      return saved;
+    }
+    if (row.job_kind === "supervision_rules_refresh") {
+      return getSummarySettings() as unknown as Record<string, unknown>;
+    }
+  }
+  return {
+    ok: true,
+    managed_by: "hermes",
+    outcome,
+    ...(detail ? { detail } : {}),
+  };
+}
+
 export function isTerminalAiJobStatus(status: string): boolean {
   return FINISHED_STATUSES.has(status as AiJobStatus);
 }
@@ -314,6 +487,7 @@ export function aiJobInputErrorResponse(error: unknown): { status: number; body:
 
 function maybeAttachRunner(row: AiJobRow, runner: AiJobRunner): void {
   if (!ACTIVE_STATUSES.has(row.status)) return;
+  if (row.status === "delegated" || row.status === "processing") return;
   if (activeRunners.has(row.request_id)) return;
   activeRunners.set(row.request_id, runner);
   if (row.status === "queued") scheduleJobRun(row.request_id);
@@ -364,7 +538,11 @@ async function runAiJob(requestId: string): Promise<void> {
   try {
     const result = await runner();
     const now = new Date().toISOString();
-    updateSucceededStmt.run(jsonStringifyBounded(result, JOB_RESULT_MAX_BYTES), now, now, requestId);
+    if (result.lifecycle === "delegated") {
+      updateDelegatedStmt.run(jsonStringifyBounded(result.value, JOB_RESULT_MAX_BYTES), now, requestId);
+    } else {
+      updateSucceededStmt.run(jsonStringifyBounded(result.value, JOB_RESULT_MAX_BYTES), now, now, requestId);
+    }
   } catch (error) {
     const now = new Date().toISOString();
     updateFailedStmt.run(jsonStringifyBounded(aiJobError(error), JOB_ERROR_MAX_BYTES), now, now, requestId);
@@ -396,7 +574,7 @@ function defaultRunner(kind: AiJobKind, payload: Record<string, unknown>, device
           date: result.date,
         });
       }
-      return result as unknown as Record<string, unknown>;
+      return completedAiJob(result as unknown as Record<string, unknown>);
     }
 
     if (kind === "weekly_summary") {
@@ -411,27 +589,27 @@ function defaultRunner(kind: AiJobKind, payload: Record<string, unknown>, device
           week_start: result.week_start,
         });
       }
-      return result as unknown as Record<string, unknown>;
+      return completedAiJob(result as unknown as Record<string, unknown>);
     }
 
     if (kind === "ai_config_test") {
-      return await testEncryptedAiConfigFromDevice(payload, deviceToken, {
+      return completedAiJob(await testEncryptedAiConfigFromDevice(payload, deviceToken, {
         deepThinking: getSummarySettings().ai_deep_thinking,
-      }) as unknown as Record<string, unknown>;
+      }) as unknown as Record<string, unknown>);
     }
 
     if (kind === "supervision_check") {
       const { runSupervisionTick } = await import("./supervision");
-      return await runSupervisionTick(new Date(String(payload.at)), {
+      return completedAiJob(await runSupervisionTick(new Date(String(payload.at)), {
         force: payload.force !== false,
         source: payload.source === "scheduled" ? "scheduled" : "report",
-      }) as unknown as Record<string, unknown>;
+      }) as unknown as Record<string, unknown>);
     }
 
     const settings = await refreshSupervisionRules(getSummarySettings());
     const { syncCurrentSupervisionPolicyToCapableDevices } = await import("./supervision-policy-control");
     syncCurrentSupervisionPolicyToCapableDevices(settings);
-    return settings as unknown as Record<string, unknown>;
+    return completedAiJob(settings as unknown as Record<string, unknown>);
   };
 }
 

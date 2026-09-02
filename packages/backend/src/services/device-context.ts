@@ -3,6 +3,7 @@ import { db } from "../db";
 import { buildTimelineSegments } from "../routes/timeline";
 import { safeTimezoneOffset } from "./cdn";
 import { buildTimelinePromptDocument } from "./timeline-prompt";
+import { trustedWatchSleepingAt } from "./health-context";
 import {
   DEVICE_CAPABILITY_SCHEMA,
   INSTALLED_APPS_SCHEMA,
@@ -104,6 +105,8 @@ export interface DeviceContext {
   frozen_packages: FrozenPackageItem[];
   installed_apps_count: number;
   installed_apps_updated_at: string;
+  sleeping: boolean;
+  device_kind: string;
 }
 
 export function listDeviceContexts(): DeviceContext[] {
@@ -225,7 +228,30 @@ function deviceContextFromRow(row: DeviceState): DeviceContext {
     frozen_packages: frozenPackageItems(deviceExtra.frozen_packages),
     installed_apps_count: installedAppItems(deviceExtra.installed_apps).length,
     installed_apps_updated_at: cleanText(deviceExtra.installed_apps_updated_at, 40),
+    sleeping: extra.sleeping === true,
+    device_kind: cleanText(deviceExtra.device_kind, 40),
   };
+}
+
+export type ControllerRestState = "asleep" | "screen_off" | "active" | "unknown";
+
+export function controllerRestState(
+  devices = listDeviceContexts(),
+  trustedWatchSleeping = trustedWatchSleepingAt(new Date()),
+): ControllerRestState {
+  const online = devices.filter((device) => device.is_online);
+  if (online.length === 0) return "unknown";
+  if (trustedWatchSleeping) return "asleep";
+  const phones = online.filter((device) => (
+    device.device_kind === "phone" || device.platform === "android"
+  ));
+  if (phones.length === 0) return "unknown";
+  return phones.every((device) => (
+    device.sleeping
+    || !device.current_app.app_id
+    || device.current_app.app_id === "idle"
+    || device.current_app.app_id === "sleeping"
+  )) ? "screen_off" : "active";
 }
 
 function capabilityForDevice(platform: string, deviceExtra: Record<string, unknown>): DeviceCapability {

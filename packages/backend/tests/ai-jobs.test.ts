@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { completedAiJob } from "../src/services/ai-job-runner";
 
 const tempDir = mkdtempSync(join(tmpdir(), "live-ai-jobs-"));
 process.env.DB_PATH = join(tempDir, "test.db");
@@ -20,30 +21,99 @@ describe("ai jobs", () => {
     }
   });
 
-  test("rejects Live-owned AI work before enqueue while Hermes controls the service", async () => {
-    const { getAiJob, submitAiJob } = await import("../src/services/ai-jobs");
+  test("delegates every Live AI request to Hermes without running a Live model", async () => {
+    const { claimDelegatedAiJobs, completeDelegatedAiJob, getAiJob, submitAiJob } = await import("../src/services/ai-jobs");
     process.env.HERMES_CONTROLLER_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_URL = "https://controller.example/webhooks/live-supervision";
+    process.env.CONTROLLER_WEBHOOK_SECRET = "independent-ai-delegation-secret";
+    const originalFetch = globalThis.fetch;
+    const events: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const event = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+      events.push(event);
+      return Response.json({
+        status: "accepted",
+        ack: {
+          schema: "live_dashboard.controller_ack.v1",
+          v: 1,
+          event_id: event.event_id,
+          accepted: true,
+        },
+      }, { status: 202 });
+    }) as typeof fetch;
     try {
-      for (const kind of ["daily_summary", "weekly_summary", "supervision_rules_refresh", "supervision_check"] as const) {
-        let caught: unknown;
-        try {
-          submitAiJob({
-            requestId: `req_hermes_${kind}`,
-            kind,
-            payload: kind === "weekly_summary"
-              ? { week_start: "2026-06-08" }
-              : kind === "daily_summary"
-                ? { date: "2026-06-11" }
-                : {},
-            device: testDevice,
-            deviceToken: "ai-job-token",
-            runner: async () => ({ ok: true }),
-          });
-        } catch (error) {
-          caught = error;
-        }
-        expect(caught).toMatchObject({ code: "AI_JOB_MANAGED_BY_HERMES", status: 409 });
+      const requests = [
+        ["daily_summary", { date: "2026-05-21", tz_offset_minutes: -480 }],
+        ["weekly_summary", { week_start: "2026-05-18", tz_offset_minutes: -480 }],
+        ["supervision_rules_refresh", { settings_updated_at: "2026-05-21T00:00:00.000Z" }],
+        ["supervision_check", { at: "2026-05-21T01:00:00.000Z", source: "report", force: true }],
+      ] as const;
+      let liveRunnerCalls = 0;
+      for (const [kind, payload] of requests) {
+        const submitted = submitAiJob({
+          requestId: `req_hermes_${kind}`,
+          kind,
+          payload,
+          device: testDevice,
+          deviceToken: "ai-job-token",
+          runner: async () => {
+            liveRunnerCalls += 1;
+            return completedAiJob({ ok: true, model_called: true });
+          },
+        });
+        const delegated = await waitForJobStatus(
+          submitted.job.request_id,
+          () => getAiJob(submitted.job.request_id),
+          ["delegated"],
+        );
+        expect(delegated.result).toMatchObject({
+          ok: true,
+          delegated: true,
+          managed_by: "hermes",
+          delivery_status: "accepted",
+        });
+        const claimedRequests = claimDelegatedAiJobs({ owner_id: "test-controller", limit: 20 }).requests;
+        const claimedRequest = claimedRequests
+          .find((item) => item.request_id === submitted.job.request_id);
+        expect(claimedRequest).toBeDefined();
+        expect(claimedRequest!.request_id).toBe(submitted.job.request_id);
+        expect(typeof claimedRequest!.claim_token).toBe("string");
+        const claimToken = String(claimedRequest!.claim_token);
+        expect(claimToken).toMatch(/^claim_[a-f0-9-]{36}$/);
+        const done = completeDelegatedAiJob({
+          request_id: submitted.job.request_id,
+          claim_token: claimToken,
+          outcome: "skipped",
+          detail: "test completion",
+        });
+        expect(done.status).toBe("succeeded");
+        const repeated = completeDelegatedAiJob({
+          request_id: submitted.job.request_id,
+          claim_token: claimToken,
+          outcome: "failed",
+          detail: "must not overwrite the settled outcome",
+        });
+        expect(repeated.status).toBe("succeeded");
       }
+      expect(liveRunnerCalls).toBe(0);
+      expect(events).toHaveLength(4);
+      expect(events.map((event) => (event.ai_request as { kind?: string }).kind)).toEqual(
+        requests.map(([kind]) => kind),
+      );
+      expect(events[0]).toMatchObject({
+        schema: "live_dashboard.controller_event.v1",
+        v: 1,
+        event_type: "ai.work_requested",
+        source: "client",
+        device_ids: [testDevice.device_id],
+        reason_codes: ["daily_summary"],
+        ai_request: {
+          request_id: "req_hermes_daily_summary",
+          kind: "daily_summary",
+          payload: { date: "2026-05-21", tz_offset_minutes: -480 },
+        },
+      });
 
       let configTestRuns = 0;
       const configTest = submitAiJob({
@@ -54,14 +124,25 @@ describe("ai jobs", () => {
         deviceToken: "ai-job-token",
         runner: async () => {
           configTestRuns += 1;
-          return { ok: true };
+          return completedAiJob({ ok: true });
         },
       });
       const configTestDone = await waitForJob(configTest.job.request_id, () => getAiJob(configTest.job.request_id));
       expect(configTestDone.status).toBe("succeeded");
-      expect(configTestRuns).toBe(1);
+      expect(configTestDone.result).toMatchObject({
+        ok: true,
+        delegated: false,
+        managed_by: "hermes",
+        provider_test_skipped: true,
+      });
+      expect(configTestRuns).toBe(0);
+      expect(events).toHaveLength(4);
     } finally {
+      globalThis.fetch = originalFetch;
       delete process.env.HERMES_CONTROLLER_ENABLED;
+      delete process.env.CONTROLLER_WEBHOOK_ENABLED;
+      delete process.env.CONTROLLER_WEBHOOK_URL;
+      delete process.env.CONTROLLER_WEBHOOK_SECRET;
     }
   });
 
@@ -78,12 +159,12 @@ describe("ai jobs", () => {
       runner: async () => {
         runs += 1;
         await Bun.sleep(10);
-        return {
+        return completedAiJob({
           ok: true,
           kind: "daily",
           date: "2026-06-11",
           summary: "done",
-        };
+        });
       },
     });
 
@@ -95,7 +176,7 @@ describe("ai jobs", () => {
       deviceToken: "ai-job-token",
       runner: async () => {
         runs += 100;
-        return { ok: true, summary: "should not run" };
+        return completedAiJob({ ok: true, summary: "should not run" });
       },
     });
 
@@ -133,12 +214,12 @@ describe("ai jobs", () => {
       deviceToken: "ai-job-token",
       runner: async () => {
         runs += 1;
-        return {
+        return completedAiJob({
           ok: true,
           kind: "daily",
           date: "2026-06-12",
           summary: "retry succeeded",
-        };
+        });
       },
     });
 
@@ -148,6 +229,139 @@ describe("ai jobs", () => {
     expect(retryDone.status).toBe("succeeded");
     expect(retryDone.result?.summary).toBe("retry succeeded");
     expect(runs).toBe(2);
+  });
+
+  test("a failed Live job retry cannot bypass a later Hermes takeover", async () => {
+    const { claimDelegatedAiJobs, completeDelegatedAiJob, getAiJob, submitAiJob } = await import("../src/services/ai-jobs");
+    let liveRunnerCalls = 0;
+    const first = submitAiJob({
+      requestId: "req_before_hermes_takeover",
+      kind: "daily_summary",
+      payload: { date: "2026-04-21", tz_offset_minutes: -480 },
+      device: testDevice,
+      deviceToken: "ai-job-token",
+      runner: async () => {
+        liveRunnerCalls += 1;
+        throw new Error("pre-takeover failure");
+      },
+    });
+    expect((await waitForJob(first.job.request_id, () => getAiJob(first.job.request_id))).status).toBe("failed");
+
+    const originalFetch = globalThis.fetch;
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_URL = "https://controller.example/webhooks/live-supervision";
+    process.env.CONTROLLER_WEBHOOK_SECRET = "independent-retry-takeover-secret";
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const event = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+      return Response.json({
+        status: "accepted",
+        ack: { schema: "live_dashboard.controller_ack.v1", v: 1, event_id: event.event_id, accepted: true },
+      }, { status: 202 });
+    }) as typeof fetch;
+    try {
+      const retry = submitAiJob({
+        requestId: "req_after_hermes_takeover",
+        kind: "daily_summary",
+        payload: { date: "2026-04-21", tz_offset_minutes: -480 },
+        device: testDevice,
+        deviceToken: "ai-job-token",
+        runner: async () => {
+          liveRunnerCalls += 100;
+          return completedAiJob({ ok: true, model_called: true });
+        },
+      });
+      const delegated = await waitForJobStatus(
+        retry.job.request_id,
+        () => getAiJob(retry.job.request_id),
+        ["delegated"],
+      );
+      expect(delegated.result).toMatchObject({ managed_by: "hermes", delegated: true });
+      const claimedRequest = claimDelegatedAiJobs({ owner_id: "takeover-controller", limit: 20 }).requests
+        .find((item) => item.request_id === retry.job.request_id);
+      expect(claimedRequest).toMatchObject({ request_id: retry.job.request_id });
+      const done = completeDelegatedAiJob({
+        request_id: retry.job.request_id,
+        claim_token: claimedRequest?.claim_token,
+        outcome: "skipped",
+      });
+      expect(done.status).toBe("succeeded");
+      expect(liveRunnerCalls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      delete process.env.HERMES_CONTROLLER_ENABLED;
+      delete process.env.CONTROLLER_WEBHOOK_ENABLED;
+      delete process.env.CONTROLLER_WEBHOOK_URL;
+      delete process.env.CONTROLLER_WEBHOOK_SECRET;
+    }
+  });
+
+  test("keeps concurrent Hermes requests in one durable delegated batch", async () => {
+    const {
+      completeDelegatedAiJob,
+      claimDelegatedAiJobs,
+      getAiJob,
+      listDelegatedAiJobs,
+      submitAiJob,
+    } = await import("../src/services/ai-jobs");
+    const originalFetch = globalThis.fetch;
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_URL = "https://controller.example/webhooks/live-supervision";
+    process.env.CONTROLLER_WEBHOOK_SECRET = "independent-batch-secret";
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const event = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+      return Response.json({
+        status: "accepted",
+        ack: { schema: "live_dashboard.controller_ack.v1", v: 1, event_id: event.event_id, accepted: true },
+      }, { status: 202 });
+    }) as typeof fetch;
+    const ids: string[] = [];
+    try {
+      for (const [kind, payload] of [
+        ["daily_summary", { date: "2026-03-21", tz_offset_minutes: -480 }],
+        ["weekly_summary", { week_start: "2026-03-16", tz_offset_minutes: -480 }],
+      ] as const) {
+        const submitted = submitAiJob({
+          requestId: `req_batch_${kind}`,
+          kind,
+          payload,
+          device: testDevice,
+          deviceToken: "ai-job-token",
+        });
+        ids.push(submitted.job.request_id);
+      }
+      await Promise.all(ids.map((requestId) => waitForJobStatus(
+        requestId,
+        () => getAiJob(requestId),
+        ["delegated"],
+      )));
+      expect(listDelegatedAiJobs(20).filter((item) => ids.includes(String(item.request_id)))).toHaveLength(2);
+      const claimed = claimDelegatedAiJobs({ owner_id: "batch-controller", limit: 20 });
+      expect(claimed.requests.filter((item) => ids.includes(String(item.request_id)))).toHaveLength(2);
+      expect(claimDelegatedAiJobs({ owner_id: "concurrent-controller", limit: 20 }).requests
+        .filter((item) => ids.includes(String(item.request_id)))).toHaveLength(0);
+      for (const requestId of ids) {
+        const request = claimed.requests.find((item) => item.request_id === requestId);
+        expect(request).toBeDefined();
+        expect(() => completeDelegatedAiJob({
+          request_id: requestId,
+          claim_token: "claim_00000000-0000-0000-0000-000000000000",
+          outcome: "skipped",
+        })).toThrow(expect.objectContaining({ code: "AI_JOB_CLAIM_MISMATCH" }));
+        expect(completeDelegatedAiJob({
+          request_id: requestId,
+          claim_token: request?.claim_token,
+          outcome: "skipped",
+        }).status).toBe("succeeded");
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      delete process.env.HERMES_CONTROLLER_ENABLED;
+      delete process.env.CONTROLLER_WEBHOOK_ENABLED;
+      delete process.env.CONTROLLER_WEBHOOK_URL;
+      delete process.env.CONTROLLER_WEBHOOK_SECRET;
+    }
   });
 
   test("exposes quick HTTP submit and poll endpoints", async () => {
@@ -227,7 +441,7 @@ describe("ai jobs", () => {
           peak = Math.max(peak, running);
           await Bun.sleep(40);
           running -= 1;
-          return { ok: true, summary: `done ${index}` };
+          return completedAiJob({ ok: true, summary: `done ${index}` });
         },
       });
       requestIds.push(submitted.job.request_id);
@@ -256,6 +470,20 @@ async function waitForJob<T extends { status: string } | null>(
     await Bun.sleep(10);
   }
   throw new Error(`timed out waiting for ${requestId}`);
+}
+
+async function waitForJobStatus<T extends { status: string } | null>(
+  requestId: string,
+  read: () => T,
+  statuses: string[],
+): Promise<NonNullable<T>> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const job = read();
+    if (job && statuses.includes(job.status)) return job as NonNullable<T>;
+    await Bun.sleep(10);
+  }
+  throw new Error(`timed out waiting for ${requestId}: ${statuses.join(",")}`);
 }
 
 function streamingJsonRequest(body: string): Request {

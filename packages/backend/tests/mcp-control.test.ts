@@ -50,6 +50,9 @@ describe("mcp control plane", () => {
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.send_device_commands");
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.set_supervision_policy");
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.get_device_installed_apps");
+    expect(tools.map((tool) => tool.name)).toContain("live_dashboard.get_controller_context");
+    expect(tools.map((tool) => tool.name)).toContain("live_dashboard.complete_controller_ai_request");
+    expect(tools.map((tool) => tool.name)).toContain("live_dashboard.claim_controller_ai_requests");
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.get_service_settings");
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.set_summary_mode");
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.get_controller_persona");
@@ -69,6 +72,29 @@ describe("mcp control plane", () => {
     expect(tools.find((tool) => tool.name === "live_dashboard.start_ai_job")?.annotations?.destructiveHint).toBe(true);
     expect(tools.find((tool) => tool.name === "live_dashboard.run_supervision_check")?.annotations?.destructiveHint).toBe(true);
     expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  test("returns one bounded controller context instead of requiring five separate reads", async () => {
+    const { handleMcpRequest } = await import("../src/routes/mcp");
+    const response = await handleMcpRequest(mcpRequest({
+      method: "tools/call",
+      params: {
+        name: "live_dashboard.get_controller_context",
+        arguments: { mode: "supervision", window_minutes: 60 },
+      },
+    }), localMcpAccess());
+    const body = await response.json() as {
+      result?: { structuredContent?: Record<string, unknown> };
+    };
+    expect(body.result?.structuredContent).toMatchObject({
+      schema: "live_dashboard.controller_context.v1",
+      mode: "supervision",
+    });
+    expect(body.result?.structuredContent?.settings).toBeDefined();
+    expect(body.result?.structuredContent?.persona).toBeDefined();
+    expect(body.result?.structuredContent?.devices).toBeArray();
+    expect(body.result?.structuredContent?.timeline).toBeDefined();
+    expect(body.result?.structuredContent?.recent_events).toBeDefined();
   });
 
   test("requires explicit opt-in for tokenless loopback MCP", async () => {
@@ -372,7 +398,7 @@ describe("mcp control plane", () => {
         name: "live_dashboard.get_controller_memory_feed",
         arguments: {
           since: "2026-06-01T00:00:00.000Z",
-          limit: 20,
+          limit: 100,
           include_messages: true,
           include_summaries: true,
           include_device_commands: true,

@@ -82,8 +82,9 @@ describe("Hermes controller takeover", () => {
       globalThis.fetch = originalFetch;
     }
 
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    const reviewEvents = events.filter((event) => event.event_type === "supervision.review_requested");
+    expect(reviewEvents).toHaveLength(1);
+    expect(reviewEvents[0]).toMatchObject({
       schema: "live_dashboard.controller_event.v1",
       v: 1,
       event_type: "supervision.review_requested",
@@ -91,8 +92,8 @@ describe("Hermes controller takeover", () => {
       device_ids: ["android-main"],
       reason_codes: ["device_requested"],
     });
-    expect(JSON.stringify(events[0])).not.toContain("private title");
-    expect(JSON.stringify(events[0])).not.toContain("com.example.video");
+    expect(JSON.stringify(reviewEvents[0])).not.toContain("private title");
+    expect(JSON.stringify(reviewEvents[0])).not.toContain("com.example.video");
   });
 
   test("turns a scheduled threshold match into a Hermes review candidate without Live AI", async () => {
@@ -170,7 +171,7 @@ describe("Hermes controller takeover", () => {
     expect(events[0]?.device_ids).toEqual(expect.arrayContaining([deviceId]));
   });
 
-  test("saves supervision settings without queuing a Live AI rules job", async () => {
+  test("saves supervision settings and queues Hermes policy reconciliation", async () => {
     const { handleSummarySettingsUpdate } = await import("../src/routes/daily-summary");
     process.env.HERMES_CONTROLLER_ENABLED = "true";
     const response = await handleSummarySettingsUpdate(new Request("http://localhost/api/summary-settings", {
@@ -182,14 +183,17 @@ describe("Hermes controller takeover", () => {
       body: JSON.stringify({
         supervision_enabled: true,
         supervision_check_interval_minutes: 60,
-        client_updated_at: "2030-01-01T00:00:00.000Z",
+        client_updated_at: "2100-01-01T00:00:00.000Z",
       }),
     }));
     const body = await response.json() as Record<string, unknown>;
 
     expect(response.status).toBe(200);
     expect(body.supervision_enabled).toBe(true);
-    expect(body.rules_refresh_job).toBeNull();
+    expect(body.rules_refresh_job).toMatchObject({
+      kind: "supervision_rules_refresh",
+      status: "queued",
+    });
   });
 
   test("reports the active controller and fallback state to Hermes", async () => {

@@ -710,6 +710,32 @@ describe("ai-config", () => {
     }
   });
 
+  test("blocks every low-level Live model request while Hermes is active", async () => {
+    const {
+      requestAiChatCompletion,
+      requestAiObjectCompletion,
+    } = await import("../src/services/ai-config");
+    const config = {
+      apiUrl: "https://should-never-be-called.invalid/v1/chat/completions",
+      apiKey: "must-not-be-spent",
+      model: "unused",
+    };
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
+    try {
+      await expect(requestAiChatCompletion(config, {
+        messages: [{ role: "user", content: "do not send" }],
+        maxTokens: 8,
+      })).rejects.toMatchObject({ code: "LIVE_AI_DISABLED_BY_HERMES" });
+      await expect(requestAiObjectCompletion(config, {
+        messages: [{ role: "user", content: "do not send" }],
+        schema: z.object({ ok: z.boolean() }),
+        maxTokens: 8,
+      })).rejects.toMatchObject({ code: "LIVE_AI_DISABLED_BY_HERMES" });
+    } finally {
+      delete process.env.HERMES_CONTROLLER_ENABLED;
+    }
+  });
+
   test("uses prompt override files without changing the summary request shape", async () => {
     const { db } = await import("../src/db");
     const { describeAiConfig, saveEncryptedAiConfigFromDevice } = await import("../src/services/ai-config");

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  scheduledSupervisionIntervalMinutes,
   shouldRunSupervisionAi,
   supervisionTriggerDecision,
   supervisionWindowMinutes,
@@ -69,5 +70,11 @@ describe("supervision trigger plan", () => {
     expect(decision.heuristicTriggered).toBe(true);
     expect(decision.heuristicReasons).toContain("early_risk_dominant");
     expect(shouldRunSupervisionAi("report", decision)).toBe(true);
+  });
+
+  test("backs scheduled reviews off while every phone screen is off", () => {
+    expect(scheduledSupervisionIntervalMinutes(30, false)).toBe(30);
+    expect(scheduledSupervisionIntervalMinutes(30, true)).toBe(120);
+    expect(scheduledSupervisionIntervalMinutes(240, true)).toBe(240);
   });
 });

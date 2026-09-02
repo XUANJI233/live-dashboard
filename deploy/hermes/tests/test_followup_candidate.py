@@ -17,7 +17,7 @@ def selected(value: str) -> bool:
     return bool(json.loads(value).get("selected_this_run"))
 
 
-def test_wakes_every_five_minutes_until_reply():
+def test_wakes_with_progressive_backoff_until_reply():
     state = {}
     root = "job:output.md"
     state, before = MODULE.evaluate_followup(
@@ -26,21 +26,42 @@ def test_wakes_every_five_minutes_until_reply():
     state, first = MODULE.evaluate_followup(
         state, root_id=root, outbound_at=1_000, inbound_at=900, now=1_300
     )
-    state, same_slot = MODULE.evaluate_followup(
-        state, root_id=root, outbound_at=1_000, inbound_at=900, now=1_599
+    state, before_second = MODULE.evaluate_followup(
+        state, root_id=root, outbound_at=1_000, inbound_at=900, now=1_899
     )
     state, second = MODULE.evaluate_followup(
-        state, root_id=root, outbound_at=1_000, inbound_at=900, now=1_600
+        state, root_id=root, outbound_at=1_000, inbound_at=900, now=1_900
     )
     state, third = MODULE.evaluate_followup(
-        state, root_id=root, outbound_at=1_000, inbound_at=900, now=1_900
+        state, root_id=root, outbound_at=1_000, inbound_at=900, now=2_800
+    )
+    state, fourth = MODULE.evaluate_followup(
+        state, root_id=root, outbound_at=1_000, inbound_at=900, now=4_600
     )
 
     assert not selected(before)
     assert selected(first)
-    assert not selected(same_slot)
+    assert not selected(before_second)
     assert selected(second)
     assert selected(third)
+    assert selected(fourth)
+
+
+def test_screen_off_uses_slower_followup_and_sleep_suppresses_it():
+    root = "job:output.md"
+    _, screen_off_early = MODULE.evaluate_followup(
+        {}, root_id=root, outbound_at=1_000, inbound_at=900, now=1_300, rest_state="screen_off"
+    )
+    _, screen_off_due = MODULE.evaluate_followup(
+        {}, root_id=root, outbound_at=1_000, inbound_at=900, now=1_900, rest_state="screen_off"
+    )
+    _, sleeping = MODULE.evaluate_followup(
+        {}, root_id=root, outbound_at=1_000, inbound_at=900, now=4_600, rest_state="asleep"
+    )
+
+    assert not selected(screen_off_early)
+    assert selected(screen_off_due)
+    assert not selected(sleeping)
 
 
 def test_any_later_weixin_user_message_clears_followup():
@@ -137,7 +158,10 @@ def test_cron_delivery_echo_is_not_treated_as_weixin_reply(tmp_path):
 
 class FollowupCandidateUnittest(unittest.TestCase):
     def test_wake_cadence(self):
-        test_wakes_every_five_minutes_until_reply()
+        test_wakes_with_progressive_backoff_until_reply()
+
+    def test_rest_backoff(self):
+        test_screen_off_uses_slower_followup_and_sleep_suppresses_it()
 
     def test_reply_clears(self):
         test_any_later_weixin_user_message_clears_followup()

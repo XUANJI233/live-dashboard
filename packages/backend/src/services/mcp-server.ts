@@ -10,7 +10,10 @@ import { getCommandStatuses } from "./device-command-ledger";
 import { sendDeviceCommands } from "./device-control";
 import { getControllerPersona, updateControllerPersona } from "./controller-persona";
 import { getControllerMemoryFeed, saveControllerSummary } from "./controller-memory";
+import { getControllerContext } from "./controller-context";
 import {
+  completeServiceAiJob,
+  claimServiceAiJobs,
   getServiceAiJob,
   getServiceSettings,
   runServiceSupervisionCheck,
@@ -23,6 +26,9 @@ import {
   AccountingBillsSchema,
   CaptureScreenshotSchema,
   CommandStatusSchema,
+  ClaimControllerAiRequestsSchema,
+  CompleteControllerAiRequestSchema,
+  ControllerContextSchema,
   ControllerMemoryFeedSchema,
   ControllerPersonaUpdateSchema,
   CoyoteAdjustSchema,
@@ -66,6 +72,7 @@ export function createLiveDashboardMcpServer(): McpServer {
     instructions: [
       "Live Dashboard MCP exposes local-only device context and control tools.",
       "Read-only tools inspect dashboard state; they never change settings or device state.",
+      "Hermes should start each decision with live_dashboard.get_controller_context and avoid separate settings, persona, device, timeline, and memory reads unless the bounded result is explicitly truncated or an action needs more detail.",
       "live_dashboard.send_device_commands is only for immediate one-shot device actions such as say, vibrate, screen_off, freeze, or unfreeze.",
       "live_dashboard.capture_device_screenshot captures the current Android LSP display on demand and may be used whenever current visual evidence is relevant. The screenshot is short-lived and returned once.",
       "Coyote electrostimulation tools only operate an Android-connected device after the user explicitly enables remote control. Cold starts and adjustments are hard-bounded; stop and emergency stop remain available without that grant.",
@@ -265,6 +272,13 @@ export function createLiveDashboardMcpServer(): McpServer {
     persona: getControllerPersona(),
   })));
 
+  server.registerTool("live_dashboard.get_controller_context", {
+    title: "Get bounded controller context",
+    description: "Preferred first and normally only read for Hermes decisions. Returns settings, persona, minimal device state, one bounded timeline, and recent controller events in one call.",
+    inputSchema: ControllerContextSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(() => getControllerContext(args)));
+
   server.registerTool("live_dashboard.update_controller_persona", {
     title: "Update controller persona",
     description: "Sync OpenClaw/Hermes persona or subordinate relationship into Live Dashboard. This guides summary/supervision/reminder voice, but cannot override security, privacy, JSON schema, or device capability constraints.",
@@ -302,6 +316,20 @@ export function createLiveDashboardMcpServer(): McpServer {
     inputSchema: AiJobStatusSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(() => getServiceAiJob(args)));
+
+  server.registerTool("live_dashboard.claim_controller_ai_requests", {
+    title: "Claim delegated Live AI requests",
+    description: "Dedicated Hermes batch consumer. Atomically claims up to 20 delegated requests with a 30-minute lease so concurrent jobs cannot process the same work.",
+    inputSchema: ClaimControllerAiRequestsSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async (args) => stableToolResult(() => claimServiceAiJobs(args)));
+
+  server.registerTool("live_dashboard.complete_controller_ai_request", {
+    title: "Complete delegated Live AI request",
+    description: "After processing a claimed ai.work_requested item, mark its Live AI job succeeded, skipped, or failed. Call exactly once with the request_id and claim_token returned by claim_controller_ai_requests.",
+    inputSchema: CompleteControllerAiRequestSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(() => completeServiceAiJob(args)));
 
   server.registerTool("live_dashboard.run_supervision_check", {
     title: "Run supervision check",

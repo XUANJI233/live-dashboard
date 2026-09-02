@@ -35,6 +35,16 @@ class ProactiveCandidateTest(unittest.TestCase):
         self.assertNotEqual(accepted, MODULE.NO_CANDIDATE)
         self.assertEqual(accepted_state["day_count"], 1)
 
+    def test_screen_off_reduces_probability_and_sleep_suppresses_candidates(self):
+        daytime = datetime(2026, 9, 1, 9, 0, tzinfo=TZ)
+        _, active = MODULE.evaluate_candidate({}, daytime, 0.2, rest_state="active")
+        _, screen_off = MODULE.evaluate_candidate({}, daytime, 0.2, rest_state="screen_off")
+        _, sleeping = MODULE.evaluate_candidate({}, daytime, 0.0, rest_state="asleep")
+
+        self.assertNotEqual(active, MODULE.NO_CANDIDATE)
+        self.assertEqual(screen_off, MODULE.NO_CANDIDATE)
+        self.assertEqual(sleeping, MODULE.NO_CANDIDATE)
+
     def test_daytime_probability_boundary_is_pinned(self):
         daytime = datetime(2026, 9, 1, 9, 0, tzinfo=TZ)
         _, accepted = MODULE.evaluate_candidate({}, daytime, 0.499999)

@@ -8,11 +8,16 @@ export interface ControllerEvent {
   schema: typeof CONTROLLER_EVENT_SCHEMA;
   v: 1;
   event_id: string;
-  event_type: "device.offline" | "supervision.deviation_detected" | "supervision.review_requested";
+  event_type: "device.offline" | "supervision.deviation_detected" | "supervision.review_requested" | "ai.work_requested";
   occurred_at: string;
-  source: "scheduled" | "report";
+  source: "scheduled" | "report" | "client";
   device_ids: string[];
   reason_codes: string[];
+  ai_request?: {
+    request_id: string;
+    kind: "daily_summary" | "weekly_summary" | "supervision_rules_refresh" | "supervision_check";
+    payload: Record<string, unknown>;
+  };
 }
 
 export interface ControllerWebhookDelivery {

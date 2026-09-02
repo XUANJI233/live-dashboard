@@ -6,9 +6,13 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from live_state_gate import read_live_rest_state
 
 
 FOLLOWUP_SECONDS = 5 * 60
@@ -30,6 +34,7 @@ def evaluate_followup(
     outbound_at: float | None,
     inbound_at: float | None,
     now: float,
+    rest_state: str = "active",
 ) -> tuple[dict[str, Any], str]:
     current = dict(state) if isinstance(state, dict) else {}
     if not root_id or outbound_at is None:
@@ -47,10 +52,10 @@ def evaluate_followup(
         return current, NO_CANDIDATE
 
     age = max(0.0, now - outbound_at)
-    if age < FOLLOWUP_SECONDS or age > MAX_OPEN_SECONDS:
+    if rest_state == "asleep" or age < FOLLOWUP_SECONDS or age > MAX_OPEN_SECONDS:
         return current, NO_CANDIDATE
 
-    slot = int(age // FOLLOWUP_SECONDS)
+    slot = followup_wake_slot(age, rest_state)
     if slot <= int(current.get("last_wake_slot") or 0):
         return current, NO_CANDIDATE
 
@@ -63,6 +68,14 @@ def evaluate_followup(
         "minutes_without_reply": int(age // 60),
     }
     return current, json.dumps(output, ensure_ascii=False, separators=(",", ":"))
+
+
+def followup_wake_slot(age_seconds: float, rest_state: str) -> int:
+    thresholds = (15 * 60, 30 * 60, 60 * 60) if rest_state in {"screen_off", "unknown"} else (5 * 60, 15 * 60, 30 * 60, 60 * 60)
+    for index, threshold in enumerate(thresholds, start=1):
+        if age_seconds < threshold:
+            return index - 1
+    return len(thresholds) + int((age_seconds - thresholds[-1]) // (60 * 60))
 
 
 def response_from_output(path: Path) -> str:
@@ -159,6 +172,7 @@ def main() -> int:
         outbound_at=outbound_at,
         inbound_at=latest_weixin_user_message(root / "state.db"),
         now=datetime.now(timezone.utc).timestamp(),
+        rest_state=read_live_rest_state(),
     )
     save_state(state_path, state)
     print(output)

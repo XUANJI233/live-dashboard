@@ -2,6 +2,7 @@ import { getAllDeviceStates, getRecentActivities } from "../db";
 import type { DeviceState, ActivityRecord } from "../types";
 import { visitors } from "../services/visitors";
 import { edgeViewerIdentity, verifyViewerToken, viewerTokenFromRequest } from "../services/viewer-auth";
+import { controllerRestState } from "../services/device-context";
 
 const CURRENT_SNAPSHOT_TTL_MS = 2_000;
 const ANON_CURRENT_WINDOW_MS = 60_000;
@@ -13,6 +14,7 @@ let currentSnapshotCache:
       expiresAt: number;
       devices: ReturnType<typeof preparePublicDevices>;
       recentActivities: ReturnType<typeof stripWindowTitle<ActivityRecord>>;
+      restState: ReturnType<typeof controllerRestState>;
     }
   | null = null;
 
@@ -63,6 +65,7 @@ function getSnapshot() {
     expiresAt: now + CURRENT_SNAPSHOT_TTL_MS,
     devices: preparePublicDevices(getAllDeviceStates.all() as DeviceState[]),
     recentActivities: stripWindowTitle(getRecentActivities.all() as ActivityRecord[]),
+    restState: controllerRestState(),
   };
   return currentSnapshotCache;
 }
@@ -104,5 +107,6 @@ export function handleCurrent(req: Request, clientIp: string, userAgent?: string
     recent_activities: snapshot.recentActivities,
     server_time: new Date().toISOString(),
     viewer_count: visitors.getCount(),
+    rest_state: snapshot.restState,
   });
 }

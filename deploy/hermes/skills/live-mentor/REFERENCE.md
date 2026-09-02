@@ -2,7 +2,7 @@
 
 ## Controller and fallback
 
-- `HERMES_CONTROLLER_ENABLED=true`: Live keeps its AI configuration but does not run AI summaries, rule generation, verification, or AI jobs. It still records data, emits signed `supervision.review_requested` candidates, serves MCP, and executes authorized Hermes commands.
+- `HERMES_CONTROLLER_ENABLED=true`: Live keeps its AI configuration as cold standby but never calls that model. Client AI jobs stay in Live's idempotent status ledger and emit bounded `ai.work_requested` events to the existing Hermes jobs. Live also records data, emits signed supervision candidates, serves MCP, and executes authorized Hermes commands.
 - `HERMES_CONTROLLER_ENABLED=false`: Live resumes its original internal AI paths. This is explicit cold/manual failover, never health-check-driven automatic switching.
 - Hermes must not present fallback Live AI output as its own work.
 
@@ -28,12 +28,15 @@ When `memory_cursor` is null, query with `since=memory_since` and save `next_sin
 
 | Tools | Use | Authority |
 |---|---|---|
-| `list_devices`, bounded timelines | Current state/context | autonomous read |
+| `get_controller_context` | First and normally only settings/persona/device/sleep/timeline/memory read | autonomous read |
+| `list_devices`, bounded timelines | Extra detail only after a truncated aggregate result | autonomous read |
 | frozen/installed app lists | Only when directly relevant | sensitive read |
 | `capture_device_screenshot`, `get_device_screenshot` | Current Android LSP visual evidence; returned once | persistently delegated by user |
 | command status | Verify actions | autonomous read |
 | settings/persona/memory feed | Goals, policy, dedup | autonomous read |
 | `save_controller_summary` | Hermes-authored review | pre-authorized write |
+| `complete_controller_ai_request` | Settle one claimed Live request with the claim's `request_id` and `claim_token` after real completion | required completion write |
+| `claim_controller_ai_requests` | Atomic 30-minute lease and per-item claim token for the dedicated Live controller batch consumer | supervision job only |
 | `send_device_commands` | One-shot action | bounded by saved settings |
 | `set_supervision_policy` | Hermes-authored review triggers and explicit time limits | persistently delegated by user |
 | other settings/mode/persona writes | Administration | explicit request |

@@ -132,7 +132,7 @@ export async function handleSummarySettingsUpdate(req: Request): Promise<Respons
   const body = parsed.body;
   const settings = updateSummarySettings(body);
   let rulesRefreshJob: unknown = null;
-  if (settings.sync_status === "applied" && settings.supervision_enabled && !hermesControllerEnabled()) {
+  if (settings.sync_status === "applied" && settings.supervision_enabled) {
     try {
       rulesRefreshJob = submitAiJobFromClient({
         request_id: body.request_id,

@@ -1,5 +1,7 @@
 import type { DeviceInfo } from "../types";
 import {
+  completeDelegatedAiJob,
+  claimDelegatedAiJobs,
   getAiJob,
   submitAiJob,
   type AiJobKind,
@@ -92,6 +94,25 @@ export function getServiceAiJob(input: { request_id?: unknown }): Record<string,
   return {
     found: !!job,
     job,
+  };
+}
+
+export function completeServiceAiJob(input: {
+  request_id: unknown;
+  claim_token: unknown;
+  outcome: "succeeded" | "failed" | "skipped";
+  detail?: unknown;
+}): Record<string, unknown> {
+  return {
+    ok: true,
+    job: completeDelegatedAiJob(input),
+  };
+}
+
+export function claimServiceAiJobs(input: { owner_id: unknown; limit?: unknown }): Record<string, unknown> {
+  return {
+    ok: true,
+    ...claimDelegatedAiJobs(input),
   };
 }
 

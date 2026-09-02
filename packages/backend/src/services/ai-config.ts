@@ -2,6 +2,7 @@ import { HASH_SECRET, metaGet, metaSet } from "../db";
 import { x25519 } from "@noble/curves/ed25519.js";
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { hermesControllerEnabled } from "./controller-mode";
 import {
   createGateway,
   extractJsonMiddleware,
@@ -262,6 +263,7 @@ export async function requestAiChatCompletion(
     deepThinking?: boolean;
   },
 ): Promise<string> {
+  rejectLiveAiWhileHermesOwnsController();
   const timeoutMs = normalizeAiChatTimeoutMs(options.timeoutMs);
   const system = options.messages
     .filter((message) => message.role === "system")
@@ -357,6 +359,7 @@ export async function requestAiObjectCompletion<T>(
     deepThinking?: boolean;
   },
 ): Promise<T> {
+  rejectLiveAiWhileHermesOwnsController();
   const timeoutMs = normalizeAiChatTimeoutMs(options.timeoutMs);
   const system = options.messages
     .filter((message) => message.role === "system")
@@ -412,6 +415,13 @@ export async function requestAiObjectCompletion<T>(
   }
   throw Object.assign(new Error(redactAiError(safeErrorMessage(lastError), config.apiKey)), {
     code: "AI_CHAT_FAILED",
+  });
+}
+
+function rejectLiveAiWhileHermesOwnsController(): void {
+  if (!hermesControllerEnabled()) return;
+  throw Object.assign(new Error("Live model requests are disabled while Hermes owns AI work"), {
+    code: "LIVE_AI_DISABLED_BY_HERMES",
   });
 }
 

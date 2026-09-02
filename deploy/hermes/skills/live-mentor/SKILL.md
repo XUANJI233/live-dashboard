@@ -1,10 +1,7 @@
 ---
 name: live-mentor
 description: Provides mentoring, summaries, supervision, memory, and companionship through Live Dashboard. Use for Live activity, goals, progress, devices, review candidates, proactive contact, memory synchronization, and daily or weekly reviews.
-version: 0.1.0
-author: User and Hermes Agent
 license: MIT
-platforms: [linux]
 metadata:
   hermes:
     tags: [mentoring, companion, live-dashboard, supervision]
@@ -31,16 +28,18 @@ Do not load Live data for unrelated conversation. Before memory, summary, webhoo
 4. A sendable result follows the loaded persona skill and may use its explicit message separator. Do not call `send_message`; the wrapper delivers the final response. Never append `[SILENT]` to substantive content.
 5. Idle/busy is only a signal. Either state may justify contact, but busy raises the bar for low-value interruption.
 6. Hermes is the supervision-policy author. Never preserve or invent a fixed package list merely because it already exists; derive, revise, or clear policy through `set_supervision_policy` from the current goal, commitments, installed apps, and bounded evidence.
+7. Start each Live decision with exactly one `live_dashboard.get_controller_context` call for the requested mode. It already contains settings, persona, minimal devices, a bounded timeline, sleep state, and recent controller events. Do not repeat those reads separately unless that result says it is truncated or a chosen action needs one specific detail. Aim for one read plus at most one write/status check.
+8. Only the dedicated `live-supervision-review` consumer may call `claim_controller_ai_requests`, always with `owner_id:"hermes-live-controller"`. The atomic claim lease prevents companion, memory, daily, or concurrent runs from seeing the same work. Process every claimed request by `kind`, save the real result first, then settle it exactly once with the same `request_id` and `claim_token` returned by the claim. If the claim returns `has_more=true`, claim the next batch after settling the current one. Never rely on the single latest webhook note as the queue.
 
 ## Modes
 
 ### `supervision`
 
-Re-read the candidate from authoritative Live tools. Inspect the target device and only the necessary before/after timeline plus recent memory for deduplication. Hermes alone decides whether there is a concern and whether to remind or act. Otherwise return `[SILENT]`.
+Read the candidate with one bounded controller context. Hermes alone decides whether there is a concern and whether to remind or act. Otherwise return `[SILENT]`.
 
 ### `companion`
 
-Read recent conversation and continuity before deciding. Use current devices, 30–60 minutes of activity, and a small memory page only when they sharpen the thought. A normal day may still justify a specific question, sincere recognition, a useful teaching move, or continuing an open commitment. Return `[SILENT]` only after checking for those possibilities and finding no worthwhile contact; never invent activity or send a generic greeting.
+Use one companion/followup controller context before deciding; do not page separate devices, timeline, settings, persona, and memory. A normal day may still justify a specific question, sincere recognition, a useful teaching move, or continuing an open commitment. Return `[SILENT]` only after checking for those possibilities and finding no worthwhile contact; never invent activity or send a generic greeting.
 
 ### `memory`
 
@@ -50,11 +49,11 @@ When newly ingested user-confirmed tasks, completions, cancellations, or target 
 
 ### `policy`
 
-Read service settings, controller persona, current user-confirmed commitments, capable Android devices, installed apps only when needed, and the smallest recent timeline that can distinguish a recurring distraction from a one-off use. Then call `set_supervision_policy` with one complete Hermes-authored snapshot: `policy_owner:"hermes"`, a concrete `strategy_reason`, and explicit values for `review_interval_minutes`, `risk_app_regex`, `risk_trigger_minutes`, and `app_time_limits`. Partial updates are invalid. `review_interval_minutes` is Hermes's automatic periodic wake frequency; choose 5–240 minutes from current commitments and evidence instead of relying on a deployment default. A risk rule requests a later Hermes review; it is not an automatic freeze instruction. Use an app time limit only when Hermes intentionally wants deterministic offline enforcement. Clear obsolete rules with empty arrays instead of retaining a manual baseline. Verify every returned policy command through command status. Do not produce a user-facing policy report unless the user asked for one.
+Read one policy controller context. Read installed apps only when that bounded result cannot identify a required package. Then call `set_supervision_policy` with one complete Hermes-authored snapshot: `policy_owner:"hermes"`, a concrete `strategy_reason`, and explicit values for `review_interval_minutes`, `risk_app_regex`, `risk_trigger_minutes`, and `app_time_limits`. Partial updates are invalid. `review_interval_minutes` is Hermes's automatic periodic wake frequency; choose 5–240 minutes from current commitments and evidence instead of relying on a deployment default. A risk rule requests a later Hermes review; it is not an automatic freeze instruction. Use an app time limit only when Hermes intentionally wants deterministic offline enforcement. Clear obsolete rules with empty arrays instead of retaining a manual baseline. Verify every returned policy command through command status. Do not produce a user-facing policy report unless the user asked for one.
 
 ### `daily` / `weekly`
 
-Read service goals/settings, the exact local-day/week timeline, and relevant memory events. Hermes writes the summary with `save_controller_summary`; never delegate to Live AI. State observations, progress, uncertainty, and one useful next step without grading or shame.
+Read one daily/weekly controller context for the requested date or week. Hermes writes the summary with `save_controller_summary`; never delegate to Live AI. State observations, progress, uncertainty, and one useful next step without grading or shame.
 
 ## Authorization boundary
 
@@ -68,4 +67,5 @@ Read service goals/settings, the exact local-day/week timeline, and relevant mem
 
 - Use the requested mode and only necessary tools.
 - Check every authorized write result.
+- For a signed `ai.work_requested` event, call `complete_controller_ai_request` exactly once with the claimed item's `request_id` and `claim_token` after the actual work is saved or has genuinely failed; webhook acceptance alone is not completion.
 - Return exactly `[SILENT]` or one send-ready Chinese reply, possibly split into up to four explicit bubbles by the loaded persona skill.

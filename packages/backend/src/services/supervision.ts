@@ -14,7 +14,7 @@ import {
 import { AI_CHAT_TIMEOUT_MS, getAiRuntimeConfig, requestAiObjectCompletion, requestAiObjectCompletionWithCachePriming, type AiChatMessage, type AiRuntimeConfig } from "./ai-config";
 import { logAiDebug } from "./ai-debug";
 import { healthContextLinesForRange, trustedWatchSleepingAt } from "./health-context";
-import { getDeviceInstalledApps, listDeviceContexts, type InstalledAppItem } from "./device-context";
+import { controllerRestState, getDeviceInstalledApps, listDeviceContexts, type InstalledAppItem } from "./device-context";
 import { formatPromptDateTime, formatPromptMinute, localDateStringForOffset } from "./prompt-time";
 import { promptOverride } from "./prompt-overrides";
 import { cleanIdentifier } from "./mcp-contracts";
@@ -40,6 +40,7 @@ import {
 import { isSafeSupervisionPattern, normalizeSupervisionPatternList } from "./supervision-patterns";
 import {
   shouldRunSupervisionAi,
+  scheduledSupervisionIntervalMinutes,
   supervisionTriggerDecision,
   supervisionWindowMinutes,
   type SupervisionRunSource,
@@ -194,7 +195,9 @@ export async function runSupervisionTick(
   if (settings.supervision_skip_watch_sleep && trustedWatchSleepingAt(now)) {
     return { ok: true, ran: false, reason: "trusted_watch_sleeping", source, checked_at: checkedAt };
   }
-  if (source === "scheduled" && !options.force && !isScheduledAiCheckDue(settings, now)) {
+  const controllerDevices = hermesControllerEnabled() ? supervisionDeviceContexts() : [];
+  const everyPhoneScreenOff = controllerRestState() === "screen_off";
+  if (source === "scheduled" && !options.force && !isScheduledAiCheckDue(settings, now, everyPhoneScreenOff)) {
     return { ok: true, ran: false, reason: "scheduled_check_not_due", source, checked_at: checkedAt };
   }
 
@@ -218,7 +221,7 @@ export async function runSupervisionTick(
 
   if (hermesControllerEnabled()) {
     markAiCheckStarted(source, now);
-    const deviceIds = supervisionDeviceContexts()
+    const deviceIds = controllerDevices
       .map((device) => cleanIdentifier(device.device_id))
       .filter(Boolean);
     if (deviceIds.length === 0) {
@@ -386,10 +389,14 @@ function scheduleReportTriggeredCheck(now: Date, delayMs = 0): void {
   }, delayMs);
 }
 
-function isScheduledAiCheckDue(settings: SummarySettings, now: Date): boolean {
+function isScheduledAiCheckDue(settings: SummarySettings, now: Date, everyPhoneScreenOff = false): boolean {
   const last = timestampMs(metaGet(LAST_SCHEDULED_AI_CHECK_AT_KEY)) ?? timestampMs(metaGet(LEGACY_LAST_AI_CHECK_AT_KEY));
   if (last === null) return true;
-  return now.getTime() - last >= settings.supervision_check_interval_minutes * 60_000;
+  const intervalMinutes = scheduledSupervisionIntervalMinutes(
+    settings.supervision_check_interval_minutes,
+    everyPhoneScreenOff,
+  );
+  return now.getTime() - last >= intervalMinutes * 60_000;
 }
 
 function controllerTriggerReasonCodes(
@@ -757,6 +764,9 @@ interface SupervisionDeviceContext {
   device_id: string;
   device_name: string;
   platform: string;
+  is_online: boolean;
+  current_app_id: string;
+  sleeping: boolean;
   capability: SupervisionDeviceCapability;
   capabilities: SupervisionDeviceCapabilities;
   frozen_packages: Array<{
@@ -1149,6 +1159,9 @@ function supervisionInstalledAppsContexts(): Array<{
   device_id: string;
   device_name: string;
   platform: string;
+  is_online: boolean;
+  current_app_id: string;
+  sleeping: boolean;
   app_count: number;
   included_count: number;
   truncated: boolean;
@@ -1159,6 +1172,9 @@ function supervisionInstalledAppsContexts(): Array<{
     device_id: string;
     device_name: string;
     platform: string;
+    is_online: boolean;
+    current_app_id: string;
+    sleeping: boolean;
     app_count: number;
     included_count: number;
     truncated: boolean;
@@ -1179,6 +1195,9 @@ function supervisionInstalledAppsContexts(): Array<{
       device_id: promptText(row.device_id, 80),
       device_name: promptText(row.device_name || row.device_id, 80),
       platform: promptText(row.platform, 40),
+      is_online: row.is_online,
+      current_app_id: promptText(row.current_app.app_id, 160),
+      sleeping: row.sleeping,
       app_count: snapshot.app_count,
       included_count: installedApps.length,
       truncated: snapshot.app_count > installedApps.length,
@@ -1204,6 +1223,9 @@ function supervisionDeviceContexts(): SupervisionDeviceContext[] {
       device_id: deviceId,
       device_name: promptText(row.device_name || row.device_id, 80),
       platform: promptText(row.platform, 40),
+      is_online: row.is_online,
+      current_app_id: promptText(row.current_app.app_id, 160),
+      sleeping: row.sleeping,
       capability: row.capability.profile,
       capabilities: row.capability.capabilities,
       frozen_packages: frozenPackageItems(row.frozen_packages),

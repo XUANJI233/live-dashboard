@@ -22,6 +22,15 @@ export const InstalledAppsSchema = z.object({
   device_id: z.string().min(1).max(160),
 });
 
+export const ControllerContextSchema = z.object({
+  mode: z.enum(["supervision", "companion", "followup", "memory", "policy", "daily", "weekly"]),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  week_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  timezone_offset_minutes: z.number().int().min(-840).max(840).optional(),
+  device_id: z.string().min(1).max(160).optional(),
+  window_minutes: z.number().int().min(15).max(1440).optional(),
+});
+
 export const AccountingBillsSchema = z.object({
   start: z.string().describe("Inclusive ISO timestamp for processed AutoAccounting bills."),
   end: z.string().describe("Exclusive ISO timestamp for processed AutoAccounting bills."),
@@ -223,6 +232,18 @@ export const StartAiJobSchema = z.object({
 
 export const AiJobStatusSchema = z.object({
   request_id: z.string().min(1).max(160),
+});
+
+export const CompleteControllerAiRequestSchema = z.object({
+  request_id: z.string().min(1).max(160),
+  claim_token: z.string().regex(/^claim_[a-f0-9-]{36}$/),
+  outcome: z.enum(["succeeded", "failed", "skipped"]),
+  detail: z.string().max(1000).optional(),
+});
+
+export const ClaimControllerAiRequestsSchema = z.object({
+  owner_id: z.string().min(1).max(160),
+  limit: z.number().int().min(1).max(20).optional(),
 });
 
 export const RunSupervisionCheckSchema = z.object({

@@ -6,9 +6,13 @@ from __future__ import annotations
 import json
 import os
 import random
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from live_state_gate import read_live_rest_state
 
 
 TIMEZONE = timezone(timedelta(hours=8), name="UTC+08:00")
@@ -17,10 +21,17 @@ COOLDOWN_SECONDS = 90 * 60
 DAILY_CANDIDATE_LIMIT = 6
 NORMAL_PROBABILITY = 0.50
 QUIET_PROBABILITY = 0.05
+SCREEN_OFF_PROBABILITY = 0.10
+UNKNOWN_STATE_PROBABILITY = 0.05
 NO_CANDIDATE = '{"selected_this_run":false}'
 
 
-def evaluate_candidate(state: dict[str, Any], now: datetime, draw: float) -> tuple[dict[str, Any], str]:
+def evaluate_candidate(
+    state: dict[str, Any],
+    now: datetime,
+    draw: float,
+    rest_state: str = "active",
+) -> tuple[dict[str, Any], str]:
     local = now.astimezone(TIMEZONE)
     slot = int(local.timestamp()) // SLOT_SECONDS
     current = dict(state) if isinstance(state, dict) else {}
@@ -35,12 +46,19 @@ def evaluate_candidate(state: dict[str, Any], now: datetime, draw: float) -> tup
         current["day"] = day
         current["day_count"] = 0
 
+    if rest_state == "asleep":
+        return current, NO_CANDIDATE
+
     count = int(current.get("day_count") or 0)
     last_at = _epoch(current.get("last_candidate_at"))
     if count >= DAILY_CANDIDATE_LIMIT or (last_at and local.timestamp() - last_at < COOLDOWN_SECONDS):
         return current, NO_CANDIDATE
 
     probability = QUIET_PROBABILITY if _quiet_time(local) else NORMAL_PROBABILITY
+    if rest_state == "screen_off":
+        probability = min(probability, SCREEN_OFF_PROBABILITY)
+    elif rest_state == "unknown":
+        probability = min(probability, UNKNOWN_STATE_PROBABILITY)
     if not 0 <= draw < probability:
         return current, NO_CANDIDATE
 
@@ -105,6 +123,7 @@ def main() -> int:
         state,
         datetime.now(TIMEZONE),
         random.SystemRandom().random(),
+        rest_state=read_live_rest_state(),
     )
     _save_state(path, state)
     print(output)

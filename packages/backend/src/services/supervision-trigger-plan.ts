@@ -30,6 +30,11 @@ export function supervisionWindowMinutes(settings: SupervisionTriggerSettings, s
     : 60;
 }
 
+export function scheduledSupervisionIntervalMinutes(intervalMinutes: number, everyPhoneScreenOff: boolean): number {
+  const bounded = Math.min(240, Math.max(5, Math.trunc(intervalMinutes)));
+  return everyPhoneScreenOff ? Math.min(240, bounded * 4) : bounded;
+}
+
 export function supervisionTriggerDecision(
   settings: SupervisionTriggerSettings,
   stats: SupervisionTriggerStats,

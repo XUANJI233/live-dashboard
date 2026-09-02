@@ -25,6 +25,7 @@ const SUPPORTED_EVENT_TYPES = new Set<ControllerEvent["event_type"]>([
   "device.offline",
   "supervision.deviation_detected",
   "supervision.review_requested",
+  "ai.work_requested",
 ]);
 
 const insertControllerEvent = db.prepare(`
@@ -132,7 +133,7 @@ function validatedControllerEvent(event: Partial<ControllerEvent>): boolean {
     || !SUPPORTED_EVENT_TYPES.has(event.event_type as ControllerEvent["event_type"])
     || typeof event.occurred_at !== "string"
     || Number.isNaN(Date.parse(event.occurred_at))
-    || (event.source !== "scheduled" && event.source !== "report")
+    || (event.source !== "scheduled" && event.source !== "report" && event.source !== "client")
     || !Array.isArray(event.device_ids)
     || event.device_ids.length < 1
     || event.device_ids.length > MAX_DEVICE_IDS_PER_EVENT
@@ -152,7 +153,51 @@ function validatedControllerEvent(event: Partial<ControllerEvent>): boolean {
   ) {
     return false;
   }
+  if (event.event_type === "ai.work_requested" && !validAiRequest(event)) return false;
+  if (event.event_type !== "ai.work_requested" && (event.source === "client" || event.ai_request !== undefined)) return false;
   return true;
+}
+
+function validAiRequest(event: Partial<ControllerEvent>): boolean {
+  const request = event.ai_request;
+  if (!request || event.source !== "client") return false;
+  if (cleanIdentifier(request.request_id) !== request.request_id) return false;
+  if (event.reason_codes?.length !== 1 || event.reason_codes[0] !== request.kind) return false;
+  const payload = request.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  if (request.kind === "daily_summary") {
+    return validDate(payload.date) && validTimezone(payload.tz_offset_minutes)
+      && onlyKeys(payload, ["date", "tz_offset_minutes"]);
+  }
+  if (request.kind === "weekly_summary") {
+    return validDate(payload.week_start) && validTimezone(payload.tz_offset_minutes)
+      && onlyKeys(payload, ["week_start", "tz_offset_minutes"]);
+  }
+  if (request.kind === "supervision_rules_refresh") {
+    return typeof payload.settings_updated_at === "string"
+      && cleanIdentifier(payload.settings_updated_at, 80) === payload.settings_updated_at
+      && onlyKeys(payload, ["settings_updated_at"]);
+  }
+  if (request.kind === "supervision_check") {
+    return typeof payload.at === "string" && !Number.isNaN(Date.parse(payload.at))
+      && (payload.source === "scheduled" || payload.source === "report")
+      && typeof payload.force === "boolean"
+      && onlyKeys(payload, ["at", "source", "force"]);
+  }
+  return false;
+}
+
+function onlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key)) && Object.keys(value).length === keys.length;
+}
+
+function validDate(value: unknown): boolean {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function validTimezone(value: unknown): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value >= -840 && value <= 840;
 }
 
 function deliveryFailureReason(delivery: ControllerWebhookDelivery): string {

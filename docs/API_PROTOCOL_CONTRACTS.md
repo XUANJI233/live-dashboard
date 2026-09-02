@@ -501,7 +501,7 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
 - `live_dashboard.get_controller_memory_feed` 用于把公开/私聊消息、设备回复、服务端下发的提醒/控制命令以及已保存的日/周总结回流给 OpenClaw/Hermes。字段：`since`、`cursor`、`limit`、`include_messages`、`include_summaries`、`include_device_commands`，布尔必须是真布尔。分页应优先传回上次响应的 `next_cursor`；只用 `next_since` 可能重复同一时间戳事件，不能保证无重复。
 - 推荐由 OpenClaw/Hermes 读取 memory feed 后自行整理长期记忆和总结，再调用 `live_dashboard.save_controller_summary` 写回服务端。`save_controller_summary` 字段：`kind`（`daily_summary` / `weekly_summary`）、`date`、`week_start`、`summary`、`mode`、`target`；服务端仍会清洗 HTML、链接、脚本、命令和控制字符。
 - `HERMES_CONTROLLER_ENABLED=false` 时，`live_dashboard.start_ai_job` 可启动日总结、周总结、监督规则刷新或监督复核；`live_dashboard.get_ai_job` 按 `request_id` 查询状态；`live_dashboard.run_supervision_check` 会排队一个 `supervision_check` job 并立即返回。
-- `HERMES_CONTROLLER_ENABLED=true` 时，上述 Live AI 写入口统一返回 `hermes_controller_active` / `AI_JOB_MANAGED_BY_HERMES`，Hermes 应直接读取 MCP 上下文并使用 `save_controller_summary`、`send_device_commands` 等明确工具完成工作。`ai_config_test` 保持可用以验证冷备用配置。
+- `HERMES_CONTROLLER_ENABLED=true` 时，所有客户端 Live AI job 都写入同一 AI job 幂等账本，但 runner 只生成 `ai.work_requested` 控制器事件，不调用 Live 模型。Webhook 接收后 job 状态为 `delegated`，不是提前伪报 `succeeded`；Hermes 原子认领后，完成、跳过或失败时必须用认领返回的 `request_id` 和 `claim_token` 调用 `complete_controller_ai_request` 结算状态。`ai_config_test` 直接返回 `managed_by="hermes"`，不会用冷备用 Key 发模型请求。Hermes 应使用 `get_controller_context` 一次取得有界上下文，再用 `save_controller_summary`、`set_supervision_policy`、`send_device_commands` 等明确工具完成工作。
 
 ## Hermes 控制模式
 
@@ -513,6 +513,8 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
 ## 控制器出站 Webhook
 
 Hermes 模式下，Live 可把高价值的确定性监督候选作为最小事件发送给同机 Hermes。该出口默认关闭；只有 `HERMES_CONTROLLER_ENABLED=true`、`CONTROLLER_WEBHOOK_ENABLED=true` 且同时配置 URL 与独立 secret 时才发送。Webhook secret 不能复用 `HASH_SECRET`、设备 token 或 MCP token。
+
+同一出口也承载 `ai.work_requested`：日／周总结、策略刷新和显式监督请求只携带白名单化日期、时区、请求 ID 与布尔参数，不能携带 API Key、自由 prompt 或未清洗正文。Live 按 job key 合并相同请求；所有按需请求路由到同一个 Hermes 控制器 job。该专用消费者用 `claim_controller_ai_requests` 原子取得 30 分钟租约和逐项随机 `claim_token`，保存真实结果后凭相同令牌结算；其它 companion/memory/daily job 和过期认领者无法完成同一请求，因此 webhook note 覆盖和并发 cron 都不会造成丢失或重复模型调用。
 
 当前事件 schema：
 
@@ -533,6 +535,7 @@ Hermes 模式下，Live 可把高价值的确定性监督候选作为最小事�
 - `v` 当前固定为 `1`；`event_id`、`device_ids` 和 `reason_codes` 只允许协议规定的 ASCII 安全集合。
 - `event_id` 由通知冷却时间桶和已验证设备集合稳定派生；同一时间桶内的重试必须复用同一 ID。
 - Payload 只携带稳定元数据，不携带原始窗口标题、时间线、AI 自由文本、token 或密钥；Hermes 收到后必须通过 MCP 读取必要的最小时间窗并自行复核。
+- `live_dashboard.get_controller_context` 是 Hermes 每轮首选读取：一次返回设置、人设、设备/睡眠状态、有界时间线和近期事件；没有截断或选定动作时不得重复拆成多次 MCP 读取。
 - 事件使用上述 V2 HMAC headers；Hermes 应把 `X-Request-ID` 作为幂等键。
 - 候选节流不复用设备命令的 `supervision_last_alert_at`，避免检测与执行相互抑制。
 - Docker 内的 Live 访问宿主 Hermes 时使用仅宿主/容器可达地址；不要把 Hermes Webhook 端口代理到公网。
