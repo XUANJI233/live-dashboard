@@ -1,4 +1,5 @@
 import type { ServerWebSocket } from "bun";
+import { cleanIdentifier } from "./mcp-contracts";
 import { settleAndroidIntegrationResult } from "./android-integration-broker";
 import {
   updateAndroidIntegrationState,
@@ -39,7 +40,5 @@ export function handleAndroidIntegrationWsMessage(
 }
 
 function cleanRequestId(value: unknown): string {
-  if (typeof value !== "string") return "";
-  const text = value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 160);
-  return /^[a-zA-Z0-9_.:-]{1,160}$/.test(text) ? text : "";
+  return cleanIdentifier(value);
 }

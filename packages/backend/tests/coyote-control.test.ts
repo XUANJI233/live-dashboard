@@ -109,6 +109,11 @@ describe("Coyote MCP safety contract", () => {
     expect(retried).toMatchObject({ ok: true, status: "applied" });
     const conflict = await executeCoyoteCommand(deviceId, requestId, { ...command, strength: 6 });
     expect(conflict).toMatchObject({ ok: false, status: "conflict", error: "coyote_request_id_conflict" });
+    const rateLimitedId = `coyote_${crypto.randomUUID()}`;
+    const rateLimited = await executeCoyoteCommand(deviceId, rateLimitedId, command);
+    const rateLimitedRetry = await executeCoyoteCommand(deviceId, rateLimitedId, command);
+    expect(rateLimited).toMatchObject({ ok: false, status: "rate_limited" });
+    expect(rateLimitedRetry).toMatchObject({ ok: false, status: "rate_limited" });
     realtimeSocketHub.removeIntegration(integrationSocket as never);
     realtimeSocketHub.removeDevice(primaryDeviceSocket as never);
   });

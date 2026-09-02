@@ -2,8 +2,9 @@ import { cleanIdentifier, cleanLooseIdentifier } from "./mcp-contracts";
 import {
   coyoteCommandAllowed,
   coyoteRateLimitAllowed,
+  inspectCoyoteRequest,
   normalizeCoyoteCommand,
-  registerCoyoteRequest,
+  rememberCoyoteRequest,
 } from "./coyote-control";
 import { androidIntegrationState, getCoyoteStatuses } from "./android-integration-state";
 import { waitForAndroidIntegrationResult } from "./android-integration-broker";
@@ -39,7 +40,7 @@ export async function executeCoyoteCommand(
       command,
     };
   }
-  const requestRegistration = registerCoyoteRequest(deviceId, requestId, command);
+  const requestRegistration = inspectCoyoteRequest(deviceId, requestId, command);
   if (requestRegistration === "conflict") {
     return { ok: false, status: "conflict", error: "coyote_request_id_conflict", device_id: deviceId, request_id: requestId };
   }
@@ -52,6 +53,7 @@ export async function executeCoyoteCommand(
       command,
     };
   }
+  if (requestRegistration === "new") rememberCoyoteRequest(deviceId, requestId, command);
   const result = waitForAndroidIntegrationResult(requestId, deviceId, "coyote", COYOTE_COMMAND_TIMEOUT_MS, () => {
     sendJson(socket!, { type: "coyote_command", v: 1, request_id: requestId, command });
   });

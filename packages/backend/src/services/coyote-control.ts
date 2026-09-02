@@ -77,7 +77,7 @@ export function coyoteRateLimitAllowed(deviceId: string, action: CoyoteAction, n
   return true;
 }
 
-export function registerCoyoteRequest(
+export function inspectCoyoteRequest(
   deviceId: string,
   requestId: string,
   command: CoyoteCommand,
@@ -86,13 +86,21 @@ export function registerCoyoteRequest(
   const fingerprint = JSON.stringify(command);
   const existing = requestFingerprints.get(key);
   if (existing != null) return existing === fingerprint ? "retry" : "conflict";
-  requestFingerprints.set(key, fingerprint);
+  return "new";
+}
+
+export function rememberCoyoteRequest(
+  deviceId: string,
+  requestId: string,
+  command: CoyoteCommand,
+): void {
+  const key = `${deviceId}:${requestId}`;
+  requestFingerprints.set(key, JSON.stringify(command));
   while (requestFingerprints.size > MAX_REQUEST_FINGERPRINTS) {
     const oldest = requestFingerprints.keys().next().value as string | undefined;
     if (!oldest) break;
     requestFingerprints.delete(oldest);
   }
-  return "new";
 }
 
 function coyoteAction(value: unknown): CoyoteAction {

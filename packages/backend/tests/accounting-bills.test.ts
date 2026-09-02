@@ -244,6 +244,21 @@ describe("AutoAccounting bill ingestion and MCP query", () => {
     expect((refreshed.devices as unknown[])).toHaveLength(2);
     sockets.forEach((socket) => realtimeSocketHub.removeIntegration(socket as never));
   });
+
+  test("rejects a malformed final snapshot without pruning cached bills", async () => {
+    const { ingestAccountingBills, queryAccountingBills } = await import("../src/services/accounting-bills");
+    ingestAccountingBills("accounting-phone", uploadSnapshot([bill({ source_bill_id: "501" })]));
+    const malformed = uploadSnapshot([]);
+    delete malformed.bills;
+
+    expect(() => ingestAccountingBills("accounting-phone", malformed)).toThrow("invalid_accounting_bills");
+    const result = queryAccountingBills({
+      start: "2026-08-31T00:00:00.000Z",
+      end: "2026-09-03T00:00:00.000Z",
+      deviceId: "accounting-phone",
+    });
+    expect(result.bills.some((item) => item.source_bill_id === "501")).toBe(true);
+  });
 });
 
 function bill(overrides: Record<string, unknown> = {}): Record<string, unknown> {

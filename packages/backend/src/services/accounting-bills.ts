@@ -147,9 +147,10 @@ export function ingestAccountingBills(
   if (batchCount < 1 || batchCount > 10_000 || batchIndex < 0 || batchIndex >= batchCount) {
     throw new Error("invalid_accounting_sync_batch");
   }
-  const inputBills = Array.isArray(payload.bills) ? payload.bills.slice(0, MAX_BILLS_PER_UPLOAD) : [];
+  if (!Array.isArray(payload.bills)) throw new Error("invalid_accounting_bills");
+  const inputBills = payload.bills.slice(0, MAX_BILLS_PER_UPLOAD);
   let accepted = 0;
-  let skipped = Array.isArray(payload.bills) ? Math.max(0, payload.bills.length - inputBills.length) : 0;
+  let skipped = Math.max(0, payload.bills.length - inputBills.length);
   let pruned = 0;
 
   const commit = db.transaction(() => {
