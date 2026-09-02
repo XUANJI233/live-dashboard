@@ -259,6 +259,22 @@ describe("AutoAccounting bill ingestion and MCP query", () => {
     });
     expect(result.bills.some((item) => item.source_bill_id === "501")).toBe(true);
   });
+
+  test("rejects an oversized final batch without pruning cached bills", async () => {
+    const { ingestAccountingBills, queryAccountingBills } = await import("../src/services/accounting-bills");
+    ingestAccountingBills("accounting-phone", uploadSnapshot([bill({ source_bill_id: "601" })]));
+    const oversized = uploadSnapshot(Array.from({ length: 501 }, (_, index) => bill({
+      source_bill_id: (10_000 + index).toString(),
+    })));
+
+    expect(() => ingestAccountingBills("accounting-phone", oversized)).toThrow("accounting_batch_too_large");
+    const result = queryAccountingBills({
+      start: "2026-08-31T00:00:00.000Z",
+      end: "2026-09-03T00:00:00.000Z",
+      deviceId: "accounting-phone",
+    });
+    expect(result.bills.some((item) => item.source_bill_id === "601")).toBe(true);
+  });
 });
 
 function bill(overrides: Record<string, unknown> = {}): Record<string, unknown> {
