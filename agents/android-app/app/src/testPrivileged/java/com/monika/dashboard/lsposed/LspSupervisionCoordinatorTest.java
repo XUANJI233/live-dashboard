@@ -23,12 +23,12 @@ public class LspSupervisionCoordinatorTest {
     public void riskThresholdRequestsAiReviewWithoutPreFreezing() throws Exception {
         FakeHost host = new FakeHost();
         LspSupervisionCoordinator coordinator = new LspSupervisionCoordinator(host);
-        long startedAt = System.currentTimeMillis();
 
         coordinator.applyPolicy(new JSONObject()
                 .put("risk_app_regex", new JSONArray().put("^com\\.example\\.game$"))
                 .put("risk_trigger_minutes", 1)
                 .put("app_time_limits", new JSONArray()));
+        long startedAt = System.currentTimeMillis();
         coordinator.evaluate(startedAt);
         coordinator.evaluate(startedAt + 61_000L);
 
