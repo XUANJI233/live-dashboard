@@ -3,6 +3,7 @@ package com.monika.dashboard.integration
 import android.content.Context
 import com.monika.dashboard.coyote.CoyoteBleController
 import com.monika.dashboard.data.DebugLog
+import com.monika.dashboard.R
 import com.monika.dashboard.data.SettingsStore
 import java.time.Duration
 import java.time.Instant
@@ -102,7 +103,9 @@ object AndroidIntegrationSocket {
                 val settings = SettingsStore(context)
                 val serverUrl = settings.serverUrl.first()
                 val token = settings.getToken().orEmpty()
-                check(serverUrl.isNotBlank() && token.isNotBlank()) { "请先配置服务器和 Token" }
+                check(serverUrl.isNotBlank() && token.isNotBlank()) {
+                    context.getString(R.string.integration_error_server_config)
+                }
                 val request = Request.Builder()
                     .url(integrationWebSocketUrl(serverUrl))
                     .header("Authorization", "Bearer $token")
@@ -162,8 +165,10 @@ object AndroidIntegrationSocket {
             val result = runCatching {
                 val start = Instant.parse(data.optString("start"))
                 val end = Instant.parse(data.optString("end"))
-                require(end.isAfter(start)) { "账单查询时间范围无效" }
-                require(Duration.between(start, end).toDays() <= MAX_ACCOUNTING_RANGE_DAYS) { "账单查询时间范围过大" }
+                require(end.isAfter(start)) { context.getString(R.string.accounting_error_invalid_range) }
+                require(Duration.between(start, end).toDays() <= MAX_ACCOUNTING_RANGE_DAYS) {
+                    context.getString(R.string.accounting_error_range_too_large)
+                }
                 AccountingSyncCoordinator(context).sync(start, end)
             }.getOrElse { error ->
                 AccountingSyncResult(
@@ -173,7 +178,10 @@ object AndroidIntegrationSocket {
                     skipped = 0,
                     pruned = 0,
                     completedAt = Instant.now().toString(),
-                    error = error.message.orEmpty().ifBlank { "账单同步失败" }.take(240),
+                    error = context.getString(
+                        R.string.accounting_error_sync,
+                        error.message.orEmpty().ifBlank { "request failed" }.take(180),
+                    ).take(240),
                 )
             }
             accountingAvailable = result.available
@@ -212,7 +220,7 @@ object AndroidIntegrationSocket {
         return when {
             base.startsWith("https://") -> "wss://${base.removePrefix("https://")}/api/ws?role=integration"
             base.startsWith("http://") -> "ws://${base.removePrefix("http://")}/api/ws?role=integration"
-            else -> throw IllegalArgumentException("服务器地址必须是 HTTPS 或 localhost HTTP")
+            else -> throw IllegalArgumentException(appContext?.getString(R.string.integration_error_server_url).orEmpty())
         }
     }
 

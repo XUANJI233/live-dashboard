@@ -102,7 +102,7 @@ class AndroidIntegrationService : Service() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "设备集成",
+            getString(R.string.integration_notification_channel_name),
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
             description = getString(R.string.integration_notification_channel_description)

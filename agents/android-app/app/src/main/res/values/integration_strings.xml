@@ -14,6 +14,7 @@
     <string name="integration_notification_emergency_stop">紧急停止</string>
     <string name="integration_notification_disconnect">断开郊狼</string>
     <string name="integration_notification_channel_description">保持 AutoAccounting 查询与郊狼控制连接</string>
+    <string name="integration_notification_channel_name">设备集成</string>
     <string name="integration_bluetooth_permission_denied">未获得蓝牙权限，无法扫描郊狼</string>
     <string name="coyote_title">郊狼控制</string>
     <string name="coyote_connected">已连接</string>
@@ -68,9 +69,26 @@
     <string name="coyote_error_service_discovery">郊狼 GATT 服务发现失败</string>
     <string name="coyote_error_notification_subscription">郊狼通知订阅失败</string>
     <string name="coyote_error_gatt_write">郊狼 GATT 写入失败：%1$d</string>
+    <string name="coyote_result_applied">操作已应用</string>
+    <string name="coyote_result_strength_clamped">操作已应用，强度已按安全上限裁剪</string>
+    <string name="coyote_result_not_connected">郊狼尚未连接</string>
+    <string name="coyote_result_channel_not_running">该通道尚未启动</string>
+    <string name="coyote_result_already_disconnected">设备已经断开</string>
+    <string name="coyote_result_remote_disabled">当前连接未授权 MCP 控制</string>
+    <string name="coyote_result_write_unconfirmed">未收到 GATT 写入确认，结果未知</string>
+    <string name="coyote_result_unsupported">不支持的郊狼操作</string>
+    <string name="coyote_result_failed">郊狼操作失败：%1$s</string>
     <string name="accounting_title">AutoAccounting 账单</string>
     <string name="accounting_body">只读取 AutoAccounting 已处理完成的主账单（Edited/Synced），不复制或读取它的识别规则；数据通过设备 Token 幂等同步到服务器。</string>
     <string name="accounting_sync_now">同步最近一年账单</string>
     <string name="accounting_syncing">同步中</string>
     <string name="accounting_sync_success">已同步 %1$d 条，跳过 %2$d 条</string>
+    <string name="accounting_error_unavailable">AutoAccounting 不可用：%1$s</string>
+    <string name="accounting_error_server_config">请先配置 Live Dashboard 服务器和 Token</string>
+    <string name="accounting_error_upload">账单上传失败：%1$s</string>
+    <string name="accounting_error_invalid_range">账单查询时间范围无效</string>
+    <string name="accounting_error_range_too_large">账单查询时间范围过大</string>
+    <string name="accounting_error_sync">账单同步失败：%1$s</string>
+    <string name="integration_error_server_config">请先配置服务器和 Token</string>
+    <string name="integration_error_server_url">服务器地址必须是 HTTPS 或 localhost HTTP</string>
 </resources>

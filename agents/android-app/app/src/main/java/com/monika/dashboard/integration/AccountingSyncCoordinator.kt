@@ -2,6 +2,7 @@ package com.monika.dashboard.integration
 
 import android.content.Context
 import com.monika.dashboard.data.SettingsStore
+import com.monika.dashboard.R
 import java.io.IOException
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -55,7 +56,8 @@ class AccountingSyncCoordinator(
         val completedAt = Instant.now().toString()
         val source = sourceClient.fetchCompletedBills(start, end)
         if (source.isFailure) {
-            val message = source.exceptionOrNull()?.message.orEmpty().ifBlank { "AutoAccounting 不可用" }.take(240)
+            val detail = source.exceptionOrNull()?.message.orEmpty().ifBlank { "unavailable" }.take(180)
+            val message = appContext.getString(R.string.accounting_error_unavailable, detail).take(240)
             preferences.accountingLastError = message
             return@withContext AccountingSyncResult(false, 0, 0, 0, 0, completedAt, message)
         }
@@ -63,7 +65,7 @@ class AccountingSyncCoordinator(
         val serverUrl = settings.serverUrl.first().trimEnd('/')
         val token = settings.getToken().orEmpty()
         if (serverUrl.isBlank() || token.isBlank()) {
-            val message = "请先配置 Live Dashboard 服务器和 Token"
+            val message = appContext.getString(R.string.accounting_error_server_config)
             preferences.accountingLastError = message
             return@withContext AccountingSyncResult(true, bills.size, 0, bills.size, 0, completedAt, message)
         }
@@ -90,7 +92,8 @@ class AccountingSyncCoordinator(
             }
         }
         uploaded.exceptionOrNull()?.let { error ->
-            val message = error.message.orEmpty().ifBlank { "账单上传失败" }.take(240)
+            val detail = error.message.orEmpty().ifBlank { "request failed" }.take(180)
+            val message = appContext.getString(R.string.accounting_error_upload, detail).take(240)
             preferences.accountingLastError = message
             return@withContext AccountingSyncResult(true, bills.size, accepted, skipped, pruned, completedAt, message)
         }

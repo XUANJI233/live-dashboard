@@ -242,11 +242,11 @@ fun DeviceIntegrationsScreen() {
                     strength = coyote.strengthA,
                     running = coyote.waveActiveA,
                     actions = CoyoteChannelActions(
-                        onStart = { status = CoyoteBleController.start(CoyoteChannel.A, 5, selectedWaveform).reason },
-                        onDecrease = { status = CoyoteBleController.adjust(CoyoteChannel.A, -5).reason },
-                        onIncrease = { status = CoyoteBleController.adjust(CoyoteChannel.A, 5).reason },
-                        onChangeWave = { status = CoyoteBleController.changeWave(CoyoteChannel.A, selectedWaveform).reason },
-                        onStop = { status = CoyoteBleController.stop(CoyoteChannel.A).reason },
+                        onStart = { status = coyoteOutcomeText(context, CoyoteBleController.start(CoyoteChannel.A, 5, selectedWaveform).reason) },
+                        onDecrease = { status = coyoteOutcomeText(context, CoyoteBleController.adjust(CoyoteChannel.A, -5).reason) },
+                        onIncrease = { status = coyoteOutcomeText(context, CoyoteBleController.adjust(CoyoteChannel.A, 5).reason) },
+                        onChangeWave = { status = coyoteOutcomeText(context, CoyoteBleController.changeWave(CoyoteChannel.A, selectedWaveform).reason) },
+                        onStop = { status = coyoteOutcomeText(context, CoyoteBleController.stop(CoyoteChannel.A).reason) },
                     ),
                 )
                 CoyoteChannelControls(
@@ -254,16 +254,16 @@ fun DeviceIntegrationsScreen() {
                     strength = coyote.strengthB,
                     running = coyote.waveActiveB,
                     actions = CoyoteChannelActions(
-                        onStart = { status = CoyoteBleController.start(CoyoteChannel.B, 5, selectedWaveform).reason },
-                        onDecrease = { status = CoyoteBleController.adjust(CoyoteChannel.B, -5).reason },
-                        onIncrease = { status = CoyoteBleController.adjust(CoyoteChannel.B, 5).reason },
-                        onChangeWave = { status = CoyoteBleController.changeWave(CoyoteChannel.B, selectedWaveform).reason },
-                        onStop = { status = CoyoteBleController.stop(CoyoteChannel.B).reason },
+                        onStart = { status = coyoteOutcomeText(context, CoyoteBleController.start(CoyoteChannel.B, 5, selectedWaveform).reason) },
+                        onDecrease = { status = coyoteOutcomeText(context, CoyoteBleController.adjust(CoyoteChannel.B, -5).reason) },
+                        onIncrease = { status = coyoteOutcomeText(context, CoyoteBleController.adjust(CoyoteChannel.B, 5).reason) },
+                        onChangeWave = { status = coyoteOutcomeText(context, CoyoteBleController.changeWave(CoyoteChannel.B, selectedWaveform).reason) },
+                        onStop = { status = coyoteOutcomeText(context, CoyoteBleController.stop(CoyoteChannel.B).reason) },
                     ),
                 )
                 Button(
                     onClick = {
-                        status = CoyoteBleController.emergencyStop().reason
+                        status = coyoteOutcomeText(context, CoyoteBleController.emergencyStop().reason)
                         AndroidIntegrationSocket.sendStatus()
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -352,4 +352,19 @@ private fun waveformLabel(id: String): String = stringResource(
         "tap" -> R.string.coyote_wave_tap
         else -> R.string.coyote_wave_pulse_mid
     },
+)
+
+private fun coyoteOutcomeText(context: android.content.Context, reason: String): String = context.getString(
+    when (reason) {
+        "applied" -> R.string.coyote_result_applied
+        "strength_clamped" -> R.string.coyote_result_strength_clamped
+        "coyote_not_connected" -> R.string.coyote_result_not_connected
+        "coyote_channel_not_running" -> R.string.coyote_result_channel_not_running
+        "already_disconnected" -> R.string.coyote_result_already_disconnected
+        "remote_control_not_enabled" -> R.string.coyote_result_remote_disabled
+        "gatt_write_not_confirmed" -> R.string.coyote_result_write_unconfirmed
+        "unsupported_coyote_action" -> R.string.coyote_result_unsupported
+        else -> R.string.coyote_result_failed
+    },
+    reason,
 )
