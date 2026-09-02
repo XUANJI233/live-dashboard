@@ -453,7 +453,6 @@ class ReportClient(
         val supervisionCheckMode: String,
         val supervisionCheckIntervalMinutes: Int,
         val supervisionBlacklistMinutes: Int,
-        val supervisionRiskTriggerMinutes: Int,
         val supervisionTargetMinMinutes: Int,
         val supervisionVibrate: Boolean,
         val supervisionSkipWatchSleep: Boolean,
@@ -613,7 +612,6 @@ class ReportClient(
             put("supervision_check_mode", update.supervisionCheckMode)
             put("supervision_check_interval_minutes", update.supervisionCheckIntervalMinutes.coerceIn(30, 240))
             put("supervision_blacklist_minutes", update.supervisionBlacklistMinutes.coerceIn(1, 55))
-            put("supervision_risk_trigger_minutes", update.supervisionRiskTriggerMinutes.coerceIn(1, 55))
             put("supervision_target_min_minutes", update.supervisionTargetMinMinutes.coerceIn(1, 55))
             put("supervision_vibrate", update.supervisionVibrate)
             put("supervision_skip_watch_sleep", update.supervisionSkipWatchSleep)

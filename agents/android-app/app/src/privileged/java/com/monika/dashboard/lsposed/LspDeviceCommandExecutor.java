@@ -201,9 +201,11 @@ final class LspDeviceCommandExecutor {
     }
 
     private boolean commandsContainPendingReview(JSONArray commands) {
+        // Rolling-upgrade compatibility: version 10200 and older temporarily
+        // froze risk matches under this reason. New clients only request review.
         if (commands == null) return false;
         for (int i = 0; i < commands.length(); i++) {
-            if (LspSupervisionPolicy.PENDING_RISK_FREEZE_REASON.equals(commands.optString(i))) return true;
+            if (LspSupervisionPolicy.PENDING_RISK_REVIEW_REASON.equals(commands.optString(i))) return true;
         }
         return false;
     }

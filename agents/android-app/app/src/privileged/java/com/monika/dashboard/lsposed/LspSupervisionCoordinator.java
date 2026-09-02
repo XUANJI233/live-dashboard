@@ -95,11 +95,6 @@ final class LspSupervisionCoordinator {
                 host.requestDirectUpload(true);
             }
             if (decision.riskReviewPackage.length() > 0) {
-                host.freezePackage(
-                        decision.riskReviewPackage,
-                        decision.riskReviewReason,
-                        now,
-                        nextDailyUnfreezeAt(now));
                 openNetworkSettingsIfOffline();
                 host.requestDirectUpload(true);
             }

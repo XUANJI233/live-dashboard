@@ -38,7 +38,7 @@ public class LspSupervisionPolicyTest {
                 NOW + 3 * 60_000L + 1L,
                 false);
         assertEquals("com.example.video", triggered.riskReviewPackage);
-        assertEquals(LspSupervisionPolicy.PENDING_RISK_FREEZE_REASON, triggered.riskReviewReason);
+        assertEquals(LspSupervisionPolicy.PENDING_RISK_REVIEW_REASON, triggered.riskReviewReason);
         assertTrue(policy.shouldRequestReviewForReport());
 
         policy.markReviewRequestSent();
@@ -51,6 +51,26 @@ public class LspSupervisionPolicyTest {
                 NOW + 4 * 60_000L,
                 false);
         assertEquals("", repeated.riskReviewPackage);
+    }
+
+    @Test
+    public void successfulReviewRequestCanTriggerAgainAfterCooldownWithoutUnfreeze() throws Exception {
+        LspSupervisionPolicy policy = new LspSupervisionPolicy();
+        policy.applyPolicy(policyJson(
+                new JSONArray().put("Video"),
+                3,
+                new JSONArray()));
+
+        policy.evaluate("com.example.video", "Video", "Feed", NOW, false);
+        LspSupervisionPolicy.Decision first = policy.evaluate(
+                "com.example.video", "Video", "Feed", NOW + 3 * 60_000L + 1L, false);
+        assertEquals("com.example.video", first.riskReviewPackage);
+
+        policy.markReviewRequestSent();
+        LspSupervisionPolicy.Decision afterCooldown = policy.evaluate(
+                "com.example.video", "Video", "Feed", NOW + 13 * 60_000L + 2L, false);
+
+        assertEquals("com.example.video", afterCooldown.riskReviewPackage);
     }
 
     @Test
@@ -232,7 +252,7 @@ public class LspSupervisionPolicyTest {
                 false);
         assertEquals("", riskAfterThreshold.timeLimitFreezePackage);
         assertEquals("com.example.video", riskAfterThreshold.riskReviewPackage);
-        assertEquals(LspSupervisionPolicy.PENDING_RISK_FREEZE_REASON, riskAfterThreshold.riskReviewReason);
+        assertEquals(LspSupervisionPolicy.PENDING_RISK_REVIEW_REASON, riskAfterThreshold.riskReviewReason);
         assertTrue(policy.shouldRequestReviewForReport());
     }
 

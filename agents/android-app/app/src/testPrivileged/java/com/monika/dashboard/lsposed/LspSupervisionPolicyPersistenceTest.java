@@ -37,7 +37,7 @@ public class LspSupervisionPolicyPersistenceTest {
     }
 
     @Test
-    public void lastValidRiskPolicySurvivesRestartAndFreezesMatchedAppWhileOffline() throws Exception {
+    public void lastValidRiskPolicySurvivesRestartAndRequestsReviewWhileOffline() throws Exception {
         FakeHost initialHost = new FakeHost(context);
         LspSupervisionCoordinator initial = new LspSupervisionCoordinator(initialHost);
         assertTrue(initial.applyPolicy(policy(
@@ -56,7 +56,9 @@ public class LspSupervisionPolicyPersistenceTest {
         assertEquals(0, restartedHost.frozenPackages.size());
 
         restarted.evaluate(NOW + 60_001L);
-        assertEquals(List.of("com.example.video"), restartedHost.frozenPackages);
+        assertTrue(restarted.shouldRequestReviewForReport());
+        assertTrue(restartedHost.directUploadRequests > 0);
+        assertTrue(restartedHost.frozenPackages.isEmpty());
     }
 
     @Test
@@ -124,6 +126,7 @@ public class LspSupervisionPolicyPersistenceTest {
         private String foregroundPackage = "";
         private String foregroundApp = "";
         private boolean networkConnected = true;
+        private int directUploadRequests = 0;
 
         FakeHost(Context context) {
             this.context = context;
@@ -192,7 +195,9 @@ public class LspSupervisionPolicyPersistenceTest {
         }
 
         @Override
-        public void requestDirectUpload(boolean force) {}
+        public void requestDirectUpload(boolean force) {
+            directUploadRequests++;
+        }
 
         @Override
         public void logDebug(String message) {}

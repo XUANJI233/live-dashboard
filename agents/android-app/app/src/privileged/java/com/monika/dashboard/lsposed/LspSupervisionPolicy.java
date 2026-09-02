@@ -14,7 +14,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 final class LspSupervisionPolicy {
-    static final String PENDING_RISK_FREEZE_REASON = "pending_supervision_review";
+    static final String PENDING_RISK_REVIEW_REASON = "pending_supervision_review";
 
     private static final int DEFAULT_RISK_TRIGGER_MINUTES = 3;
     private static final long GLOBAL_RISK_COOLDOWN_MS = 60_000L;
@@ -134,7 +134,7 @@ final class LspSupervisionPolicy {
             lastRiskRequestAtByPackage.put(pkg, now);
             reviewRequestPending = true;
             decision.riskReviewPackage = pkg;
-            decision.riskReviewReason = PENDING_RISK_FREEZE_REASON;
+            decision.riskReviewReason = PENDING_RISK_REVIEW_REASON;
         }
         decision.nextCheckDelayMs = nextCheckDelayMs(now);
         return decision;
@@ -146,6 +146,7 @@ final class LspSupervisionPolicy {
 
     synchronized void markReviewRequestSent() {
         reviewRequestPending = false;
+        pendingRiskPackages.clear();
     }
 
     synchronized void finishPendingReview() {

@@ -34,9 +34,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.monika.dashboard.BuildConfig
+import com.monika.dashboard.R
 import com.monika.dashboard.data.DebugLog
 import com.monika.dashboard.data.SettingsStore
 import com.monika.dashboard.network.ReportClient
@@ -247,7 +249,6 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                             supervisionCheckMode = "hourly",
                             supervisionCheckIntervalMinutes = supervisionCheckIntervalMinutes.toIntervalSetting(60),
                             supervisionBlacklistMinutes = supervisionBlacklistMinutes.toMinuteSetting(20),
-                            supervisionRiskTriggerMinutes = supervisionRiskTriggerMinutes.toMinuteSetting(3),
                             supervisionTargetMinMinutes = supervisionTargetMinMinutes.toMinuteSetting(25),
                             supervisionVibrate = supervisionVibrate,
                             supervisionSkipWatchSleep = supervisionSkipWatchSleep,
@@ -682,16 +683,12 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                         label = { Text("黑名单触发分钟") },
                         singleLine = true,
                     )
-                    OutlinedTextField(
-                        value = supervisionRiskTriggerMinutes,
-                        onValueChange = {
-                            markSummaryEdited()
-                            supervisionRiskTriggerMinutes = it.filter { ch -> ch.isDigit() }.take(2)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !loading,
-                        label = { Text("风险触发分钟") },
-                        singleLine = true,
+                    Text(
+                        text = stringResource(
+                            R.string.supervision_risk_threshold_controller_managed,
+                            supervisionRiskTriggerMinutes,
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
                     )
                     OutlinedTextField(
                         value = supervisionTargetMinMinutes,
