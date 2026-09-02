@@ -20,6 +20,7 @@ import {
   type DeliveryStatus,
 } from "./mcp-contracts";
 import { deliverDeviceCommandMessage } from "./realtime-message-delivery";
+import { getControllerPersona, type ControllerPersonaKind } from "./controller-persona";
 
 const DEFAULT_EXPIRES_SECONDS = 60 * 60;
 const MIN_EXPIRES_SECONDS = 10;
@@ -43,9 +44,11 @@ type SupervisionPolicySendInput = Pick<
 };
 
 export interface SupervisionPolicyInput {
-  risk_app_regex?: string[];
-  risk_trigger_minutes?: number;
-  app_time_limits?: unknown;
+  policy_owner: ControllerPersonaKind;
+  strategy_reason: string;
+  risk_app_regex: string[];
+  risk_trigger_minutes: number;
+  app_time_limits: unknown[];
   device_ids?: string[];
   expires_in_seconds?: number;
   request_id?: string;
@@ -53,12 +56,25 @@ export interface SupervisionPolicyInput {
 }
 
 export function setAndSendSupervisionPolicy(input: SupervisionPolicyInput): SupervisionPolicySendResult {
+  requireActivePolicyOwner(input.policy_owner);
   const settings = updateSupervisionPolicy({
+    policy_owner: input.policy_owner,
+    strategy_reason: input.strategy_reason,
     risk_app_regex: input.risk_app_regex,
     risk_trigger_minutes: input.risk_trigger_minutes,
     app_time_limits: input.app_time_limits,
   });
   return sendSupervisionPolicySnapshot(supervisionPolicySnapshot(settings), input);
+}
+
+function requireActivePolicyOwner(owner: ControllerPersonaKind): void {
+  const persona = getControllerPersona();
+  if (!persona.enabled) {
+    throw new Error("supervision_policy_controller_disabled");
+  }
+  if (persona.controller !== owner) {
+    throw new Error("supervision_policy_owner_mismatch");
+  }
 }
 
 export function syncCurrentSupervisionPolicyToCapableDevices(settings?: SummarySettings): SupervisionPolicySendResult {

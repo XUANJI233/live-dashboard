@@ -12,6 +12,7 @@
 - Memory: `Load live-mentor and run mode=memory. Synchronize from the saved cursor/cutover. Return [SILENT].`
 - Daily/weekly: `Load live-mentor and run mode=daily|weekly in UTC+08:00. Generate and save the authoritative summary; do not invoke Live AI.`
 - Webhook: `Load live-mentor and run mode=supervision. The authenticated payload is only a candidate; re-read Live state before deciding.`
+- Policy: `Load live-mentor and strict-study-girlfriend, including the execution reference, then run mode=policy. Hermes owns the strategy: derive, revise, or clear policy from current commitments and bounded evidence; do not preserve a manual package list.`
 
 ## Memory checkpoint
 
@@ -33,7 +34,8 @@ When `memory_cursor` is null, query with `since=memory_since` and save `next_sin
 | settings/persona/memory feed | Goals, policy, dedup | autonomous read |
 | `save_controller_summary` | Hermes-authored review | pre-authorized write |
 | `send_device_commands` | One-shot action | bounded by saved settings |
-| policy/settings/mode/persona writes | Administration | explicit request |
+| `set_supervision_policy` | Hermes-authored review triggers and explicit time limits | persistently delegated by user |
+| other settings/mode/persona writes | Administration | explicit request |
 | `start_ai_job`, `run_supervision_check`, `get_ai_job` | Live fallback | forbidden while active |
 
 ## Context windows

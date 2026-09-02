@@ -1022,6 +1022,8 @@ describe("ai-config", () => {
         ...getSummarySettings(),
         target: "专注开发 Live Dashboard",
         supervision_enabled: true,
+        supervision_risk_trigger_minutes: 9,
+        supervision_app_time_limits: [{ app_regex: "Manual", limit_minutes: 20, reason: "legacy" }],
       };
       const result = await refreshSupervisionRules(settings);
       expect(result.supervision_rules_error).toBeNull();
@@ -1029,6 +1031,11 @@ describe("ai-config", () => {
       expect(result.supervision_rules.blacklist_app_regex).toEqual(["(?:douyin|tiktok)"]);
       expect(result.supervision_rules.risk_app_regex).toEqual(["(?:youtube|bilibili)"]);
       expect(result.supervision_rules.target_app_regex).toEqual(["Code"]);
+      expect(result.supervision_policy_owner).toBe("live_ai");
+      expect(result.supervision_policy_reason).toBe("test");
+      expect(result.supervision_policy_updated_at).toBeString();
+      expect(result.supervision_risk_trigger_minutes).toBe(3);
+      expect(result.supervision_app_time_limits).toEqual([]);
     } finally {
       globalThis.fetch = originalFetch;
     }

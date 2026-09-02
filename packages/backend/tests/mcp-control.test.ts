@@ -61,7 +61,9 @@ describe("mcp control plane", () => {
     expect(tools.find((tool) => tool.name === "live_dashboard.send_device_commands")?.description)
       .toContain("Immediate one-shot");
     expect(tools.find((tool) => tool.name === "live_dashboard.set_supervision_policy")?.description)
-      .toContain("Persistent policy-setting");
+      .toContain("Delegated-controller persistent strategy");
+    expect(tools.find((tool) => tool.name === "live_dashboard.set_supervision_policy")?.description)
+      .toContain("do not freeze by themselves");
     expect(tools.find((tool) => tool.name === "live_dashboard.update_controller_persona")?.annotations?.destructiveHint).toBe(true);
     expect(tools.find((tool) => tool.name === "live_dashboard.save_controller_summary")?.annotations?.destructiveHint).toBe(true);
     expect(tools.find((tool) => tool.name === "live_dashboard.start_ai_job")?.annotations?.destructiveHint).toBe(true);
@@ -829,6 +831,8 @@ describe("mcp control plane", () => {
   test("sends supervision policy only to devices with policy capabilities", async () => {
     const { db } = await import("../src/db");
     const { setAndSendSupervisionPolicy } = await import("../src/services/supervision-policy-control");
+    const { updateControllerPersona } = await import("../src/services/controller-persona");
+    updateControllerPersona({ enabled: true, controller: "hermes" });
 
     insertDeviceState(db, {
       device_id: "android-policy-lsp",
@@ -889,6 +893,8 @@ describe("mcp control plane", () => {
     });
 
     const sent = setAndSendSupervisionPolicy({
+      policy_owner: "hermes",
+      strategy_reason: "Repeated video and game use conflicts with the current target.",
       request_id: "req_policy_capabilities",
       device_ids: ["android-policy-lsp", "android-policy-normal", "desktop-policy"],
       risk_app_regex: ["Video"],
@@ -896,7 +902,9 @@ describe("mcp control plane", () => {
       app_time_limits: [{ app_regex: "Game", limit_minutes: 10, reason: "限时" }],
     });
 
-    expect(sent.policy).toEqual({
+    expect(sent.policy).toMatchObject({
+      policy_owner: "hermes",
+      strategy_reason: "Repeated video and game use conflicts with the current target.",
       risk_app_regex: ["Video"],
       risk_trigger_minutes: 3,
       app_time_limits: [{ app_regex: "Game", limit_minutes: 10, reason: "限时" }],
@@ -940,6 +948,70 @@ describe("mcp control plane", () => {
     expect(policyTtlMs).toBeGreaterThanOrEqual(59 * 60_000);
   });
 
+  test("accepts only complete active-controller policy snapshots and replaces legacy fields", async () => {
+    const { getSummarySettings, updateSummarySettings, updateSupervisionPolicy } = await import("../src/services/daily-summary-gen");
+    const { updateControllerPersona } = await import("../src/services/controller-persona");
+    const { SupervisionPolicySchema } = await import("../src/services/mcp-tool-schemas");
+    const { setAndSendSupervisionPolicy } = await import("../src/services/supervision-policy-control");
+
+    expect(SupervisionPolicySchema.safeParse({
+      policy_owner: "hermes",
+      strategy_reason: "Incomplete snapshot",
+      risk_app_regex: ["Manual"],
+      risk_trigger_minutes: 9,
+    }).success).toBe(false);
+
+    updateSupervisionPolicy({
+      policy_owner: null,
+      strategy_reason: "legacy deployer policy",
+      risk_app_regex: ["Manual"],
+      risk_trigger_minutes: 9,
+      app_time_limits: [{ app_regex: "ManualLimit", limit_minutes: 20, reason: "legacy" }],
+    });
+    updateControllerPersona({ enabled: true, controller: "hermes" });
+
+    expect(() => setAndSendSupervisionPolicy({
+      policy_owner: "openclaw",
+      strategy_reason: "Wrong controller",
+      risk_app_regex: [],
+      risk_trigger_minutes: 3,
+      app_time_limits: [],
+      device_ids: ["missing-policy-device"],
+    })).toThrow("supervision_policy_owner_mismatch");
+
+    const sent = setAndSendSupervisionPolicy({
+      policy_owner: "hermes",
+      strategy_reason: "No recurring app pattern currently justifies a persistent rule.",
+      risk_app_regex: [],
+      risk_trigger_minutes: 4,
+      app_time_limits: [],
+      device_ids: ["missing-policy-device"],
+    });
+    const settings = getSummarySettings();
+
+    expect(sent.policy).toMatchObject({
+      policy_owner: "hermes",
+      strategy_reason: "No recurring app pattern currently justifies a persistent rule.",
+      risk_app_regex: [],
+      risk_trigger_minutes: 4,
+      app_time_limits: [],
+    });
+    expect(settings.supervision_policy_owner).toBe("hermes");
+    expect(settings.supervision_policy_reason).toBe("No recurring app pattern currently justifies a persistent rule.");
+    expect(settings.supervision_rules.risk_app_regex).toEqual([]);
+    expect(settings.supervision_app_time_limits).toEqual([]);
+
+    updateSummarySettings({
+      client_updated_at: "2029-01-01T00:00:00.000Z",
+      supervision_risk_trigger_minutes: 55,
+      supervision_app_time_limits: [{ app_regex: "ManualOverride", limit_minutes: 55 }],
+    });
+    const afterGenericUpdate = getSummarySettings();
+    expect(afterGenericUpdate.supervision_risk_trigger_minutes).toBe(4);
+    expect(afterGenericUpdate.supervision_app_time_limits).toEqual([]);
+    expect(afterGenericUpdate.supervision_policy_owner).toBe("hermes");
+  });
+
   test("syncs current supervision policy idempotently for reporting LSP devices", async () => {
     const { db } = await import("../src/db");
     const { updateSummarySettings, updateSupervisionPolicy } = await import("../src/services/daily-summary-gen");
@@ -972,6 +1044,8 @@ describe("mcp control plane", () => {
       supervision_enabled: true,
     });
     updateSupervisionPolicy({
+      policy_owner: "hermes",
+      strategy_reason: "Initial controller strategy",
       risk_app_regex: ["Video"],
       risk_trigger_minutes: 3,
       app_time_limits: [{ app_regex: "Game", limit_minutes: 10, reason: "limit" }],
@@ -1006,6 +1080,8 @@ describe("mcp control plane", () => {
     expect(countAfterStaleRetry).toBe(countAfterFirst + 1);
 
     updateSupervisionPolicy({
+      policy_owner: "hermes",
+      strategy_reason: "Controller strategy expanded after new evidence",
       risk_app_regex: ["Video", "Shorts"],
       risk_trigger_minutes: 3,
       app_time_limits: [{ app_regex: "Game", limit_minutes: 10, reason: "limit" }],

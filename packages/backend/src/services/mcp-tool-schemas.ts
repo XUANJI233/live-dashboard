@@ -40,21 +40,25 @@ export const SendCommandsSchema = z.object({
 }).describe("Use for immediate one-shot device actions only. Do not use to save risk-app rules or app time limits.");
 
 export const SupervisionPolicySchema = z.object({
-  risk_app_regex: z.array(z.string().max(120)).max(12).optional()
-    .describe("Persistent Android LSP risk-app monitor regex list. Not an immediate freeze command."),
-  risk_trigger_minutes: z.number().int().min(1).max(55).optional()
-    .describe("Persistent minutes threshold before Android LSP asks the server for an AI review."),
+  policy_owner: z.enum(["openclaw", "hermes", "custom"])
+    .describe("Controller identity that authored this complete snapshot; must match the active controller persona."),
+  strategy_reason: z.string().min(1).max(500)
+    .describe("Controller-authored rationale grounded in the current target and evidence."),
+  risk_app_regex: z.array(z.string().max(120)).max(12)
+    .describe("Controller-authored persistent Android LSP review-trigger regexes. Matching requests review; it does not freeze by itself."),
+  risk_trigger_minutes: z.number().int().min(1).max(55)
+    .describe("Controller-authored minutes threshold before Android LSP requests controller review."),
   app_time_limits: z.array(z.object({
     app_regex: z.string().min(1).max(120).describe("Persistent app matching regex for local daily time-limit enforcement."),
     limit_minutes: z.number().int().min(1).max(55).describe("Persistent daily local usage limit in minutes."),
     reason: z.string().max(120).optional().describe("Optional reason shown in local freeze state."),
-  })).max(12).optional()
+  })).max(12)
     .describe("Persistent app time-limit policy. Not a one-time freeze."),
   device_ids: z.array(z.string().min(1).max(160)).max(20).optional()
     .describe("Optional Android LSP device ids to sync; omit to sync all capable devices."),
   expires_in_seconds: z.number().int().min(10).max(3600).optional()
     .describe("Policy command delivery TTL, not the policy duration."),
-}).describe("Use only to persist/update supervision policy. Do not use for one-shot reminders or freezes.");
+}).describe("Delegated-controller interface for replacing the complete persistent strategy snapshot. Do not use for one-shot reminders or freezes.");
 
 export const CommandStatusSchema = z.object({
   command_id: z.string().min(1).max(160).optional(),
@@ -79,7 +83,6 @@ export const ServiceSettingsUpdateSchema = z.object({
   supervision_heuristic_triggers: z.boolean().optional(),
   supervision_check_interval_minutes: z.number().int().min(30).max(240).optional(),
   supervision_blacklist_minutes: z.number().int().min(1).max(55).optional(),
-  supervision_risk_trigger_minutes: z.number().int().min(1).max(55).optional(),
   supervision_target_min_minutes: z.number().int().min(1).max(55).optional(),
   supervision_vibrate: z.boolean().optional(),
   supervision_skip_watch_sleep: z.boolean().optional(),

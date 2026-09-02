@@ -46,7 +46,7 @@ export function createLiveDashboardMcpServer(): McpServer {
       "Live Dashboard MCP exposes local-only device context and control tools.",
       "Read-only tools inspect dashboard state; they never change settings or device state.",
       "live_dashboard.send_device_commands is only for immediate one-shot device actions such as say, vibrate, screen_off, freeze, or unfreeze.",
-      "live_dashboard.set_supervision_policy is only for persistent Android LSP monitoring rules, risk-app AI trigger thresholds, and app time limits; do not use it for one-time reminders, one-time freezes, or chat messages.",
+      "live_dashboard.set_supervision_policy is the delegated controller's strategy interface for persistent Android LSP review triggers and app time limits. The active controller should create, revise, or clear the complete policy from the current goal and evidence instead of waiting for the user to enumerate packages. Risk triggers request controller review; they do not themselves authorize a freeze.",
       "OpenClaw/Hermes controllers may use service settings and AI job tools for server-side administration; the phone app cannot change the locked summary tone.",
       "OpenClaw/Hermes controllers may sync their persona or subordinate relationship so summaries, supervision, and reminders keep the same voice without overriding safety, privacy, schema, or device capability rules.",
       "Prefer letting OpenClaw/Hermes process memory and summaries: use get_controller_memory_feed to ingest sent messages, replies, device reminders, and saved summaries, then save_controller_summary when the controller has produced the authoritative summary.",
@@ -112,7 +112,7 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.set_supervision_policy", {
     title: "Set supervision policy",
-    description: "Persistent policy-setting tool. Use only when the user explicitly wants to save/update Android LSP risk-app monitoring rules, AI trigger thresholds, or app time limits. Do not use for one-time freeze/unfreeze, vibration, say/reminder messages, or ordinary supervision decisions.",
+    description: "Delegated-controller persistent strategy tool. The active controller must submit a complete policy snapshot with its matching controller identity and rationale, derived from the current goal, commitments, installed apps, and bounded evidence. Do not ask the user to enumerate packages. Risk triggers request controller review and do not freeze by themselves. Use send_device_commands for a freeze chosen in the current review.",
     inputSchema: SupervisionPolicySchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   }, async (args) => stableToolResult(() => setAndSendSupervisionPolicy(args)));

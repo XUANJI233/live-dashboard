@@ -248,7 +248,7 @@ WS 帧 `viewer_message` 与 HTTP `POST /api/messages/public`、`POST /api/messag
 
 策略命令额外字段：
 
-- `risk_app_regex`：风险应用 AI 复核触发名单，匹配语义与冻结命令一致，分别作用于包名、应用名和标题。
+- `risk_app_regex`：由外部 AI 控制器编写的复核触发名单，匹配语义与冻结命令一致，分别作用于包名、应用名和标题；命中阈值只请求 AI 复核，不在端侧预先冻结。
 - `risk_trigger_minutes`：风险名单中任一应用累计使用多少分钟触发 AI 监督。
 - `app_time_limits`：独立限时冻结策略，元素为 `{ "app_regex": "...", "limit_minutes": 10, "reason": "..." }`。
 
@@ -383,7 +383,10 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
   - `live_dashboard.get_ai_job`
   - `live_dashboard.run_supervision_check`
 - `live_dashboard.send_device_commands` 只用于一次性设备动作：提醒文本、震动、息屏、即时冻结/解冻；服务端会按设备显式上报能力裁剪。
-- `live_dashboard.set_supervision_policy` 只用于持久监督策略：风险应用 AI 触发规则、触发分钟数和应用限时；不要用于一次性提醒、一次性冻结/解冻或普通聊天消息。
+- `live_dashboard.set_supervision_policy` 是外部 AI 控制器编写持久监督策略的唯一接口：AI 根据当前目标和证据主动创建、修改或清空复核触发规则、触发分钟数和明确的离线应用限时；不要让部署者预填固定名单，也不要用于一次性提醒、一次性冻结/解冻或普通聊天消息。
+  - 输入必须是完整快照：`policy_owner`、`strategy_reason`、`risk_app_regex`、`risk_trigger_minutes`、`app_time_limits` 缺一不可。
+  - `policy_owner` 必须与已启用的控制器 persona 一致（`openclaw` / `hermes` / `custom`）；Live 冷备 AI 接管时服务端内部记录为 `live_ai`，不冒充外部控制器。
+  - 服务端整体替换旧策略，不接受依赖旧字段的部分更新。执行设备只接收三项执行字段，作者、理由与更新时间留在服务端设置中用于审计。
 - `live_dashboard.update_service_settings` 只接受 snake_case 字段和真布尔，不接受手机端同义 camelCase。`live_dashboard.set_summary_mode` 是服务端控制语气的唯一远程工具；如果 `AI_SUMMARY_MODE` 环境变量存在，则环境变量优先。
 - `live_dashboard.update_controller_persona` 用于同步 OpenClaw/Hermes 人设或附属关系。字段全部为 snake_case：`enabled`、`controller`（`openclaw` / `hermes` / `custom`）、`controller_name`、`persona`、`relationship`、`style_notes`。同步内容会加入日/周总结和监督 system prompt，使服务口吻保持控制器一致；它不能覆盖安全、隐私、JSON schema、输出格式或设备能力约束。
 - `live_dashboard.get_controller_memory_feed` 用于把公开/私聊消息、设备回复、服务端下发的提醒/控制命令以及已保存的日/周总结回流给 OpenClaw/Hermes。字段：`since`、`cursor`、`limit`、`include_messages`、`include_summaries`、`include_device_commands`，布尔必须是真布尔。分页应优先传回上次响应的 `next_cursor`；只用 `next_since` 可能重复同一时间戳事件，不能保证无重复。

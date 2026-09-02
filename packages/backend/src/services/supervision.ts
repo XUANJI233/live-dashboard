@@ -63,6 +63,8 @@ const MAX_INSTALLED_APPS_PER_DEVICE = 120;
 const SUPERVISION_RULES_MAX_TOKENS = 8192;
 const SUPERVISION_VERIFY_MAX_TOKENS = 8192;
 const REPORT_TRIGGER_MIN_INTERVAL_MS = 60_000;
+// Rolling-upgrade cleanup for Android 10200 and older, which pre-froze a risk
+// match before controller review. Current clients only emit a review request.
 const PENDING_RISK_FREEZE_REASON = "pending_supervision_review";
 
 let supervisionInFlight = false;
@@ -140,16 +142,22 @@ export async function refreshSupervisionRules(settings = getSummarySettings()): 
       debugLabel: "supervision.rules",
       deepThinking: settings.ai_deep_thinking,
     });
+    const policyUpdatedAt = new Date().toISOString();
     appendSupervisionHistory({
-      at: new Date().toISOString(),
+      at: policyUpdatedAt,
       kind: "rules",
       outcome: "updated",
       reason: rules.reason,
     });
     return saveSummarySettings({
       ...settings,
+      supervision_policy_owner: "live_ai",
+      supervision_policy_reason: rules.reason,
+      supervision_policy_updated_at: policyUpdatedAt,
+      supervision_risk_trigger_minutes: 3,
+      supervision_app_time_limits: [],
       supervision_rules: rules,
-      supervision_rules_updated_at: new Date().toISOString(),
+      supervision_rules_updated_at: policyUpdatedAt,
       supervision_rules_error: null,
     });
   } catch (e) {
