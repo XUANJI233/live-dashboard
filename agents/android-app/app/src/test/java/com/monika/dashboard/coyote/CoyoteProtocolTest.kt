@@ -2,6 +2,7 @@ package com.monika.dashboard.coyote
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class CoyoteProtocolTest {
@@ -56,5 +57,23 @@ class CoyoteProtocolTest {
         assertEquals(-10, policy.adjustDelta(-100))
         assertEquals(30, policy.targetStrength(CoyoteChannel.A, 25, 20))
         assertEquals(0, policy.targetStrength(CoyoteChannel.B, 3, -10))
+    }
+
+    @Test
+    fun `protocol runtime emits bounded output and ignores stale strength after stop`() {
+        val runtime = CoyoteProtocolRuntime()
+        val policy = CoyoteSafetyPolicy(maxStrengthA = 30, maxStrengthB = 40)
+        runtime.reset(CoyoteGeneration.V3)
+
+        assertEquals("applied", runtime.start(CoyoteChannel.A, 5, "pulse_mid", true, policy).reason)
+        val packet = runtime.nextV3Packet(policy)
+        assertEquals(5, packet[2].toInt())
+        assertEquals(10, packet[4].toInt())
+        assertEquals(60, packet[8].toInt())
+
+        runtime.stop(CoyoteChannel.A)
+        assertEquals(0, runtime.snapshot().strengthA)
+        assertFalse(runtime.handleV3Notification(byteArrayOf(0xb1.toByte(), 1, 5, 0)))
+        assertEquals(0, runtime.snapshot().strengthA)
     }
 }

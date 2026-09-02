@@ -217,7 +217,7 @@ fun DeviceIntegrationsScreen() {
                         Text(
                             stringResource(
                                 R.string.coyote_waveform_format,
-                                CoyoteWaveforms.byId(selectedWaveform).displayName,
+                                waveformLabel(selectedWaveform),
                             ),
                         )
                     }
@@ -227,7 +227,7 @@ fun DeviceIntegrationsScreen() {
                     ) {
                         CoyoteWaveforms.all.forEach { waveform ->
                             DropdownMenuItem(
-                                text = { Text(waveform.displayName) },
+                                text = { Text(waveformLabel(waveform.id)) },
                                 onClick = {
                                     selectedWaveform = waveform.id
                                     waveformMenuExpanded = false
@@ -341,3 +341,15 @@ private fun bluetoothPermissions(): Array<String> = when {
     )
     else -> arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
 }
+
+@Composable
+private fun waveformLabel(id: String): String = stringResource(
+    when (id) {
+        "breath" -> R.string.coyote_wave_breath
+        "tide" -> R.string.coyote_wave_tide
+        "pulse_low" -> R.string.coyote_wave_pulse_low
+        "pulse_high" -> R.string.coyote_wave_pulse_high
+        "tap" -> R.string.coyote_wave_tap
+        else -> R.string.coyote_wave_pulse_mid
+    },
+)

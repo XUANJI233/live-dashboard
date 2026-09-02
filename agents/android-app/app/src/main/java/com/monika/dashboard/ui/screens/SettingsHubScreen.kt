@@ -90,8 +90,8 @@ fun SettingsHubScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             CompactPageHeader(
-                title = "设置",
-                subtitle = "配置、健康、总结、设备和诊断集中管理。",
+                title = stringResource(R.string.settings_title),
+                subtitle = stringResource(R.string.settings_subtitle),
                 action = {
                     TextButton(onClick = { showLogs = true }) {
                         Text("日志")
@@ -99,7 +99,13 @@ fun SettingsHubScreen(
                 },
             )
             SegmentedControl(
-                options = listOf("配置", "健康", "总结", "设备", "诊断"),
+                options = listOf(
+                    stringResource(R.string.settings_tab_setup),
+                    stringResource(R.string.settings_tab_health),
+                    stringResource(R.string.settings_tab_summary),
+                    stringResource(R.string.settings_tab_devices),
+                    stringResource(R.string.settings_tab_diagnostics),
+                ),
                 selectedIndex = selected,
                 onSelect = selectTab,
             )

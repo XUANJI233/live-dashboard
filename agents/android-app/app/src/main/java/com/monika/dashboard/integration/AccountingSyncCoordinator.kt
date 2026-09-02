@@ -7,8 +7,13 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -21,6 +26,7 @@ data class AccountingSyncResult(
     val fetched: Int,
     val accepted: Int,
     val skipped: Int,
+    val pruned: Int,
     val completedAt: String,
     val error: String = "",
 ) {
@@ -29,6 +35,7 @@ data class AccountingSyncResult(
         put("fetched", fetched)
         put("accepted", accepted)
         put("skipped", skipped)
+        put("pruned", pruned)
         put("last_sync_at", completedAt)
         put("last_error", error)
     }
@@ -43,13 +50,14 @@ class AccountingSyncCoordinator(
     private val settings = SettingsStore(appContext)
     private val preferences = AndroidIntegrationPreferences(appContext)
 
-    suspend fun sync(start: Instant, end: Instant): AccountingSyncResult = withContext(Dispatchers.IO) {
+    suspend fun sync(start: Instant, end: Instant): AccountingSyncResult = syncMutex.withLock {
+        withContext(Dispatchers.IO) {
         val completedAt = Instant.now().toString()
         val source = sourceClient.fetchCompletedBills(start, end)
         if (source.isFailure) {
             val message = source.exceptionOrNull()?.message.orEmpty().ifBlank { "AutoAccounting 不可用" }.take(240)
             preferences.accountingLastError = message
-            return@withContext AccountingSyncResult(false, 0, 0, 0, completedAt, message)
+            return@withContext AccountingSyncResult(false, 0, 0, 0, 0, completedAt, message)
         }
         val bills = source.getOrThrow()
         val serverUrl = settings.serverUrl.first().trimEnd('/')
@@ -57,27 +65,40 @@ class AccountingSyncCoordinator(
         if (serverUrl.isBlank() || token.isBlank()) {
             val message = "请先配置 Live Dashboard 服务器和 Token"
             preferences.accountingLastError = message
-            return@withContext AccountingSyncResult(true, bills.size, 0, bills.size, completedAt, message)
+            return@withContext AccountingSyncResult(true, bills.size, 0, bills.size, 0, completedAt, message)
         }
 
         var accepted = 0
         var skipped = 0
+        var pruned = 0
+        val syncId = "accounting_${java.util.UUID.randomUUID()}"
+        val batches = bills.chunked(UPLOAD_BATCH_SIZE).ifEmpty { listOf(emptyList()) }
         val uploaded = runCatching {
-            for (batch in bills.chunked(UPLOAD_BATCH_SIZE).ifEmpty { listOf(emptyList()) }) {
-                val result = uploadBatch(serverUrl, token, batch)
-                accepted += result.first
-                skipped += result.second
+            val plans = batches.mapIndexed { batchIndex, batch ->
+                AccountingUploadBatch(syncId, start, end, batchIndex, batches.size, batch)
+            }
+            val results = coroutineScope {
+                val preliminary = plans.dropLast(1).map { plan ->
+                    async { uploadBatch(serverUrl, token, plan) }
+                }.awaitAll()
+                preliminary + uploadBatch(serverUrl, token, plans.last())
+            }
+            for (result in results) {
+                accepted += result.accepted
+                skipped += result.skipped
+                pruned += result.pruned
             }
         }
         uploaded.exceptionOrNull()?.let { error ->
             val message = error.message.orEmpty().ifBlank { "账单上传失败" }.take(240)
             preferences.accountingLastError = message
-            return@withContext AccountingSyncResult(true, bills.size, accepted, skipped, completedAt, message)
+            return@withContext AccountingSyncResult(true, bills.size, accepted, skipped, pruned, completedAt, message)
         }
 
         preferences.accountingLastSyncAt = completedAt
         preferences.accountingLastError = ""
-        AccountingSyncResult(true, bills.size, accepted, skipped, completedAt)
+        AccountingSyncResult(true, bills.size, accepted, skipped, pruned, completedAt)
+        }
     }
 
     suspend fun syncRecent(days: Long = 365): AccountingSyncResult {
@@ -88,11 +109,16 @@ class AccountingSyncCoordinator(
     private fun uploadBatch(
         serverUrl: String,
         token: String,
-        bills: List<ProcessedAccountingBill>,
-    ): Pair<Int, Int> {
+        batch: AccountingUploadBatch,
+    ): UploadResult {
         val body = JSONObject().apply {
             put("source", "autoaccounting")
-            put("bills", JSONArray().apply { bills.forEach { put(it.toJson()) } })
+            put("sync_id", batch.syncId)
+            put("range_start", batch.rangeStart.toString())
+            put("range_end", batch.rangeEnd.toString())
+            put("batch_index", batch.batchIndex)
+            put("batch_count", batch.batchCount)
+            put("bills", JSONArray().apply { batch.bills.forEach { put(it.toJson()) } })
         }.toString().toRequestBody(JSON_MEDIA_TYPE)
         val request = Request.Builder()
             .url("$serverUrl/api/accounting/bills")
@@ -103,7 +129,11 @@ class AccountingSyncCoordinator(
             val raw = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw IOException("Live Dashboard HTTP ${response.code}: ${errorText(raw)}")
             val json = JSONObject(raw)
-            return json.optInt("accepted", 0) to json.optInt("skipped", 0)
+            return UploadResult(
+                accepted = json.optInt("accepted", 0),
+                skipped = json.optInt("skipped", 0),
+                pruned = json.optInt("pruned", 0),
+            )
         }
     }
 
@@ -116,8 +146,24 @@ class AccountingSyncCoordinator(
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val sharedUploadClient = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(20, TimeUnit.SECONDS)
             .build()
+        private val syncMutex = Mutex()
     }
+
+    private data class UploadResult(
+        val accepted: Int,
+        val skipped: Int,
+        val pruned: Int,
+    )
+
+    private data class AccountingUploadBatch(
+        val syncId: String,
+        val rangeStart: Instant,
+        val rangeEnd: Instant,
+        val batchIndex: Int,
+        val batchCount: Int,
+        val bills: List<ProcessedAccountingBill>,
+    )
 }

@@ -58,9 +58,10 @@
 1. 设置页“设备”分段由用户显式启动 `AndroidIntegrationService` 前台服务；通知持续显示并提供郊狼紧急停止入口。
 2. 集成服务使用独立 `/api/ws?role=integration` 连接，不占用 `role=device`，因此不会替换 LSPosed `system_server` 的主设备连接。
 3. 郊狼通过原生 BLE 支持 Coyote V2（`D-LAB ESTIM`）与 V3（`47L121`）。协议常量、数据包和内置波形参考 MIT 许可的 0xNuller/DG-Kit；细节见 `THIRD_PARTY_NOTICES.md`。
-4. MCP 启动/调整/切波形默认拒绝；用户必须在 Android 当前连接上显式开启远程控制。Android 执行边界固定再次应用冷启动 ≤10、单步调整 ≤10 和用户 A/B 通道上限。停止/紧急停止不受启动授权限制。
+4. MCP 启动/调整/切波形默认拒绝；用户必须在 Android 当前连接上显式开启远程控制，断开或服务重启即清除授权。Android 执行边界固定再次应用冷启动 ≤10、单步调整 ≤10 和用户 A/B 通道上限；只有对应 GATT 写回调成功才返回 `applied`。停止/紧急停止不受启动授权限制。
 5. AutoAccounting 只从其现有本机 `http://127.0.0.1:52045/bill/range` 读取 `Edited`/`Synced`、`groupId=-1` 的完成态主账单；不访问或复制 Hook/OCR/规则实现。
-6. 账单按设备、来源、来源账单 ID 幂等上传到 `POST /api/accounting/bills`。MCP 查询默认先通过集成 WS 请求 Android 刷新指定时间范围；Android 离线时明确返回缓存状态。
+6. 集成 WS 帧固定 `v=1`。郊狼 MCP 调用方生成稳定 `coyote_<uuid>`，Android 持久去重，同 ID 不会重复执行；账单按设备、来源、来源账单 ID 幂等上传到 `POST /api/accounting/bills`。
+7. 账单上传携带完整时间范围快照和 `accounting_<uuid>`；最后一批完成后服务端删除本次范围内已被 AutoAccounting 删除、退回待编辑或改成子账单的旧记录。MCP 查询默认先通过集成 WS 请求 Android 刷新；Android 离线时明确返回缓存状态。
 
 ## 常见问题
 

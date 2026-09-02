@@ -14,7 +14,6 @@ data class CoyoteWaveStep(
 
 data class CoyoteWaveform(
     val id: String,
-    val displayName: String,
     val frames: List<CoyoteWaveStep>,
 )
 
@@ -22,13 +21,11 @@ object CoyoteWaveforms {
     val all: List<CoyoteWaveform> = listOf(
         CoyoteWaveform(
             id = "breath",
-            displayName = "呼吸",
             frames = listOf(0, 20, 40, 60, 80, 100, 100, 100, 0, 0, 0, 0)
                 .map { CoyoteWaveStep(10, it) },
         ),
         CoyoteWaveform(
             id = "tide",
-            displayName = "潮汐",
             frames = listOf(
                 10 to 0, 11 to 16, 13 to 33, 14 to 50, 16 to 66, 18 to 83,
                 19 to 100, 21 to 92, 22 to 84, 24 to 76, 26 to 68, 26 to 0,
@@ -36,12 +33,11 @@ object CoyoteWaveforms {
                 37 to 92, 38 to 84, 40 to 76, 42 to 68,
             ).map { (frequency, intensity) -> CoyoteWaveStep(frequency, intensity) },
         ),
-        CoyoteWaveform("pulse_low", "低脉冲", List(10) { CoyoteWaveStep(10, 30) }),
-        CoyoteWaveform("pulse_mid", "中脉冲", List(10) { CoyoteWaveStep(10, 60) }),
-        CoyoteWaveform("pulse_high", "高脉冲", List(10) { CoyoteWaveStep(10, 100) }),
+        CoyoteWaveform("pulse_low", List(10) { CoyoteWaveStep(10, 30) }),
+        CoyoteWaveform("pulse_mid", List(10) { CoyoteWaveStep(10, 60) }),
+        CoyoteWaveform("pulse_high", List(10) { CoyoteWaveStep(10, 100) }),
         CoyoteWaveform(
             id = "tap",
-            displayName = "敲击",
             frames = listOf(100, 0, 0, 100, 0, 0).map { CoyoteWaveStep(10, it) },
         ),
     )

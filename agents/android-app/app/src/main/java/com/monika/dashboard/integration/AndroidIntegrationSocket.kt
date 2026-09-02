@@ -78,6 +78,7 @@ object AndroidIntegrationSocket {
         val preferences = AndroidIntegrationPreferences(context)
         val payload = JSONObject().apply {
             put("type", "integration_status")
+            put("v", 1)
             put("coyote", CoyoteBleController.state.value.toJson())
             put(
                 "accounting",
@@ -120,6 +121,10 @@ object AndroidIntegrationSocket {
 
     private fun handleMessage(webSocket: WebSocket, text: String) {
         val data = runCatching { JSONObject(text) }.getOrNull() ?: return
+        if (data.optInt("v", -1) != 1) {
+            DebugLog.log("设备集成", "忽略不支持的协议版本")
+            return
+        }
         when (data.optString("type")) {
             "ack" -> if (data.optString("role") == "integration") sendStatus()
             "integration_status_request" -> sendStatus()
@@ -132,8 +137,18 @@ object AndroidIntegrationSocket {
         val requestId = cleanRequestId(data.optString("request_id"))
         val command = data.optJSONObject("command") ?: JSONObject()
         scope.launch {
-            val result = CoyoteBleController.executeRemote(command)
+            val result = if (!requestId.matches(Regex("coyote_[a-f0-9-]{36}"))) {
+                JSONObject().apply {
+                    put("ok", false)
+                    put("status", "rejected")
+                    put("reason", "invalid_coyote_request_id")
+                    put("coyote", CoyoteBleController.state.value.toJson())
+                }
+            } else {
+                CoyoteRemoteCommandStore.executeOnce(appContext ?: return@launch, requestId, command)
+            }
             result.put("type", "coyote_command_result")
+            result.put("v", 1)
             result.put("request_id", requestId)
             webSocket.send(result.toString())
             sendStatus()
@@ -156,6 +171,7 @@ object AndroidIntegrationSocket {
                     fetched = 0,
                     accepted = 0,
                     skipped = 0,
+                    pruned = 0,
                     completedAt = Instant.now().toString(),
                     error = error.message.orEmpty().ifBlank { "账单同步失败" }.take(240),
                 )
@@ -163,6 +179,7 @@ object AndroidIntegrationSocket {
             accountingAvailable = result.available
             val response = result.toJson().apply {
                 put("type", "accounting_sync_result")
+                put("v", 1)
                 put("request_id", requestId)
                 put("ok", result.error.isBlank())
                 put("status", if (result.error.isBlank()) "applied" else "failed")
