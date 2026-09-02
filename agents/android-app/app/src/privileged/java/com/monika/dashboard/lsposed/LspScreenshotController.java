@@ -1,13 +1,12 @@
 package com.monika.dashboard.lsposed;
 
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 
 import java.io.ByteArrayOutputStream;
 
 final class LspScreenshotController {
     interface Source {
-        byte[] capturePng();
+        Bitmap captureBitmap();
     }
 
     interface Host {
@@ -30,13 +29,11 @@ final class LspScreenshotController {
     }
 
     LspCapturedScreenshot capture(int requestedMaxWidth, int requestedQuality) {
-        byte[] png = source.capturePng();
-        if (png == null || png.length == 0) return null;
         Bitmap original = null;
         Bitmap scaled = null;
         Bitmap fallback = null;
         try {
-            original = BitmapFactory.decodeByteArray(png, 0, png.length);
+            original = source.captureBitmap();
             if (original == null || original.getWidth() <= 0 || original.getHeight() <= 0) return null;
             int maxWidth = clamp(requestedMaxWidth, MIN_WIDTH, MAX_WIDTH, DEFAULT_MAX_WIDTH);
             int targetWidth = Math.min(maxWidth, original.getWidth());

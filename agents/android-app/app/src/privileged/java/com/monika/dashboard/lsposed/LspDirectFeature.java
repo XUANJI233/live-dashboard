@@ -47,7 +47,7 @@ final class LspDirectFeature {
         this.foregroundFeature = foregroundFeature;
         this.deviceControlFeature = deviceControlFeature;
         this.host = host;
-        LspShellScreenshotSource screenshotSource = new LspShellScreenshotSource(host::logDebug);
+        LspSystemScreenshotSource screenshotSource = new LspSystemScreenshotSource(host::logDebug);
         screenshotController = new LspScreenshotController(screenshotSource, host::logDebug);
         LspInstalledAppsReporter installedAppsReporter =
                 new LspInstalledAppsReporter(newInstalledAppsReporterHost());

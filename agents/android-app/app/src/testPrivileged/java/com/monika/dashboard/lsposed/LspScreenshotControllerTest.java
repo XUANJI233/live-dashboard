@@ -13,15 +13,13 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.annotation.Config;
 
-import java.io.ByteArrayOutputStream;
-
 @RunWith(AndroidJUnit4.class)
 @Config(sdk = 35)
 public class LspScreenshotControllerTest {
     @Test
     public void downscalesAndBoundsJpegForUpload() {
-        byte[] png = testPng(1440, 3200);
-        LspScreenshotController controller = new LspScreenshotController(() -> png, message -> {});
+        Bitmap bitmap = testBitmap(1440, 3200);
+        LspScreenshotController controller = new LspScreenshotController(() -> bitmap, message -> {});
 
         LspCapturedScreenshot screenshot = controller.capture(720, 65);
 
@@ -34,12 +32,9 @@ public class LspScreenshotControllerTest {
         assertEquals(0xd8, screenshot.bytes[1] & 0xff);
     }
 
-    private byte[] testPng(int width, int height) {
+    private Bitmap testBitmap(int width, int height) {
         Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         bitmap.eraseColor(Color.rgb(40, 80, 120));
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
-        bitmap.recycle();
-        return out.toByteArray();
+        return bitmap;
     }
 }
