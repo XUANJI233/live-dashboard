@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ACCOUNTING_TRANSACTION_TYPES } from "./accounting-contracts";
 import { COYOTE_WAVEFORMS } from "./coyote-control";
 
 export const DateRangeSchema = z.object({
@@ -25,27 +26,19 @@ export const AccountingBillsSchema = z.object({
   start: z.string().describe("Inclusive ISO timestamp for processed AutoAccounting bills."),
   end: z.string().describe("Exclusive ISO timestamp for processed AutoAccounting bills."),
   device_id: z.string().min(1).max(160).optional(),
-  transaction_types: z.array(z.enum([
-    "Expend",
-    "ExpendReimbursement",
-    "ExpendLending",
-    "ExpendRepayment",
-    "Income",
-    "IncomeLending",
-    "IncomeRepayment",
-    "IncomeReimbursement",
-    "IncomeRefund",
-    "Transfer",
-  ])).max(10).optional(),
+  transaction_types: z.array(z.enum(ACCOUNTING_TRANSACTION_TYPES)).max(10).optional(),
   category: z.string().max(100).optional(),
   keyword: z.string().max(200).optional(),
   limit: z.number().int().min(1).max(200).optional(),
+  cursor: z.string().max(500).optional(),
   refresh_from_android: z.boolean().optional()
     .describe("True by default. Ask the online Android integration to read AutoAccounting's completed bills before querying the server cache."),
 });
 
 const CoyoteDeviceSchema = z.object({
   device_id: z.string().min(1).max(160),
+  request_id: z.string().regex(/^coyote_[a-f0-9-]{36}$/)
+    .describe("Stable caller-generated idempotency ID. Reuse exactly for retries of the same physical command."),
 });
 
 const CoyoteChannelSchema = z.enum(["A", "B"]);

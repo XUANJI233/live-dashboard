@@ -102,6 +102,7 @@ const KNOWN_TABLES = new Set([
   "device_commands",
   "device_command_results",
   "device_screenshots",
+  "accounting_bills",
   "ai_jobs",
   "daily_summaries",
   "weekly_summaries",
@@ -201,10 +202,13 @@ db.run(`
     rule_name TEXT NOT NULL DEFAULT '',
     tags TEXT NOT NULL DEFAULT '[]',
     flag INTEGER NOT NULL DEFAULT 0,
+    last_sync_id TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY(device_id, source, source_bill_id)
   )
 `);
+
+addColumnIfMissing("accounting_bills", "last_sync_id", "last_sync_id TEXT NOT NULL DEFAULT ''");
 
 db.run(`
   CREATE INDEX IF NOT EXISTS idx_accounting_bills_occurred

@@ -53,6 +53,7 @@ describe("Coyote MCP safety contract", () => {
         if (payload.type === "coyote_command") {
           queueMicrotask(() => handleAndroidIntegrationWsMessage(integrationSocket as never, {
             type: "coyote_command_result",
+            v: 1,
             request_id: payload.request_id,
             ok: true,
             status: "applied",
@@ -76,6 +77,7 @@ describe("Coyote MCP safety contract", () => {
     realtimeSocketHub.registerIntegration(integrationSocket as never);
     handleAndroidIntegrationWsMessage(integrationSocket as never, {
       type: "integration_status",
+      v: 1,
       coyote: {
         available: true,
         connected: true,
@@ -87,17 +89,26 @@ describe("Coyote MCP safety contract", () => {
       },
     });
 
-    const result = await executeCoyoteCommand(deviceId, {
+    const requestId = `coyote_${crypto.randomUUID()}`;
+    const command = {
       action: "start",
       channel: "A",
       strength: 5,
       waveform: "pulse_mid",
-    });
+    };
+    const [result, retried] = await Promise.all([
+      executeCoyoteCommand(deviceId, requestId, command),
+      executeCoyoteCommand(deviceId, requestId, command),
+    ]);
 
     expect(realtimeSocketHub.getDeviceSocket(deviceId)).toBe(primaryDeviceSocket as never);
     expect(realtimeSocketHub.getIntegrationSocket(deviceId)).toBe(integrationSocket as never);
-    expect(sent.some((payload) => payload.type === "coyote_command")).toBe(true);
+    expect(sent.filter((payload) => payload.type === "coyote_command")).toHaveLength(1);
+    expect(sent.find((payload) => payload.type === "coyote_command")).toMatchObject({ v: 1, request_id: requestId });
     expect(result).toMatchObject({ ok: true, status: "applied" });
+    expect(retried).toMatchObject({ ok: true, status: "applied" });
+    const conflict = await executeCoyoteCommand(deviceId, requestId, { ...command, strength: 6 });
+    expect(conflict).toMatchObject({ ok: false, status: "conflict", error: "coyote_request_id_conflict" });
     realtimeSocketHub.removeIntegration(integrationSocket as never);
     realtimeSocketHub.removeDevice(primaryDeviceSocket as never);
   });

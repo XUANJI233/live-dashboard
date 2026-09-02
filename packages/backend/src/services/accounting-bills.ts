@@ -1,5 +1,6 @@
 import { db } from "../db";
 import { cleanLooseIdentifier, cleanText } from "./mcp-contracts";
+import { ACCOUNTING_TRANSACTION_TYPES } from "./accounting-contracts";
 
 export const ACCOUNTING_BILLS_SCHEMA = "live_dashboard.accounting_bills.v1";
 export const ACCOUNTING_SOURCE = "autoaccounting";
@@ -8,18 +9,7 @@ const MAX_BILLS_PER_UPLOAD = 500;
 const MAX_QUERY_LIMIT = 200;
 const MAX_QUERY_RANGE_DAYS = 3_650;
 const COMPLETED_STATES = new Set(["Edited", "Synced"]);
-const TRANSACTION_TYPES = new Set([
-  "Expend",
-  "ExpendReimbursement",
-  "ExpendLending",
-  "ExpendRepayment",
-  "Income",
-  "IncomeLending",
-  "IncomeRepayment",
-  "IncomeReimbursement",
-  "IncomeRefund",
-  "Transfer",
-]);
+const TRANSACTION_TYPES = new Set<string>(ACCOUNTING_TRANSACTION_TYPES);
 
 export interface AccountingBillUpload {
   source_bill_id?: unknown;
@@ -47,6 +37,11 @@ export interface AccountingBillUpload {
 
 export interface AccountingUploadPayload {
   source?: unknown;
+  sync_id?: unknown;
+  range_start?: unknown;
+  range_end?: unknown;
+  batch_index?: unknown;
+  batch_count?: unknown;
   bills?: unknown;
 }
 
@@ -80,17 +75,23 @@ interface AccountingBillRow extends Omit<AccountingBillRecord, "auto" | "tags"> 
   tags: string;
 }
 
+interface AccountingCursor {
+  occurred_at: string;
+  device_id: string;
+  source_bill_id: string;
+}
+
 const upsertBill = db.prepare(`
   INSERT INTO accounting_bills (
     device_id, source, source_bill_id, type, currency_code, money, fee,
     occurred_at, shop_name, shop_item, category_name, book_name,
     account_name_from, account_name_to, app, channel, state, remark,
-    auto, rule_name, tags, flag, updated_at
+    auto, rule_name, tags, flag, last_sync_id, updated_at
   ) VALUES (
     ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, datetime('now')
+    ?, ?, ?, ?, ?, datetime('now')
   )
   ON CONFLICT(device_id, source, source_bill_id) DO UPDATE SET
     type = excluded.type,
@@ -112,24 +113,53 @@ const upsertBill = db.prepare(`
     rule_name = excluded.rule_name,
     tags = excluded.tags,
     flag = excluded.flag,
+    last_sync_id = excluded.last_sync_id,
     updated_at = datetime('now')
+`);
+
+const reconcileRange = db.prepare(`
+  DELETE FROM accounting_bills
+  WHERE device_id = ?
+    AND source = ?
+    AND occurred_at >= ?
+    AND occurred_at < ?
+    AND last_sync_id != ?
 `);
 
 export function ingestAccountingBills(
   deviceIdInput: string,
   payload: AccountingUploadPayload,
-): { schema: typeof ACCOUNTING_BILLS_SCHEMA; accepted: number; skipped: number } {
+): { schema: typeof ACCOUNTING_BILLS_SCHEMA; sync_id: string; accepted: number; skipped: number; pruned: number } {
   const deviceId = cleanLooseIdentifier(deviceIdInput, 160);
   if (!deviceId) throw new Error("invalid_device_id");
   if (payload.source !== ACCOUNTING_SOURCE) throw new Error("unsupported_accounting_source");
+  const syncId = cleanSyncId(payload.sync_id);
+  const rangeStart = normalizeIso(payload.range_start);
+  const rangeEnd = normalizeIso(payload.range_end);
+  const batchIndex = finiteInteger(payload.batch_index, Number.NaN);
+  const batchCount = finiteInteger(payload.batch_count, Number.NaN);
+  if (!syncId || !rangeStart || !rangeEnd || Date.parse(rangeEnd) <= Date.parse(rangeStart)) {
+    throw new Error("invalid_accounting_sync_snapshot");
+  }
+  if (Date.parse(rangeEnd) - Date.parse(rangeStart) > MAX_QUERY_RANGE_DAYS * 24 * 60 * 60_000) {
+    throw new Error("accounting_range_too_large");
+  }
+  if (batchCount < 1 || batchCount > 10_000 || batchIndex < 0 || batchIndex >= batchCount) {
+    throw new Error("invalid_accounting_sync_batch");
+  }
   const inputBills = Array.isArray(payload.bills) ? payload.bills.slice(0, MAX_BILLS_PER_UPLOAD) : [];
   let accepted = 0;
   let skipped = Array.isArray(payload.bills) ? Math.max(0, payload.bills.length - inputBills.length) : 0;
+  let pruned = 0;
 
   const commit = db.transaction(() => {
     for (const input of inputBills) {
       const normalized = normalizeUploadedBill(input);
       if (!normalized) {
+        skipped += 1;
+        continue;
+      }
+      if (normalized.occurred_at < rangeStart || normalized.occurred_at >= rangeEnd) {
         skipped += 1;
         continue;
       }
@@ -156,13 +186,17 @@ export function ingestAccountingBills(
         normalized.rule_name,
         JSON.stringify(normalized.tags),
         normalized.flag,
+        syncId,
       );
       accepted += 1;
+    }
+    if (batchIndex === batchCount - 1) {
+      pruned = Number(reconcileRange.run(deviceId, ACCOUNTING_SOURCE, rangeStart, rangeEnd, syncId).changes);
     }
   });
   commit();
 
-  return { schema: ACCOUNTING_BILLS_SCHEMA, accepted, skipped };
+  return { schema: ACCOUNTING_BILLS_SCHEMA, sync_id: syncId, accepted, skipped, pruned };
 }
 
 export function queryAccountingBills(options: {
@@ -173,6 +207,7 @@ export function queryAccountingBills(options: {
   category?: string;
   keyword?: string;
   limit?: number;
+  cursor?: string;
 }): {
   schema: typeof ACCOUNTING_BILLS_SCHEMA;
   range: { start: string; end: string };
@@ -180,7 +215,7 @@ export function queryAccountingBills(options: {
   limit: number;
   truncated: boolean;
   bills: AccountingBillRecord[];
-  summary_by_currency: Record<string, AccountingCurrencySummary>;
+  next_cursor: string | null;
 } {
   const start = isoTimestamp(options.start, "invalid_accounting_start");
   const end = isoTimestamp(options.end, "invalid_accounting_end");
@@ -189,21 +224,15 @@ export function queryAccountingBills(options: {
     throw new Error("accounting_range_too_large");
   }
   const limit = integer(options.limit, 1, MAX_QUERY_LIMIT, 100);
-  const where = accountingWhere({ ...options, start, end });
+  const cursor = decodeCursor(options.cursor);
+  const where = accountingWhere({ ...options, start, end, cursor });
   const rows = db.prepare(`
     SELECT * FROM accounting_bills
     WHERE ${where.sql}
-    ORDER BY occurred_at DESC, source_bill_id DESC
+    ORDER BY occurred_at DESC, device_id ASC, source_bill_id DESC
     LIMIT ?
   `).all(...where.params, limit + 1) as AccountingBillRow[];
   const visibleRows = rows.slice(0, limit);
-
-  const summaries = db.prepare(`
-    SELECT currency_code, type, SUM(money) AS amount, COUNT(*) AS count
-    FROM accounting_bills
-    WHERE ${where.sql}
-    GROUP BY currency_code, type
-  `).all(...where.params) as Array<{ currency_code: string; type: string; amount: number; count: number }>;
 
   return {
     schema: ACCOUNTING_BILLS_SCHEMA,
@@ -212,16 +241,10 @@ export function queryAccountingBills(options: {
     limit,
     truncated: rows.length > visibleRows.length,
     bills: visibleRows.map(publicBill),
-    summary_by_currency: summarizeCurrencies(summaries),
+    next_cursor: rows.length > visibleRows.length && visibleRows.length > 0
+      ? encodeCursor(visibleRows[visibleRows.length - 1]!)
+      : null,
   };
-}
-
-interface AccountingCurrencySummary {
-  income: number;
-  expense: number;
-  refund: number;
-  transfer: number;
-  count: number;
 }
 
 function normalizeUploadedBill(value: unknown): AccountingBillRecord | null {
@@ -269,6 +292,7 @@ function accountingWhere(options: {
   transactionTypes?: string[];
   category?: string;
   keyword?: string;
+  cursor?: AccountingCursor | null;
 }): { sql: string; params: Array<string | number> } {
   const conditions = ["occurred_at >= ?", "occurred_at < ?"];
   const params: Array<string | number> = [options.start, options.end];
@@ -299,27 +323,22 @@ function accountingWhere(options: {
       params.push(...textColumns.map(() => `%${escapeLike(keyword)}%`));
     }
   }
-  return { sql: conditions.join(" AND "), params };
-}
-
-function summarizeCurrencies(
-  rows: Array<{ currency_code: string; type: string; amount: number; count: number }>,
-): Record<string, AccountingCurrencySummary> {
-  const out: Record<string, AccountingCurrencySummary> = {};
-  for (const row of rows) {
-    const summary = out[row.currency_code] ?? { income: 0, expense: 0, refund: 0, transfer: 0, count: 0 };
-    const amount = roundedMoney(Number(row.amount) || 0);
-    summary.count += Number(row.count) || 0;
-    if (row.type === "Income") summary.income = roundedMoney(summary.income + amount);
-    if (row.type === "Expend") summary.expense = roundedMoney(summary.expense + amount);
-    if (row.type === "IncomeRefund") {
-      summary.refund = roundedMoney(summary.refund + amount);
-      summary.expense = roundedMoney(summary.expense - amount);
-    }
-    if (row.type === "Transfer") summary.transfer = roundedMoney(summary.transfer + amount);
-    out[row.currency_code] = summary;
+  if (options.cursor) {
+    conditions.push(`(
+      occurred_at < ? OR
+      (occurred_at = ? AND device_id > ?) OR
+      (occurred_at = ? AND device_id = ? AND source_bill_id < ?)
+    )`);
+    params.push(
+      options.cursor.occurred_at,
+      options.cursor.occurred_at,
+      options.cursor.device_id,
+      options.cursor.occurred_at,
+      options.cursor.device_id,
+      options.cursor.source_bill_id,
+    );
   }
-  return out;
+  return { sql: conditions.join(" AND "), params };
 }
 
 function publicBill(row: AccountingBillRow): AccountingBillRecord {
@@ -346,6 +365,33 @@ function parseTags(value: string): string[] {
 function numericId(value: unknown): string {
   const text = String(value ?? "").trim();
   return /^\d{1,19}$/.test(text) ? text : "";
+}
+
+function cleanSyncId(value: unknown): string {
+  const text = String(value ?? "").trim();
+  return /^accounting_[a-f0-9-]{36}$/.test(text) ? text : "";
+}
+
+function encodeCursor(row: Pick<AccountingBillRow, "occurred_at" | "device_id" | "source_bill_id">): string {
+  return Buffer.from(JSON.stringify({
+    occurred_at: row.occurred_at,
+    device_id: row.device_id,
+    source_bill_id: row.source_bill_id,
+  }), "utf8").toString("base64url");
+}
+
+function decodeCursor(value: unknown): AccountingCursor | null {
+  if (typeof value !== "string" || !value || value.length > 500) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Record<string, unknown>;
+    const occurredAt = normalizeIso(parsed.occurred_at);
+    const deviceId = cleanLooseIdentifier(parsed.device_id, 160);
+    const sourceBillId = numericId(parsed.source_bill_id);
+    if (!occurredAt || !deviceId || !sourceBillId) throw new Error("invalid_accounting_cursor");
+    return { occurred_at: occurredAt, device_id: deviceId, source_bill_id: sourceBillId };
+  } catch {
+    throw new Error("invalid_accounting_cursor");
+  }
 }
 
 function currencyCode(value: unknown): string {

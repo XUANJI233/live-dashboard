@@ -7,6 +7,8 @@ const MAX_COLD_START_STRENGTH = 10;
 const MAX_ADJUST_STEP = 10;
 const RATE_WINDOW_MS = 5_000;
 const actionHistory = new Map<string, number[]>();
+const requestFingerprints = new Map<string, string>();
+const MAX_REQUEST_FINGERPRINTS = 1_000;
 
 export interface CoyoteCommand {
   action: CoyoteAction;
@@ -73,6 +75,24 @@ export function coyoteRateLimitAllowed(deviceId: string, action: CoyoteAction, n
   recent.push(now);
   actionHistory.set(key, recent);
   return true;
+}
+
+export function registerCoyoteRequest(
+  deviceId: string,
+  requestId: string,
+  command: CoyoteCommand,
+): "new" | "retry" | "conflict" {
+  const key = `${deviceId}:${requestId}`;
+  const fingerprint = JSON.stringify(command);
+  const existing = requestFingerprints.get(key);
+  if (existing != null) return existing === fingerprint ? "retry" : "conflict";
+  requestFingerprints.set(key, fingerprint);
+  while (requestFingerprints.size > MAX_REQUEST_FINGERPRINTS) {
+    const oldest = requestFingerprints.keys().next().value as string | undefined;
+    if (!oldest) break;
+    requestFingerprints.delete(oldest);
+  }
+  return "new";
 }
 
 function coyoteAction(value: unknown): CoyoteAction {

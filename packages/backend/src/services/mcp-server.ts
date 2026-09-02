@@ -146,6 +146,7 @@ export function createLiveDashboardMcpServer(): McpServer {
         category: args.category,
         keyword: args.keyword,
         limit: args.limit,
+        cursor: args.cursor,
       }),
     };
   }));
@@ -162,35 +163,35 @@ export function createLiveDashboardMcpServer(): McpServer {
     description: "Start one Android-connected Coyote electrostimulation channel with a built-in waveform. Requires the user's live remote-control grant; cold-start strength is capped at 10 and then by the user's local channel limit.",
     inputSchema: CoyoteStartSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, { action: "start", ...args })));
+  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, args.request_id, { action: "start", ...args })));
 
   server.registerTool("live_dashboard.coyote_adjust", {
     title: "Adjust Coyote strength",
     description: "Relatively adjust one running Coyote channel by at most plus or minus 10. Requires the user's live remote-control grant and remains bounded by local channel limits.",
     inputSchema: CoyoteAdjustSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, { action: "adjust", ...args })));
+  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, args.request_id, { action: "adjust", ...args })));
 
   server.registerTool("live_dashboard.coyote_change_wave", {
     title: "Change Coyote waveform",
     description: "Change the waveform of one already running Coyote channel without changing strength. Requires the user's live remote-control grant.",
     inputSchema: CoyoteChangeWaveSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, { action: "change_wave", ...args })));
+  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, args.request_id, { action: "change_wave", ...args })));
 
   server.registerTool("live_dashboard.coyote_stop", {
     title: "Stop Coyote output",
     description: "Stop one Coyote channel or both channels. Stop remains available even when the user has disabled remote starts and adjustments.",
     inputSchema: CoyoteStopSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, { action: "stop", ...args })));
+  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, args.request_id, { action: "stop", ...args })));
 
   server.registerTool("live_dashboard.coyote_emergency_stop", {
     title: "Emergency stop Coyote",
     description: "Immediately force both Coyote channels to zero and clear active waveforms. Always use this instead of a start-strength-zero workaround.",
     inputSchema: CoyoteEmergencyStopSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, { action: "emergency_stop" })));
+  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, args.request_id, { action: "emergency_stop" })));
 
   server.registerTool("live_dashboard.capture_device_screenshot", {
     title: "Capture device screenshot",

@@ -64,6 +64,54 @@
   - Android 集成：`{ "type": "ack", "status": "connected", "role": "integration", "device_id": "..." }`
   - 访客：`{ "type": "ack", "status": "connected", "role": "viewer", "viewer_id": "..." }`
 
+### Android 集成 WS 帧
+
+所有 `role=integration` 双向帧固定带 `v: 1`；缺失或其它版本必须拒绝，不能按当前版本猜测。服务端连接后发送 `{ "type":"integration_status_request", "v":1 }`，Android 回：
+
+```json
+{
+  "type": "integration_status",
+  "v": 1,
+  "coyote": {
+    "available": true,
+    "connected": true,
+    "device_name": "47L121...",
+    "generation": "v3",
+    "battery_percent": 80,
+    "strength_a": 0,
+    "strength_b": 0,
+    "limit_a": 50,
+    "limit_b": 50,
+    "wave_active_a": false,
+    "wave_active_b": false,
+    "waveform_a": "",
+    "waveform_b": "",
+    "remote_control_enabled": false
+  },
+  "accounting": {
+    "available": true,
+    "last_sync_at": "2026-09-02T03:00:00.000Z",
+    "last_error": ""
+  }
+}
+```
+
+郊狼命令：`{ "type":"coyote_command", "v":1, "request_id":"coyote_<uuid>", "command":{...} }`。`request_id` 由 MCP 调用方生成并在超时重试时原样复用；Android 持久保存该 ID 的命令指纹和结果，同 ID 同命令只重放结果，同 ID 不同命令返回 `coyote_request_id_conflict`。Android 只有在对应 GATT 写回调成功后才能返回 `status="applied"`：
+
+```json
+{
+  "type": "coyote_command_result",
+  "v": 1,
+  "request_id": "coyote_00000000-0000-0000-0000-000000000000",
+  "ok": true,
+  "status": "applied",
+  "reason": "applied",
+  "coyote": {}
+}
+```
+
+账单刷新：`{ "type":"accounting_sync_request", "v":1, "request_id":"accounting_<uuid>", "start":"<ISO>", "end":"<ISO>" }`；Android 完成源读取和全部上传后返回 `{ "type":"accounting_sync_result", "v":1, "request_id", "ok", "status", "accounting":{...} }`。服务端分别用 `coyote_command_result_received` / `accounting_sync_result_received`（均带 `v:1` 和原 `request_id`）确认结果。
+
 ## AI 设置和 Prompt
 
 `GET /api/summary-settings` 和 `POST /api/summary-settings` 使用设备 Bearer token。JSON 字段保持 `snake_case`，布尔必须是真布尔。
@@ -312,6 +360,11 @@ Android 只通过 AutoAccounting 现有本机接口 `http://127.0.0.1:52045/bill
 ```json
 {
   "source": "autoaccounting",
+  "sync_id": "accounting_00000000-0000-0000-0000-000000000000",
+  "range_start": "2026-09-01T00:00:00.000Z",
+  "range_end": "2026-09-02T00:00:00.000Z",
+  "batch_index": 0,
+  "batch_count": 1,
   "bills": [
     {
       "source_bill_id": "123",
@@ -342,6 +395,7 @@ Android 只通过 AutoAccounting 现有本机接口 `http://127.0.0.1:52045/bill
 
 - 只接受 `state="Edited"` 或 `state="Synced"` 且 `group_id=-1` 的完成态主账单；`Wait2Edit` 与去重子账单必须跳过。
 - 幂等键为 `device_id + source + source_bill_id`；同一来源账单再次上传会覆盖其已编辑字段，不产生重复记录。
+- 一次范围快照的所有批次复用同一 `sync_id`，`batch_index` 从 0 开始；最后一批入库后，服务端删除该设备/来源/时间范围内未被本次快照标记的旧记录，因此已删除、退回 `Wait2Edit` 或变成子账单的数据不会继续被 MCP 返回。
 - 单批最多 500 条。外部自由文本需在 Android 与服务端两次清洗并限制长度。
 - MCP 查询可先通过 `integration` WS 事件式请求 Android 刷新指定时间范围；Android 不在线时返回服务端已有缓存与明确的 `refresh.status="offline"`，不得伪装成实时结果。
 
@@ -436,7 +490,7 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
   - `live_dashboard.run_supervision_check`
 - `live_dashboard.send_device_commands` 只用于一次性设备动作：提醒文本、震动、息屏、即时冻结/解冻；服务端会按设备显式上报能力裁剪。
 - `live_dashboard.capture_device_screenshot` 用于按需抓取 Android LSP 当前画面；默认事件式等待上传，超时返回 `screenshot_id`。`live_dashboard.get_device_screenshot` 用该 ID 取回一次图片。
-- `live_dashboard.get_accounting_bills` 只查询 AutoAccounting 已处理完成并同步到服务端的主账单；默认先通过 Android `integration` WS 请求指定时间范围的事件式刷新。返回按币种分开的收入、支出、退款、转账和数量汇总，禁止跨币种直接相加。
+- `live_dashboard.get_accounting_bills` 只查询 AutoAccounting 已处理完成并同步到服务端的原始主账单字段；默认先通过 Android `integration` WS 请求指定时间范围的事件式刷新，不重新解释账务汇总语义。最多返回 200 条；`truncated=true` 时必须把 `next_cursor` 原样传入下一次调用，直到 `next_cursor=null`。
 - 郊狼工具只作用于 Android 集成当前已连接的 Coyote V2/V3：`coyote_start` 冷启动强度上限 10，`coyote_adjust` 单步上限 ±10，且 Android 会再次按用户 A/B 通道上限裁剪；`coyote_change_wave` 不改变强度。上述三项需要 Android 本地显式开启远程控制；`coyote_stop` 与 `coyote_emergency_stop` 不受启动授权限制，紧急停止会立即归零并清空波形。
 - `live_dashboard.set_supervision_policy` 是外部 AI 控制器编写持久监督策略的唯一接口：AI 根据当前目标和证据主动创建、修改或清空复核触发规则、触发分钟数和明确的离线应用限时；不要让部署者预填固定名单，也不要用于一次性提醒、一次性冻结/解冻或普通聊天消息。
   - 输入必须是完整快照：`policy_owner`、`strategy_reason`、`review_interval_minutes`、`risk_app_regex`、`risk_trigger_minutes`、`app_time_limits` 缺一不可。

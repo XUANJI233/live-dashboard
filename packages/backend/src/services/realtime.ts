@@ -68,8 +68,8 @@ export const realtimeWebSocket = {
     }
     if (ws.data.role === "integration") {
       realtimeSocketHub.registerIntegration(ws);
-      sendJson(ws, { type: "ack", status: "connected", role: "integration", device_id: ws.data.id });
-      sendJson(ws, { type: "integration_status_request" });
+      sendJson(ws, { type: "ack", v: 1, status: "connected", role: "integration", device_id: ws.data.id });
+      sendJson(ws, { type: "integration_status_request", v: 1 });
       return;
     }
     realtimeSocketHub.registerViewer(ws.data.id, ws);

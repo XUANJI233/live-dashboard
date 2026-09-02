@@ -21,29 +21,26 @@ describe("AutoAccounting bill ingestion and MCP query", () => {
   test("stores only completed parent bills and upserts the same source bill", async () => {
     const { ingestAccountingBills, queryAccountingBills } = await import("../src/services/accounting-bills");
 
-    const first = ingestAccountingBills("accounting-phone", {
-      source: "autoaccounting",
-      bills: [
+    const first = ingestAccountingBills("accounting-phone", uploadSnapshot([
         bill({ source_bill_id: "101", type: "Expend", money: 28.5, state: "Edited", shop_name: "Coffee" }),
         bill({ source_bill_id: "102", type: "Income", money: 100, state: "Synced", shop_name: "Refund" }),
         bill({ source_bill_id: "103", type: "Expend", money: 9, state: "Wait2Edit", shop_name: "Pending" }),
         bill({ source_bill_id: "104", type: "Expend", money: 12, state: "Edited", group_id: 101, shop_name: "Child" }),
-      ],
-    });
+      ]));
 
     expect(first).toMatchObject({ accepted: 2, skipped: 2 });
 
-    const updated = ingestAccountingBills("accounting-phone", {
-      source: "autoaccounting",
-      bills: [bill({
+    const updated = ingestAccountingBills("accounting-phone", uploadSnapshot([
+      bill({
         source_bill_id: "101",
         type: "Expend",
         money: 30,
         state: "Synced",
         shop_name: "Coffee corrected",
-      })],
-    });
-    expect(updated).toMatchObject({ accepted: 1, skipped: 0 });
+      }),
+      bill({ source_bill_id: "102", type: "Income", money: 100, state: "Synced", shop_name: "Refund" }),
+    ]));
+    expect(updated).toMatchObject({ accepted: 2, skipped: 0, pruned: 0 });
 
     const result = queryAccountingBills({
       start: "2026-08-31T00:00:00.000Z",
@@ -61,34 +58,34 @@ describe("AutoAccounting bill ingestion and MCP query", () => {
     expect(result.bills.some((item) => item.shop_name === "Child")).toBe(false);
   });
 
-  test("returns currency-separated totals and bounded filters", async () => {
+  test("returns bounded filters and a lossless cursor for additional pages", async () => {
     const { ingestAccountingBills, queryAccountingBills } = await import("../src/services/accounting-bills");
-    ingestAccountingBills("accounting-phone", {
-      source: "autoaccounting",
-      bills: [
+    ingestAccountingBills("accounting-phone", uploadSnapshot([
         bill({ source_bill_id: "201", type: "Expend", money: 20, currency_code: "CNY", category_name: "餐饮" }),
         bill({ source_bill_id: "202", type: "IncomeRefund", money: 5, currency_code: "CNY", category_name: "退款" }),
         bill({ source_bill_id: "203", type: "Income", money: 7, currency_code: "USD", category_name: "工资" }),
-      ],
-    });
+      ]));
 
     const result = queryAccountingBills({
       start: "2026-08-31T00:00:00.000Z",
       end: "2026-09-03T00:00:00.000Z",
       transactionTypes: ["Expend", "IncomeRefund"],
       keyword: "餐饮 退款",
-      limit: 200,
+      limit: 1,
     });
 
-    expect(result.limit).toBe(200);
-    expect(result.summary_by_currency.CNY).toEqual({
-      income: 0,
-      expense: 15,
-      refund: 5,
-      transfer: 0,
-      count: 2,
+    expect(result.limit).toBe(1);
+    expect(result.truncated).toBe(true);
+    expect(result.next_cursor).toBeString();
+    const next = queryAccountingBills({
+      start: "2026-08-31T00:00:00.000Z",
+      end: "2026-09-03T00:00:00.000Z",
+      transactionTypes: ["Expend", "IncomeRefund"],
+      keyword: "餐饮 退款",
+      limit: 1,
+      cursor: result.next_cursor!,
     });
-    expect(result.bills.map((item) => item.source_bill_id).sort()).toEqual(["201", "202"]);
+    expect([...result.bills, ...next.bills].map((item) => item.source_bill_id).sort()).toEqual(["201", "202"]);
   });
 
   test("exposes accounting and Coyote tools through the existing MCP server", async () => {
@@ -118,10 +115,9 @@ describe("AutoAccounting bill ingestion and MCP query", () => {
         "Content-Type": "application/json",
         Authorization: "Bearer accounting-device-token",
       },
-      body: JSON.stringify({
-        source: "autoaccounting",
-        bills: [bill({ source_bill_id: "301", type: "Expend", money: 18, category_name: "交通" })],
-      }),
+      body: JSON.stringify(uploadSnapshot([
+        bill({ source_bill_id: "301", type: "Expend", money: 18, category_name: "交通" }),
+      ])),
     }));
     expect(upload.status).toBe(200);
     expect(await upload.json()).toMatchObject({ ok: true, accepted: 1, skipped: 0 });
@@ -158,6 +154,7 @@ describe("AutoAccounting bill ingestion and MCP query", () => {
         name: "live_dashboard.coyote_start",
         arguments: {
           device_id: "accounting-phone",
+          request_id: `coyote_${crypto.randomUUID()}`,
           channel: "A",
           strength: 5,
           waveform: "pulse_mid",
@@ -189,6 +186,64 @@ describe("AutoAccounting bill ingestion and MCP query", () => {
       device: { platform: "android" },
     });
   });
+
+  test("prunes bills removed or reverted inside a completed range snapshot", async () => {
+    const { ingestAccountingBills, queryAccountingBills } = await import("../src/services/accounting-bills");
+    ingestAccountingBills("accounting-phone", uploadSnapshot([
+      bill({ source_bill_id: "401", state: "Edited" }),
+      bill({ source_bill_id: "402", state: "Synced" }),
+    ]));
+    const reconciled = ingestAccountingBills("accounting-phone", uploadSnapshot([
+      bill({ source_bill_id: "402", state: "Synced" }),
+    ]));
+
+    expect(reconciled.pruned).toBeGreaterThanOrEqual(1);
+    const result = queryAccountingBills({
+      start: "2026-08-31T00:00:00.000Z",
+      end: "2026-09-03T00:00:00.000Z",
+      deviceId: "accounting-phone",
+      limit: 200,
+    });
+    expect(result.bills.some((item) => item.source_bill_id === "401")).toBe(false);
+    expect(result.bills.some((item) => item.source_bill_id === "402")).toBe(true);
+  });
+
+  test("refreshes every online Android integration when no device is selected", async () => {
+    const { handleAndroidIntegrationWsMessage, requestAccountingSync } = await import("../src/services/android-integration-control");
+    const { realtimeSocketHub } = await import("../src/services/realtime-socket-hub");
+    const sockets = ["a", "b"].map((suffix) => {
+      const deviceId = `accounting-multi-${suffix}-${crypto.randomUUID()}`;
+      const socket = {
+        data: { role: "integration", id: deviceId },
+        send(encoded: string) {
+          const payload = JSON.parse(encoded) as Record<string, unknown>;
+          if (payload.type === "accounting_sync_request") {
+            queueMicrotask(() => handleAndroidIntegrationWsMessage(socket as never, {
+              type: "accounting_sync_result",
+              v: 1,
+              request_id: payload.request_id,
+              ok: true,
+              status: "applied",
+              accounting: { available: true, last_sync_at: "2026-09-02T00:00:00.000Z", last_error: "" },
+            }));
+          }
+        },
+        close() {},
+        ping() {},
+      };
+      realtimeSocketHub.registerIntegration(socket as never);
+      return socket;
+    });
+
+    const refreshed = await requestAccountingSync({
+      start: "2026-09-01T00:00:00.000Z",
+      end: "2026-09-03T00:00:00.000Z",
+    });
+
+    expect(refreshed).toMatchObject({ ok: true, status: "applied" });
+    expect((refreshed.devices as unknown[])).toHaveLength(2);
+    sockets.forEach((socket) => realtimeSocketHub.removeIntegration(socket as never));
+  });
 });
 
 function bill(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -215,6 +270,18 @@ function bill(overrides: Record<string, unknown> = {}): Record<string, unknown> 
     flag: 0,
     group_id: -1,
     ...overrides,
+  };
+}
+
+function uploadSnapshot(bills: Record<string, unknown>[]): Record<string, unknown> {
+  return {
+    source: "autoaccounting",
+    sync_id: `accounting_${crypto.randomUUID()}`,
+    range_start: "2026-08-31T00:00:00.000Z",
+    range_end: "2026-09-03T00:00:00.000Z",
+    batch_index: 0,
+    batch_count: 1,
+    bills,
   };
 }
 
