@@ -20,10 +20,17 @@ import {
 } from "./mcp-admin";
 import {
   AiJobStatusSchema,
+  AccountingBillsSchema,
   CaptureScreenshotSchema,
   CommandStatusSchema,
   ControllerMemoryFeedSchema,
   ControllerPersonaUpdateSchema,
+  CoyoteAdjustSchema,
+  CoyoteChangeWaveSchema,
+  CoyoteEmergencyStopSchema,
+  CoyoteStartSchema,
+  CoyoteStatusSchema,
+  CoyoteStopSchema,
   DateRangeSchema,
   DeviceTimelineSchema,
   FrozenListSchema,
@@ -44,6 +51,12 @@ import {
   getDeviceScreenshot,
   type ScreenshotCaptureResult,
 } from "./device-screenshot-control";
+import { queryAccountingBills } from "./accounting-bills";
+import {
+  executeCoyoteCommand,
+  getCoyoteStatuses,
+  requestAccountingSync,
+} from "./android-integration-control";
 
 export function createLiveDashboardMcpServer(): McpServer {
   const server = new McpServer({
@@ -55,6 +68,8 @@ export function createLiveDashboardMcpServer(): McpServer {
       "Read-only tools inspect dashboard state; they never change settings or device state.",
       "live_dashboard.send_device_commands is only for immediate one-shot device actions such as say, vibrate, screen_off, freeze, or unfreeze.",
       "live_dashboard.capture_device_screenshot captures the current Android LSP display on demand and may be used whenever current visual evidence is relevant. The screenshot is short-lived and returned once.",
+      "Coyote electrostimulation tools only operate an Android-connected device after the user explicitly enables remote control. Cold starts and adjustments are hard-bounded; stop and emergency stop remain available without that grant.",
+      "get_accounting_bills reads only AutoAccounting bills that are already Edited or Synced; Live Dashboard does not reproduce AutoAccounting recognition rules.",
       "live_dashboard.set_supervision_policy is the delegated controller's strategy interface for persistent Android LSP review triggers and app time limits. The active controller should create, revise, or clear the complete policy from the current goal and evidence instead of waiting for the user to enumerate packages. Risk triggers request controller review; they do not themselves authorize a freeze.",
       "OpenClaw/Hermes controllers may use service settings and AI job tools for server-side administration; the phone app cannot change the locked summary tone.",
       "OpenClaw/Hermes controllers may sync their persona or subordinate relationship so summaries, supervision, and reminders keep the same voice without overriding safety, privacy, schema, or device capability rules.",
@@ -111,6 +126,71 @@ export function createLiveDashboardMcpServer(): McpServer {
     inputSchema: InstalledAppsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(() => getDeviceInstalledApps(args.device_id)));
+
+  server.registerTool("live_dashboard.get_accounting_bills", {
+    title: "Get processed AutoAccounting bills",
+    description: "Ask an online Android integration to read AutoAccounting's completed parent bills (Edited/Synced), cache them idempotently, then query the bounded server copy. Recognition rules and pending Wait2Edit data are never reproduced here.",
+    inputSchema: AccountingBillsSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(async () => {
+    const refresh = args.refresh_from_android === false
+      ? { ok: true, status: "skipped" }
+      : await requestAccountingSync({ deviceId: args.device_id, start: args.start, end: args.end });
+    return {
+      refresh,
+      ...queryAccountingBills({
+        start: args.start,
+        end: args.end,
+        deviceId: args.device_id,
+        transactionTypes: args.transaction_types,
+        category: args.category,
+        keyword: args.keyword,
+        limit: args.limit,
+      }),
+    };
+  }));
+
+  server.registerTool("live_dashboard.get_coyote_status", {
+    title: "Get Android Coyote status",
+    description: "Return Android integration connectivity, explicit remote-control grant, channel strengths and limits, battery, waveform, and output state. This never changes the device.",
+    inputSchema: CoyoteStatusSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(() => getCoyoteStatuses(args.device_id)));
+
+  server.registerTool("live_dashboard.coyote_start", {
+    title: "Start Coyote channel",
+    description: "Start one Android-connected Coyote electrostimulation channel with a built-in waveform. Requires the user's live remote-control grant; cold-start strength is capped at 10 and then by the user's local channel limit.",
+    inputSchema: CoyoteStartSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, { action: "start", ...args })));
+
+  server.registerTool("live_dashboard.coyote_adjust", {
+    title: "Adjust Coyote strength",
+    description: "Relatively adjust one running Coyote channel by at most plus or minus 10. Requires the user's live remote-control grant and remains bounded by local channel limits.",
+    inputSchema: CoyoteAdjustSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, { action: "adjust", ...args })));
+
+  server.registerTool("live_dashboard.coyote_change_wave", {
+    title: "Change Coyote waveform",
+    description: "Change the waveform of one already running Coyote channel without changing strength. Requires the user's live remote-control grant.",
+    inputSchema: CoyoteChangeWaveSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, { action: "change_wave", ...args })));
+
+  server.registerTool("live_dashboard.coyote_stop", {
+    title: "Stop Coyote output",
+    description: "Stop one Coyote channel or both channels. Stop remains available even when the user has disabled remote starts and adjustments.",
+    inputSchema: CoyoteStopSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, { action: "stop", ...args })));
+
+  server.registerTool("live_dashboard.coyote_emergency_stop", {
+    title: "Emergency stop Coyote",
+    description: "Immediately force both Coyote channels to zero and clear active waveforms. Always use this instead of a start-strength-zero workaround.",
+    inputSchema: CoyoteEmergencyStopSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(() => executeCoyoteCommand(args.device_id, { action: "emergency_stop" })));
 
   server.registerTool("live_dashboard.capture_device_screenshot", {
     title: "Capture device screenshot",

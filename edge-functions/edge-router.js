@@ -177,7 +177,7 @@ export default {
         const auth = request.headers.get("authorization") || "";
         const role = url.searchParams.get("role") || "";
         // Device token: check whitelist at edge
-        if (role === "device") {
+        if (role === "device" || role === "integration") {
           if (await isDeviceTokenRequest(request, secret, deviceTokens, deviceTokenHashes)) {
             return passthrough(request, origin, clientIp, cors);
           }
@@ -194,7 +194,7 @@ export default {
           return jsonResponse({ error: "需要访客令牌" }, 403, cors);
         }
         ignoreRequestBody(request);
-        return jsonResponse({ error: "需要 role 参数 (device/viewer)" }, 400, cors);
+        return jsonResponse({ error: "需要 role 参数 (device/integration/viewer)" }, 400, cors);
       }
 
       // 访客写入端点在边缘先验 token 和限流，挡掉无效脚本请求再回源。
@@ -733,6 +733,7 @@ function parseDeviceTokenList(raw) {
 
 function isDeviceEndpoint(p, method) {
   if (method === "POST" && p.startsWith("/api/device-screenshots/")) return true;
+  if (method === "POST" && p === "/api/accounting/bills") return true;
   if (method === "GET" && (p === "/api/messages/public" || p === "/api/health-data" || p === "/api/location")) return true;
   if (p === "/api/summary-settings") return true;
   if (p === "/api/ai-jobs") return true;

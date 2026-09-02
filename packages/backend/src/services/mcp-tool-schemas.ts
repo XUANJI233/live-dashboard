@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { COYOTE_WAVEFORMS } from "./coyote-control";
 
 export const DateRangeSchema = z.object({
   start: z.string().describe("Inclusive ISO timestamp, for reading history only."),
@@ -19,6 +20,67 @@ export const FrozenListSchema = z.object({
 export const InstalledAppsSchema = z.object({
   device_id: z.string().min(1).max(160),
 });
+
+export const AccountingBillsSchema = z.object({
+  start: z.string().describe("Inclusive ISO timestamp for processed AutoAccounting bills."),
+  end: z.string().describe("Exclusive ISO timestamp for processed AutoAccounting bills."),
+  device_id: z.string().min(1).max(160).optional(),
+  transaction_types: z.array(z.enum([
+    "Expend",
+    "ExpendReimbursement",
+    "ExpendLending",
+    "ExpendRepayment",
+    "Income",
+    "IncomeLending",
+    "IncomeRepayment",
+    "IncomeReimbursement",
+    "IncomeRefund",
+    "Transfer",
+  ])).max(10).optional(),
+  category: z.string().max(100).optional(),
+  keyword: z.string().max(200).optional(),
+  limit: z.number().int().min(1).max(200).optional(),
+  refresh_from_android: z.boolean().optional()
+    .describe("True by default. Ask the online Android integration to read AutoAccounting's completed bills before querying the server cache."),
+});
+
+const CoyoteDeviceSchema = z.object({
+  device_id: z.string().min(1).max(160),
+});
+
+const CoyoteChannelSchema = z.enum(["A", "B"]);
+const CoyoteWaveformSchema = z.enum(COYOTE_WAVEFORMS);
+
+export const CoyoteStatusSchema = z.object({
+  device_id: z.string().min(1).max(160).optional(),
+});
+
+export const CoyoteStartSchema = CoyoteDeviceSchema.extend({
+  channel: CoyoteChannelSchema,
+  strength: z.number().int().min(0).max(10)
+    .describe("Cold-start strength. Hard-limited to 10 before the Android user's own channel limit is applied."),
+  waveform: CoyoteWaveformSchema,
+  loop: z.boolean().optional(),
+});
+
+export const CoyoteAdjustSchema = CoyoteDeviceSchema.extend({
+  channel: CoyoteChannelSchema,
+  delta: z.number().int().min(-10).max(10)
+    .describe("Relative strength change. Each call is hard-limited to plus or minus 10."),
+});
+
+export const CoyoteChangeWaveSchema = CoyoteDeviceSchema.extend({
+  channel: CoyoteChannelSchema,
+  waveform: CoyoteWaveformSchema,
+  loop: z.boolean().optional(),
+});
+
+export const CoyoteStopSchema = CoyoteDeviceSchema.extend({
+  channel: CoyoteChannelSchema.optional()
+    .describe("Omit to stop both channels."),
+});
+
+export const CoyoteEmergencyStopSchema = CoyoteDeviceSchema;
 
 export const CaptureScreenshotSchema = z.object({
   device_id: z.string().min(1).max(160),

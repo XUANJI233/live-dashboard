@@ -3,6 +3,7 @@ import { sendJson } from "./realtime-socket-hub";
 import { parseJson } from "./message-protocol";
 import { handleDeviceWsMessage } from "./realtime-device-ws-handlers";
 import { handleViewerWsMessage } from "./realtime-viewer-ws-handlers";
+import { handleAndroidIntegrationWsMessage } from "./android-integration-control";
 import type { WsData } from "./realtime-types";
 
 export function handleRealtimeWsMessage(ws: ServerWebSocket<WsData>, raw: string | Buffer): void {
@@ -14,6 +15,11 @@ export function handleRealtimeWsMessage(ws: ServerWebSocket<WsData>, raw: string
 
   if (ws.data.role === "viewer") {
     handleViewerWsMessage(ws, data);
+    return;
+  }
+
+  if (ws.data.role === "integration") {
+    handleAndroidIntegrationWsMessage(ws, data);
     return;
   }
 

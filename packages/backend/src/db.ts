@@ -175,6 +175,47 @@ db.run(`
   ON health_records(device_id, recorded_at)
 `);
 
+// ── Processed AutoAccounting bills ──
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS accounting_bills (
+    device_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_bill_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    currency_code TEXT NOT NULL,
+    money REAL NOT NULL,
+    fee REAL NOT NULL DEFAULT 0,
+    occurred_at TEXT NOT NULL,
+    shop_name TEXT NOT NULL DEFAULT '',
+    shop_item TEXT NOT NULL DEFAULT '',
+    category_name TEXT NOT NULL DEFAULT '',
+    book_name TEXT NOT NULL DEFAULT '',
+    account_name_from TEXT NOT NULL DEFAULT '',
+    account_name_to TEXT NOT NULL DEFAULT '',
+    app TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL,
+    remark TEXT NOT NULL DEFAULT '',
+    auto INTEGER NOT NULL DEFAULT 0,
+    rule_name TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '[]',
+    flag INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(device_id, source, source_bill_id)
+  )
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_accounting_bills_occurred
+  ON accounting_bills(occurred_at DESC)
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_accounting_bills_device_occurred
+  ON accounting_bills(device_id, occurred_at DESC)
+`);
+
 // ── Location records table ──
 
 db.run(`

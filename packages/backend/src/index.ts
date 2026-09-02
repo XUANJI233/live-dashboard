@@ -10,6 +10,7 @@ import { handleHealthWebhook } from "./routes/health-webhook";
 import { handleConfig } from "./routes/config";
 import { handleSupervisionAck } from "./routes/supervision-ack";
 import { handleDeviceScreenshotUpload } from "./routes/device-screenshot";
+import { handleAccountingBillsUpload } from "./routes/accounting-bills";
 import { authenticateToken } from "./middleware/auth";
 import { handleAiJobQuery, handleAiJobSubmit } from "./routes/ai-jobs";
 import {
@@ -246,6 +247,8 @@ const server = Bun.serve<WsData>({
           req,
           pathname.slice("/api/device-screenshots/".length),
         );
+      } else if (pathname === "/api/accounting/bills" && req.method === "POST") {
+        response = await handleAccountingBillsUpload(req);
       } else if (pathname === "/api/current" && req.method === "GET") {
         response = handleCurrent(req, clientIp, req.headers.get("user-agent") || undefined);
         response = noStore(response, ["current", "realtime", "status"]);

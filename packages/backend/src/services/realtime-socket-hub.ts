@@ -12,6 +12,7 @@ export function sendJson(ws: ServerWebSocket<WsData>, payload: unknown): void {
 
 class RealtimeSocketHub {
   private readonly deviceSockets = new Map<string, ServerWebSocket<WsData>>();
+  private readonly integrationSockets = new Map<string, ServerWebSocket<WsData>>();
   private readonly viewerSockets = new Map<string, Set<ServerWebSocket<WsData>>>();
   private readonly allViewerSockets = new Set<ServerWebSocket<WsData>>();
   private readonly devicePongTimes = new Map<string, number>();
@@ -21,6 +22,15 @@ class RealtimeSocketHub {
       const now = Date.now();
       for (const [deviceId, ws] of this.deviceSockets) {
         const lastPong = this.devicePongTimes.get(deviceId) ?? 0;
+        if (now - lastPong > PONG_TIMEOUT_MS) {
+          ws.close(4001, "pong timeout");
+          continue;
+        }
+        try { ws.ping(); } catch { /* socket may already be closing */ }
+      }
+      for (const [deviceId, ws] of this.integrationSockets) {
+        const key = integrationPongKey(deviceId);
+        const lastPong = this.devicePongTimes.get(key) ?? 0;
         if (now - lastPong > PONG_TIMEOUT_MS) {
           ws.close(4001, "pong timeout");
           continue;
@@ -61,10 +71,42 @@ class RealtimeSocketHub {
       this.deviceSockets.delete(deviceId);
     }
     this.devicePongTimes.delete(deviceId);
+    const integration = this.integrationSockets.get(deviceId);
+    if (integration) {
+      try { integration.close(code, reason); } catch { /* ignore */ }
+      this.integrationSockets.delete(deviceId);
+    }
+    this.devicePongTimes.delete(integrationPongKey(deviceId));
   }
 
   getDeviceSocket(deviceId: string): ServerWebSocket<WsData> | undefined {
     return this.deviceSockets.get(deviceId);
+  }
+
+  registerIntegration(ws: ServerWebSocket<WsData>): void {
+    const previous = this.integrationSockets.get(ws.data.id);
+    if (previous && previous !== ws) {
+      try { previous.close(4000, "replaced by new integration socket"); } catch { /* ignore */ }
+    }
+    this.integrationSockets.set(ws.data.id, ws);
+    this.devicePongTimes.set(integrationPongKey(ws.data.id), Date.now());
+  }
+
+  markIntegrationPong(ws: ServerWebSocket<WsData>): void {
+    this.devicePongTimes.set(integrationPongKey(ws.data.id), Date.now());
+  }
+
+  removeIntegration(ws: ServerWebSocket<WsData>): void {
+    if (this.integrationSockets.get(ws.data.id) === ws) this.integrationSockets.delete(ws.data.id);
+    this.devicePongTimes.delete(integrationPongKey(ws.data.id));
+  }
+
+  getIntegrationSocket(deviceId: string): ServerWebSocket<WsData> | undefined {
+    return this.integrationSockets.get(deviceId);
+  }
+
+  onlineIntegrationDeviceIds(): string[] {
+    return Array.from(this.integrationSockets.keys());
   }
 
   onlineMessageDeviceIds(): string[] {
@@ -152,3 +194,7 @@ class RealtimeSocketHub {
 }
 
 export const realtimeSocketHub = new RealtimeSocketHub();
+
+function integrationPongKey(deviceId: string): string {
+  return `integration:${deviceId}`;
+}

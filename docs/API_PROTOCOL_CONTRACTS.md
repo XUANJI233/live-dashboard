@@ -56,11 +56,12 @@
 
 ## WebSocket 入口
 
-- 路径：`/api/ws?role=device` 或 `/api/ws?role=viewer`。
-- 设备 WS 必须带 `Authorization: Bearer <device_token>`。
+- 路径：`/api/ws?role=device`、`/api/ws?role=integration` 或 `/api/ws?role=viewer`。
+- 设备与 Android 集成 WS 必须带 `Authorization: Bearer <device_token>`；`integration` 只接受平台为 `android` 的设备 Token，并与 `device` 使用独立 socket 槽位，不能替换 LSPosed 主连接。
 - 访客 WS 必须带 viewer token，可由 Edge 验证后签名回源，也可源站直接验证。
 - 服务端连接 ack：
   - 设备：`{ "type": "ack", "status": "connected", "role": "device", "device_id": "..." }`
+  - Android 集成：`{ "type": "ack", "status": "connected", "role": "integration", "device_id": "..." }`
   - 访客：`{ "type": "ack", "status": "connected", "role": "viewer", "viewer_id": "..." }`
 
 ## AI 设置和 Prompt
@@ -304,6 +305,46 @@ HTTP ack：
 - receipt 成功：`{ "received": true, "command_id": "...", "request_id": "..." }`
 - result 成功：`{ "received": true, "command_id": "...", "request_id": "...", "result_id": "...", "duplicate": false }`
 
+## AutoAccounting 完成账单同步
+
+Android 只通过 AutoAccounting 现有本机接口 `http://127.0.0.1:52045/bill/range` 读取账单；不复制其 Hook、OCR、规则或数据库实现。上传端点为 `POST /api/accounting/bills`，必须使用平台为 `android` 的设备 Bearer token。
+
+```json
+{
+  "source": "autoaccounting",
+  "bills": [
+    {
+      "source_bill_id": "123",
+      "type": "Expend",
+      "currency_code": "CNY",
+      "money": 28.5,
+      "fee": 0,
+      "occurred_at": "2026-09-01T08:00:00.000Z",
+      "shop_name": "示例商户",
+      "shop_item": "示例商品",
+      "category_name": "餐饮",
+      "book_name": "默认账本",
+      "account_name_from": "余额",
+      "account_name_to": "",
+      "app": "微信",
+      "channel": "支付",
+      "state": "Edited",
+      "remark": "",
+      "auto": true,
+      "rule_name": "规则名",
+      "tags": [],
+      "flag": 0,
+      "group_id": -1
+    }
+  ]
+}
+```
+
+- 只接受 `state="Edited"` 或 `state="Synced"` 且 `group_id=-1` 的完成态主账单；`Wait2Edit` 与去重子账单必须跳过。
+- 幂等键为 `device_id + source + source_bill_id`；同一来源账单再次上传会覆盖其已编辑字段，不产生重复记录。
+- 单批最多 500 条。外部自由文本需在 Android 与服务端两次清洗并限制长度。
+- MCP 查询可先通过 `integration` WS 事件式请求 Android 刷新指定时间范围；Android 不在线时返回服务端已有缓存与明确的 `refresh.status="offline"`，不得伪装成实时结果。
+
 ## 设备状态上报
 
 HTTP `/api/report` 与 WS `device_status.payload` 共享上报主体核心字段：
@@ -373,6 +414,13 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
   - `live_dashboard.get_device_timeline`
   - `live_dashboard.get_device_frozen_list`
   - `live_dashboard.get_device_installed_apps`
+  - `live_dashboard.get_accounting_bills`
+  - `live_dashboard.get_coyote_status`
+  - `live_dashboard.coyote_start`
+  - `live_dashboard.coyote_adjust`
+  - `live_dashboard.coyote_change_wave`
+  - `live_dashboard.coyote_stop`
+  - `live_dashboard.coyote_emergency_stop`
   - `live_dashboard.send_device_commands`
   - `live_dashboard.set_supervision_policy`
   - `live_dashboard.get_command_status`
@@ -388,6 +436,8 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
   - `live_dashboard.run_supervision_check`
 - `live_dashboard.send_device_commands` 只用于一次性设备动作：提醒文本、震动、息屏、即时冻结/解冻；服务端会按设备显式上报能力裁剪。
 - `live_dashboard.capture_device_screenshot` 用于按需抓取 Android LSP 当前画面；默认事件式等待上传，超时返回 `screenshot_id`。`live_dashboard.get_device_screenshot` 用该 ID 取回一次图片。
+- `live_dashboard.get_accounting_bills` 只查询 AutoAccounting 已处理完成并同步到服务端的主账单；默认先通过 Android `integration` WS 请求指定时间范围的事件式刷新。返回按币种分开的收入、支出、退款、转账和数量汇总，禁止跨币种直接相加。
+- 郊狼工具只作用于 Android 集成当前已连接的 Coyote V2/V3：`coyote_start` 冷启动强度上限 10，`coyote_adjust` 单步上限 ±10，且 Android 会再次按用户 A/B 通道上限裁剪；`coyote_change_wave` 不改变强度。上述三项需要 Android 本地显式开启远程控制；`coyote_stop` 与 `coyote_emergency_stop` 不受启动授权限制，紧急停止会立即归零并清空波形。
 - `live_dashboard.set_supervision_policy` 是外部 AI 控制器编写持久监督策略的唯一接口：AI 根据当前目标和证据主动创建、修改或清空复核触发规则、触发分钟数和明确的离线应用限时；不要让部署者预填固定名单，也不要用于一次性提醒、一次性冻结/解冻或普通聊天消息。
   - 输入必须是完整快照：`policy_owner`、`strategy_reason`、`review_interval_minutes`、`risk_app_regex`、`risk_trigger_minutes`、`app_time_limits` 缺一不可。
   - `policy_owner` 必须与已启用的控制器 persona 一致（`openclaw` / `hermes` / `custom`）；Live 冷备 AI 接管时服务端内部记录为 `live_ai`，不冒充外部控制器。

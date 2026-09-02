@@ -1,6 +1,6 @@
 import type { DeviceInfo } from "../types";
 
-export type RealtimeRole = "viewer" | "device";
+export type RealtimeRole = "viewer" | "device" | "integration";
 
 export interface WsData {
   role: RealtimeRole;
