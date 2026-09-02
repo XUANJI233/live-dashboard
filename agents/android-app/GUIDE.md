@@ -53,6 +53,15 @@
 
 > 若设备不支持后台读取，APP 仍会在打开时自动执行前台同步；不会伪装成“后台已开启”。
 
+### 设备集成流程（郊狼 / AutoAccounting）
+
+1. 设置页“设备”分段由用户显式启动 `AndroidIntegrationService` 前台服务；通知持续显示并提供郊狼紧急停止入口。
+2. 集成服务使用独立 `/api/ws?role=integration` 连接，不占用 `role=device`，因此不会替换 LSPosed `system_server` 的主设备连接。
+3. 郊狼通过原生 BLE 支持 Coyote V2（`D-LAB ESTIM`）与 V3（`47L121`）。协议常量、数据包和内置波形参考 MIT 许可的 0xNuller/DG-Kit；细节见 `THIRD_PARTY_NOTICES.md`。
+4. MCP 启动/调整/切波形默认拒绝；用户必须在 Android 当前连接上显式开启远程控制。Android 执行边界固定再次应用冷启动 ≤10、单步调整 ≤10 和用户 A/B 通道上限。停止/紧急停止不受启动授权限制。
+5. AutoAccounting 只从其现有本机 `http://127.0.0.1:52045/bill/range` 读取 `Edited`/`Synced`、`groupId=-1` 的完成态主账单；不访问或复制 Hook/OCR/规则实现。
+6. 账单按设备、来源、来源账单 ID 幂等上传到 `POST /api/accounting/bills`。MCP 查询默认先通过集成 WS 请求 Android 刷新指定时间范围；Android 离线时明确返回缓存状态。
+
 ## 常见问题
 
 | 症状 | 原因 | 解决 |
@@ -83,6 +92,8 @@
 | GET/POST | `/api/ai-config` | 读取/加密保存 AI 端点、Key 和模型 | SettingsHubScreen |
 | POST | `/api/ai-config/test` | 加密测试 AI 连接并获取模型列表，不保存 | SettingsHubScreen |
 | GET | `/api/health` | 连接测试 | MainActivity |
+| WS | `/api/ws?role=integration` | 独立郊狼控制与账单刷新命令通道 | AndroidIntegrationService |
+| POST | `/api/accounting/bills` | 上传 AutoAccounting 完成态账单 | AccountingSyncCoordinator |
 
 ## DataStore 配置键
 
@@ -98,3 +109,5 @@
 | `upload_vpn_status` | Boolean | `false` | 是否上传 VPN 连接状态 |
 | `upload_input_state` | Boolean | `false` | 是否上传输入状态布尔值 |
 | `token`（加密） | String | `null` | 认证令牌（AES256-GCM） |
+
+设备集成的本地授权、A/B 通道上限和账单同步状态使用独立 `android_integrations` SharedPreferences，避免把高频 BLE 状态塞入通用 DataStore。布尔值仍为显式 `true` / `false`。

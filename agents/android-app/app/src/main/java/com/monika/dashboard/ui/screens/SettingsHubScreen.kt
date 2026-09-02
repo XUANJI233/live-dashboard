@@ -91,7 +91,7 @@ fun SettingsHubScreen(
         ) {
             CompactPageHeader(
                 title = "设置",
-                subtitle = "配置、健康、总结和诊断集中管理。",
+                subtitle = "配置、健康、总结、设备和诊断集中管理。",
                 action = {
                     TextButton(onClick = { showLogs = true }) {
                         Text("日志")
@@ -99,7 +99,7 @@ fun SettingsHubScreen(
                 },
             )
             SegmentedControl(
-                options = listOf("配置", "健康", "总结", "诊断"),
+                options = listOf("配置", "健康", "总结", "设备", "诊断"),
                 selectedIndex = selected,
                 onSelect = selectTab,
             )
@@ -109,7 +109,8 @@ fun SettingsHubScreen(
             when (selected) {
                 1 -> HealthScreen(settings = settings, showHeader = false)
                 2 -> SummarySettingsPane(settings)
-                3 -> StatusScreen(showHeader = false, showUploadStatus = false)
+                3 -> DeviceIntegrationsScreen()
+                4 -> StatusScreen(showHeader = false, showUploadStatus = false)
                 else -> SetupScreen(settings = settings, showHeader = false)
             }
         }

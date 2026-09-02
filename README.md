@@ -24,6 +24,8 @@ Android 客户端是一个 Kotlin + Jetpack Compose 应用，通过 Health Conne
 | **电量上报** | 自动上报电池电量和充电状态 |
 | **连接状态检测** | 每 5 秒测试服务器连接，顶栏实时显示连接状态 |
 | **诊断日志** | APP 内 DebugLog 页面查看同步日志，方便排查问题 |
+| **郊狼控制** | 通过原生 BLE 控制 DG-Lab Coyote V2/V3；本地授权后可由服务端 MCP 安全控制 |
+| **AutoAccounting 同步** | 读取 AutoAccounting 已完成的主账单并幂等同步到服务端供 MCP 查询，不复制识别规则 |
 
 ### 技术栈
 

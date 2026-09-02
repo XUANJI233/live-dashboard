@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="integration_service_title">设备集成服务</string>
+    <string name="integration_service_running">运行中</string>
+    <string name="integration_service_stopped">已停止</string>
+    <string name="integration_service_body">通过独立设备 WebSocket 保持 AutoAccounting 查询和郊狼 MCP 控制在线；不会替换 LSPosed 的设备连接。</string>
+    <string name="integration_service_start">启动服务</string>
+    <string name="integration_service_stop">停止服务</string>
+    <string name="integration_service_starting">设备集成服务正在启动</string>
+    <string name="integration_notification_title">Live Dashboard 设备集成</string>
+    <string name="integration_notification_coyote_connected">郊狼 %1$s 已连接</string>
+    <string name="integration_notification_coyote_connecting">正在连接郊狼</string>
+    <string name="integration_notification_online">AutoAccounting 与郊狼集成在线</string>
+    <string name="integration_notification_emergency_stop">紧急停止</string>
+    <string name="integration_notification_disconnect">断开郊狼</string>
+    <string name="integration_notification_channel_description">保持 AutoAccounting 查询与郊狼控制连接</string>
+    <string name="integration_bluetooth_permission_denied">未获得蓝牙权限，无法扫描郊狼</string>
+    <string name="coyote_title">郊狼控制</string>
+    <string name="coyote_connected">已连接</string>
+    <string name="coyote_connecting">连接中</string>
+    <string name="coyote_disconnected">未连接</string>
+    <string name="coyote_safety_body">支持郊狼 V2/V3。冷启动强度固定不超过 10，单次调整不超过 ±10；本地通道上限在 Android 执行前再次裁剪。</string>
+    <string name="coyote_scan">扫描郊狼</string>
+    <string name="coyote_scanning">扫描中</string>
+    <string name="coyote_disconnect">断开</string>
+    <string name="coyote_state_format">%1$s · 电量 %2$s · A %3$d · B %4$d</string>
+    <string name="coyote_remote_control_title">允许 MCP 控制郊狼</string>
+    <string name="coyote_remote_control_body">默认关闭。开启后 MCP 才能启动、调节或切换波形；停止和紧急停止始终可用。</string>
+    <string name="coyote_limit_a">A 通道上限</string>
+    <string name="coyote_limit_b">B 通道上限</string>
+    <string name="coyote_save_limits">保存通道上限</string>
+    <string name="coyote_waveform_format">波形：%1$s</string>
+    <string name="coyote_channel_a">A 通道</string>
+    <string name="coyote_channel_b">B 通道</string>
+    <string name="coyote_emergency_stop">紧急停止全部输出</string>
+    <string name="coyote_change_wave">波形</string>
+    <string name="coyote_stop">停止</string>
+    <string name="accounting_title">AutoAccounting 账单</string>
+    <string name="accounting_body">只读取 AutoAccounting 已处理完成的主账单（Edited/Synced），不复制或读取它的识别规则；数据通过设备 Token 幂等同步到服务器。</string>
+    <string name="accounting_sync_now">同步最近一年账单</string>
+    <string name="accounting_syncing">同步中</string>
+    <string name="accounting_sync_success">已同步 %1$d 条，跳过 %2$d 条</string>
+</resources>
