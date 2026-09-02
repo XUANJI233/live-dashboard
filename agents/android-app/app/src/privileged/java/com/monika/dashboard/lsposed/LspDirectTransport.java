@@ -151,6 +151,45 @@ final class LspDirectTransport {
         }
     }
 
+    boolean postScreenshot(
+            String baseUrl,
+            String token,
+            String screenshotId,
+            String commandId,
+            LspCapturedScreenshot screenshot) {
+        if (screenshot == null || screenshot.bytes == null || screenshot.bytes.length == 0) return false;
+        HttpURLConnection connection = null;
+        try {
+            URL url = endpoint(baseUrl, "/api/device-screenshots/" + screenshotId);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(10_000);
+            connection.setReadTimeout(10_000);
+            connection.setRequestMethod("POST");
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Authorization", "Bearer " + token);
+            connection.setRequestProperty("Content-Type", screenshot.mimeType);
+            connection.setRequestProperty("X-Command-Id", commandId);
+            connection.setRequestProperty("X-Screenshot-Width", String.valueOf(screenshot.width));
+            connection.setRequestProperty("X-Screenshot-Height", String.valueOf(screenshot.height));
+            connection.setFixedLengthStreamingMode(screenshot.bytes.length);
+            connection.getOutputStream().write(screenshot.bytes);
+            int code = connection.getResponseCode();
+            if (code < 200 || code >= 300) {
+                host.logDebug("screenshot upload HTTP " + code);
+                return false;
+            }
+            JSONObject response = new JSONObject(readUtf8(connection.getInputStream()));
+            boolean received = strictBoolean(response, "received", false);
+            if (!received) host.logDebug("screenshot upload not confirmed");
+            return received;
+        } catch (Throwable t) {
+            host.logDebug("screenshot upload failed: " + t.getClass().getSimpleName());
+            return false;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
     private boolean postReportFallback(String serverUrl, String token, String body) {
         HttpURLConnection connection = null;
         try {

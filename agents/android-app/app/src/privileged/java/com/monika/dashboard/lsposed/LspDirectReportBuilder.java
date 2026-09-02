@@ -139,6 +139,7 @@ final class LspDirectReportBuilder {
             capabilities.put("unfreeze", true);
             capabilities.put("vibrate", true);
             capabilities.put("screen_off", deviceControlFeature.screenOffSupported());
+            capabilities.put("screenshot", true);
             capabilities.put("say", true);
             capabilities.put("risk_app_monitor", true);
             capabilities.put("app_time_limit", true);

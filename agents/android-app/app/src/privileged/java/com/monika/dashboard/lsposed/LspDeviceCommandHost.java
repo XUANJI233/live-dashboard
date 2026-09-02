@@ -28,9 +28,38 @@ interface LspDeviceCommandHost {
     boolean postSayNotification(String commandId, String text);
     boolean vibrate(long durationMs);
     boolean screenOff();
+    LspScreenshotResult captureAndUploadScreenshot(
+            String commandId,
+            String screenshotId,
+            int maxWidth,
+            int jpegQuality);
     void requestDirectUpload();
     boolean applySupervisionPolicy(JSONObject payload);
     void finishPendingSupervisionReview();
+}
+
+final class LspScreenshotResult {
+    final String status;
+    final String reason;
+    final String screenshotId;
+    final int width;
+    final int height;
+    final int byteCount;
+
+    LspScreenshotResult(
+            String status,
+            String reason,
+            String screenshotId,
+            int width,
+            int height,
+            int byteCount) {
+        this.status = status;
+        this.reason = reason;
+        this.screenshotId = screenshotId;
+        this.width = width;
+        this.height = height;
+        this.byteCount = byteCount;
+    }
 }
 
 final class LspInstalledApp {

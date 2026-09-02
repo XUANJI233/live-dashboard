@@ -247,7 +247,6 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                             supervisionIncludeInstalledApps = supervisionIncludeInstalledApps,
                             supervisionHeuristicTriggers = supervisionHeuristicTriggers,
                             supervisionCheckMode = "hourly",
-                            supervisionCheckIntervalMinutes = supervisionCheckIntervalMinutes.toIntervalSetting(60),
                             supervisionBlacklistMinutes = supervisionBlacklistMinutes.toMinuteSetting(20),
                             supervisionTargetMinMinutes = supervisionTargetMinMinutes.toMinuteSetting(25),
                             supervisionVibrate = supervisionVibrate,
@@ -578,16 +577,12 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                 },
             )
             if (supervisionEnabled) {
-                OutlinedTextField(
-                    value = supervisionCheckIntervalMinutes,
-                    onValueChange = {
-                        markSummaryEdited()
-                        supervisionCheckIntervalMinutes = it.filter { ch -> ch.isDigit() }.take(3)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !loading,
-                    label = { Text("复核间隔分钟") },
-                    singleLine = true,
+                Text(
+                    text = stringResource(
+                        R.string.supervision_review_interval_controller_managed,
+                        supervisionCheckIntervalMinutes,
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
                 )
                 com.monika.dashboard.ui.components.PreferenceSwitchRow(
                     checked = supervisionIncludeInstalledApps,
@@ -938,9 +933,6 @@ private fun normalizeClockInput(value: String): String =
 
 private fun String.toMinuteSetting(fallback: Int): Int =
     toIntOrNull()?.coerceIn(1, 55) ?: fallback
-
-private fun String.toIntervalSetting(fallback: Int): Int =
-    toIntOrNull()?.coerceIn(30, 240) ?: fallback
 
 private fun formatClock(value: String): String =
     runCatching {

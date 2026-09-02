@@ -3,4 +3,5 @@
     <string name="app_name">Monika Now</string>
     <string name="accessibility_service_description">读取当前应用窗口标题，用于上报正在使用的应用、页面标题或视频页面标题。</string>
     <string name="supervision_risk_threshold_controller_managed">风险复核阈值由 AI 控制器策略管理：%1$s 分钟</string>
+    <string name="supervision_review_interval_controller_managed">Hermes 自动复核间隔：%1$s 分钟（由 AI 策略管理）</string>
 </resources>

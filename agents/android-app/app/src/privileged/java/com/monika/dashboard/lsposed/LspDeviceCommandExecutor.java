@@ -32,6 +32,9 @@ final class LspDeviceCommandExecutor {
         if (LspDeviceCommandProtocol.KIND_SUPERVISION_POLICY.equals(kind)) {
             return executePolicy(commandId, requestId, resultId, payload, actions);
         }
+        if (LspDeviceCommandProtocol.KIND_SCREENSHOT.equals(kind)) {
+            return executeScreenshot(commandId, requestId, resultId, payload, actions);
+        }
         if (!LspDeviceCommandProtocol.KIND_SUPERVISION.equals(kind)) {
             return result(commandId, requestId, resultId, "unsupported", actions, host.frozenState(System.currentTimeMillis()), "unsupported_command_kind");
         }
@@ -92,6 +95,43 @@ final class LspDeviceCommandExecutor {
         }
         actions.put(action("supervision_policy", "failed", "policy_apply_failed"));
         return result(commandId, requestId, resultId, "failed", actions, host.frozenState(System.currentTimeMillis()), "policy_apply_failed");
+    }
+
+    private JSONObject executeScreenshot(
+            String commandId,
+            String requestId,
+            String resultId,
+            JSONObject payload,
+            JSONArray actions) {
+        JSONObject request = payload.optJSONObject("screenshot");
+        String screenshotId = request != null
+                ? LspDeviceCommandProtocol.cleanId(request.optString("screenshot_id", ""))
+                : "";
+        if (screenshotId.length() == 0) {
+            actions.put(action("screenshot", "failed", "screenshot_id_required"));
+            return result(commandId, requestId, resultId, "failed", actions,
+                    host.frozenState(System.currentTimeMillis()), "screenshot_id_required");
+        }
+        LspScreenshotResult captured = host.captureAndUploadScreenshot(
+                commandId,
+                screenshotId,
+                request.optInt("max_width", 720),
+                request.optInt("jpeg_quality", 65));
+        String status = captured != null ? captured.status : "failed";
+        String reason = captured != null ? captured.reason : "screenshot_capture_failed";
+        JSONObject action = action("screenshot", status, reason);
+        LspDeviceCommandProtocol.put(action, "screenshot_id", screenshotId);
+        if (captured != null) {
+            LspDeviceCommandProtocol.put(action, "width", captured.width);
+            LspDeviceCommandProtocol.put(action, "height", captured.height);
+            LspDeviceCommandProtocol.put(action, "bytes", captured.byteCount);
+        }
+        actions.put(action);
+        return result(commandId, requestId, resultId,
+                "applied".equals(status) ? "applied" : "failed",
+                actions,
+                host.frozenState(System.currentTimeMillis()),
+                "applied".equals(status) ? "" : reason);
     }
 
     private Counts applyUnfreeze(JSONArray commands, String reason, JSONArray actions) {

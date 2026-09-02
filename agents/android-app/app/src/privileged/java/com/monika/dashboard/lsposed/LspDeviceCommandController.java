@@ -7,6 +7,8 @@ import org.json.JSONObject;
 import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 
 final class LspDeviceCommandController {
     private static final int MAX_PENDING_EVENTS = 16;
@@ -15,6 +17,7 @@ final class LspDeviceCommandController {
 
     private final LspDeviceCommandHost host;
     private final LspDeviceCommandExecutor executor;
+    private final Executor screenshotExecutor;
     private final ConcurrentLinkedQueue<String> pendingEvents = new ConcurrentLinkedQueue<>();
     private final ConcurrentHashMap<String, String> completedResults = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> inFlightCommands = new ConcurrentHashMap<>();
@@ -22,8 +25,17 @@ final class LspDeviceCommandController {
     private volatile boolean httpFallbackScheduled = false;
 
     LspDeviceCommandController(LspDeviceCommandHost host) {
+        this(host, Executors.newSingleThreadExecutor(task -> {
+            Thread thread = new Thread(task, "monika-screenshot-command");
+            thread.setDaemon(true);
+            return thread;
+        }));
+    }
+
+    LspDeviceCommandController(LspDeviceCommandHost host, Executor screenshotExecutor) {
         this.host = host;
         this.executor = new LspDeviceCommandExecutor(host);
+        this.screenshotExecutor = screenshotExecutor;
     }
 
     void flush(String serverUrl, String token) {
@@ -76,9 +88,19 @@ final class LspDeviceCommandController {
         if (command == null || !LspDeviceCommandProtocol.TYPE_COMMAND.equals(command.optString("type", ""))) return false;
         Handler handler = host.uploadHandler();
         Runnable task = () -> processCommand(command, source);
+        if (isScreenshotCommand(command)) {
+            screenshotExecutor.execute(task);
+            return true;
+        }
         if (handler != null) handler.post(task);
         else task.run();
         return true;
+    }
+
+    private boolean isScreenshotCommand(JSONObject command) {
+        JSONObject payload = command.optJSONObject("payload");
+        return payload != null
+                && LspDeviceCommandProtocol.KIND_SCREENSHOT.equals(payload.optString("kind", ""));
     }
 
     private void processCommand(JSONObject command, String source) {

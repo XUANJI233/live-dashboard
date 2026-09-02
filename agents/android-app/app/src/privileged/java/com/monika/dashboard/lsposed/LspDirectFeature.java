@@ -24,6 +24,7 @@ final class LspDirectFeature {
     private final LspDirectConfig config = new LspDirectConfig();
     private final LspForegroundFeature foregroundFeature;
     private final LspDeviceControlFeature deviceControlFeature;
+    private final LspScreenshotController screenshotController;
     private final Host host;
 
     private final LspDirectReportBuilder reportBuilder;
@@ -46,6 +47,8 @@ final class LspDirectFeature {
         this.foregroundFeature = foregroundFeature;
         this.deviceControlFeature = deviceControlFeature;
         this.host = host;
+        LspShellScreenshotSource screenshotSource = new LspShellScreenshotSource(host::logDebug);
+        screenshotController = new LspScreenshotController(screenshotSource, host::logDebug);
         LspInstalledAppsReporter installedAppsReporter =
                 new LspInstalledAppsReporter(newInstalledAppsReporterHost());
         reportBuilder = new LspDirectReportBuilder(
@@ -457,6 +460,33 @@ final class LspDirectFeature {
             @Override
             public boolean screenOff() {
                 return deviceControlFeature.screenOff();
+            }
+
+            @Override
+            public LspScreenshotResult captureAndUploadScreenshot(
+                    String commandId,
+                    String screenshotId,
+                    int maxWidth,
+                    int jpegQuality) {
+                String serverUrl = config.serverUrl();
+                String token = config.token();
+                if (!config.enabled() || serverUrl.length() == 0 || token.length() == 0) {
+                    return new LspScreenshotResult(
+                            "failed", "screenshot_transport_unavailable", screenshotId, 0, 0, 0);
+                }
+                LspCapturedScreenshot captured = screenshotController.capture(maxWidth, jpegQuality);
+                if (captured == null) {
+                    return new LspScreenshotResult(
+                            "failed", "screenshot_capture_failed", screenshotId, 0, 0, 0);
+                }
+                if (!transport.postScreenshot(serverUrl, token, screenshotId, commandId, captured)) {
+                    return new LspScreenshotResult(
+                            "failed", "screenshot_upload_failed", screenshotId,
+                            captured.width, captured.height, captured.bytes.length);
+                }
+                return new LspScreenshotResult(
+                        "applied", "", screenshotId,
+                        captured.width, captured.height, captured.bytes.length);
             }
 
             @Override

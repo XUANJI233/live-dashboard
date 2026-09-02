@@ -451,7 +451,6 @@ class ReportClient(
         val supervisionIncludeInstalledApps: Boolean,
         val supervisionHeuristicTriggers: Boolean,
         val supervisionCheckMode: String,
-        val supervisionCheckIntervalMinutes: Int,
         val supervisionBlacklistMinutes: Int,
         val supervisionTargetMinMinutes: Int,
         val supervisionVibrate: Boolean,
@@ -610,7 +609,6 @@ class ReportClient(
             put("supervision_include_installed_apps", update.supervisionIncludeInstalledApps)
             put("supervision_heuristic_triggers", update.supervisionHeuristicTriggers)
             put("supervision_check_mode", update.supervisionCheckMode)
-            put("supervision_check_interval_minutes", update.supervisionCheckIntervalMinutes.coerceIn(30, 240))
             put("supervision_blacklist_minutes", update.supervisionBlacklistMinutes.coerceIn(1, 55))
             put("supervision_target_min_minutes", update.supervisionTargetMinMinutes.coerceIn(1, 55))
             put("supervision_vibrate", update.supervisionVibrate)

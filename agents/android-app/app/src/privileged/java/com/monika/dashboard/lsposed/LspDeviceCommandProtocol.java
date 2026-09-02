@@ -17,6 +17,7 @@ final class LspDeviceCommandProtocol {
     static final String TYPE_RESULT_ACK = "device_command_result_received";
     static final String KIND_SUPERVISION = "supervision";
     static final String KIND_SUPERVISION_POLICY = "supervision_policy";
+    static final String KIND_SCREENSHOT = "screenshot";
     static final long VIBRATE_MS = 650L;
 
     private LspDeviceCommandProtocol() {}

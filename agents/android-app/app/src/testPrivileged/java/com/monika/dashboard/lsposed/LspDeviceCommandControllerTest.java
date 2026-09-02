@@ -15,6 +15,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executor;
 
 @RunWith(AndroidJUnit4.class)
 @Config(sdk = 35)
@@ -81,6 +82,40 @@ public class LspDeviceCommandControllerTest {
         assertEquals("com.ztgame.yyzy", host.unfreezeCalls.get(0));
     }
 
+    @Test
+    public void capturesAndUploadsScreenshotCommands() throws Exception {
+        FakeHost host = new FakeHost();
+        LspDeviceCommandController controller = new LspDeviceCommandController(host, Runnable::run);
+
+        controller.handleCommand(screenshotCommand(), "test");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        JSONObject result = new JSONObject(host.wsBodies.get(1));
+        assertEquals("applied", result.getString("status"));
+        assertEquals(1, host.screenshotCalls);
+        assertEquals("screenshot", result.getJSONArray("actions").getJSONObject(0).getString("action"));
+        assertEquals("shot_12345678-1234-1234-1234-123456789abc",
+                result.getJSONArray("actions").getJSONObject(0).getString("screenshot_id"));
+    }
+
+    @Test
+    public void screenshotWorkDoesNotBlockTheUploadHandler() throws Exception {
+        FakeHost host = new FakeHost();
+        DeferredExecutor screenshotExecutor = new DeferredExecutor();
+        LspDeviceCommandController controller = new LspDeviceCommandController(host, screenshotExecutor);
+
+        controller.handleCommand(screenshotCommand(), "test");
+        controller.handleCommand(screenOffCommand(), "test");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        assertEquals(1, host.screenOffCalls);
+        assertEquals(0, host.screenshotCalls);
+
+        screenshotExecutor.runPending();
+        shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(1, host.screenshotCalls);
+    }
+
     private static JSONObject command() throws Exception {
         return new JSONObject()
                 .put("type", LspDeviceCommandProtocol.TYPE_COMMAND)
@@ -121,6 +156,19 @@ public class LspDeviceCommandControllerTest {
                         .put("unfreeze_commands", new org.json.JSONArray().put(pattern)));
     }
 
+    private static JSONObject screenshotCommand() throws Exception {
+        return new JSONObject()
+                .put("type", LspDeviceCommandProtocol.TYPE_COMMAND)
+                .put("request_id", "req_screenshot")
+                .put("command_id", "cmd_screenshot")
+                .put("payload", new JSONObject()
+                        .put("kind", "screenshot")
+                        .put("screenshot", new JSONObject()
+                                .put("screenshot_id", "shot_12345678-1234-1234-1234-123456789abc")
+                                .put("max_width", 720)
+                                .put("jpeg_quality", 65)));
+    }
+
     private static final class FakeHost implements LspDeviceCommandHost {
         final Handler handler = new Handler(Looper.getMainLooper());
         final List<String> wsBodies = new ArrayList<>();
@@ -130,6 +178,7 @@ public class LspDeviceCommandControllerTest {
         final List<String> freezeCalls = new ArrayList<>();
         final List<String> unfreezeCalls = new ArrayList<>();
         int screenOffCalls = 0;
+        int screenshotCalls = 0;
 
         @Override
         public Handler uploadHandler() {
@@ -238,6 +287,16 @@ public class LspDeviceCommandControllerTest {
         }
 
         @Override
+        public LspScreenshotResult captureAndUploadScreenshot(
+                String commandId,
+                String screenshotId,
+                int maxWidth,
+                int jpegQuality) {
+            screenshotCalls++;
+            return new LspScreenshotResult("applied", "", screenshotId, 720, 1600, 4);
+        }
+
+        @Override
         public void requestDirectUpload() {}
 
         @Override
@@ -247,5 +306,20 @@ public class LspDeviceCommandControllerTest {
 
         @Override
         public void finishPendingSupervisionReview() {}
+    }
+
+    private static final class DeferredExecutor implements Executor {
+        private Runnable pending;
+
+        @Override
+        public void execute(Runnable command) {
+            pending = command;
+        }
+
+        void runPending() {
+            Runnable command = pending;
+            pending = null;
+            if (command != null) command.run();
+        }
     }
 }
