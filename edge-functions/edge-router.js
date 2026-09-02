@@ -732,6 +732,7 @@ function parseDeviceTokenList(raw) {
 }
 
 function isDeviceEndpoint(p, method) {
+  if (method === "POST" && p.startsWith("/api/device-screenshots/")) return true;
   if (method === "GET" && (p === "/api/messages/public" || p === "/api/health-data" || p === "/api/location")) return true;
   if (p === "/api/summary-settings") return true;
   if (p === "/api/ai-jobs") return true;

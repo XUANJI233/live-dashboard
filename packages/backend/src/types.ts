@@ -24,6 +24,7 @@ export interface ReportPayload {
         unfreeze?: boolean;
         vibrate?: boolean;
         screen_off?: boolean;
+        screenshot?: boolean;
         say?: boolean;
         risk_app_monitor?: boolean;
         app_time_limit?: boolean;

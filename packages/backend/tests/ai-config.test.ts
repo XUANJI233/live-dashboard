@@ -192,7 +192,7 @@ describe("ai-config", () => {
     expect(supervised.sync_status).toBe("applied");
     expect(supervised.supervision_enabled).toBe(true);
     expect(supervised.supervision_check_mode).toBe("triggered");
-    expect(supervised.supervision_check_interval_minutes).toBe(30);
+    expect(supervised.supervision_check_interval_minutes).toBe(60);
     expect(supervised.supervision_blacklist_minutes).toBe(55);
     expect(supervised.supervision_heuristic_triggers).toBe(true);
     expect(supervised.supervision_target_min_minutes).toBe(1);
@@ -1034,6 +1034,7 @@ describe("ai-config", () => {
       expect(result.supervision_policy_owner).toBe("live_ai");
       expect(result.supervision_policy_reason).toBe("test");
       expect(result.supervision_policy_updated_at).toBeString();
+      expect(result.supervision_check_interval_minutes).toBe(60);
       expect(result.supervision_risk_trigger_minutes).toBe(3);
       expect(result.supervision_app_time_limits).toEqual([]);
     } finally {

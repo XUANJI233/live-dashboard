@@ -30,6 +30,7 @@ When `memory_cursor` is null, query with `since=memory_since` and save `next_sin
 |---|---|---|
 | `list_devices`, bounded timelines | Current state/context | autonomous read |
 | frozen/installed app lists | Only when directly relevant | sensitive read |
+| `capture_device_screenshot`, `get_device_screenshot` | Current Android LSP visual evidence; returned once | persistently delegated by user |
 | command status | Verify actions | autonomous read |
 | settings/persona/memory feed | Goals, policy, dedup | autonomous read |
 | `save_controller_summary` | Hermes-authored review | pre-authorized write |

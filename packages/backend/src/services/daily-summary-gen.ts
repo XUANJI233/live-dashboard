@@ -182,7 +182,7 @@ export function getSummarySettings(): SummarySettings {
         ? false
         : normalizeBoolean(parsed.supervision_heuristic_triggers),
       supervision_check_mode: normalizeSupervisionCheckMode(parsed.supervision_check_mode),
-      supervision_check_interval_minutes: normalizeSupervisionInterval(parsed.supervision_check_interval_minutes, 60),
+      supervision_check_interval_minutes: policy.review_interval_minutes,
       supervision_blacklist_minutes: normalizeMinuteThreshold(parsed.supervision_blacklist_minutes, 20),
       supervision_risk_trigger_minutes: policy.risk_trigger_minutes,
       supervision_target_min_minutes: normalizeMinuteThreshold(parsed.supervision_target_min_minutes, 25),
@@ -257,9 +257,7 @@ export function updateSummarySettings(input: unknown): SummarySettings {
     supervision_check_mode: source.supervision_check_mode === undefined
       ? current.supervision_check_mode
       : normalizeSupervisionCheckMode(source.supervision_check_mode),
-    supervision_check_interval_minutes: source.supervision_check_interval_minutes === undefined
-      ? current.supervision_check_interval_minutes
-      : normalizeSupervisionInterval(source.supervision_check_interval_minutes, current.supervision_check_interval_minutes),
+    supervision_check_interval_minutes: current.supervision_check_interval_minutes,
     supervision_blacklist_minutes: source.supervision_blacklist_minutes === undefined
       ? current.supervision_blacklist_minutes
       : normalizeMinuteThreshold(source.supervision_blacklist_minutes, current.supervision_blacklist_minutes),
@@ -297,6 +295,7 @@ export function updateSupervisionPolicy(input: unknown): SummarySettings {
   const policy = replaceSupervisionPolicySettings(source, updatedAt);
   const next: SummarySettings = {
     ...current,
+    supervision_check_interval_minutes: policy.review_interval_minutes,
     supervision_risk_trigger_minutes: policy.risk_trigger_minutes,
     supervision_policy_owner: policy.policy_owner,
     supervision_policy_reason: policy.strategy_reason,
@@ -319,6 +318,7 @@ export function supervisionPolicySnapshot(settings = getSummarySettings()): {
   policy_owner: SupervisionPolicyOwner | null;
   strategy_reason: string;
   policy_updated_at: string | null;
+  review_interval_minutes: number;
   risk_app_regex: string[];
   risk_trigger_minutes: number;
   app_time_limits: SupervisionAppTimeLimit[];
@@ -327,6 +327,7 @@ export function supervisionPolicySnapshot(settings = getSummarySettings()): {
     policy_owner: settings.supervision_policy_owner,
     strategy_reason: settings.supervision_policy_reason,
     policy_updated_at: settings.supervision_policy_updated_at,
+    review_interval_minutes: settings.supervision_check_interval_minutes,
     risk_app_regex: settings.supervision_rules.risk_app_regex,
     risk_trigger_minutes: settings.supervision_risk_trigger_minutes,
     app_time_limits: settings.supervision_app_time_limits,
@@ -342,6 +343,7 @@ export function effectiveSupervisionPolicySnapshot(
     policy_owner: policy.policy_owner,
     strategy_reason: policy.strategy_reason,
     policy_updated_at: policy.policy_updated_at,
+    review_interval_minutes: policy.review_interval_minutes,
     risk_app_regex: [],
     risk_trigger_minutes: policy.risk_trigger_minutes,
     app_time_limits: [],
@@ -593,12 +595,6 @@ export function normalizeSupervisionRules(value: unknown): SupervisionRules {
 function normalizeSupervisionCheckMode(value: unknown): SupervisionCheckMode {
   const raw = String(value || "").trim().toLowerCase();
   return raw === "triggered" ? "triggered" : "hourly";
-}
-
-function normalizeSupervisionInterval(value: unknown, fallback: number): number {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(240, Math.max(30, parsed));
 }
 
 function defaultSupervisionRules(): SupervisionRules {

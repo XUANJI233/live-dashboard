@@ -1,5 +1,6 @@
 import {
   cleanupExpiredMessages,
+  cleanupExpiredDeviceScreenshots,
   cleanupOldActivities,
   cleanupOldAiJobs,
   cleanupOldControllerEvents,
@@ -56,6 +57,15 @@ const hourlyCleanupTimer = setInterval(() => {
     }
   } catch (e) {
     console.error("[cleanup] Device command cleanup failed:", e);
+  }
+
+  try {
+    const screenshotResult = cleanupExpiredDeviceScreenshots.run();
+    if (screenshotResult.changes > 0) {
+      console.log(`[cleanup] Deleted ${screenshotResult.changes} expired device screenshots`);
+    }
+  } catch (e) {
+    console.error("[cleanup] Device screenshot cleanup failed:", e);
   }
 
   try {

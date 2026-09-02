@@ -20,6 +20,20 @@ export const InstalledAppsSchema = z.object({
   device_id: z.string().min(1).max(160),
 });
 
+export const CaptureScreenshotSchema = z.object({
+  device_id: z.string().min(1).max(160),
+  max_width: z.number().int().min(320).max(1080).optional()
+    .describe("Maximum JPEG width. Defaults to 720."),
+  jpeg_quality: z.number().int().min(35).max(85).optional()
+    .describe("JPEG quality. Defaults to 65."),
+  wait_seconds: z.number().int().min(0).max(20).optional()
+    .describe("Event-driven wait for upload. Defaults to 12 seconds; 0 returns pending immediately."),
+});
+
+export const GetScreenshotSchema = z.object({
+  screenshot_id: z.string().regex(/^shot_[a-f0-9-]{36}$/),
+});
+
 export const SendCommandsSchema = z.object({
   request_id: z.string().min(1).max(160).optional()
     .describe("Stable idempotency id for this one-shot action batch."),
@@ -44,6 +58,8 @@ export const SupervisionPolicySchema = z.object({
     .describe("Controller identity that authored this complete snapshot; must match the active controller persona."),
   strategy_reason: z.string().min(1).max(500)
     .describe("Controller-authored rationale grounded in the current target and evidence."),
+  review_interval_minutes: z.number().int().min(5).max(240)
+    .describe("Controller-authored periodic interval for automatically waking the controller to review current supervision state."),
   risk_app_regex: z.array(z.string().max(120)).max(12)
     .describe("Controller-authored persistent Android LSP review-trigger regexes. Matching requests review; it does not freeze by itself."),
   risk_trigger_minutes: z.number().int().min(1).max(55)
@@ -81,7 +97,6 @@ export const ServiceSettingsUpdateSchema = z.object({
   supervision_enabled: z.boolean().optional(),
   supervision_include_installed_apps: z.boolean().optional(),
   supervision_heuristic_triggers: z.boolean().optional(),
-  supervision_check_interval_minutes: z.number().int().min(30).max(240).optional(),
   supervision_blacklist_minutes: z.number().int().min(1).max(55).optional(),
   supervision_target_min_minutes: z.number().int().min(1).max(55).optional(),
   supervision_vibrate: z.boolean().optional(),

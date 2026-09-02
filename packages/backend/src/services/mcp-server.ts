@@ -20,12 +20,14 @@ import {
 } from "./mcp-admin";
 import {
   AiJobStatusSchema,
+  CaptureScreenshotSchema,
   CommandStatusSchema,
   ControllerMemoryFeedSchema,
   ControllerPersonaUpdateSchema,
   DateRangeSchema,
   DeviceTimelineSchema,
   FrozenListSchema,
+  GetScreenshotSchema,
   InstalledAppsSchema,
   RunSupervisionCheckSchema,
   SaveControllerSummarySchema,
@@ -36,6 +38,12 @@ import {
   SupervisionPolicySchema,
 } from "./mcp-tool-schemas";
 import { setAndSendSupervisionPolicy } from "./supervision-policy-control";
+import {
+  captureDeviceScreenshot,
+  consumeReadyScreenshot,
+  getDeviceScreenshot,
+  type ScreenshotCaptureResult,
+} from "./device-screenshot-control";
 
 export function createLiveDashboardMcpServer(): McpServer {
   const server = new McpServer({
@@ -46,6 +54,7 @@ export function createLiveDashboardMcpServer(): McpServer {
       "Live Dashboard MCP exposes local-only device context and control tools.",
       "Read-only tools inspect dashboard state; they never change settings or device state.",
       "live_dashboard.send_device_commands is only for immediate one-shot device actions such as say, vibrate, screen_off, freeze, or unfreeze.",
+      "live_dashboard.capture_device_screenshot captures the current Android LSP display on demand and may be used whenever current visual evidence is relevant. The screenshot is short-lived and returned once.",
       "live_dashboard.set_supervision_policy is the delegated controller's strategy interface for persistent Android LSP review triggers and app time limits. The active controller should create, revise, or clear the complete policy from the current goal and evidence instead of waiting for the user to enumerate packages. Risk triggers request controller review; they do not themselves authorize a freeze.",
       "OpenClaw/Hermes controllers may use service settings and AI job tools for server-side administration; the phone app cannot change the locked summary tone.",
       "OpenClaw/Hermes controllers may sync their persona or subordinate relationship so summaries, supervision, and reminders keep the same voice without overriding safety, privacy, schema, or device capability rules.",
@@ -102,6 +111,20 @@ export function createLiveDashboardMcpServer(): McpServer {
     inputSchema: InstalledAppsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(() => getDeviceInstalledApps(args.device_id)));
+
+  server.registerTool("live_dashboard.capture_device_screenshot", {
+    title: "Capture device screenshot",
+    description: "Capture the current display from one capable Android LSP device. This is pre-authorized for Hermes whenever current visual evidence is relevant. The tool waits event-first for the upload and returns an MCP image; on timeout it returns screenshot_id for get_device_screenshot.",
+    inputSchema: CaptureScreenshotSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async (args) => screenshotToolResult(consumeReadyScreenshot(await captureDeviceScreenshot(args))));
+
+  server.registerTool("live_dashboard.get_device_screenshot", {
+    title: "Get device screenshot",
+    description: "Retrieve a pending screenshot by screenshot_id after capture_device_screenshot returned pending. A ready image is returned once and then removed.",
+    inputSchema: GetScreenshotSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async (args) => screenshotToolResult(getDeviceScreenshot(args.screenshot_id)));
 
   server.registerTool("live_dashboard.send_device_commands", {
     title: "Send device commands",
@@ -207,6 +230,33 @@ export function createLiveDashboardMcpServer(): McpServer {
   }, async (args) => stableToolResult(() => runServiceSupervisionCheck(args)));
 
   return server;
+}
+
+function screenshotToolResult(result: ScreenshotCaptureResult): CallToolResult {
+  const metadata: Record<string, unknown> = {
+    status: result.status,
+    screenshot_id: result.screenshot_id,
+    command_id: result.command_id,
+    device_id: result.device_id,
+    ...(result.error ? { error: result.error } : {}),
+  };
+  if (result.status !== "ready" || !result.record?.image_data) {
+    return toolResult(metadata);
+  }
+  Object.assign(metadata, {
+    mime_type: result.record.mime_type,
+    width: result.record.width,
+    height: result.record.height,
+    captured_at: result.record.uploaded_at,
+  });
+  return {
+    structuredContent: metadata,
+    content: [{
+      type: "image",
+      data: Buffer.from(result.record.image_data).toString("base64"),
+      mimeType: result.record.mime_type,
+    }],
+  };
 }
 
 function toolResult(value: Record<string, unknown>): CallToolResult {

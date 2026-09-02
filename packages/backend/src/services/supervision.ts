@@ -154,6 +154,7 @@ export async function refreshSupervisionRules(settings = getSummarySettings()): 
       supervision_policy_owner: "live_ai",
       supervision_policy_reason: rules.reason,
       supervision_policy_updated_at: policyUpdatedAt,
+      supervision_check_interval_minutes: 60,
       supervision_risk_trigger_minutes: 3,
       supervision_app_time_limits: [],
       supervision_rules: rules,

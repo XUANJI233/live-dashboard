@@ -803,6 +803,7 @@ describe("mcp control plane", () => {
       unfreeze: false,
       vibrate: true,
       screen_off: true,
+      screenshot: false,
       say: true,
       risk_app_monitor: true,
       app_time_limit: true,
@@ -895,6 +896,7 @@ describe("mcp control plane", () => {
     const sent = setAndSendSupervisionPolicy({
       policy_owner: "hermes",
       strategy_reason: "Repeated video and game use conflicts with the current target.",
+      review_interval_minutes: 30,
       request_id: "req_policy_capabilities",
       device_ids: ["android-policy-lsp", "android-policy-normal", "desktop-policy"],
       risk_app_regex: ["Video"],
@@ -956,9 +958,10 @@ describe("mcp control plane", () => {
 
     expect(SupervisionPolicySchema.safeParse({
       policy_owner: "hermes",
-      strategy_reason: "Incomplete snapshot",
-      risk_app_regex: ["Manual"],
-      risk_trigger_minutes: 9,
+      strategy_reason: "Missing controller review interval",
+      risk_app_regex: [],
+      risk_trigger_minutes: 3,
+      app_time_limits: [],
     }).success).toBe(false);
 
     updateSupervisionPolicy({
@@ -973,41 +976,48 @@ describe("mcp control plane", () => {
     expect(() => setAndSendSupervisionPolicy({
       policy_owner: "openclaw",
       strategy_reason: "Wrong controller",
+      review_interval_minutes: 30,
       risk_app_regex: [],
       risk_trigger_minutes: 3,
       app_time_limits: [],
       device_ids: ["missing-policy-device"],
     })).toThrow("supervision_policy_owner_mismatch");
 
-    const sent = setAndSendSupervisionPolicy({
-      policy_owner: "hermes",
+    const controllerSnapshot = {
+      policy_owner: "hermes" as const,
       strategy_reason: "No recurring app pattern currently justifies a persistent rule.",
+      review_interval_minutes: 7,
       risk_app_regex: [],
       risk_trigger_minutes: 4,
       app_time_limits: [],
       device_ids: ["missing-policy-device"],
-    });
+    };
+    const sent = setAndSendSupervisionPolicy(controllerSnapshot);
     const settings = getSummarySettings();
 
     expect(sent.policy).toMatchObject({
       policy_owner: "hermes",
       strategy_reason: "No recurring app pattern currently justifies a persistent rule.",
+      review_interval_minutes: 7,
       risk_app_regex: [],
       risk_trigger_minutes: 4,
       app_time_limits: [],
     });
     expect(settings.supervision_policy_owner).toBe("hermes");
     expect(settings.supervision_policy_reason).toBe("No recurring app pattern currently justifies a persistent rule.");
+    expect(settings.supervision_check_interval_minutes).toBe(7);
     expect(settings.supervision_rules.risk_app_regex).toEqual([]);
     expect(settings.supervision_app_time_limits).toEqual([]);
 
     updateSummarySettings({
       client_updated_at: "2029-01-01T00:00:00.000Z",
+      supervision_check_interval_minutes: 240,
       supervision_risk_trigger_minutes: 55,
       supervision_app_time_limits: [{ app_regex: "ManualOverride", limit_minutes: 55 }],
     });
     const afterGenericUpdate = getSummarySettings();
     expect(afterGenericUpdate.supervision_risk_trigger_minutes).toBe(4);
+    expect(afterGenericUpdate.supervision_check_interval_minutes).toBe(7);
     expect(afterGenericUpdate.supervision_app_time_limits).toEqual([]);
     expect(afterGenericUpdate.supervision_policy_owner).toBe("hermes");
   });

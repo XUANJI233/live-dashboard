@@ -240,7 +240,7 @@ WS 帧 `viewer_message` 与 HTTP `POST /api/messages/public`、`POST /api/messag
 
 - `v` 当前固定为 `1`。
 - `created_by` 只能是 `mcp` 或 `supervision`。
-- `payload.kind` 只能是 `supervision` 或 `supervision_policy`。
+- `payload.kind` 只能是 `supervision`、`supervision_policy` 或 `screenshot`。
 - `freeze_commands` / `unfreeze_commands` 是应用名或包名正则数组；客户端必须分别匹配包名、应用名和标题，不能只匹配三者拼接串，因此 `^com\\.example\\.app$` 必须能精确命中包名。
 - `vibrate` / `screen_off` 必须是真布尔。
 - `say` 是设备要展示/播报的话。
@@ -250,7 +250,10 @@ WS 帧 `viewer_message` 与 HTTP `POST /api/messages/public`、`POST /api/messag
 
 - `risk_app_regex`：由外部 AI 控制器编写的复核触发名单，匹配语义与冻结命令一致，分别作用于包名、应用名和标题；命中阈值只请求 AI 复核，不在端侧预先冻结。
 - `risk_trigger_minutes`：风险名单中任一应用累计使用多少分钟触发 AI 监督。
+- `review_interval_minutes`：外部控制器自动周期复核间隔（5–240 分钟），只保存在服务端，不下发到设备。
 - `app_time_limits`：独立限时冻结策略，元素为 `{ "app_regex": "...", "limit_minutes": 10, "reason": "..." }`。
+
+截图命令使用 `payload.kind="screenshot"`，并带 `{ "screenshot_id", "max_width", "jpeg_quality" }`。Android LSP 截图后向 `POST /api/device-screenshots/{screenshot_id}` 上传受限 JPEG，Header 必须包含原 `X-Command-Id` 与实际宽高；服务端按设备身份、截图 ID 和命令 ID 三者绑定验收。
 
 命令状态：
 
@@ -339,6 +342,7 @@ HTTP `/api/report` 与 WS `device_status.payload` 共享上报主体核心字段
 能力 profile：
 
 - `android_lsp`：可上报冻结列表，可支持 `freeze`、`unfreeze`、`vibrate`、`say`、`screen_off`、`risk_app_monitor`、`app_time_limit`；其中 `screen_off` 必须由新端侧显式上报为 `true` 才会下发。
+- `android_lsp` 只有显式上报 `screenshot:true` 才能接收截图命令。截图由 LSP 调用系统截图能力、缩放并压成受限 JPEG，经设备鉴权上传；MCP 图片读取一次后删除，过期记录自动清理。
 - `android_normal`：可 `vibrate`、`say`，不能冻结/解冻。
 - `desktop_message`：只支持 `say`。
 - `unsupported`：所有能力为 `false`。
@@ -383,8 +387,9 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
   - `live_dashboard.get_ai_job`
   - `live_dashboard.run_supervision_check`
 - `live_dashboard.send_device_commands` 只用于一次性设备动作：提醒文本、震动、息屏、即时冻结/解冻；服务端会按设备显式上报能力裁剪。
+- `live_dashboard.capture_device_screenshot` 用于按需抓取 Android LSP 当前画面；默认事件式等待上传，超时返回 `screenshot_id`。`live_dashboard.get_device_screenshot` 用该 ID 取回一次图片。
 - `live_dashboard.set_supervision_policy` 是外部 AI 控制器编写持久监督策略的唯一接口：AI 根据当前目标和证据主动创建、修改或清空复核触发规则、触发分钟数和明确的离线应用限时；不要让部署者预填固定名单，也不要用于一次性提醒、一次性冻结/解冻或普通聊天消息。
-  - 输入必须是完整快照：`policy_owner`、`strategy_reason`、`risk_app_regex`、`risk_trigger_minutes`、`app_time_limits` 缺一不可。
+  - 输入必须是完整快照：`policy_owner`、`strategy_reason`、`review_interval_minutes`、`risk_app_regex`、`risk_trigger_minutes`、`app_time_limits` 缺一不可。
   - `policy_owner` 必须与已启用的控制器 persona 一致（`openclaw` / `hermes` / `custom`）；Live 冷备 AI 接管时服务端内部记录为 `live_ai`，不冒充外部控制器。
   - 服务端整体替换旧策略，不接受依赖旧字段的部分更新。执行设备只接收三项执行字段，作者、理由与更新时间留在服务端设置中用于审计。
 - `live_dashboard.update_service_settings` 只接受 snake_case 字段和真布尔，不接受手机端同义 camelCase。`live_dashboard.set_summary_mode` 是服务端控制语气的唯一远程工具；如果 `AI_SUMMARY_MODE` 环境变量存在，则环境变量优先。

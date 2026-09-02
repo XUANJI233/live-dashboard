@@ -46,6 +46,7 @@ type SupervisionPolicySendInput = Pick<
 export interface SupervisionPolicyInput {
   policy_owner: ControllerPersonaKind;
   strategy_reason: string;
+  review_interval_minutes: number;
   risk_app_regex: string[];
   risk_trigger_minutes: number;
   app_time_limits: unknown[];
@@ -60,6 +61,7 @@ export function setAndSendSupervisionPolicy(input: SupervisionPolicyInput): Supe
   const settings = updateSupervisionPolicy({
     policy_owner: input.policy_owner,
     strategy_reason: input.strategy_reason,
+    review_interval_minutes: input.review_interval_minutes,
     risk_app_regex: input.risk_app_regex,
     risk_trigger_minutes: input.risk_trigger_minutes,
     app_time_limits: input.app_time_limits,

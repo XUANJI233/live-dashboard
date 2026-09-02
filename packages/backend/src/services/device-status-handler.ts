@@ -13,7 +13,7 @@ const MAX_MEDIUM_LENGTH = 256;
 const MAX_INSTALLED_APPS = 512;
 const VALID_SOURCES = new Set(["normal", "root", "lsposed", "accessibility", "notification"]);
 const VALID_DEVICE_PROFILES = new Set(["android_lsp", "android_normal", "desktop_message"]);
-const DEVICE_CAPABILITY_KEYS = ["freeze", "unfreeze", "vibrate", "screen_off", "say", "risk_app_monitor", "app_time_limit"] as const;
+const DEVICE_CAPABILITY_KEYS = ["freeze", "unfreeze", "vibrate", "screen_off", "screenshot", "say", "risk_app_monitor", "app_time_limit"] as const;
 const getPreviousDeviceExtra = db.prepare("SELECT extra FROM device_states WHERE device_id = ?");
 
 export interface PublicDeviceUpdate {

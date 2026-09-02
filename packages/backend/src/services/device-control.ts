@@ -20,6 +20,7 @@ import {
   type DeviceCommandPayload,
   type DeliveryStatus,
 } from "./mcp-contracts";
+import { boundedInteger } from "./bounded-integer";
 import { deliverDeviceCommandMessage } from "./realtime-message-delivery";
 
 const MAX_COMMANDS_PER_REQUEST = 20;
@@ -30,12 +31,18 @@ const MIN_EXPIRES_SECONDS = 10;
 const MAX_EXPIRES_SECONDS = 60 * 60;
 
 export interface DeviceCommandRequest {
+  command_id?: string;
   device_id: string;
   freeze_commands?: string[];
   unfreeze_commands?: string[];
   vibrate?: boolean;
   screen_off?: boolean;
   say?: string;
+  screenshot?: {
+    screenshot_id: string;
+    max_width: number;
+    jpeg_quality: number;
+  };
   expires_in_seconds?: number;
 }
 
@@ -55,7 +62,7 @@ export function sendDeviceCommands(input: SendDeviceCommandsInput): {
   const commandIds: string[] = [];
 
   for (const command of commands) {
-    const commandId = generatedCommandId();
+    const commandId = cleanIdentifier(command.command_id) || generatedCommandId();
     commandIds.push(commandId);
     const targetDeviceId = cleanLooseIdentifier(command.device_id, 160);
     const issuedAt = new Date();
@@ -121,44 +128,62 @@ function normalizeCommandPayload(command: DeviceCommandRequest, device: DeviceCo
   const requestedVibrate = command.vibrate === true;
   const requestedSay = cleanText(command.say, 500);
   const requestedScreenOff = command.screen_off === true;
+  const requestedScreenshot = screenshotRequest(command.screenshot);
 
   const freezeCommands = device && deviceSupportsCommand(device, "freeze") ? requestedFreeze : [];
   const unfreezeCommands = device && deviceSupportsCommand(device, "unfreeze") ? requestedUnfreeze : [];
   const vibrate = !!device && deviceSupportsCommand(device, "vibrate") && requestedVibrate;
   const say = device && deviceSupportsCommand(device, "say") ? requestedSay : "";
   const screenOff = !!device && deviceSupportsCommand(device, "screen_off") && requestedScreenOff;
+  const screenshot = device && deviceSupportsCommand(device, "screenshot") ? requestedScreenshot : null;
 
   if (requestedFreeze.length > 0 && freezeCommands.length === 0) notes.push("freeze_not_supported");
   if (requestedUnfreeze.length > 0 && unfreezeCommands.length === 0) notes.push("unfreeze_not_supported");
   if (requestedVibrate && !vibrate) notes.push("vibrate_not_supported");
   if (requestedSay && !say) notes.push("say_not_supported");
   if (requestedScreenOff && !screenOff) notes.push("screen_off_not_supported");
+  if (requestedScreenshot && !screenshot) notes.push("screenshot_not_supported");
 
   const hasAction = freezeCommands.length > 0 ||
     unfreezeCommands.length > 0 ||
     vibrate ||
     screenOff ||
-    !!say;
+    !!say ||
+    !!screenshot;
   const requestedAny = requestedFreeze.length > 0 ||
     requestedUnfreeze.length > 0 ||
     requestedVibrate ||
     requestedScreenOff ||
-    !!requestedSay;
+    !!requestedSay ||
+    !!requestedScreenshot;
   return {
     payload: {
-      kind: "supervision",
+      kind: screenshot ? "screenshot" : "supervision",
       freeze_commands: freezeCommands,
       unfreeze_commands: unfreezeCommands,
       vibrate,
       screen_off: screenOff,
       say,
       notes,
+      ...(screenshot ? { screenshot } : {}),
     },
     hasAction,
     resultStatus: requestedAny ? "unsupported" : "ignored",
     resultReason: requestedAny ? notes.join(",") || "unsupported_device_capability" : "empty_command",
   };
 }
+
+function screenshotRequest(value: DeviceCommandRequest["screenshot"]): DeviceCommandPayload["screenshot"] | null {
+  if (!value || typeof value !== "object") return null;
+  const screenshotId = cleanIdentifier(value.screenshot_id);
+  if (!screenshotId) return null;
+  return {
+    screenshot_id: screenshotId,
+    max_width: boundedInteger(value.max_width, 320, 1080, 720),
+    jpeg_quality: boundedInteger(value.jpeg_quality, 35, 85, 65),
+  };
+}
+
 
 function markSkipped(commandId: string, reason: string, resultStatus: "ignored" | "unsupported"): void {
   recordCommandDelivery({ commandId, status: "skipped" satisfies DeliveryStatus, reason });

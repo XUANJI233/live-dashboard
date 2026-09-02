@@ -101,6 +101,7 @@ const KNOWN_TABLES = new Set([
   "device_messages",
   "device_commands",
   "device_command_results",
+  "device_screenshots",
   "ai_jobs",
   "daily_summaries",
   "weekly_summaries",
@@ -423,6 +424,29 @@ db.run(`
   ON device_command_results(command_id, received_at)
 `);
 
+// Short-lived, one-time screenshot handoff from a device command to MCP.
+db.run(`
+  CREATE TABLE IF NOT EXISTS device_screenshots (
+    screenshot_id TEXT PRIMARY KEY,
+    command_id TEXT NOT NULL UNIQUE,
+    device_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    mime_type TEXT NOT NULL DEFAULT '',
+    width INTEGER NOT NULL DEFAULT 0,
+    height INTEGER NOT NULL DEFAULT 0,
+    image_data BLOB,
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    uploaded_at TEXT NOT NULL DEFAULT ''
+  )
+`);
+
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_device_screenshots_expires
+  ON device_screenshots(expires_at)
+`);
+
 // ── Async AI jobs (keeps long AI work out of edge HTTP lifetimes) ──
 
 db.run(`
@@ -598,6 +622,10 @@ export const cleanupOldDeviceCommandResults = db.prepare(`
 
 export const cleanupOldDeviceCommands = db.prepare(`
   DELETE FROM device_commands WHERE datetime(issued_at) < datetime('now', '-14 days')
+`);
+
+export const cleanupExpiredDeviceScreenshots = db.prepare(`
+  DELETE FROM device_screenshots WHERE datetime(expires_at) < datetime('now')
 `);
 
 export const cleanupOldAiJobs = db.prepare(`

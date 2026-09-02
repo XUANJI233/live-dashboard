@@ -12,6 +12,7 @@ export interface SupervisionPolicySettings {
   policy_owner: SupervisionPolicyOwner | null;
   strategy_reason: string;
   policy_updated_at: string | null;
+  review_interval_minutes: number;
   risk_app_regex: string[];
   risk_trigger_minutes: number;
   app_time_limits: SupervisionAppTimeLimit[];
@@ -23,6 +24,7 @@ export function readSupervisionPolicySettings(source: Record<string, unknown>): 
     policy_owner: normalizePolicyOwner(source.supervision_policy_owner),
     strategy_reason: cleanText(source.supervision_policy_reason, 500),
     policy_updated_at: cleanTimestamp(source.supervision_policy_updated_at),
+    review_interval_minutes: normalizeReviewInterval(source.supervision_check_interval_minutes, 60),
     risk_app_regex: normalizeRegexList(rules?.risk_app_regex),
     risk_trigger_minutes: normalizeMinuteThreshold(source.supervision_risk_trigger_minutes, 3),
     app_time_limits: normalizeSupervisionAppTimeLimits(source.supervision_app_time_limits),
@@ -37,6 +39,7 @@ export function replaceSupervisionPolicySettings(
     policy_owner: normalizePolicyOwner(input.policy_owner),
     strategy_reason: cleanText(input.strategy_reason, 500),
     policy_updated_at: updatedAt,
+    review_interval_minutes: normalizeReviewInterval(input.review_interval_minutes, 60),
     risk_app_regex: normalizeRegexList(input.risk_app_regex),
     risk_trigger_minutes: normalizeMinuteThreshold(input.risk_trigger_minutes, 3),
     app_time_limits: normalizeSupervisionAppTimeLimits(input.app_time_limits),
@@ -83,6 +86,12 @@ function normalizeMinuteThreshold(value: unknown, fallback: number): number {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(55, Math.max(1, parsed));
+}
+
+function normalizeReviewInterval(value: unknown, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(240, Math.max(5, parsed));
 }
 
 function cleanText(value: unknown, maxLength: number): string {
