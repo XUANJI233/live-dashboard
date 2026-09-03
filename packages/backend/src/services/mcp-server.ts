@@ -11,6 +11,7 @@ import { sendDeviceCommands } from "./device-control";
 import { getControllerPersona, updateControllerPersona } from "./controller-persona";
 import { getControllerMemoryFeed, saveControllerSummary } from "./controller-memory";
 import { getControllerContext } from "./controller-context";
+import { controllerContextText } from "./controller-context-budget";
 import {
   completeServiceAiJob,
   claimServiceAiJobs,
@@ -72,7 +73,7 @@ export function createLiveDashboardMcpServer(): McpServer {
     instructions: [
       "Live Dashboard MCP exposes local-only device context and control tools.",
       "Read-only tools inspect dashboard state; they never change settings or device state.",
-      "Hermes should start each decision with live_dashboard.get_controller_context and avoid separate settings, persona, device, timeline, and memory reads unless the bounded result is explicitly truncated or an action needs more detail.",
+      "Hermes should start each decision with live_dashboard.get_controller_context and avoid separate settings, persona, device, timeline, and memory reads. Its bounds.truncated flag only means older or lower-priority detail was omitted; do not re-read solely for that flag because bounds.decision_complete remains true and bounds.followup_required remains false. Read one specific detail only after choosing an action that requires it.",
       "live_dashboard.send_device_commands is only for immediate one-shot device actions such as say, vibrate, screen_off, freeze, or unfreeze.",
       "live_dashboard.capture_device_screenshot captures the current Android LSP display on demand and may be used whenever current visual evidence is relevant. The screenshot is short-lived and returned once.",
       "Coyote electrostimulation tools only operate an Android-connected device after the user explicitly enables remote control. Cold starts and adjustments are hard-bounded; stop and emergency stop remain available without that grant.",
@@ -274,10 +275,13 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.get_controller_context", {
     title: "Get bounded controller context",
-    description: "Preferred first and normally only read for Hermes decisions. Returns settings, persona, minimal device state, one bounded timeline, and recent controller events in one call.",
+    description: "Preferred first and normally only read for Hermes decisions. Returns settings, persona, minimal device state, one bounded timeline, and recent controller events in one call. Bounded truncation preserves a decision-complete newest-first view and never by itself requires another read.",
     inputSchema: ControllerContextSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (args) => stableToolResult(() => getControllerContext(args)));
+  }, async (args) => stableToolResult(
+    () => getControllerContext(args),
+    controllerContextText,
+  ));
 
   server.registerTool("live_dashboard.update_controller_persona", {
     title: "Update controller persona",
@@ -368,17 +372,20 @@ function screenshotToolResult(result: ScreenshotCaptureResult): CallToolResult {
   };
 }
 
-function toolResult(value: Record<string, unknown>): CallToolResult {
+function toolResult(value: Record<string, unknown>, text?: string): CallToolResult {
   return {
     structuredContent: value,
-    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+    content: [{ type: "text", text: text ?? JSON.stringify(value, null, 2) }],
   };
 }
 
-async function stableToolResult(build: () => unknown | Promise<unknown>): Promise<CallToolResult> {
+async function stableToolResult(
+  build: () => unknown | Promise<unknown>,
+  textView?: (value: Record<string, unknown>) => string,
+): Promise<CallToolResult> {
   try {
-    const value = await build();
-    return toolResult(objectResult(value));
+    const value = objectResult(await build());
+    return toolResult(value, textView?.(value));
   } catch (error) {
     const code = error instanceof Error && stableErrorCode(error.message)
       ? error.message

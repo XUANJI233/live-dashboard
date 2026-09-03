@@ -1,0 +1,130 @@
+import { describe, expect, test } from "bun:test";
+import { fitControllerContextToMcpBudget } from "../src/services/controller-context-budget";
+
+describe("controller context transport budget", () => {
+  test("keeps the newest decision events while removing older oversized history", () => {
+    const events = Array.from({ length: 24 }, (_, index) => ({
+      event_id: `event-${index}`,
+      event_type: "visitor_message",
+      occurred_at: new Date(index * 1_000).toISOString(),
+      payload: { text: `记录 ${index} ${"具体上下文".repeat(220)}` },
+    }));
+    const context = fitControllerContextToMcpBudget({
+      schema: "live_dashboard.controller_context.v1",
+      generated_at: "2026-09-03T00:00:00.000Z",
+      mode: "supervision",
+      controller_active: true,
+      settings: { supervision_enabled: true },
+      persona: { enabled: true },
+      rest_state: "active",
+      available_device_count: 1,
+      returned_device_count: 1,
+      devices: [{ device_id: "android-main", frozen_packages: [] }],
+      timeline: {
+        segment_count: 0,
+        prebudget_segment_count: 0,
+        returned_segment_count: 0,
+        timeline: { devices: [] },
+      },
+      recent_events: {
+        has_more: false,
+        prebudget_event_count: events.length,
+        returned_event_count: events.length,
+        events,
+      },
+    }, []);
+    const recentEvents = context.recent_events as {
+      events: Array<{ event_id: string }>;
+      returned_event_count: number;
+    };
+
+    expect(new TextEncoder().encode(JSON.stringify(context)).byteLength).toBeLessThanOrEqual(24_000);
+    expect(recentEvents.events.at(-1)?.event_id).toBe("event-23");
+    expect(recentEvents.returned_event_count).toBe(recentEvents.events.length);
+  });
+
+  test("falls back to a fixed valid envelope for pathological caller text", () => {
+    const context = fitControllerContextToMcpBudget({
+      schema: "live_dashboard.controller_context.v1",
+      generated_at: "时间".repeat(100_000),
+      mode: "supervision",
+      controller_active: true,
+      settings: {
+        supervision_enabled: true,
+        target: "目标".repeat(100_000),
+      },
+      persona: {
+        enabled: true,
+        persona: "人设".repeat(100_000),
+      },
+      rest_state: "active",
+      available_device_count: 0,
+      returned_device_count: 0,
+      devices: [],
+      timeline: { segment_count: 0, timeline: { devices: [] } },
+      recent_events: { events: [] },
+    }, []);
+
+    expect(new TextEncoder().encode(JSON.stringify(context)).byteLength).toBeLessThanOrEqual(24_000);
+    expect(context.generated_at.length).toBeLessThanOrEqual(40);
+    expect(context.bounds).toMatchObject({
+      truncated: true,
+      decision_complete: false,
+      followup_required: false,
+    });
+  });
+
+  test("retains one oversized latest session and clips text on code-point boundaries", () => {
+    const items = Array.from({ length: 80 }, (_, index) => ({
+      time: `2026-09-03 00:${String(index % 60).padStart(2, "0")}`,
+      duration_minutes: 1,
+      title: `${"内容".repeat(180)}😀${index}`,
+    }));
+    const context = fitControllerContextToMcpBudget({
+      schema: "live_dashboard.controller_context.v1",
+      generated_at: "2026-09-03T00:00:00.000Z",
+      mode: "daily",
+      controller_active: true,
+      settings: {
+        supervision_enabled: true,
+        target: `${"a".repeat(498)}😀xx`,
+      },
+      persona: { enabled: true, persona: "人设".repeat(20_000) },
+      rest_state: "active",
+      available_device_count: 1,
+      returned_device_count: 1,
+      devices: [{ device_id: "android-main", frozen_packages: [] }],
+      timeline: {
+        segment_count: 80,
+        prebudget_segment_count: 80,
+        returned_segment_count: 80,
+        timeline: {
+          devices: [{
+            device_id: "android-main",
+            sessions: [{
+              app: "Reader",
+              start: "2026-09-03 00:00",
+              segment_count: 80,
+              items,
+            }],
+          }],
+        },
+      },
+      recent_events: { events: [], returned_event_count: 0 },
+    }, []);
+    const timeline = context.timeline as {
+      segment_count: number;
+      timeline: { devices: Array<{ sessions: Array<{ items: unknown[]; items_truncated?: boolean }> }> };
+    };
+    const target = (context.settings as { target: string }).target;
+
+    expect(new TextEncoder().encode(JSON.stringify(context)).byteLength).toBeLessThanOrEqual(24_000);
+    expect(timeline.timeline.devices).toHaveLength(1);
+    expect(timeline.timeline.devices[0]?.sessions).toHaveLength(1);
+    expect(timeline.timeline.devices[0]?.sessions[0]?.items).toHaveLength(3);
+    expect(timeline.timeline.devices[0]?.sessions[0]?.items_truncated).toBe(true);
+    expect(timeline.segment_count).toBe(80);
+    expect(target.endsWith("…")).toBe(true);
+    expect(target).not.toMatch(/[\uD800-\uDBFF]…$/);
+  });
+});

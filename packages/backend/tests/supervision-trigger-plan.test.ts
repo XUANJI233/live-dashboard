@@ -15,7 +15,7 @@ describe("supervision trigger plan", () => {
     supervision_heuristic_triggers: false,
   };
 
-  test("keeps scheduled checks and report-triggered checks independent", () => {
+  test("filters a scheduled check when the rule scorer found no review candidate", () => {
     const quietStats = {
       blacklistMinutes: 0,
       riskMinutes: 0,
@@ -28,8 +28,8 @@ describe("supervision trigger plan", () => {
     });
 
     expect(supervisionWindowMinutes(settings, "scheduled")).toBe(45);
-    expect(shouldRunSupervisionAi("scheduled", decision)).toBe(true);
-    expect(shouldRunSupervisionAi("report", decision)).toBe(false);
+    expect(shouldRunSupervisionAi("scheduled", decision)).toBe(false);
+    expect(shouldRunSupervisionAi("report", decision)).toBe(true);
     expect(decision.heuristicTriggered).toBe(false);
   });
 
@@ -48,6 +48,51 @@ describe("supervision trigger plan", () => {
     expect(supervisionWindowMinutes(settings, "report")).toBe(60);
     expect(decision.riskTriggered).toBe(true);
     expect(shouldRunSupervisionAi("report", decision)).toBe(true);
+  });
+
+  test("keeps every deterministic review candidate eligible on scheduled checks", () => {
+    const baseDecision = {
+      blacklistTriggered: false,
+      riskTriggered: false,
+      targetTriggered: false,
+      heuristicTriggered: false,
+      heuristicReasons: [],
+    };
+
+    for (const trigger of [
+      "blacklistTriggered",
+      "riskTriggered",
+      "targetTriggered",
+      "heuristicTriggered",
+    ] as const) {
+      expect(shouldRunSupervisionAi("scheduled", {
+        ...baseDecision,
+        [trigger]: true,
+      })).toBe(true);
+    }
+  });
+
+  test("does not turn disabled zero thresholds into permanent scheduled candidates", () => {
+    const decision = supervisionTriggerDecision({
+      ...settings,
+      supervision_blacklist_minutes: 0,
+      supervision_risk_trigger_minutes: 0,
+      supervision_heuristic_triggers: true,
+    }, {
+      blacklistMinutes: 0,
+      riskMinutes: 0,
+      targetMinutes: 0,
+      totalMinutes: 45,
+    }, {
+      targetRuleCount: 0,
+      windowMinutes: 45,
+    });
+
+    expect(decision.blacklistTriggered).toBe(false);
+    expect(decision.riskTriggered).toBe(false);
+    expect(decision.targetTriggered).toBe(false);
+    expect(decision.heuristicTriggered).toBe(false);
+    expect(shouldRunSupervisionAi("scheduled", decision)).toBe(false);
   });
 
   test("uses heuristics to catch early dominant risk before the hard threshold", () => {

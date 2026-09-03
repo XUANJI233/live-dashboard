@@ -1,7 +1,7 @@
 import { safeTimezoneOffset, utcRangeForLocalDate } from "./cdn";
 import { getControllerMemoryFeed } from "./controller-memory";
 import { getControllerPersona } from "./controller-persona";
-import { controllerRestState, listDeviceContexts, getTimelineContext } from "./device-context";
+import { controllerRestState, listDeviceContexts, getTimelineContext, type DeviceContext } from "./device-context";
 import {
   addDays,
   getSummarySettings,
@@ -9,8 +9,12 @@ import {
   validDateString,
 } from "./daily-summary-gen";
 import { hermesControllerEnabled } from "./controller-mode";
+import { fitControllerContextToMcpBudget } from "./controller-context-budget";
 
 export type ControllerContextMode = "supervision" | "companion" | "followup" | "memory" | "policy" | "daily" | "weekly";
+
+const MAX_CONTEXT_DEVICES = 12;
+const MAX_CONTEXT_FROZEN_PACKAGES = 6;
 
 export function getControllerContext(input: {
   mode: ControllerContextMode;
@@ -25,30 +29,70 @@ export function getControllerContext(input: {
     input.timezone_offset_minutes ?? settings.timezone_offset_minutes ?? -480,
   );
   const range = contextRange(input, timezoneOffset, settings.supervision_check_interval_minutes);
-  const devices = listDeviceContexts();
-  return {
+  const allDevices = listDeviceContexts();
+  const truncatedSections = new Set<string>();
+  const devices = selectContextDevices(allDevices, input.device_id).map((device) => {
+    const frozenPackages = device.frozen_packages.slice(0, MAX_CONTEXT_FROZEN_PACKAGES);
+    if (frozenPackages.length < device.frozen_packages.length) {
+      truncatedSections.add("devices.frozen_packages");
+    }
+    return {
+      ...device,
+      frozen_packages: frozenPackages,
+      frozen_packages_count: device.frozen_packages.length,
+      frozen_packages_returned_count: frozenPackages.length,
+      frozen_packages_truncated: frozenPackages.length < device.frozen_packages.length,
+    };
+  });
+  if (devices.length < allDevices.length) truncatedSections.add("devices");
+
+  const timeline = getTimelineContext({
+    start: range.start,
+    end: range.end,
+    deviceId: input.device_id,
+    limit: input.mode === "daily" || input.mode === "weekly" ? 96 : 40,
+    timezoneOffsetMinutes: timezoneOffset,
+  });
+  Object.assign(timeline, {
+    prebudget_segment_count: timeline.segment_count,
+    returned_segment_count: timeline.segment_count,
+  });
+  if (timeline.truncated) truncatedSections.add("timeline");
+
+  const recentEvents = getControllerMemoryFeed({
+    limit: input.mode === "memory" ? 40 : 24,
+    include_messages: true,
+    include_summaries: true,
+    include_device_commands: input.mode === "supervision" || input.mode === "policy",
+  });
+  const recentEventCount = Array.isArray(recentEvents.events) ? recentEvents.events.length : 0;
+  Object.assign(recentEvents, {
+    prebudget_event_count: recentEventCount,
+    returned_event_count: recentEventCount,
+  });
+  if (recentEvents.has_more === true) truncatedSections.add("recent_events");
+
+  return fitControllerContextToMcpBudget({
     schema: "live_dashboard.controller_context.v1",
     generated_at: new Date().toISOString(),
     mode: input.mode,
     controller_active: hermesControllerEnabled(),
     settings,
-    persona: getControllerPersona(),
-    rest_state: controllerRestState(devices),
+    persona: { ...getControllerPersona() },
+    rest_state: controllerRestState(allDevices),
+    available_device_count: allDevices.length,
+    returned_device_count: devices.length,
     devices,
-    timeline: getTimelineContext({
-      start: range.start,
-      end: range.end,
-      deviceId: input.device_id,
-      limit: input.mode === "daily" || input.mode === "weekly" ? 96 : 40,
-      timezoneOffsetMinutes: timezoneOffset,
-    }),
-    recent_events: getControllerMemoryFeed({
-      limit: input.mode === "memory" ? 40 : 24,
-      include_messages: true,
-      include_summaries: true,
-      include_device_commands: input.mode === "supervision" || input.mode === "policy",
-    }),
-  };
+    timeline,
+    recent_events: recentEvents,
+  }, truncatedSections);
+}
+
+function selectContextDevices(devices: DeviceContext[], requestedDeviceId?: string): DeviceContext[] {
+  if (!requestedDeviceId) return devices.slice(0, MAX_CONTEXT_DEVICES);
+  const requested = devices.find((device) => device.device_id === requestedDeviceId);
+  if (!requested) return devices.slice(0, MAX_CONTEXT_DEVICES);
+  return [requested, ...devices.filter((device) => device !== requested)].slice(0, MAX_CONTEXT_DEVICES);
 }
 
 function contextRange(

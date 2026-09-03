@@ -97,6 +97,169 @@ describe("mcp control plane", () => {
     expect(body.result?.structuredContent?.recent_events).toBeDefined();
   });
 
+  test("keeps production-scale controller context below Hermes inline spillover", async () => {
+    const { db } = await import("../src/db");
+    const { handleMcpRequest } = await import("../src/routes/mcp");
+    const suffix = crypto.randomUUID();
+    const devicePrefix = `context-budget-${suffix}`;
+    const messagePrefix = `context-message-${suffix}`;
+    const now = Date.now();
+    const insertActivity = db.prepare(`
+      INSERT INTO activities (
+        device_id, device_name, platform, app_id, app_name, window_title,
+        display_title, extra, title_hash, time_bucket, started_at, created_at
+      )
+      VALUES (?, ?, 'android', ?, ?, '', ?, '{}', ?, ?, ?, ?)
+    `);
+    const insertMessage = db.prepare(`
+      INSERT INTO visitor_messages (
+        id, device_id, viewer_id, viewer_name, kind, direction, text, created_at
+      )
+      VALUES (?, ?, 'owner', 'Owner', 'private', ?, ?, ?)
+    `);
+
+    try {
+      for (let deviceIndex = 0; deviceIndex < 14; deviceIndex += 1) {
+        const deviceId = `${devicePrefix}-${deviceIndex}`;
+        insertDeviceState(db, {
+          device_id: deviceId,
+          device_name: `Production phone ${deviceIndex}`,
+          platform: "android",
+          extra: JSON.stringify({
+            device: {
+              profile: "android_lsp",
+              capabilities: {
+                freeze: true,
+                unfreeze: true,
+                vibrate: true,
+                screen_off: true,
+                screenshot: true,
+                say: true,
+                risk_app_monitor: true,
+                app_time_limit: true,
+              },
+              frozen_packages: Array.from({ length: 12 }, (_, frozenIndex) => ({
+                package_name: `com.example.${"package".repeat(10)}.${deviceIndex}.${frozenIndex}`,
+                app_name: `Frozen ${"application ".repeat(8)}${frozenIndex}`,
+                mode: "suspended",
+                reason: `A specific controller decision ${"with bounded evidence ".repeat(7)}${frozenIndex}`,
+                since: "2026-09-03T00:00:00.000Z",
+                until: "2026-09-03T12:00:00.000Z",
+              })),
+              installed_apps: Array.from({ length: 120 }, (_, appIndex) => ({
+                package_name: `com.example.app.${appIndex}`,
+                app_name: `Installed app ${appIndex}`,
+              })),
+              installed_apps_updated_at: "2026-09-03T00:00:00.000Z",
+              device_kind: "phone",
+            },
+          }),
+        });
+      }
+
+      for (let index = 0; index < 50; index += 1) {
+        const startedAt = new Date(now - (55 - index) * 60_000).toISOString();
+        const deviceId = `${devicePrefix}-${index % 6}`;
+        insertActivity.run(
+          deviceId,
+          `Production phone ${index % 6}`,
+          `com.example.activity.${index}`,
+          `Application ${index}`,
+          `Observed title ${index} ${"with useful activity detail ".repeat(5)}`,
+          `${suffix}-${index}`,
+          index,
+          startedAt,
+          startedAt,
+        );
+      }
+
+      for (let index = 0; index < 24; index += 1) {
+        const createdAt = new Date(now - (24 - index) * 30_000).toISOString();
+        insertMessage.run(
+          `${messagePrefix}-${index}`,
+          `${devicePrefix}-${index % 6}`,
+          index % 2 === 0 ? "inbound" : "outbound",
+          `对话 ${index}: 路径 C:\\学习\\记录，原话是 \"继续\"。${"具体学习上下文和后续细节 ".repeat(15)}`,
+          createdAt,
+        );
+      }
+
+      const response = await handleMcpRequest(mcpRequest({
+        method: "tools/call",
+        params: {
+          name: "live_dashboard.get_controller_context",
+          arguments: { mode: "supervision", window_minutes: 60 },
+        },
+      }), localMcpAccess());
+      const responseText = await response.text();
+      const body = JSON.parse(responseText) as {
+        result?: {
+          content?: Array<{ type: string; text?: string }>;
+          structuredContent?: Record<string, unknown>;
+        };
+      };
+      const text = body.result?.content?.find((item) => item.type === "text")?.text ?? "";
+      const structuredContent = body.result?.structuredContent ?? {};
+      const hermesResult = JSON.stringify({ result: structuredContent });
+      const timeline = structuredContent.timeline as {
+        prebudget_segment_count?: number;
+        returned_segment_count?: number;
+        segment_count?: number;
+      } | undefined;
+      const recentEvents = structuredContent.recent_events as {
+        prebudget_event_count?: number;
+        returned_event_count?: number;
+        events?: Array<{ event_id?: string }>;
+      } | undefined;
+
+      expect(response.status).toBe(200);
+      expect(JSON.parse(text)).toEqual(structuredContent);
+      expect(new TextEncoder().encode(JSON.stringify(structuredContent)).byteLength).toBeLessThanOrEqual(24_000);
+      expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(24_000);
+      expect(hermesResult.length).toBeLessThan(25_000);
+      expect(new TextEncoder().encode(hermesResult).byteLength).toBeLessThan(25_000);
+      expect(new TextEncoder().encode(responseText).byteLength).toBeLessThan(52_000);
+      expect(timeline?.segment_count).toBeGreaterThan(0);
+      expect(timeline?.segment_count).toBeLessThan(40);
+      expect(timeline?.prebudget_segment_count).toBe(40);
+      expect(timeline?.returned_segment_count).toBe(timeline?.segment_count);
+      expect(recentEvents?.prebudget_event_count).toBe(24);
+      expect(recentEvents?.returned_event_count).toBe(recentEvents?.events?.length);
+      expect(structuredContent).toMatchObject({
+        schema: "live_dashboard.controller_context.v1",
+        mode: "supervision",
+        bounds: {
+          max_structured_bytes: 24_000,
+          truncated: true,
+          decision_complete: true,
+          followup_required: false,
+        },
+      });
+      expect(Number(structuredContent.available_device_count)).toBeGreaterThanOrEqual(14);
+
+      const targetedResponse = await handleMcpRequest(mcpRequest({
+        method: "tools/call",
+        params: {
+          name: "live_dashboard.get_controller_context",
+          arguments: {
+            mode: "supervision",
+            window_minutes: 60,
+            device_id: `${devicePrefix}-13`,
+          },
+        },
+      }), localMcpAccess());
+      const targetedBody = await targetedResponse.json() as {
+        result?: { structuredContent?: { devices?: Array<{ device_id?: string }> } };
+      };
+      expect(targetedBody.result?.structuredContent?.devices?.map((device) => device.device_id))
+        .toContain(`${devicePrefix}-13`);
+    } finally {
+      db.prepare("DELETE FROM visitor_messages WHERE id LIKE ?").run(`${messagePrefix}%`);
+      db.prepare("DELETE FROM activities WHERE device_id LIKE ?").run(`${devicePrefix}%`);
+      db.prepare("DELETE FROM device_states WHERE device_id LIKE ?").run(`${devicePrefix}%`);
+    }
+  });
+
   test("requires explicit opt-in for tokenless loopback MCP", async () => {
     const { handleMcpRequest } = await import("../src/routes/mcp");
     const previousToken = process.env.MCP_SERVER_TOKEN;

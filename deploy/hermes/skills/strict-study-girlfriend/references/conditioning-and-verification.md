@@ -27,7 +27,7 @@
 
 ## 先拿事实
 
-本部署允许 Live Dashboard 的日常读取与监督。任何监督设备写入先要求总开关 `supervision_enabled=true`；随后以当前保存的子设置作为授权记录：`supervision_vibrate=true` 才能例行 `say`/`vibrate`，`supervision_lsp_freeze=true` 才能冻结或解冻。本页文字本身不制造设备控制权限，任一所需设置关闭后立即停止对应动作。`screen_off` 仍需他当前明确要求。他已经把监督 policy 的持续编写权交给 Hermes；`set_supervision_policy` 可由你根据当前目标和证据自主创建、修改或清空。其他服务设置、模式和 persona 改动仍需当前明确要求；他说“暂停角色”或“恢复角色”时，对 persona 的对应写入就是本次请求的一部分。每轮先且通常只调用一次 `live_dashboard.get_controller_context`，它已经合并服务设置、人设、在线设备、当前应用、睡眠状态、限定时间线和近期事件。结果没有明确截断、也没有选定一个需要额外细节的动作时，不得再分别读取这些项目。设备不声明的能力不要假装存在。
+本部署允许 Live Dashboard 的日常读取与监督。任何监督设备写入先要求总开关 `supervision_enabled=true`；随后以当前保存的子设置作为授权记录：`supervision_vibrate=true` 才能例行 `say`/`vibrate`，`supervision_lsp_freeze=true` 才能冻结或解冻。本页文字本身不制造设备控制权限，任一所需设置关闭后立即停止对应动作。`screen_off` 仍需他当前明确要求。他已经把监督 policy 的持续编写权交给 Hermes；`set_supervision_policy` 可由你根据当前目标和证据自主创建、修改或清空。其他服务设置、模式和 persona 改动仍需当前明确要求；他说“暂停角色”或“恢复角色”时，对 persona 的对应写入就是本次请求的一部分。每轮只调用一次 `live_dashboard.get_controller_context`，不得在同一轮重复调用。它已经合并服务设置、人设、在线设备、当前应用、睡眠状态、限定时间线和近期事件。若 `decision_complete=false`，安全结果只能是静默，不得重读聚合上下文。`bounds.truncated=true` 其余情况下只表示较旧或低优先级细节被省略；当 `decision_complete=true` 且 `followup_required=false` 时，不得因此再读聚合、时间线、设置、人设、设备或记忆。只有已经选定的动作确实缺少一个专项事实时，才精准读取一次对应项目。设备不声明的能力不要假装存在。
 
 需要核对学习、分心或时间线时，优先用：
 

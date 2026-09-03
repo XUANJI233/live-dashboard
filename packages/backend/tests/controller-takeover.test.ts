@@ -171,6 +171,69 @@ describe("Hermes controller takeover", () => {
     expect(events[0]?.device_ids).toEqual(expect.arrayContaining([deviceId]));
   });
 
+  test("does not send a quiet scheduled check to Hermes", async () => {
+    const { db } = await import("../src/db");
+    const { getSummarySettings, saveSummarySettings } = await import("../src/services/daily-summary-gen");
+    const { runSupervisionTick } = await import("../src/services/supervision");
+    const now = new Date("2026-07-04T13:31:00.000Z");
+    const deviceId = "android-quiet-scheduled";
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_URL = "https://controller.example/webhooks/live-supervision";
+    process.env.CONTROLLER_WEBHOOK_SECRET = "independent-controller-secret";
+    db.prepare("DELETE FROM meta WHERE key LIKE 'supervision_last_%'").run();
+    saveSummarySettings({
+      ...getSummarySettings(),
+      supervision_enabled: true,
+      supervision_skip_watch_sleep: false,
+      supervision_heuristic_triggers: false,
+      supervision_check_interval_minutes: 30,
+      supervision_blacklist_minutes: 5,
+      supervision_risk_trigger_minutes: 5,
+      supervision_rules: {
+        whitelist_app_regex: ["Reader"],
+        blacklist_app_regex: [],
+        risk_app_regex: [],
+        target_app_regex: [],
+        reason: "quiet scheduled check",
+      },
+    });
+    db.prepare(`
+      INSERT OR REPLACE INTO device_states (
+        device_id, device_name, platform, app_id, app_name, window_title, display_title, last_seen_at, extra, is_online
+      ) VALUES (?, 'Android', 'android', 'com.example.reader', 'Reader', '', 'Reader', ?, ?, 1)
+    `).run(deviceId, now.toISOString(), JSON.stringify({ device: { profile: "android_lsp" } }));
+    const insertActivity = db.prepare(`
+      INSERT INTO activities (
+        device_id, device_name, platform, app_id, app_name, window_title, display_title, extra, title_hash, time_bucket, started_at
+      ) VALUES (?, 'Android', 'android', 'com.example.reader', 'Reader', '', 'Reader', '{}', ?, ?, ?)
+    `);
+    insertActivity.run(deviceId, "quiet-reader-1", 1, new Date(now.getTime() - 20 * 60_000).toISOString());
+    insertActivity.run(deviceId, "quiet-reader-2", 2, new Date(now.getTime() - 5 * 60_000).toISOString());
+
+    const originalFetch = globalThis.fetch;
+    let webhookCalls = 0;
+    globalThis.fetch = (async (
+      _input: Parameters<typeof fetch>[0],
+      _init?: Parameters<typeof fetch>[1],
+    ) => {
+      webhookCalls += 1;
+      return Response.json({ status: "unexpected" });
+    }) as typeof fetch;
+    try {
+      const result = await runSupervisionTick(now, { source: "scheduled" });
+      expect(result).toMatchObject({
+        ok: true,
+        ran: false,
+        reason: "trigger_not_met",
+        source: "scheduled",
+      });
+      expect(webhookCalls).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("saves supervision settings and queues Hermes policy reconciliation", async () => {
     const { handleSummarySettingsUpdate } = await import("../src/routes/daily-summary");
     process.env.HERMES_CONTROLLER_ENABLED = "true";

@@ -40,8 +40,10 @@ export function supervisionTriggerDecision(
   stats: SupervisionTriggerStats,
   options: { targetRuleCount: number; windowMinutes: number },
 ): SupervisionTriggerDecision {
-  const blacklistTriggered = stats.blacklistMinutes >= settings.supervision_blacklist_minutes;
-  const riskTriggered = stats.riskMinutes >= settings.supervision_risk_trigger_minutes;
+  const blacklistTriggered = settings.supervision_blacklist_minutes > 0 &&
+    stats.blacklistMinutes >= settings.supervision_blacklist_minutes;
+  const riskTriggered = settings.supervision_risk_trigger_minutes > 0 &&
+    stats.riskMinutes >= settings.supervision_risk_trigger_minutes;
   const targetTriggered = options.targetRuleCount > 0 &&
     stats.targetMinutes < settings.supervision_target_min_minutes &&
     stats.totalMinutes >= Math.min(50, options.windowMinutes);
@@ -57,7 +59,7 @@ export function supervisionTriggerDecision(
 }
 
 export function shouldRunSupervisionAi(source: SupervisionRunSource, decision: SupervisionTriggerDecision): boolean {
-  if (source === "scheduled") return true;
+  if (source !== "scheduled") return true;
   return decision.blacklistTriggered || decision.riskTriggered || decision.targetTriggered || decision.heuristicTriggered;
 }
 
@@ -73,6 +75,7 @@ function heuristicTriggerReasons(
 
   const earlyBlacklistMinutes = Math.min(3, settings.supervision_blacklist_minutes);
   if (
+    settings.supervision_blacklist_minutes > 0 &&
     stats.blacklistMinutes >= earlyBlacklistMinutes &&
     stats.targetMinutes === 0 &&
     stats.blacklistMinutes * 2 >= activeMinutes
@@ -82,6 +85,7 @@ function heuristicTriggerReasons(
 
   const earlyRiskMinutes = Math.min(2, settings.supervision_risk_trigger_minutes);
   if (
+    settings.supervision_risk_trigger_minutes > 0 &&
     stats.riskMinutes >= earlyRiskMinutes &&
     (stats.targetMinutes === 0 || stats.riskMinutes * 2 >= activeMinutes)
   ) {

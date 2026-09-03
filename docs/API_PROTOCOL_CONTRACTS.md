@@ -531,11 +531,11 @@ Hermes 模式下，Live 可把高价值的确定性监督候选作为最小事�
 }
 ```
 
-- 事件只表示“请 Hermes 复核”，不是 Live 已确认偏离。显式设备请求可直接成为候选；普通报告仍经过白名单/黑名单/风险规则；定时检查按保存的间隔产生候选。
+- 事件只表示“请 Hermes 复核”，不是 Live 已确认偏离。显式设备请求可直接成为候选；普通报告仍经过白名单/黑名单/风险规则；定时检查到达保存间隔后，只有 AI 已保存策略中的黑名单、风险、目标不足或启发式条件形成确定性候选时才唤醒 Hermes，安静轮次在模型前结束。
 - `v` 当前固定为 `1`；`event_id`、`device_ids` 和 `reason_codes` 只允许协议规定的 ASCII 安全集合。
 - `event_id` 由通知冷却时间桶和已验证设备集合稳定派生；同一时间桶内的重试必须复用同一 ID。
 - Payload 只携带稳定元数据，不携带原始窗口标题、时间线、AI 自由文本、token 或密钥；Hermes 收到后必须通过 MCP 读取必要的最小时间窗并自行复核。
-- `live_dashboard.get_controller_context` 是 Hermes 每轮首选读取：一次返回设置、人设、设备/睡眠状态、有界时间线和近期事件；没有截断或选定动作时不得重复拆成多次 MCP 读取。
+- `live_dashboard.get_controller_context` 是 Hermes 每轮唯一的聚合读取：一次返回设置、人设、设备/睡眠状态、有界时间线和近期事件。`content` 是不缩进的完整 JSON，且与 `structuredContent` 语义完全相同，以兼容只识别任一视图的 MCP 客户端；两者各自的 UTF-8 上限为 24 KB。Hermes 适配器在进入模型上下文前对等价视图去重，所以模型侧结果保持在 50K spillover 阈值以内。`bounds.truncated=true` 只代表省略较旧或低优先级信息；当 `decision_complete=true` 且 `followup_required=false` 时不得据此重复读取。只有选定动作确实缺少一个具体事实时，才允许调用对应的单项工具。
 - 事件使用上述 V2 HMAC headers；Hermes 应把 `X-Request-ID` 作为幂等键。
 - 候选节流不复用设备命令的 `supervision_last_alert_at`，避免检测与执行相互抑制。
 - Docker 内的 Live 访问宿主 Hermes 时使用仅宿主/容器可达地址；不要把 Hermes Webhook 端口代理到公网。
