@@ -1,5 +1,77 @@
+import type { TimelineSegment } from "../types";
+import { promptText } from "./prompt-text";
+
 const MAX_PATTERN_COUNT = 12;
 const MAX_PATTERN_LENGTH = 120;
+
+export interface CompiledSupervisionRules {
+  whitelist: RegExp[];
+  blacklist: RegExp[];
+  risk: RegExp[];
+  target: RegExp[];
+  whitelistPatterns: string[];
+  blacklistPatterns: string[];
+  riskPatterns: string[];
+  targetPatterns: string[];
+}
+
+export interface SupervisionRuleMatch {
+  whitelisted: boolean;
+  blacklisted: boolean;
+  risked: boolean;
+  targeted: boolean;
+}
+
+export function compileSupervisionRules(rules: {
+  whitelist_app_regex: unknown;
+  blacklist_app_regex: unknown;
+  risk_app_regex: unknown;
+  target_app_regex: unknown;
+}): CompiledSupervisionRules {
+  const whitelistPatterns = normalizeSupervisionPatternList(rules.whitelist_app_regex);
+  const blacklistPatterns = normalizeSupervisionPatternList(rules.blacklist_app_regex);
+  const riskPatterns = normalizeSupervisionPatternList(rules.risk_app_regex);
+  const targetPatterns = normalizeSupervisionPatternList(rules.target_app_regex);
+  return {
+    whitelist: compileRegexList(whitelistPatterns),
+    blacklist: compileRegexList(blacklistPatterns),
+    risk: compileRegexList(riskPatterns),
+    target: compileRegexList(targetPatterns),
+    whitelistPatterns,
+    blacklistPatterns,
+    riskPatterns,
+    targetPatterns,
+  };
+}
+
+// Server-side rules match the combined app name, id, and title of one timeline
+// segment; trigger statistics and the controller usage digest share this result.
+export function matchSegmentSupervisionRules(
+  segment: Pick<TimelineSegment, "app_name" | "app_id" | "display_title">,
+  rules: CompiledSupervisionRules,
+): SupervisionRuleMatch {
+  const text = promptText(`${segment.app_name} ${segment.app_id} ${segment.display_title}`, 240);
+  const whitelisted = rules.whitelist.some((rule) => rule.test(text));
+  return {
+    whitelisted,
+    blacklisted: !whitelisted && rules.blacklist.some((rule) => rule.test(text)),
+    risked: !whitelisted && rules.risk.some((rule) => rule.test(text)),
+    targeted: rules.target.some((rule) => rule.test(text)),
+  };
+}
+
+function compileRegexList(patterns: string[]): RegExp[] {
+  const out: RegExp[] = [];
+  for (const pattern of patterns.slice(0, MAX_PATTERN_COUNT)) {
+    if (!isSafeSupervisionPattern(pattern)) continue;
+    try {
+      out.push(new RegExp(pattern, "i"));
+    } catch {
+      // Skip invalid AI-generated patterns.
+    }
+  }
+  return out;
+}
 
 export function normalizeSupervisionPatternList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];

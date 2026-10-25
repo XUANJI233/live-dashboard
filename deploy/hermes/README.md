@@ -22,3 +22,24 @@ Production secrets and job IDs are not stored here. Deploy the scripts under the
 Set `HERMES_CONTROLLER_ENABLED=true` in both the Live container environment and the Hermes profile environment. In this mode, attach both `live-mentor` and `strict-study-girlfriend` to the supervision, companion, memory, daily-summary, and weekly-summary jobs. The former controls facts and authority; the latter controls relationship and output. To use Live AI fallback, explicitly set the flag to `false`, pause those Hermes jobs, and restart Live; never switch automatically from a health probe because that can create two active controllers.
 
 Before enabling unattended jobs, obtain the user's explicit consent, save `supervision_enabled=true`, initialize the Live controller persona with `enabled=true`, and verify current supervision sub-settings. The master supervision switch is the proactive-contact and device-action grant; enabled subsettings narrow vibration and LSP freeze/unfreeze. Persona `enabled` controls whether strict voice is active, not consent by itself. A user pause sets persona `enabled=false`; all unattended prompts must re-read both records and stay silent until an explicit resume.
+
+## Token budget
+
+Every Hermes wake is a full agent turn, so cost grows with how often Live wakes Hermes and with what each wake carries. Fixed payload measured on 2026-10-25:
+
+- `live_dashboard` MCP tool schemas: 30 tools, about 30 KB (7-9K tokens), sent with every model call.
+- `strict-study-girlfriend`: `SKILL.md` about 9 KB, `references/voice.md` about 12 KB, `references/conditioning-and-verification.md` about 43 KB (9-14K tokens). A file loaded with `skill_view` stays in the session until compaction.
+- `live-mentor`: `SKILL.md` and `REFERENCE.md` together about 13 KB.
+- `get_controller_context`: up to 24 KB per call.
+
+The prompts check deterministic gates before loading strict references and treat skills and references as conversation-scoped: a file whose full text is already in the session is reused instead of loaded again for every event. Every user-facing reply or device action still loads the references its mode requires. Live merges repeated rule-matched reports into one review per device per 10 minutes, and does not wake Hermes for a due periodic review whose usage digest is materially unchanged since the last delivered one (at most two skips in a row, never once that review is four hours old); explicit device requests are never merged or skipped. Supervision, companion, and follow-up contexts carry a whole-window `usage_digest` and only the newest timeline segments, so older detail is one `get_device_timeline` call away instead of riding along on every wake.
+
+Any wake that continues a long-lived session also replays that session's history: the Weixin DM session always does, and with `session_events` enabled every Live event and companion or follow-up candidate continues one shared session (`session_events.session_key`). Upstream Hermes compacts only at `compression.threshold` of the model context window (50% by default, at least 75% for windows under 512K), so on a large-window model one wake can replay hundreds of thousands of tokens. Cap long-lived sessions in the Hermes profile `config.yaml` and tune the value from measurements:
+
+```yaml
+compression:
+  threshold_tokens: 100000
+  idle_compact_after_seconds: 1800
+```
+
+`idle_compact_after_seconds` trades one summary call for smaller replays across the steps of a wake that arrives after 30 idle minutes; keep it only if totals drop. Measure before and after with `hermes insights --days 7` (tokens by source), `hermes prompt-size` (system prompt, skills index, and tool schemas), and `usage_summary.py` (cron jobs, including `silent_calls`, which is spend that ended in `[SILENT]`). Check whether session-event wakes appear in `cron/usage_audit.jsonl`; if they do not, `hermes insights` is the only place they are counted.

@@ -10,11 +10,17 @@ import {
 } from "./daily-summary-gen";
 import { hermesControllerEnabled } from "./controller-mode";
 import { fitControllerContextToMcpBudget } from "./controller-context-budget";
+import { compileSupervisionRules } from "./supervision-patterns";
+import { loadUsageDigest } from "./usage-digest";
 
 export type ControllerContextMode = "supervision" | "companion" | "followup" | "memory" | "policy" | "daily" | "weekly";
 
 const MAX_CONTEXT_DEVICES = 12;
 const MAX_CONTEXT_FROZEN_PACKAGES = 6;
+// Frequent wakes read the whole-window usage digest first and keep only the newest
+// timeline segments; Hermes fetches older detail with get_device_timeline when needed.
+const RECENT_ONLY_MODES = new Set<ControllerContextMode>(["supervision", "companion", "followup"]);
+const RECENT_TIMELINE_SEGMENTS = 8;
 
 export function getControllerContext(input: {
   mode: ControllerContextMode;
@@ -46,18 +52,29 @@ export function getControllerContext(input: {
   });
   if (devices.length < allDevices.length) truncatedSections.add("devices");
 
+  const usageDigest = loadUsageDigest({
+    start: range.start,
+    end: range.end,
+    rules: compileSupervisionRules(settings.supervision_rules),
+    preferDeviceId: input.device_id,
+  });
+  if (usageDigest.truncated) truncatedSections.add("usage_digest");
+
+  const recentOnly = RECENT_ONLY_MODES.has(input.mode);
   const timeline = getTimelineContext({
     start: range.start,
     end: range.end,
     deviceId: input.device_id,
-    limit: input.mode === "daily" || input.mode === "weekly" ? 96 : 40,
+    limit: recentOnly ? RECENT_TIMELINE_SEGMENTS : input.mode === "daily" || input.mode === "weekly" ? 96 : 40,
     timezoneOffsetMinutes: timezoneOffset,
   });
   Object.assign(timeline, {
     prebudget_segment_count: timeline.segment_count,
     returned_segment_count: timeline.segment_count,
+    recent_only: recentOnly,
   });
-  if (timeline.truncated) truncatedSections.add("timeline");
+  // A recent-only timeline is complete by design: the digest covers the whole window.
+  if (timeline.truncated && !recentOnly) truncatedSections.add("timeline");
 
   const recentEvents = getControllerMemoryFeed({
     limit: input.mode === "memory" ? 40 : 24,
@@ -83,6 +100,7 @@ export function getControllerContext(input: {
     available_device_count: allDevices.length,
     returned_device_count: devices.length,
     devices,
+    usage_digest: usageDigest,
     timeline,
     recent_events: recentEvents,
   }, truncatedSections);

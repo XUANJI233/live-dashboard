@@ -532,11 +532,14 @@ Hermes 模式下，Live 可把高价值的确定性监督候选作为最小事�
 }
 ```
 
-- 事件只表示“请 Hermes 复核”，不是 Live 已确认偏离。显式设备请求可直接成为候选；普通报告仍经过白名单/黑名单/风险规则；定时检查到达保存间隔后，只有 AI 已保存策略中的黑名单、风险、目标不足或启发式条件形成确定性候选时才唤醒 Hermes，安静轮次在模型前结束。
+- 事件只表示“请 Hermes 复核”，不是 Live 已确认偏离。显式设备请求可直接成为候选；普通报告仍经过白名单/黑名单/风险规则；定时检查到达保存间隔后，只有 AI 已保存策略中的黑名单、风险、目标不足或启发式条件形成确定性候选时才唤醒 Hermes，安静轮次在模型前结束。到点且形成确定性候选的周期复核还会先与上次已投递的周期复核比较时长摘要的实质内容（每台设备占用至少 5 分钟的应用及其规则类别）：没有变化就不唤醒 Hermes，结果为 `usage_unchanged_since_review`；最多连续跳过 2 轮，且距上次已投递的复核满 4 小时必定复核。规则命中和设备显式请求不受此限制。
 - `v` 当前固定为 `1`；`event_id`、`device_ids` 和 `reason_codes` 只允许协议规定的 ASCII 安全集合。
 - `event_id` 由通知冷却时间桶和已验证设备集合稳定派生；同一时间桶内的重试必须复用同一 ID。
+- 普通上报的规则命中按设备使用 10 分钟冷却桶：应用持续打开时每次上报都会命中，同一窗口内只产生一次复核事件，与 LSP 同一应用的请求冷却一致。设备显式请求（`device_requested`）仍用 1 分钟桶，由设备端节流。
 - Payload 只携带稳定元数据，不携带原始窗口标题、时间线、AI 自由文本、token 或密钥；Hermes 收到后必须通过 MCP 读取必要的最小时间窗并自行复核。
-- `live_dashboard.get_controller_context` 是 Hermes 每轮唯一的聚合读取：一次返回设置、人设、设备/睡眠状态、有界时间线和近期事件。`content` 是不缩进的完整 JSON，且与 `structuredContent` 语义完全相同，以兼容只识别任一视图的 MCP 客户端；两者各自的 UTF-8 上限为 24 KB。Hermes 适配器在进入模型上下文前对等价视图去重，所以模型侧结果保持在 50K spillover 阈值以内。`bounds.truncated=true` 只代表省略较旧或低优先级信息；当 `decision_complete=true` 且 `followup_required=false` 时不得据此重复读取。只有选定动作确实缺少一个具体事实时，才允许调用对应的单项工具。
+- `live_dashboard.get_controller_context` 是 Hermes 每轮唯一的聚合读取：一次返回设置、人设、设备/睡眠状态、`usage_digest`、有界时间线和近期事件。`content` 是不缩进的完整 JSON，且与 `structuredContent` 语义完全相同，以兼容只识别任一视图的 MCP 客户端；两者各自的 UTF-8 上限为 24 KB。Hermes 适配器在进入模型上下文前对等价视图去重，所以模型侧结果保持在 50K spillover 阈值以内。`bounds.truncated=true` 只代表省略较旧或低优先级信息；当 `decision_complete=true` 且 `followup_required=false` 时不得据此重复读取。只有选定动作确实缺少一个具体事实时，才允许调用对应的单项工具。
+- `usage_digest`（schema `live_dashboard.usage_digest.v1`）由 Live 用代码计算，不调用模型，覆盖整个上下文窗口。每台设备（最多 6 台，按活跃时长排序，请求的 `device_id` 排第一）给出 `active_minutes`、`current`（当前应用、类别、开始时间与连续分钟）、`class_minutes`、前 6 个应用的分钟与类别，以及 `app_count` 和 `switches`。类别按已保存的监督规则判定，每段只计入第一个命中的 `blacklist`、`risk`、`target`、`whitelist`，都不命中为 `unclassified`。摘要只含应用名和包名，不含窗口标题；行数超限时保留最新部分并标记 `truncated=true`。
+- `supervision`、`companion`、`followup` 模式的 `timeline` 只保留最近 8 段并带 `recent_only=true`，这本身不算截断，不进入 `bounds.truncated_sections`。摘要留下与决策相关的疑问时，Hermes 对一台设备、一个时间窗调用一次 `live_dashboard.get_device_timeline` 查看细节。其它模式的时间线上限不变。
 - 事件使用上述 V2 HMAC headers；Hermes 应把 `X-Request-ID` 作为幂等键。
 - 候选节流不复用设备命令的 `supervision_last_alert_at`，避免检测与执行相互抑制。
 - Docker 内的 Live 访问宿主 Hermes 时使用仅宿主/容器可达地址；不要把 Hermes Webhook 端口代理到公网。

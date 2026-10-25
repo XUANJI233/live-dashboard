@@ -73,7 +73,7 @@ export function createLiveDashboardMcpServer(): McpServer {
     instructions: [
       "Live Dashboard MCP exposes local-only device context and control tools.",
       "Read-only tools inspect dashboard state; they never change settings or device state.",
-      "Hermes should start each decision with live_dashboard.get_controller_context and avoid separate settings, persona, device, timeline, and memory reads. Its bounds.truncated flag only means older or lower-priority detail was omitted; do not re-read solely for that flag because bounds.decision_complete remains true and bounds.followup_required remains false. Read one specific detail only after choosing an action that requires it.",
+      "Hermes should start each decision with live_dashboard.get_controller_context and avoid separate settings, persona, device, timeline, and memory reads. Its bounds.truncated flag only means older or lower-priority detail was omitted; do not re-read solely for that flag because bounds.decision_complete remains true and bounds.followup_required remains false. Its usage_digest covers the whole window; supervision, companion, and followup timelines keep only the newest segments. Read one specific detail only after choosing an action that requires it, or call get_device_timeline once for one device and window when the digest leaves a decision-relevant question.",
       "live_dashboard.send_device_commands is only for immediate one-shot device actions such as say, vibrate, screen_off, freeze, or unfreeze.",
       "live_dashboard.capture_device_screenshot captures the current Android LSP display on demand and may be used whenever current visual evidence is relevant. The screenshot is short-lived and returned once.",
       "Coyote electrostimulation tools only operate an Android-connected device after the user explicitly enables remote control. Cold starts and adjustments are hard-bounded; stop and emergency stop remain available without that grant.",
@@ -275,7 +275,7 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.get_controller_context", {
     title: "Get bounded controller context",
-    description: "Preferred first and normally only read for Hermes decisions. Returns settings, persona, minimal device state, one bounded timeline, and recent controller events in one call. Bounded truncation preserves a decision-complete newest-first view and never by itself requires another read.",
+    description: "Preferred first and normally only read for Hermes decisions. Returns settings, persona, minimal device state, a whole-window usage digest, one bounded timeline (newest segments only in supervision, companion, and followup modes), and recent controller events in one call. Bounded truncation preserves a decision-complete newest-first view and never by itself requires another read.",
     inputSchema: ControllerContextSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(

@@ -8,7 +8,6 @@ import {
   saveSummarySettings,
   summaryTimezoneOffset,
   type SummarySettings,
-  type SupervisionRules,
   weekdayLabel,
 } from "./daily-summary-gen";
 import { AI_CHAT_TIMEOUT_MS, getAiRuntimeConfig, requestAiObjectCompletion, requestAiObjectCompletionWithCachePriming, type AiChatMessage, type AiRuntimeConfig } from "./ai-config";
@@ -37,7 +36,19 @@ import {
   type SupervisionCommandDecision,
   type SupervisionDecision,
 } from "./supervision-ai-response";
-import { isSafeSupervisionPattern, normalizeSupervisionPatternList } from "./supervision-patterns";
+import {
+  compileSupervisionRules,
+  matchSegmentSupervisionRules,
+  normalizeSupervisionPatternList,
+  type CompiledSupervisionRules,
+} from "./supervision-patterns";
+import { promptText } from "./prompt-text";
+import { materialUsageSignature } from "./usage-digest";
+import {
+  nextScheduledReviewState,
+  readScheduledReviewState,
+  writeScheduledReviewState,
+} from "./supervision-review-gate";
 import {
   shouldRunSupervisionAi,
   scheduledSupervisionIntervalMinutes,
@@ -64,6 +75,10 @@ const MAX_INSTALLED_APPS_PER_DEVICE = 120;
 const SUPERVISION_RULES_MAX_TOKENS = 8192;
 const SUPERVISION_VERIFY_MAX_TOKENS = 8192;
 const REPORT_TRIGGER_MIN_INTERVAL_MS = 60_000;
+// A matched app keeps matching on every report while it stays open, and each
+// Hermes review is a full agent turn. One review per device per window matches
+// the LSP same-app request cooldown; explicit device requests stay per-minute.
+const HERMES_RULE_MATCH_REVIEW_COOLDOWN_MINUTES = 10;
 // Rolling-upgrade cleanup for Android 10200 and older, which pre-froze a risk
 // match before controller review. Current clients only emit a review request.
 const PENDING_RISK_FREEZE_REASON = "pending_supervision_review";
@@ -201,7 +216,7 @@ export async function runSupervisionTick(
     return { ok: true, ran: false, reason: "scheduled_check_not_due", source, checked_at: checkedAt };
   }
 
-  const rules = compileRules(settings.supervision_rules);
+  const rules = compileSupervisionRules(settings.supervision_rules);
   const windowMinutes = supervisionWindowMinutes(settings, source);
   const rangeEnd = now;
   const rangeStart = new Date(now.getTime() - windowMinutes * 60_000);
@@ -227,6 +242,15 @@ export async function runSupervisionTick(
     if (deviceIds.length === 0) {
       return { ok: true, ran: false, reason: "no_controller_devices", source, checked_at: checkedAt };
     }
+    // A due periodic review whose material usage matches the last delivered one
+    // gives Hermes nothing new to judge; report and explicit reviews always pass.
+    const reviewGate = source === "scheduled" && !options.force
+      ? nextScheduledReviewState(readScheduledReviewState(), materialUsageSignature(segments, rules), now)
+      : null;
+    if (reviewGate?.skip) {
+      writeScheduledReviewState(reviewGate.state);
+      return { ok: true, ran: false, reason: "usage_unchanged_since_review", source, checked_at: checkedAt };
+    }
     const reasonCodes = controllerTriggerReasonCodes(source, triggers);
     const eventId = controllerWebhookEventId(
       deviceIds,
@@ -246,6 +270,7 @@ export async function runSupervisionTick(
     if (!queued) {
       return { ok: false, ran: false, reason: "controller_event_invalid", source, checked_at: checkedAt };
     }
+    if (reviewGate) writeScheduledReviewState(reviewGate.state);
     await flushControllerEvents(now);
     const delivered = controllerEventDelivered(eventId);
     return {
@@ -337,7 +362,7 @@ export function requestSupervisionCheckForReport(candidate: SupervisionReportCan
   if (settings.supervision_skip_watch_sleep && trustedWatchSleepingAt(now)) return false;
   if (!isReportTriggerDue(now)) return false;
 
-  const rules = compileRules(settings.supervision_rules);
+  const rules = compileSupervisionRules(settings.supervision_rules);
   const ruleMatched = matchesReportCandidate(candidate, rules);
   if (!candidate.requested && !ruleMatched) return false;
 
@@ -348,7 +373,11 @@ export function requestSupervisionCheckForReport(candidate: SupervisionReportCan
       return false;
     }
     const occurredAt = now.toISOString();
-    const eventId = controllerWebhookEventId([deviceId], now, 1);
+    const eventId = controllerWebhookEventId(
+      [deviceId],
+      now,
+      candidate.requested ? 1 : HERMES_RULE_MATCH_REVIEW_COOLDOWN_MINUTES,
+    );
     const queued = enqueueControllerEvent({
       schema: CONTROLLER_EVENT_SCHEMA,
       v: 1,
@@ -433,7 +462,7 @@ function isReportTriggerDue(now: Date): boolean {
   return now.getTime() - last >= REPORT_TRIGGER_MIN_INTERVAL_MS;
 }
 
-function matchesReportCandidate(candidate: SupervisionReportCandidate, rules: CompiledRules): boolean {
+function matchesReportCandidate(candidate: SupervisionReportCandidate, rules: CompiledSupervisionRules): boolean {
   if (candidate.platform !== "android") return false;
   const text = supervisionReportText(candidate);
   if (!text) return false;
@@ -736,17 +765,6 @@ function buildVerifyPromptParts(
   return { context: contextLines.join("\n"), final: finalLines.join("\n") };
 }
 
-interface CompiledRules {
-  whitelist: RegExp[];
-  blacklist: RegExp[];
-  risk: RegExp[];
-  target: RegExp[];
-  whitelistPatterns: string[];
-  blacklistPatterns: string[];
-  riskPatterns: string[];
-  targetPatterns: string[];
-}
-
 interface SupervisionStats {
   blacklistMinutes: number;
   riskMinutes: number;
@@ -788,37 +806,7 @@ interface SupervisionDeviceCapabilities {
   app_time_limit: boolean;
 }
 
-function compileRules(rules: SupervisionRules): CompiledRules {
-  const whitelistPatterns = normalizeSupervisionPatternList(rules.whitelist_app_regex);
-  const blacklistPatterns = normalizeSupervisionPatternList(rules.blacklist_app_regex);
-  const riskPatterns = normalizeSupervisionPatternList(rules.risk_app_regex);
-  const targetPatterns = normalizeSupervisionPatternList(rules.target_app_regex);
-  return {
-    whitelist: compileRegexList(whitelistPatterns),
-    blacklist: compileRegexList(blacklistPatterns),
-    risk: compileRegexList(riskPatterns),
-    target: compileRegexList(targetPatterns),
-    whitelistPatterns,
-    blacklistPatterns,
-    riskPatterns,
-    targetPatterns,
-  };
-}
-
-function compileRegexList(patterns: string[]): RegExp[] {
-  const out: RegExp[] = [];
-  for (const pattern of patterns.slice(0, MAX_REGEX_COUNT)) {
-    if (!isSafeSupervisionPattern(pattern)) continue;
-    try {
-      out.push(new RegExp(pattern, "i"));
-    } catch {
-      // Skip invalid AI-generated patterns.
-    }
-  }
-  return out;
-}
-
-function scoreSegments(segments: TimelineSegment[], rules: CompiledRules): SupervisionStats {
+function scoreSegments(segments: TimelineSegment[], rules: CompiledSupervisionRules): SupervisionStats {
   const blacklistApps = new Set<string>();
   const riskApps = new Set<string>();
   const targetApps = new Set<string>();
@@ -831,11 +819,7 @@ function scoreSegments(segments: TimelineSegment[], rules: CompiledRules): Super
   for (const segment of segments) {
     const seconds = Math.max(0, segment.duration_seconds);
     totalSeconds += seconds;
-    const text = promptText(`${segment.app_name} ${segment.app_id} ${segment.display_title}`, 240);
-    const whitelisted = rules.whitelist.some((rule) => rule.test(text));
-    const blacklisted = !whitelisted && rules.blacklist.some((rule) => rule.test(text));
-    const risked = !whitelisted && rules.risk.some((rule) => rule.test(text));
-    const targeted = rules.target.some((rule) => rule.test(text));
+    const { whitelisted, blacklisted, risked, targeted } = matchSegmentSupervisionRules(segment, rules);
     if (whitelisted) whitelistSeconds += seconds;
     if (blacklisted) {
       blacklistSeconds += seconds;
@@ -1277,21 +1261,6 @@ function getRecentSegmentsForRange(start: string, end: string, limit: number): T
   return buildTimelineSegments(rows, { openLast: false })
     .filter((segment) => segment.duration_seconds > 0)
     .slice(-limit);
-}
-
-function promptText(value: string | null | undefined, maxLength: number): string {
-  if (!value) return "";
-  return value
-    .replace(/\r\n?/g, "\n")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
-    .replace(/[<>]/g, " ")
-    .split("\n")
-    .map((line) => line.replace(/[ \t]+/g, " ").trim())
-    .filter(Boolean)
-    .slice(0, 12)
-    .join("\n")
-    .trim()
-    .slice(0, maxLength);
 }
 
 function timestampMs(value: string | null | undefined): number | null {

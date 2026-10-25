@@ -4,6 +4,7 @@ const ALLOWED_TRUNCATED_SECTIONS = new Set([
   "persona",
   "devices",
   "devices.frozen_packages",
+  "usage_digest",
   "timeline",
   "recent_events",
 ]);
@@ -62,6 +63,8 @@ export function fitControllerContextToMcpBudget(
     for (const section of compactLargeTextSections(context)) truncatedSections.add(section);
     syncBounds(context, truncatedSections);
   }
+  trimWhileOversized(context, () => trimUsageDigestApp(context, 2), truncatedSections, "usage_digest");
+  trimWhileOversized(context, () => trimUsageDigestDevice(context, 2), truncatedSections, "usage_digest");
   trimWhileOversized(context, () => trimOldestDevice(context, 4), truncatedSections, "devices");
   trimWhileOversized(context, () => trimOldestRecentEvent(context, 0), truncatedSections, "recent_events");
   trimWhileOversized(context, () => trimOldestTimelineSession(context, 1), truncatedSections, "timeline");
@@ -71,6 +74,7 @@ export function fitControllerContextToMcpBudget(
     truncatedSections.add("recent_events");
     truncatedSections.add("timeline");
     truncatedSections.add("devices");
+    if (isRecord(context.usage_digest)) truncatedSections.add("usage_digest");
     syncBounds(context, truncatedSections);
   }
   return serializedBytes(context) <= MAX_STRUCTURED_BYTES
@@ -186,6 +190,25 @@ function trimOldestDevice(context: BoundedControllerContext, minimum: number): b
   return true;
 }
 
+function trimUsageDigestApp(context: BoundedControllerContext, minimumApps: number): boolean {
+  const devices = recordField(context.usage_digest).devices;
+  if (!Array.isArray(devices)) return false;
+  const device = devices
+    .filter(isRecord)
+    .filter((candidate) => arrayLength(candidate.top_apps) > minimumApps)
+    .sort((left, right) => arrayLength(right.top_apps) - arrayLength(left.top_apps))[0];
+  if (!device || !Array.isArray(device.top_apps)) return false;
+  device.top_apps.pop();
+  return true;
+}
+
+function trimUsageDigestDevice(context: BoundedControllerContext, minimumDevices: number): boolean {
+  const devices = recordField(context.usage_digest).devices;
+  if (!Array.isArray(devices) || devices.length <= minimumDevices) return false;
+  devices.pop();
+  return true;
+}
+
 function compactLargeTextSections(context: BoundedControllerContext): string[] {
   const changed = new Set<string>();
   const settings = recordField(context.settings);
@@ -235,6 +258,13 @@ function replaceWithMinimalContext(context: BoundedControllerContext): void {
     }));
     context.devices = minimalDevices;
     context.returned_device_count = minimalDevices.length;
+  }
+  const usageDigest = recordField(context.usage_digest);
+  if (Array.isArray(usageDigest.devices)) {
+    usageDigest.devices = usageDigest.devices.slice(0, 2).filter(isRecord).map((device) => ({
+      ...device,
+      top_apps: Array.isArray(device.top_apps) ? device.top_apps.slice(0, 2) : [],
+    }));
   }
   const timeline = recordField(context.timeline);
   timeline.truncated = true;

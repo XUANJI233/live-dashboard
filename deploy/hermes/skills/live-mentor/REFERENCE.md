@@ -28,8 +28,8 @@ When `memory_cursor` is null, query with `since=memory_since` and save `next_sin
 
 | Tools | Use | Authority |
 |---|---|---|
-| `get_controller_context` | Exactly one decision-complete bounded settings/persona/device/sleep/timeline/memory read per run | autonomous read |
-| `list_devices`, bounded timelines | One action-specific detail after an action was chosen; never a response to aggregate truncation alone | autonomous read |
+| `get_controller_context` | Exactly one decision-complete bounded settings/persona/device/sleep/usage-digest/timeline/memory read per run | autonomous read |
+| `list_devices`, bounded timelines | One action-specific detail after an action was chosen, or one `get_device_timeline` drill-down when the usage digest leaves a decision-relevant question; never a response to aggregate truncation alone | autonomous read |
 | frozen/installed app lists | Only when directly relevant | sensitive read |
 | `capture_device_screenshot`, `get_device_screenshot` | Current Android LSP visual evidence; returned once | persistently delegated by user |
 | command status | Verify actions | autonomous read |
@@ -45,7 +45,7 @@ When `memory_cursor` is null, query with `since=memory_since` and save `next_sin
 ## Context windows
 
 - Companion: devices plus 30–60 minutes only if useful.
-- Supervision: use the aggregate's bounded event window; do not re-read merely because older detail was truncated.
+- Supervision: judge usage from `usage_digest`, which covers the aggregate's window; the timeline keeps only the newest segments, and older detail was not lost merely because it is absent there.
 - Daily: exact UTC+08:00 calendar day.
 - Weekly: Monday through Sunday in UTC+08:00 from the bounded aggregate; use a narrower day only for an already-selected factual check.
 - Never dump the full timeline or feed into ordinary conversation.

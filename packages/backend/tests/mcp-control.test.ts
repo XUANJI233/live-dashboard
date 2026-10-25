@@ -205,6 +205,12 @@ describe("mcp control plane", () => {
         prebudget_segment_count?: number;
         returned_segment_count?: number;
         segment_count?: number;
+        recent_only?: boolean;
+      } | undefined;
+      const usageDigest = structuredContent.usage_digest as {
+        schema?: string;
+        available_device_count?: number;
+        devices?: Array<{ device_id?: string; active_minutes?: number; top_apps?: unknown[] }>;
       } | undefined;
       const recentEvents = structuredContent.recent_events as {
         prebudget_event_count?: number;
@@ -220,9 +226,17 @@ describe("mcp control plane", () => {
       expect(new TextEncoder().encode(hermesResult).byteLength).toBeLessThan(25_000);
       expect(new TextEncoder().encode(responseText).byteLength).toBeLessThan(52_000);
       expect(timeline?.segment_count).toBeGreaterThan(0);
-      expect(timeline?.segment_count).toBeLessThan(40);
-      expect(timeline?.prebudget_segment_count).toBe(40);
+      // Supervision keeps only the newest segments; the digest covers the whole window.
+      expect(timeline?.recent_only).toBe(true);
+      expect(timeline?.prebudget_segment_count).toBe(8);
       expect(timeline?.returned_segment_count).toBe(timeline?.segment_count);
+      expect(usageDigest?.schema).toBe("live_dashboard.usage_digest.v1");
+      expect(Number(usageDigest?.available_device_count)).toBeGreaterThanOrEqual(6);
+      // Other suites share this database, so only assert bounded, populated digest devices.
+      expect(usageDigest?.devices?.length).toBeGreaterThan(0);
+      expect(usageDigest?.devices?.length).toBeLessThanOrEqual(6);
+      expect(usageDigest?.devices?.every((device) => Number(device.active_minutes) > 0)).toBe(true);
+      expect(usageDigest?.devices?.some((device) => device.device_id?.startsWith(devicePrefix))).toBe(true);
       expect(recentEvents?.prebudget_event_count).toBe(24);
       expect(recentEvents?.returned_event_count).toBe(recentEvents?.events?.length);
       expect(structuredContent).toMatchObject({
