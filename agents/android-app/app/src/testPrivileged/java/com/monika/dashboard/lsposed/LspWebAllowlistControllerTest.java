@@ -6,7 +6,6 @@ import static org.junit.Assert.assertTrue;
 import static org.robolectric.Shadows.shadowOf;
 
 import android.app.Application;
-import android.content.Context;
 import android.content.Intent;
 
 import androidx.test.core.app.ApplicationProvider;
@@ -37,11 +36,7 @@ public class LspWebAllowlistControllerTest {
     @Before
     public void clearPersistedState() {
         context = ApplicationProvider.getApplicationContext();
-        context.createDeviceProtectedStorageContext()
-                .getSharedPreferences("monika_lsp_web_allowlist", Context.MODE_PRIVATE)
-                .edit()
-                .clear()
-                .commit();
+        LspSystemStateFile.file(context, LspWebAllowlistController.STATE_FILE).delete();
     }
 
     @Test

@@ -29,11 +29,7 @@ public class LspSupervisionPolicyPersistenceTest {
     @Before
     public void clearStoredPolicy() {
         context = ApplicationProvider.getApplicationContext();
-        context.createDeviceProtectedStorageContext()
-                .getSharedPreferences(LspSupervisionPolicyStore.PREFS_NAME, Context.MODE_PRIVATE)
-                .edit()
-                .clear()
-                .commit();
+        LspSystemStateFile.file(context, LspSupervisionPolicyStore.FILE_NAME).delete();
     }
 
     @Test

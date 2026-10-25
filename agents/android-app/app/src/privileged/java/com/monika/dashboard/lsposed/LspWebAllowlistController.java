@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.SharedPreferences;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
@@ -49,7 +48,7 @@ final class LspWebAllowlistController {
     static final String EVENT_REQUEST = "request";
     static final String EVENT_BLOCKED = "blocked";
 
-    private static final String PREFS_NAME = "monika_lsp_web_allowlist";
+    static final String STATE_FILE = "web_allowlist_state.json";
     private static final String KEY_PAUSED_UNTIL = "paused_until_ms";
     private static final String KEY_SUSPENDED = "suspended_browsers";
     // Repair suspensions an "unfreeze all" may have lifted, without querying on every foreground change.
@@ -75,14 +74,15 @@ final class LspWebAllowlistController {
 
     /** Restore the persisted policy, pause, and suspension records after a reboot. */
     synchronized void restore(JSONObject policy) {
-        SharedPreferences prefs = preferences();
-        long pausedUntil = prefs != null ? prefs.getLong(KEY_PAUSED_UNTIL, 0L) : 0L;
-        state = LspWebAllowlistState.fromPolicy(policy, pausedUntil);
-        if (prefs != null) {
-            for (String pkg : prefs.getString(KEY_SUSPENDED, "").split(",")) {
-                if (pkg.trim().length() > 0) suspendedBrowsers.add(pkg.trim());
-            }
+        JSONObject saved = readSavedState();
+        state = LspWebAllowlistState.fromPolicy(policy, saved.optLong(KEY_PAUSED_UNTIL, 0L));
+        JSONArray suspended = saved.optJSONArray(KEY_SUSPENDED);
+        for (int i = 0; suspended != null && i < suspended.length(); i++) {
+            String pkg = safeString(suspended.optString(i, ""));
+            if (pkg.length() > 0) suspendedBrowsers.add(pkg);
         }
+        host.logWarn("web allowlist restored: " + state.domains.size() + " domains, "
+                + suspendedBrowsers.size() + " paused browsers");
     }
 
     void applyPolicy(JSONObject policy, long now) {
@@ -101,9 +101,8 @@ final class LspWebAllowlistController {
         long until = minutes <= 0 ? 0L : now + Math.min(minutes * 60_000L, LspWebAllowlistState.MAX_PAUSE_MS);
         synchronized (this) {
             state = state.withPausedUntil(until);
-            SharedPreferences prefs = preferences();
-            if (prefs != null) prefs.edit().putLong(KEY_PAUSED_UNTIL, until).apply();
         }
+        persistState();
         host.logWarn(until > 0 ? "web allowlist paused for " + minutes + " min" : "web allowlist resumed");
         evaluate(now, lastForegroundPackage, lastEnabled);
         host.requestDirectUpload(true);
@@ -220,7 +219,7 @@ final class LspWebAllowlistController {
                 }
             }
         }
-        if (changed) persistSuspended();
+        if (changed) persistState();
     }
 
     private void releaseBrowsers() {
@@ -228,15 +227,16 @@ final class LspWebAllowlistController {
         synchronized (this) {
             release = new ArrayList<>(suspendedBrowsers);
         }
+        boolean changed = false;
         for (String pkg : release) {
             // A supervision freeze of the same app outlives the strict-browsing window.
             if (host.isSupervisionFrozen(pkg) || host.setPackageSuspended(pkg, false) || !host.isInstalled(pkg)) {
                 synchronized (this) {
-                    suspendedBrowsers.remove(pkg);
+                    changed |= suspendedBrowsers.remove(pkg);
                 }
             }
         }
-        persistSuspended();
+        if (changed) persistState();
     }
 
     /** The browser enforces nothing while LSP supervision is switched off on the phone. */
@@ -292,23 +292,31 @@ final class LspWebAllowlistController {
         return false;
     }
 
-    private void persistSuspended() {
-        SharedPreferences prefs = preferences();
-        if (prefs == null) return;
-        String joined;
+    /** Pause and strict-browsing suspensions, so a reboot mid-window still releases browsers. */
+    private void persistState() {
+        Context context = host.systemContext();
+        if (context == null) return;
+        JSONObject saved = new JSONObject();
         synchronized (this) {
-            joined = String.join(",", suspendedBrowsers);
+            LspDeviceCommandProtocol.put(saved, KEY_PAUSED_UNTIL, state.pausedUntilMs);
+            LspDeviceCommandProtocol.put(saved, KEY_SUSPENDED, new JSONArray(new ArrayList<>(suspendedBrowsers)));
         }
-        prefs.edit().putString(KEY_SUSPENDED, joined).apply();
+        try {
+            LspSystemStateFile.write(context, STATE_FILE, saved.toString());
+        } catch (Throwable t) {
+            host.logWarn("web allowlist state not saved: " + t.getClass().getSimpleName());
+        }
     }
 
-    private SharedPreferences preferences() {
+    private JSONObject readSavedState() {
         Context context = host.systemContext();
-        if (context == null) return null;
+        if (context == null) return new JSONObject();
         try {
-            return LspSystemPreferences.open(context, PREFS_NAME);
-        } catch (Throwable ignored) {
-            return null;
+            String raw = LspSystemStateFile.read(context, STATE_FILE);
+            return raw.length() > 0 ? new JSONObject(raw) : new JSONObject();
+        } catch (Throwable t) {
+            host.logWarn("web allowlist state unreadable: " + t.getClass().getSimpleName());
+            return new JSONObject();
         }
     }
 
