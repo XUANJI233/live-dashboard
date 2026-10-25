@@ -77,6 +77,21 @@ public class LspWebAllowlistControllerTest {
     }
 
     @Test
+    public void pauseRunningOutPushesStateAgainSoTheBrowserRechecksOpenPages() throws Exception {
+        LspWebAllowlistTestHosts.FakeHost host = host();
+        LspWebAllowlistController controller = new LspWebAllowlistController(host);
+        long now = System.currentTimeMillis();
+        controller.applyPolicy(alwaysOn("example.com"), now);
+        controller.pause(15, now);
+        int pushesWhilePaused = statePushCount();
+
+        controller.evaluate(now + 16 * 60_000L, "", true);
+
+        assertEquals(pushesWhilePaused + 1, statePushCount());
+        assertEquals(set(CHROME, EDGE), host.suspended);
+    }
+
+    @Test
     public void pauseIsCappedAtOneHour() throws Exception {
         LspWebAllowlistTestHosts.FakeHost host = host();
         LspWebAllowlistController controller = new LspWebAllowlistController(host);
@@ -151,6 +166,14 @@ public class LspWebAllowlistControllerTest {
         LspWebAllowlistTestHosts.FakeHost host = new LspWebAllowlistTestHosts.FakeHost(context, INSTALLED);
         host.declaredBrowsers.addAll(Arrays.asList(CHROME, MI_BROWSER, EDGE));
         return host;
+    }
+
+    private int statePushCount() {
+        int count = 0;
+        for (Intent intent : shadowOf(context).getBroadcastIntents()) {
+            if (LspWebAllowlistController.ACTION_STATE.equals(intent.getAction())) count++;
+        }
+        return count;
     }
 
     private Intent lastStatePush() {

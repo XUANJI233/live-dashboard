@@ -132,7 +132,8 @@ final class LspWebAllowlistController {
                     && !browser.equals(lastForegroundPackage);
             lastForegroundPackage = foreground;
             LspWebAllowlistState pushed = pushedState();
-            if (browser.length() > 0 && (browserCameForward || !pushed.signature().equals(lastPushedSignature))) {
+            // Also push when a pause ends or a window starts, so the browser re-checks its open pages.
+            if (browser.length() > 0 && (browserCameForward || changed || !pushed.signature().equals(lastPushedSignature))) {
                 pushState(browser, pushed);
             }
             if (changed) host.requestDirectUpload(true);

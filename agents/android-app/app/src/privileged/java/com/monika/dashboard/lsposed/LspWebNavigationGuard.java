@@ -18,10 +18,13 @@ import java.io.FileOutputStream;
 import java.lang.reflect.Method;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TimeZone;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -38,6 +41,8 @@ final class LspWebNavigationGuard {
 
     private static final String CACHE_FILE = "monika_web_allowlist.json";
     private static final long BLOCK_REPORT_INTERVAL_MS = 10_000L;
+    // Mi Browser's address-bar suggestion panel is itself a WebView; clicking a suggestion still navigates the tab.
+    private static final Set<String> BROWSER_UI_HOSTS = Collections.singleton("sug.browser.miui.com");
     private static final String[][] WEBKIT_FAMILIES = {
             {"hyper.webkit.WebView", "hyper.webkit.WebViewClient", "hyper.webkit.WebResourceRequest"},
             {"android.webkit.WebView", "android.webkit.WebViewClient", "android.webkit.WebResourceRequest"},
@@ -46,6 +51,7 @@ final class LspWebNavigationGuard {
     private final LspHookSupport hookSupport;
     private final Host host;
     private final Set<String> hookedClientClasses = ConcurrentHashMap.newKeySet();
+    private final Set<View> openWebViews = Collections.newSetFromMap(new WeakHashMap<>());
     private volatile LspWebAllowlistState state = LspWebAllowlistState.empty();
     private volatile Context appContext;
     private volatile String lastReportedHost = "";
@@ -94,6 +100,7 @@ final class LspWebNavigationGuard {
     /** loadUrl/postUrl: swap a blocked address for the block page before the original call. */
     private void hookNavigationCall(Method method) {
         hookSupport.hookIntercept(method, chain -> {
+            track(chain.getThisObject());
             List<Object> args = chain.getArgs();
             Object url = args.isEmpty() ? null : args.get(0);
             if (url instanceof String && shouldBlock((String) url)) {
@@ -143,6 +150,7 @@ final class LspWebNavigationGuard {
             List<Object> args = chain.getArgs();
             Object view = args.size() > 0 ? args.get(0) : null;
             Object url = args.size() > 1 ? args.get(1) : null;
+            track(view);
             if (url instanceof String && shouldBlock((String) url)) {
                 reportBlocked((String) url);
                 hookSupport.invokeNoArg(view, "stopLoading");
@@ -154,6 +162,7 @@ final class LspWebNavigationGuard {
 
     private boolean shouldBlock(String url) {
         if (url == null || url.length() == 0) return false;
+        if (BROWSER_UI_HOSTS.contains(LspWebAllowlistState.hostOf(url))) return false;
         if (appContext == null) initialize(currentApplication());
         LspWebAllowlistState current = state;
         return current.activeAt(System.currentTimeMillis(), TimeZone.getDefault()) && !current.allowsUrl(url);
@@ -204,8 +213,30 @@ final class LspWebNavigationGuard {
             if (raw == null || raw.length() == 0) return;
             state = LspWebAllowlistState.fromStateJson(new JSONObject(raw));
             writeCache(raw);
+            if (state.activeAt(System.currentTimeMillis(), TimeZone.getDefault())) blockOpenPages();
         } catch (Throwable t) {
             host.logDebug("web allowlist state rejected: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void track(Object view) {
+        if (!(view instanceof View)) return;
+        synchronized (openWebViews) {
+            openWebViews.add((View) view);
+        }
+    }
+
+    /** A page opened during a pause or outside the window must not stay usable once blocking resumes. */
+    private void blockOpenPages() {
+        List<View> views;
+        synchronized (openWebViews) {
+            views = new ArrayList<>(openWebViews);
+        }
+        for (View view : views) {
+            view.post(() -> {
+                Object url = hookSupport.invokeNoArg(view, "getUrl");
+                if (url instanceof String && shouldBlock((String) url)) showBlockPage(view, (String) url);
+            });
         }
     }
 
