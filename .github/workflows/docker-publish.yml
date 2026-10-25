@@ -37,7 +37,7 @@ jobs:
 
       - name: Backend — test
         working-directory: packages/backend
-        run: bun test
+        run: bun run test
 
       - name: Frontend — install & lint
         working-directory: packages/frontend
