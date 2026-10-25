@@ -40,6 +40,7 @@ final class LspWebNavigationGuard {
     }
 
     private static final String CACHE_FILE = "monika_web_allowlist.json";
+    static final String BLOCK_PAGE_PREFIX = "data:text/html;charset=utf-8,";
     private static final long BLOCK_REPORT_INTERVAL_MS = 10_000L;
     // Mi Browser's address-bar suggestion panel is itself a WebView; clicking a suggestion still navigates the tab.
     private static final Set<String> BROWSER_UI_HOSTS = Collections.singleton("sug.browser.miui.com");
@@ -51,7 +52,9 @@ final class LspWebNavigationGuard {
     private final LspHookSupport hookSupport;
     private final Host host;
     private final Set<String> hookedClientClasses = ConcurrentHashMap.newKeySet();
+    // Guarded by openWebViews. blockedUrls remembers what each view's block page replaced.
     private final Set<View> openWebViews = Collections.newSetFromMap(new WeakHashMap<>());
+    private final Map<View, String> blockedUrls = new WeakHashMap<>();
     private volatile LspWebAllowlistState state = LspWebAllowlistState.empty();
     private volatile Context appContext;
     private volatile String lastReportedHost = "";
@@ -105,6 +108,7 @@ final class LspWebNavigationGuard {
             Object url = args.isEmpty() ? null : args.get(0);
             if (url instanceof String && shouldBlock((String) url)) {
                 reportBlocked((String) url);
+                rememberBlocked(chain.getThisObject(), (String) url);
                 Object[] replaced = args.toArray();
                 replaced[0] = blockPage((String) url);
                 return chain.proceed(replaced);
@@ -170,15 +174,18 @@ final class LspWebNavigationGuard {
 
     private void showBlockPage(Object view, String url) {
         if (!(view instanceof View)) return;
+        rememberBlocked(view, url);
         String page = blockPage(url);
-        ((View) view).post(() -> {
-            try {
-                Method load = hookSupport.publicMethod(view.getClass(), "loadUrl", String.class);
-                if (load != null) load.invoke(view, page);
-            } catch (Throwable t) {
-                host.logDebug("web allowlist block page failed: " + t.getClass().getSimpleName());
-            }
-        });
+        ((View) view).post(() -> loadInView(view, page));
+    }
+
+    private void loadInView(Object view, String url) {
+        try {
+            Method load = hookSupport.publicMethod(view.getClass(), "loadUrl", String.class);
+            if (load != null) load.invoke(view, url);
+        } catch (Throwable t) {
+            host.logDebug("web allowlist page load failed: " + t.getClass().getSimpleName());
+        }
     }
 
     private synchronized void initialize(Context context) {
@@ -213,7 +220,7 @@ final class LspWebNavigationGuard {
             if (raw == null || raw.length() == 0) return;
             state = LspWebAllowlistState.fromStateJson(new JSONObject(raw));
             writeCache(raw);
-            if (state.activeAt(System.currentTimeMillis(), TimeZone.getDefault())) blockOpenPages();
+            recheckOpenPages();
         } catch (Throwable t) {
             host.logDebug("web allowlist state rejected: " + t.getClass().getSimpleName());
         }
@@ -226,16 +233,41 @@ final class LspWebNavigationGuard {
         }
     }
 
-    /** A page opened during a pause or outside the window must not stay usable once blocking resumes. */
-    private void blockOpenPages() {
+    private void rememberBlocked(Object view, String url) {
+        if (!(view instanceof View)) return;
+        synchronized (openWebViews) {
+            openWebViews.add((View) view);
+            blockedUrls.put((View) view, url);
+        }
+    }
+
+    /**
+     * Applies a new state to pages already open: a page opened during a pause or outside the
+     * window gets the block page, and a page blocked by a stale state (the cache read at cold
+     * start, before the current pause arrived) is loaded again once it is allowed.
+     */
+    private void recheckOpenPages() {
         List<View> views;
         synchronized (openWebViews) {
             views = new ArrayList<>(openWebViews);
         }
         for (View view : views) {
             view.post(() -> {
-                Object url = hookSupport.invokeNoArg(view, "getUrl");
-                if (url instanceof String && shouldBlock((String) url)) showBlockPage(view, (String) url);
+                Object current = hookSupport.invokeNoArg(view, "getUrl");
+                String url = current instanceof String ? (String) current : "";
+                String blocked;
+                synchronized (openWebViews) {
+                    blocked = blockedUrls.get(view);
+                }
+                if (blocked != null && url.startsWith(BLOCK_PAGE_PREFIX)) {
+                    if (shouldBlock(blocked)) return;
+                    synchronized (openWebViews) {
+                        blockedUrls.remove(view);
+                    }
+                    loadInView(view, blocked);
+                } else if (shouldBlock(url)) {
+                    showBlockPage(view, url);
+                }
             });
         }
     }
@@ -324,7 +356,7 @@ final class LspWebNavigationGuard {
                 + "<p style=\"color:#57606a;word-break:break-all\">" + host + "</p>"
                 + "<p>监督时段内只能打开白名单网站。</p></body></html>";
         try {
-            return "data:text/html;charset=utf-8," + URLEncoder.encode(html, "UTF-8").replace("+", "%20");
+            return BLOCK_PAGE_PREFIX + URLEncoder.encode(html, "UTF-8").replace("+", "%20");
         } catch (Throwable ignored) {
             return "about:blank";
         }

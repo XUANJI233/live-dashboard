@@ -35,7 +35,9 @@ public class LspWebAllowlistStateTest {
         assertFalse(state.allowsUrl("https://www.bilibili.com/"));
         // Internal, data, and script pages are never filtered.
         assertTrue(state.allowsUrl("about:blank"));
-        assertTrue(state.allowsUrl(LspWebNavigationGuard.blockPage("https://www.bilibili.com/")));
+        String blockPage = LspWebNavigationGuard.blockPage("https://www.bilibili.com/");
+        assertTrue(blockPage.startsWith(LspWebNavigationGuard.BLOCK_PAGE_PREFIX));
+        assertTrue(state.allowsUrl(blockPage));
         assertTrue(state.allowsUrl("javascript:void(0)"));
     }
 
