@@ -1,5 +1,22 @@
-import { describe, expect, test } from "bun:test";
-import { controllerRestState, type DeviceContext } from "../src/services/device-context";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { DeviceContext } from "../src/services/device-context";
+
+const tempDir = mkdtempSync(join(tmpdir(), "live-controller-rest-state-"));
+process.env.DB_PATH = join(tempDir, "test.db");
+process.env.HASH_SECRET = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
+
+const { controllerRestState } = await import("../src/services/device-context");
+
+afterAll(() => {
+  try {
+    rmSync(tempDir, { recursive: true, force: true });
+  } catch {
+    // Windows keeps the SQLite file locked until the process exits.
+  }
+});
 
 describe("controller rest state", () => {
   test("uses one authoritative sleep and screen-off classification", () => {
