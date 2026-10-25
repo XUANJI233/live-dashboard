@@ -123,6 +123,24 @@ public class LspWebAllowlistControllerTest {
     }
 
     @Test
+    public void switchingSupervisionOffOnThePhoneClearsTheBrowserState() throws Exception {
+        LspWebAllowlistTestHosts.FakeHost host = host();
+        LspWebAllowlistController controller = new LspWebAllowlistController(host);
+        controller.applyPolicy(alwaysOn("example.com"), System.currentTimeMillis());
+
+        controller.evaluate(System.currentTimeMillis(), "", false);
+
+        assertTrue(host.suspended.isEmpty());
+        JSONObject pushed = new JSONObject(lastStatePush().getStringExtra(LspWebAllowlistController.EXTRA_STATE));
+        assertEquals(0, pushed.getJSONArray("allowed_domains").length());
+
+        controller.evaluate(System.currentTimeMillis(), "", true);
+        pushed = new JSONObject(lastStatePush().getStringExtra(LspWebAllowlistController.EXTRA_STATE));
+        assertEquals("example.com", pushed.getJSONArray("allowed_domains").getString(0));
+        assertEquals(set(CHROME, EDGE), host.suspended);
+    }
+
+    @Test
     public void phonesWithoutTheSystemBrowserNeverActivate() throws Exception {
         LspWebAllowlistTestHosts.FakeHost host = new LspWebAllowlistTestHosts.FakeHost(context, Arrays.asList(CHROME, EDGE));
         host.declaredBrowsers.addAll(Arrays.asList(CHROME, EDGE));

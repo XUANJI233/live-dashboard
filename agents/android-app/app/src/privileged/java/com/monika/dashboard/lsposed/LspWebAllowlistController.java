@@ -132,9 +132,9 @@ final class LspWebAllowlistController {
                     && browser.equals(foreground)
                     && !browser.equals(lastForegroundPackage);
             lastForegroundPackage = foreground;
-            String signature = state.signature();
-            if (browser.length() > 0 && (browserCameForward || !signature.equals(lastPushedSignature))) {
-                pushState(browser, signature);
+            LspWebAllowlistState pushed = pushedState();
+            if (browser.length() > 0 && (browserCameForward || !pushed.signature().equals(lastPushedSignature))) {
+                pushState(browser, pushed);
             }
             if (changed) host.requestDirectUpload(true);
             scheduleEvaluation(now);
@@ -196,7 +196,7 @@ final class LspWebAllowlistController {
         }
         String event = safeString(intent.getStringExtra(EXTRA_EVENT));
         if (EVENT_REQUEST.equals(event)) {
-            pushState(browser, state.signature());
+            pushState(browser, pushedState());
         } else if (EVENT_BLOCKED.equals(event)) {
             String blockedHost = LspWebAllowlistState.normalizeDomain(intent.getStringExtra(EXTRA_HOST));
             if (blockedHost.length() == 0) return;
@@ -239,16 +239,21 @@ final class LspWebAllowlistController {
         persistSuspended();
     }
 
-    private void pushState(String browser, String signature) {
+    /** The browser enforces nothing while LSP supervision is switched off on the phone. */
+    private LspWebAllowlistState pushedState() {
+        return lastEnabled ? state : LspWebAllowlistState.empty();
+    }
+
+    private void pushState(String browser, LspWebAllowlistState pushed) {
         Context context = host.systemContext();
         if (context == null) return;
         Intent intent = new Intent(ACTION_STATE);
         intent.setPackage(browser);
-        intent.putExtra(EXTRA_STATE, state.stateJson().toString());
+        intent.putExtra(EXTRA_STATE, pushed.stateJson().toString());
         long token = Binder.clearCallingIdentity();
         try {
             context.sendBroadcast(intent);
-            lastPushedSignature = signature;
+            lastPushedSignature = pushed.signature();
         } catch (Throwable t) {
             host.logDebug("web allowlist push failed: " + t.getClass().getSimpleName());
         } finally {
