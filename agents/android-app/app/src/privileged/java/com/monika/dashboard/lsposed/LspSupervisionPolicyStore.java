@@ -45,8 +45,6 @@ final class LspSupervisionPolicyStore {
     }
 
     private SharedPreferences preferences(Context context) {
-        return context
-                .createDeviceProtectedStorageContext()
-                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        return LspSystemPreferences.open(context, PREFS_NAME);
     }
 }

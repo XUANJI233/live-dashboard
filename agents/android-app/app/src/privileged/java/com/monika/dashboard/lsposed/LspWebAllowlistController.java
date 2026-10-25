@@ -301,9 +301,7 @@ final class LspWebAllowlistController {
         Context context = host.systemContext();
         if (context == null) return null;
         try {
-            return context
-                    .createDeviceProtectedStorageContext()
-                    .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            return LspSystemPreferences.open(context, PREFS_NAME);
         } catch (Throwable ignored) {
             return null;
         }
