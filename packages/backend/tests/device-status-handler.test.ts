@@ -244,6 +244,71 @@ describe("device-status-handler", () => {
     expect(state?.app_id).toBe("com.reader");
   });
 
+  test("websocket device_update keeps installed app inventories private across carried-forward state", async () => {
+    const { db } = await import("../src/db");
+    const { realtimeWebSocket } = await import("../src/services/realtime");
+    const deviceId = "ws-public-apps-phone";
+    const viewerFrames: Array<Record<string, any>> = [];
+    const deviceWs = {
+      data: {
+        role: "device",
+        id: deviceId,
+        device: { device_id: deviceId, device_name: "WS Apps Phone", platform: "android" },
+      },
+      send() {},
+    };
+    const viewerWs = {
+      data: { role: "viewer", id: "viewer-ws-public-apps" },
+      send(payload: string) {
+        viewerFrames.push(JSON.parse(payload));
+      },
+    };
+
+    realtimeWebSocket.open(viewerWs as any);
+    realtimeWebSocket.open(deviceWs as any);
+    realtimeWebSocket.message(deviceWs as any, JSON.stringify({
+      type: "device_status",
+      payload: {
+        app_id: "com.example.reader",
+        window_title: "Reading",
+        extra: {
+          foreground: { package_name: "com.example.reader", title: "Reading" },
+          device: {
+            profile: "android_lsp",
+            installed_apps_updated_at: "2026-06-12T00:00:00.000Z",
+            installed_apps: [
+              { package_name: "com.example.reader", app_name: "Reader" },
+              { package_name: "com.example.diary", app_name: "Private Diary" },
+            ],
+          },
+        },
+      },
+    }));
+    // The next heartbeat inherits installed_apps from stored device state.
+    realtimeWebSocket.message(deviceWs as any, JSON.stringify({
+      type: "device_status",
+      payload: {
+        app_id: "com.example.reader",
+        window_title: "Reading",
+        extra: { device: { profile: "android_lsp", heartbeat_only: true } },
+      },
+    }));
+    realtimeWebSocket.close(deviceWs as any);
+    realtimeWebSocket.close(viewerWs as any);
+
+    const updates = viewerFrames.filter((frame) => frame.type === "device_update" && frame.device_id === deviceId);
+    expect(updates).toHaveLength(2);
+    for (const update of updates) {
+      expect(JSON.stringify(update)).not.toContain("com.example.diary");
+      expect(update.payload.extra.device.installed_apps).toBeUndefined();
+      expect(update.payload.extra.device.installed_apps_count).toBe(2);
+    }
+    expect(updates[0]?.payload.extra.foreground).toEqual({ package_name: "com.example.reader" });
+
+    const state = db.prepare("SELECT extra FROM device_states WHERE device_id = ?").get(deviceId) as { extra: string };
+    expect(JSON.parse(state.extra).device.installed_apps).toHaveLength(2);
+  });
+
   test("sleeping Android devices use the extended offline threshold", async () => {
     const { processReportPayload } = await import("../src/services/device-status-handler");
     const { db, markOfflineDevices } = await import("../src/db");

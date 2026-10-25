@@ -3,6 +3,7 @@ import { isNSFW } from "./nsfw-filter";
 // NSFW filter can be disabled via environment variable (default: enabled)
 const NSFW_FILTER_ENABLED = process.env.NSFW_FILTER_DISABLED !== "true";
 import { processDisplayTitle } from "./privacy-tiers";
+import { publicDeviceExtra } from "./public-device-extra";
 import { db, insertActivity, insertLocationRecord, upsertDeviceState, hmacTitle } from "../db";
 import { OFFLINE_TIMEOUT_FIELD, validateReportedOfflineTimeoutMinutes } from "../offline-policy";
 import type { DeviceInfo, TimelineSegmentExtra } from "../types";
@@ -328,7 +329,7 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
     app_id: appId,
     app_name: appName,
     display_title: displayTitle,
-    extra,
+    extra: publicDeviceExtra(extra),
   };
   if (payloadError) throw payloadError;
   return update;

@@ -3,6 +3,7 @@ import type { DeviceState, ActivityRecord } from "../types";
 import { visitors } from "../services/visitors";
 import { edgeViewerIdentity, verifyViewerToken, viewerTokenFromRequest } from "../services/viewer-auth";
 import { controllerRestState } from "../services/device-context";
+import { publicDeviceExtra } from "../services/public-device-extra";
 
 const CURRENT_SNAPSHOT_TTL_MS = 2_000;
 const ANON_CURRENT_WINDOW_MS = 60_000;
@@ -32,20 +33,7 @@ function preparePublicDevices(devices: DeviceState[]) {
     } catch {
       // Malformed JSON is ignored for the public snapshot.
     }
-    if (parsedExtra.foreground && typeof parsedExtra.foreground === "object" && !Array.isArray(parsedExtra.foreground)) {
-      const foreground = { ...(parsedExtra.foreground as Record<string, unknown>) };
-      delete foreground.title;
-      parsedExtra = { ...parsedExtra, foreground };
-    }
-    if (parsedExtra.device && typeof parsedExtra.device === "object" && !Array.isArray(parsedExtra.device)) {
-      const device = { ...(parsedExtra.device as Record<string, unknown>) };
-      if (Array.isArray(device.installed_apps)) {
-        device.installed_apps_count = device.installed_apps.length;
-      }
-      delete device.installed_apps;
-      parsedExtra = { ...parsedExtra, device };
-    }
-    return { ...rest, extra: parsedExtra };
+    return { ...rest, extra: publicDeviceExtra(parsedExtra) };
   });
 }
 

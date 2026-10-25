@@ -59,6 +59,7 @@
 - 路径：`/api/ws?role=device`、`/api/ws?role=integration` 或 `/api/ws?role=viewer`。
 - 设备与 Android 集成 WS 必须带 `Authorization: Bearer <device_token>`；`integration` 只接受平台为 `android` 的设备 Token，并与 `device` 使用独立 socket 槽位，不能替换 LSPosed 主连接。
 - 访客 WS 必须带 viewer token，可由 Edge 验证后签名回源，也可源站直接验证。
+- 访客 `device_update` 与 `GET /api/current` 使用同一公开设备视图：不含 `window_title`、`extra.foreground.title` 和 `extra.device.installed_apps`，已安装应用只公开 `installed_apps_count`。
 - 服务端连接 ack：
   - 设备：`{ "type": "ack", "status": "connected", "role": "device", "device_id": "..." }`
   - Android 集成：`{ "type": "ack", "status": "connected", "role": "integration", "device_id": "..." }`
