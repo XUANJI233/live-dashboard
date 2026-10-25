@@ -15,6 +15,8 @@ object LsposedConfigBridge {
     private const val KEY_BROWSER_TITLE_NONCE = "browser_title_nonce"
     private const val EXTRA_COMMAND = "command"
     private const val COMMAND_CLEAR_SUPERVISION_FREEZE = "clear_supervision_freeze"
+    private const val COMMAND_PAUSE_WEB_ALLOWLIST = "web_allowlist_pause"
+    private const val EXTRA_PAUSE_MINUTES = "minutes"
 
     suspend fun publish(context: Context, settings: SettingsStore) {
         if (!BuildConfig.PRIVILEGED_FEATURES) return
@@ -79,6 +81,23 @@ object LsposedConfigBridge {
             true
         } catch (e: Exception) {
             DebugLog.log("LSPosed", "清空监督冻结广播失败: ${e.message}")
+            false
+        }
+    }
+
+    /** Temporarily pause strict browsing; the module caps it at 60 minutes and 0 resumes now. */
+    fun pauseWebAllowlist(context: Context, minutes: Int): Boolean {
+        if (!BuildConfig.PRIVILEGED_FEATURES) return false
+        val intent = Intent(ACTION_CONFIG).apply {
+            putExtra(EXTRA_COMMAND, COMMAND_PAUSE_WEB_ALLOWLIST)
+            putExtra(EXTRA_PAUSE_MINUTES, minutes.coerceAtLeast(0))
+        }
+        return try {
+            context.sendBroadcast(intent, PERMISSION)
+            DebugLog.log("LSPosed", if (minutes > 0) "已请求暂停网站白名单 ${minutes} 分钟" else "已请求恢复网站白名单")
+            true
+        } catch (e: Exception) {
+            DebugLog.log("LSPosed", "网站白名单暂停广播失败: ${e.message}")
             false
         }
     }

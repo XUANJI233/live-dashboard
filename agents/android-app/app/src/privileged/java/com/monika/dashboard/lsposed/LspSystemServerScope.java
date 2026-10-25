@@ -55,6 +55,7 @@ final class LspSystemServerScope {
             try { deviceControlFeature.restoreSupervisionPolicy(); } catch (Throwable t) { host.logWarn("deferred restore supervision policy failed: " + t.getClass().getSimpleName()); }
             try { directFeature.registerConfigReceiver(handler); } catch (Throwable t) { host.logWarn("deferred register receiver failed: " + t.getClass().getSimpleName()); }
             try { browserFeature.registerReceiver(handler); } catch (Throwable t) { host.logWarn("deferred register browser title receiver failed: " + t.getClass().getSimpleName()); }
+            try { deviceControlFeature.registerWebAllowlistReceiver(handler); } catch (Throwable t) { host.logWarn("deferred register web allowlist receiver failed: " + t.getClass().getSimpleName()); }
             try { foregroundFeature.registerScreenReceiver(handler); } catch (Throwable t) { host.logWarn("deferred register screen receiver failed: " + t.getClass().getSimpleName()); }
             try { mediaTracker.initSessionListener(); } catch (Throwable t) { host.logWarn("deferred init media listener failed: " + t.getClass().getSimpleName()); }
             try { foregroundFeature.snapshot(); } catch (Throwable t) { host.logDebug("deferred initial snapshot skipped: " + t.getClass().getSimpleName()); }

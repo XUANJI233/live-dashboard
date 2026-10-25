@@ -23,6 +23,11 @@ final class LspProtectedPackagePolicy {
         return isProtectedPackage(pkg, operations.isSystemApplicationPackage(pkg));
     }
 
+    /** Protection without the blanket system-app rule, for preinstalled browsers in strict browsing. */
+    boolean isProtectedIgnoringSystemFlag(String packageName) {
+        return isProtectedPackage(safeString(packageName), false);
+    }
+
     boolean isProtectedApplication(ApplicationInfo app) {
         if (app == null) return true;
         int systemFlags = ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP;

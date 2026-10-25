@@ -669,6 +669,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                             },
                         )
                     }
+                    com.monika.dashboard.ui.components.WebAllowlistPauseControl(enabled = !loading)
                 }
                 Column(
                     modifier = Modifier.fillMaxWidth(),

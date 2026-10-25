@@ -22,7 +22,7 @@ public class LspSupervisionCoordinatorTest {
     @Test
     public void riskThresholdRequestsAiReviewWithoutPreFreezing() throws Exception {
         FakeHost host = new FakeHost();
-        LspSupervisionCoordinator coordinator = new LspSupervisionCoordinator(host);
+        LspSupervisionCoordinator coordinator = new LspSupervisionCoordinator(host, LspWebAllowlistTestHosts.inactive(host.systemContext()));
 
         coordinator.applyPolicy(new JSONObject()
                 .put("risk_app_regex", new JSONArray().put("^com\\.example\\.game$"))

@@ -31,6 +31,7 @@ final class LspDeviceControlFeature {
 
     private final LspDeviceFeedback feedback;
     private final LspPackageController packageController;
+    private final LspWebAllowlistController webAllowlist;
     private final LspSupervisionCoordinator supervisionCoordinator;
 
     LspDeviceControlFeature(
@@ -40,7 +41,24 @@ final class LspDeviceControlFeature {
             Host host) {
         feedback = new LspDeviceFeedback(notificationCenter, newFeedbackHost(host));
         packageController = new LspPackageController(hookSupport, newPackageControllerHost(host), targetPackage);
-        supervisionCoordinator = new LspSupervisionCoordinator(newSupervisionCoordinatorHost(host));
+        webAllowlist = new LspWebAllowlistController(newWebAllowlistHost(host));
+        supervisionCoordinator = new LspSupervisionCoordinator(newSupervisionCoordinatorHost(host), webAllowlist);
+    }
+
+    boolean webAllowlistSupported() {
+        return webAllowlist.supported();
+    }
+
+    JSONObject webAllowlistStatus(long now) {
+        return webAllowlist.statusJson(now);
+    }
+
+    void pauseWebAllowlist(int minutes) {
+        webAllowlist.pause(minutes, System.currentTimeMillis());
+    }
+
+    void registerWebAllowlistReceiver(Handler handler) {
+        webAllowlist.registerReceiver(handler);
     }
 
     boolean isProtectedPackage(String packageName) {
@@ -181,6 +199,60 @@ final class LspDeviceControlFeature {
             @Override
             public void cancelFreezeNotification(String packageName) {
                 feedback.cancelSupervisionFreeze(packageName);
+            }
+
+            @Override
+            public void logDebug(String message) {
+                host.logDebug(message);
+            }
+
+            @Override
+            public void logWarn(String message) {
+                host.logWarn(message);
+            }
+        };
+    }
+
+    private LspWebAllowlistController.Host newWebAllowlistHost(Host host) {
+        return new LspWebAllowlistController.Host() {
+            @Override
+            public Context systemContext() {
+                return host.systemContext();
+            }
+
+            @Override
+            public Handler handler() {
+                return host.uploadHandler();
+            }
+
+            @Override
+            public List<String> browserPackages() {
+                return packageController.browserPackages();
+            }
+
+            @Override
+            public boolean isInstalled(String packageName) {
+                return packageController.isInstalledPackage(packageName);
+            }
+
+            @Override
+            public boolean setPackageSuspended(String packageName, boolean suspended) {
+                return packageController.setPackageSuspendedUntracked(packageName, suspended);
+            }
+
+            @Override
+            public boolean isSupervisionFrozen(String packageName) {
+                return packageController.hasActiveFreeze(packageName, System.currentTimeMillis());
+            }
+
+            @Override
+            public void requestDirectUpload(boolean force) {
+                host.requestDirectUpload(force);
+            }
+
+            @Override
+            public String isoTime(long millis) {
+                return host.isoTime(millis);
             }
 
             @Override

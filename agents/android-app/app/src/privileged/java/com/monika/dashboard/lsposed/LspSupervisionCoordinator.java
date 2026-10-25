@@ -31,12 +31,14 @@ final class LspSupervisionCoordinator {
 
     private final LspSupervisionPolicy policy = new LspSupervisionPolicy();
     private final LspSupervisionPolicyStore policyStore = new LspSupervisionPolicyStore();
+    private final LspWebAllowlistController webAllowlist;
     private final Host host;
     private volatile long policyCheckDueAt = 0L;
     private volatile boolean dailyFreezeCleanupScheduled = false;
 
-    LspSupervisionCoordinator(Host host) {
+    LspSupervisionCoordinator(Host host, LspWebAllowlistController webAllowlist) {
         this.host = host;
+        this.webAllowlist = webAllowlist;
     }
 
     boolean shouldRequestReviewForReport() {
@@ -46,18 +48,28 @@ final class LspSupervisionCoordinator {
     boolean applyPolicy(JSONObject payload) {
         boolean applied = policy.applyPolicy(payload);
         if (applied) {
-            policyStore.save(host.systemContext(), policy.persistentSnapshot());
-            evaluate(System.currentTimeMillis());
+            long now = System.currentTimeMillis();
+            webAllowlist.applyPolicy(payload.optJSONObject("web_allowlist"), now);
+            policyStore.save(host.systemContext(), persistentSnapshot());
+            evaluate(now);
         }
         return applied;
     }
 
     boolean restorePolicy() {
         JSONObject stored = policyStore.load(host.systemContext());
+        // The pause and strict-browsing suspensions persist on their own, even without a policy.
+        webAllowlist.restore(stored != null ? stored.optJSONObject("web_allowlist") : null);
         if (stored == null) return false;
         boolean restored = policy.applyPolicy(stored);
         if (restored) host.logDebug("restored persisted supervision policy");
         return restored;
+    }
+
+    private JSONObject persistentSnapshot() {
+        JSONObject snapshot = policy.persistentSnapshot();
+        LspDeviceCommandProtocol.put(snapshot, "web_allowlist", webAllowlist.policyJson());
+        return snapshot;
     }
 
     void finishPendingReview() {
@@ -77,7 +89,11 @@ final class LspSupervisionCoordinator {
 
     void evaluate(long now) {
         try {
-            if (!host.enabled() || !host.uploadForeground() || !host.systemServerProcess()) return;
+            if (!host.systemServerProcess()) return;
+            boolean enabled = host.enabled() && host.uploadForeground();
+            // Disabled LSP supervision must also release strict-browsing suspensions.
+            webAllowlist.evaluate(now, enabled ? safeString(host.foregroundPackage()) : "", enabled);
+            if (!enabled) return;
             String pkg = safeString(host.foregroundPackage());
             boolean protectedPackage = pkg.length() == 0 || host.protectedPackage(pkg);
             LspSupervisionPolicy.Decision decision = policy.evaluate(

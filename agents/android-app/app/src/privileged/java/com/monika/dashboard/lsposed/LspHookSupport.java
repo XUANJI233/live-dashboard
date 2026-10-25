@@ -22,6 +22,10 @@ final class LspHookSupport {
         Method find(Class<?> clazz);
     }
 
+    interface Interceptor {
+        Object intercept(XposedInterface.Chain chain) throws Throwable;
+    }
+
     private static final Object MISS = new Object();
     private static final String NO_ARG_SIG = "#";
 
@@ -236,6 +240,20 @@ final class LspHookSupport {
                         } catch (Throwable ignored) {}
                         return result;
                     });
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** Full interception for hooks that may replace arguments or skip the original call. */
+    boolean hookIntercept(Method method, Interceptor interceptor) {
+        if (method == null) return false;
+        try { xposed.deoptimize(method); } catch (Throwable ignored) {}
+        try {
+            xposed.hook(method)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(interceptor::intercept);
             return true;
         } catch (Throwable ignored) {
             return false;

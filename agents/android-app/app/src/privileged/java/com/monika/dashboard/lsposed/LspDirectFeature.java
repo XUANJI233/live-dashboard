@@ -334,6 +334,11 @@ final class LspDirectFeature {
             }
 
             @Override
+            public void pauseWebAllowlist(int minutes) {
+                deviceControlFeature.pauseWebAllowlist(minutes);
+            }
+
+            @Override
             public void requestDirectUpload(boolean force) {
                 requestUpload(force);
             }

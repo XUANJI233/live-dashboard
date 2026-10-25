@@ -96,6 +96,9 @@ final class LspDirectReportBuilder {
             }
             JSONArray frozen = deviceControlFeature.frozenPackagesJson(now);
             device.put("frozen_packages", frozen);
+            if (deviceControlFeature.webAllowlistSupported()) {
+                device.put("web_allowlist", deviceControlFeature.webAllowlistStatus(now));
+            }
             installedAppsReporter.putIfDue(device, now, heartbeatOnly);
             extra.put("device", device);
             extra.put("sleeping", sleeping);
@@ -143,6 +146,7 @@ final class LspDirectReportBuilder {
             capabilities.put("say", true);
             capabilities.put("risk_app_monitor", true);
             capabilities.put("app_time_limit", true);
+            capabilities.put("web_allowlist", deviceControlFeature.webAllowlistSupported());
         } catch (Throwable ignored) {}
         return capabilities;
     }

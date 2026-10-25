@@ -93,6 +93,24 @@ final class LspPackageController {
         return operations.isInstalledPackage(packageName);
     }
 
+    List<String> browserPackages() {
+        return operations.browserPackages();
+    }
+
+    /**
+     * Suspend without a supervision freeze record; strict browsing tracks these itself.
+     * Preinstalled browsers are allowed, every other protection still applies.
+     */
+    boolean setPackageSuspendedUntracked(String packageName, boolean suspended) {
+        String pkg = safeString(packageName);
+        if (pkg.length() == 0 || protectedPolicy.isProtectedIgnoringSystemFlag(pkg)) return false;
+        return operations.setPackageSuspended(pkg, suspended);
+    }
+
+    boolean hasActiveFreeze(String packageName, long now) {
+        return store.activeRecord(safeString(packageName), now) != null;
+    }
+
     List<LspInstalledApp> installedApps() {
         return operations.installedApps(protectedPolicy);
     }

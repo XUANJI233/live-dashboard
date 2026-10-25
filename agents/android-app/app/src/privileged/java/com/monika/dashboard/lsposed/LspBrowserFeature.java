@@ -29,7 +29,8 @@ final class LspBrowserFeature {
             LspForegroundTitleState titleState,
             Host host) {
         browserTitleHooks = new LspBrowserTitleHooks(hookSupport, newTitleHooksHost(host));
-        browserHookScope = new LspBrowserHookScope(browserTitleHooks, newHookScopeHost(host));
+        LspWebNavigationGuard navigationGuard = new LspWebNavigationGuard(hookSupport, newNavigationGuardHost(host));
+        browserHookScope = new LspBrowserHookScope(browserTitleHooks, navigationGuard, newHookScopeHost(host));
         browserTitleReceiver = new LspBrowserTitleReceiver(
                 foregroundReader,
                 titleState,
@@ -71,6 +72,25 @@ final class LspBrowserFeature {
                 return host.ignoredPackage(packageName);
             }
 
+            @Override
+            public void logInfo(String message) {
+                host.logInfo(message);
+            }
+
+            @Override
+            public void logWarn(String message) {
+                host.logWarn(message);
+            }
+
+            @Override
+            public void logDebug(String message) {
+                host.logDebug(message);
+            }
+        };
+    }
+
+    private LspWebNavigationGuard.Host newNavigationGuardHost(Host host) {
+        return new LspWebNavigationGuard.Host() {
             @Override
             public void logInfo(String message) {
                 host.logInfo(message);

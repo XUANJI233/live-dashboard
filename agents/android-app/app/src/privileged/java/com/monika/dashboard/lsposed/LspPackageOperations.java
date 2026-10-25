@@ -42,6 +42,28 @@ final class LspPackageOperations {
         }
     }
 
+    /** Installed apps that declare themselves browsers (CATEGORY_APP_BROWSER). */
+    List<String> browserPackages() {
+        ArrayList<String> out = new ArrayList<>();
+        long token = Binder.clearCallingIdentity();
+        try {
+            Context ctx = host.systemContext();
+            if (ctx == null) return out;
+            android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_MAIN)
+                    .addCategory(android.content.Intent.CATEGORY_APP_BROWSER);
+            for (android.content.pm.ResolveInfo info : ctx.getPackageManager().queryIntentActivities(
+                    intent, PackageManager.MATCH_ALL)) {
+                String pkg = info.activityInfo != null ? safeString(info.activityInfo.packageName) : "";
+                if (pkg.length() > 0 && !out.contains(pkg)) out.add(pkg);
+            }
+        } catch (Throwable t) {
+            host.logDebug("browser query failed: " + t.getClass().getSimpleName());
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+        return out;
+    }
+
     List<LspInstalledApp> installedApps(LspProtectedPackagePolicy protectedPolicy) {
         ArrayList<LspInstalledApp> out = new ArrayList<>();
         try {

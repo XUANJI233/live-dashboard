@@ -39,7 +39,7 @@ public class LspSupervisionPolicyPersistenceTest {
     @Test
     public void lastValidRiskPolicySurvivesRestartAndRequestsReviewWhileOffline() throws Exception {
         FakeHost initialHost = new FakeHost(context);
-        LspSupervisionCoordinator initial = new LspSupervisionCoordinator(initialHost);
+        LspSupervisionCoordinator initial = new LspSupervisionCoordinator(initialHost, LspWebAllowlistTestHosts.inactive(context));
         assertTrue(initial.applyPolicy(policy(
                 new JSONArray().put("Video"),
                 1,
@@ -49,7 +49,7 @@ public class LspSupervisionPolicyPersistenceTest {
         restartedHost.foregroundPackage = "com.example.video";
         restartedHost.foregroundApp = "Video";
         restartedHost.networkConnected = false;
-        LspSupervisionCoordinator restarted = new LspSupervisionCoordinator(restartedHost);
+        LspSupervisionCoordinator restarted = new LspSupervisionCoordinator(restartedHost, LspWebAllowlistTestHosts.inactive(context));
         assertTrue(restarted.restorePolicy());
 
         restarted.evaluate(NOW);
@@ -64,7 +64,7 @@ public class LspSupervisionPolicyPersistenceTest {
     @Test
     public void lastValidTimeLimitSurvivesRestartAndFreezesMatchedAppWhileOffline() throws Exception {
         FakeHost initialHost = new FakeHost(context);
-        LspSupervisionCoordinator initial = new LspSupervisionCoordinator(initialHost);
+        LspSupervisionCoordinator initial = new LspSupervisionCoordinator(initialHost, LspWebAllowlistTestHosts.inactive(context));
         assertTrue(initial.applyPolicy(policy(
                 new JSONArray(),
                 3,
@@ -74,7 +74,7 @@ public class LspSupervisionPolicyPersistenceTest {
         restartedHost.foregroundPackage = "com.example.game";
         restartedHost.foregroundApp = "Game";
         restartedHost.networkConnected = false;
-        LspSupervisionCoordinator restarted = new LspSupervisionCoordinator(restartedHost);
+        LspSupervisionCoordinator restarted = new LspSupervisionCoordinator(restartedHost, LspWebAllowlistTestHosts.inactive(context));
         assertTrue(restarted.restorePolicy());
 
         restarted.evaluate(NOW);
@@ -86,7 +86,7 @@ public class LspSupervisionPolicyPersistenceTest {
     @Test
     public void offlineStateAloneNeverFreezesAnAppOutsideTheRestoredPolicy() throws Exception {
         FakeHost initialHost = new FakeHost(context);
-        LspSupervisionCoordinator initial = new LspSupervisionCoordinator(initialHost);
+        LspSupervisionCoordinator initial = new LspSupervisionCoordinator(initialHost, LspWebAllowlistTestHosts.inactive(context));
         assertTrue(initial.applyPolicy(policy(
                 new JSONArray().put("Video"),
                 1,
@@ -96,7 +96,7 @@ public class LspSupervisionPolicyPersistenceTest {
         restartedHost.foregroundPackage = "com.example.notes";
         restartedHost.foregroundApp = "Notes";
         restartedHost.networkConnected = false;
-        LspSupervisionCoordinator restarted = new LspSupervisionCoordinator(restartedHost);
+        LspSupervisionCoordinator restarted = new LspSupervisionCoordinator(restartedHost, LspWebAllowlistTestHosts.inactive(context));
         assertTrue(restarted.restorePolicy());
 
         restarted.evaluate(NOW);

@@ -15,6 +15,7 @@ final class LspDirectConfigReceiver {
         SharedPreferences remotePreferences() throws Throwable;
         void disconnectTransport();
         void clearSupervisionFreeze(String reason);
+        void pauseWebAllowlist(int minutes);
         void requestDirectUpload(boolean force);
         void logInfo(String message);
         void logWarn(String message);
@@ -23,6 +24,8 @@ final class LspDirectConfigReceiver {
 
     private static final String EXTRA_CONFIG_COMMAND = "command";
     private static final String COMMAND_CLEAR_SUPERVISION_FREEZE = "clear_supervision_freeze";
+    private static final String COMMAND_PAUSE_WEB_ALLOWLIST = "web_allowlist_pause";
+    private static final String EXTRA_PAUSE_MINUTES = "minutes";
 
     private final LspDirectConfig config;
     private final String actionConfig;
@@ -63,6 +66,11 @@ final class LspDirectConfigReceiver {
                     String command = safeString(intent.getStringExtra(EXTRA_CONFIG_COMMAND));
                     if (COMMAND_CLEAR_SUPERVISION_FREEZE.equals(command)) {
                         host.clearSupervisionFreeze("app command");
+                        return;
+                    }
+                    if (COMMAND_PAUSE_WEB_ALLOWLIST.equals(command)) {
+                        // Zero resumes; the controller caps longer requests.
+                        host.pauseWebAllowlist(intent.getIntExtra(EXTRA_PAUSE_MINUTES, 0));
                         return;
                     }
                     apply(receiverContext, intent);

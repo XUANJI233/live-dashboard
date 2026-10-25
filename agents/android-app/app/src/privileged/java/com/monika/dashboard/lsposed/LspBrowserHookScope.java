@@ -9,10 +9,12 @@ final class LspBrowserHookScope {
     }
 
     private final LspBrowserTitleHooks browserTitleHooks;
+    private final LspWebNavigationGuard navigationGuard;
     private final Host host;
 
-    LspBrowserHookScope(LspBrowserTitleHooks browserTitleHooks, Host host) {
+    LspBrowserHookScope(LspBrowserTitleHooks browserTitleHooks, LspWebNavigationGuard navigationGuard, Host host) {
         this.browserTitleHooks = browserTitleHooks;
+        this.navigationGuard = navigationGuard;
         this.host = host;
     }
 
@@ -24,6 +26,7 @@ final class LspBrowserHookScope {
             return;
         }
         browserTitleHooks.install(classLoader, packageName);
+        navigationGuard.install(classLoader, packageName);
     }
 
     private boolean shouldHookBrowserProcess(String packageName, String processName) {

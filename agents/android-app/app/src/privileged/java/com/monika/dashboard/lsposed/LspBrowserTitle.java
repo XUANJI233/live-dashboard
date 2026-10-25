@@ -64,6 +64,10 @@ final class LspBrowserTitle {
         return false;
     }
 
+    static java.util.List<String> knownBrowserPackages() {
+        return java.util.Arrays.asList(BROWSER_PACKAGES.clone());
+    }
+
     static String cleanBrowserTitle(String appLabel, String title) {
         String cleaned = cleanTitle(title);
         if (cleaned == null) return null;
