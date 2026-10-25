@@ -302,6 +302,11 @@ WS 帧 `viewer_message` 与 HTTP `POST /api/messages/public`、`POST /api/messag
 - `risk_trigger_minutes`：风险名单中任一应用累计使用多少分钟触发 AI 监督。
 - `review_interval_minutes`：外部控制器自动周期复核间隔（5–240 分钟），只保存在服务端，不下发到设备。
 - `app_time_limits`：独立限时冻结策略，元素为 `{ "app_regex": "...", "limit_minutes": 10, "reason": "..." }`。
+- `web_allowlist`：系统浏览器的严格网页白名单，`{ "allowed_domains": ["example.com"], "active_windows": [{ "days": [1,2,3,4,5], "start": "08:00", "end": "12:00" }] }`。
+  - 域名同时放行其子域名，服务端统一为小写主机名（去掉协议、路径、端口和 `*.` 前缀），至少两段，最多 64 个；空列表表示关闭网页过滤。
+  - `active_windows` 按手机本地时间判断，`days` 为 ISO 星期（1=周一，空表示每天），只支持同日内 `start < end`，跨夜写成两段，最多 14 段；空列表表示监督开启期间一直生效。
+  - 生效期间 Android LSP 只放行系统浏览器（小米浏览器）：其它浏览器被单独挂起（不进 AI 冻结列表，不受“全部解冻”和每日重置影响），系统浏览器内非白名单的 http/https 导航在加载前被拦下。用户可在 App 内临时暂停，暂停有上限并会上报。
+  - 监督关闭时有效策略中的 `web_allowlist` 为空；旧版 LSP 会忽略该字段，是否执行以设备能力 `web_allowlist` 为准。
 
 截图命令使用 `payload.kind="screenshot"`，并带 `{ "screenshot_id", "max_width", "jpeg_quality" }`。Android LSP 截图后向 `POST /api/device-screenshots/{screenshot_id}` 上传受限 JPEG，Header 必须包含原 `X-Command-Id` 与实际宽高；服务端按设备身份、截图 ID 和命令 ID 三者绑定验收。
 
@@ -438,6 +443,7 @@ HTTP `/api/report` 与 WS `device_status.payload` 共享上报主体核心字段
 能力 profile：
 
 - `android_lsp`：可上报冻结列表，可支持 `freeze`、`unfreeze`、`vibrate`、`say`、`screen_off`、`risk_app_monitor`、`app_time_limit`；其中 `screen_off` 必须由新端侧显式上报为 `true` 才会下发。
+- `android_lsp` 只有显式上报 `web_allowlist:true` 才表示执行网页白名单，并在 `extra.device.web_allowlist` 上报执行状态：`active`、`paused_until`、`browser_package`、`allowed_domain_count`、`paused_browsers`、`last_blocked_host`、`last_blocked_at`。该状态只在设备上下文中给控制器读取，不进入 `/api/current` 和访客 `device_update`。
 - `android_lsp` 只有显式上报 `screenshot:true` 才能接收截图命令。截图由 LSP 调用系统截图能力、缩放并压成受限 JPEG，经设备鉴权上传；MCP 图片读取一次后删除，过期记录自动清理。
 - `android_normal`：可 `vibrate`、`say`，不能冻结/解冻。
 - `desktop_message`：只支持 `say`。
@@ -494,7 +500,7 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
 - `live_dashboard.get_accounting_bills` 只查询 AutoAccounting 已处理完成并同步到服务端的原始主账单字段；默认先通过 Android `integration` WS 请求指定时间范围的事件式刷新，不重新解释账务汇总语义。最多返回 200 条；`truncated=true` 时必须把 `next_cursor` 原样传入下一次调用，直到 `next_cursor=null`。
 - 郊狼工具只作用于 Android 集成当前已连接的 Coyote V2/V3：`coyote_start` 冷启动强度上限 10，`coyote_adjust` 单步上限 ±10，且 Android 会再次按用户 A/B 通道上限裁剪；`coyote_change_wave` 不改变强度。上述三项需要 Android 本地显式开启远程控制；`coyote_stop` 与 `coyote_emergency_stop` 不受启动授权限制，紧急停止会立即归零并清空波形。
 - `live_dashboard.set_supervision_policy` 是外部 AI 控制器编写持久监督策略的唯一接口：AI 根据当前目标和证据主动创建、修改或清空复核触发规则、触发分钟数和明确的离线应用限时；不要让部署者预填固定名单，也不要用于一次性提醒、一次性冻结/解冻或普通聊天消息。
-  - 输入必须是完整快照：`policy_owner`、`strategy_reason`、`review_interval_minutes`、`risk_app_regex`、`risk_trigger_minutes`、`app_time_limits` 缺一不可。
+  - 输入必须是完整快照：`policy_owner`、`strategy_reason`、`review_interval_minutes`、`risk_app_regex`、`risk_trigger_minutes`、`app_time_limits` 缺一不可；`web_allowlist` 可省略，省略等同于空白名单（关闭网页过滤），不会保留旧值。
   - `policy_owner` 必须与已启用的控制器 persona 一致（`openclaw` / `hermes` / `custom`）；Live 冷备 AI 接管时服务端内部记录为 `live_ai`，不冒充外部控制器。
   - 服务端整体替换旧策略，不接受依赖旧字段的部分更新。执行设备只接收三项执行字段，作者、理由与更新时间留在服务端设置中用于审计。
 - `live_dashboard.update_service_settings` 只接受 snake_case 字段和真布尔，不接受手机端同义 camelCase。`live_dashboard.set_summary_mode` 是服务端控制语气的唯一远程工具；如果 `AI_SUMMARY_MODE` 环境变量存在，则环境变量优先。

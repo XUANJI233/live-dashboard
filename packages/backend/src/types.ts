@@ -28,6 +28,7 @@ export interface ReportPayload {
         say?: boolean;
         risk_app_monitor?: boolean;
         app_time_limit?: boolean;
+        web_allowlist?: boolean;
       };
       last_sample_at?: string;
       relay_mode?: string;

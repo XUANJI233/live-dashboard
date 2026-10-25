@@ -134,6 +134,17 @@ export const SupervisionPolicySchema = z.object({
     reason: z.string().max(120).optional().describe("Optional reason shown in local freeze state."),
   })).max(12)
     .describe("Persistent app time-limit policy. Not a one-time freeze."),
+  web_allowlist: z.object({
+    allowed_domains: z.array(z.string().min(1).max(253)).max(64)
+      .describe("Domains the system browser may open while active; a domain also allows its subdomains. Empty disables web filtering."),
+    active_windows: z.array(z.object({
+      days: z.array(z.number().int().min(1).max(7)).max(7).describe("ISO weekdays, 1 = Monday; empty means every day."),
+      start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).describe("Phone-local start time, HH:MM."),
+      end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).describe("Phone-local end time after start, HH:MM."),
+    })).max(14)
+      .describe("Optional windows; empty means whenever supervision is enabled."),
+  }).optional()
+    .describe("Strict Android LSP web allowlist: while active only the system browser runs, other browsers are paused, and it opens only these domains. Part of the complete snapshot; omitting it disables web filtering."),
   device_ids: z.array(z.string().min(1).max(160)).max(20).optional()
     .describe("Optional Android LSP device ids to sync; omit to sync all capable devices."),
   expires_in_seconds: z.number().int().min(10).max(3600).optional()

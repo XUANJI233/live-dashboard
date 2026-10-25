@@ -1,4 +1,5 @@
 import type { ControllerPersonaKind } from "./controller-persona";
+import { normalizeWebAllowlistPolicy, type WebAllowlistPolicy } from "./web-allowlist";
 
 export type SupervisionPolicyOwner = ControllerPersonaKind | "live_ai";
 
@@ -16,6 +17,7 @@ export interface SupervisionPolicySettings {
   risk_app_regex: string[];
   risk_trigger_minutes: number;
   app_time_limits: SupervisionAppTimeLimit[];
+  web_allowlist: WebAllowlistPolicy;
 }
 
 export function readSupervisionPolicySettings(source: Record<string, unknown>): SupervisionPolicySettings {
@@ -28,6 +30,7 @@ export function readSupervisionPolicySettings(source: Record<string, unknown>): 
     risk_app_regex: normalizeRegexList(rules?.risk_app_regex),
     risk_trigger_minutes: normalizeMinuteThreshold(source.supervision_risk_trigger_minutes, 3),
     app_time_limits: normalizeSupervisionAppTimeLimits(source.supervision_app_time_limits),
+    web_allowlist: normalizeWebAllowlistPolicy(source.supervision_web_allowlist),
   };
 }
 
@@ -43,6 +46,8 @@ export function replaceSupervisionPolicySettings(
     risk_app_regex: normalizeRegexList(input.risk_app_regex),
     risk_trigger_minutes: normalizeMinuteThreshold(input.risk_trigger_minutes, 3),
     app_time_limits: normalizeSupervisionAppTimeLimits(input.app_time_limits),
+    // A complete snapshot: omitting the web allowlist clears it rather than keeping the old one.
+    web_allowlist: normalizeWebAllowlistPolicy(input.web_allowlist),
   };
 }
 

@@ -4,6 +4,7 @@ import { buildTimelineSegments } from "../routes/timeline";
 import { safeTimezoneOffset } from "./cdn";
 import { buildTimelinePromptDocument } from "./timeline-prompt";
 import { trustedWatchSleepingAt } from "./health-context";
+import { cleanWebAllowlistStatus, type WebAllowlistStatus } from "./web-allowlist";
 import {
   DEVICE_CAPABILITY_SCHEMA,
   INSTALLED_APPS_SCHEMA,
@@ -74,6 +75,7 @@ export interface DeviceCapabilityFlags {
   say: boolean;
   risk_app_monitor: boolean;
   app_time_limit: boolean;
+  web_allowlist: boolean;
 }
 
 export interface FrozenPackageItem {
@@ -107,6 +109,8 @@ export interface DeviceContext {
   installed_apps_updated_at: string;
   sleeping: boolean;
   device_kind: string;
+  /** Strict web allowlist enforcement as the Android LSP phone last reported it. */
+  web_allowlist: WebAllowlistStatus | null;
 }
 
 export function listDeviceContexts(): DeviceContext[] {
@@ -230,6 +234,7 @@ function deviceContextFromRow(row: DeviceState): DeviceContext {
     installed_apps_updated_at: cleanText(deviceExtra.installed_apps_updated_at, 40),
     sleeping: extra.sleeping === true,
     device_kind: cleanText(deviceExtra.device_kind, 40),
+    web_allowlist: cleanWebAllowlistStatus(deviceExtra.web_allowlist),
   };
 }
 
@@ -280,15 +285,15 @@ function capabilityProfile(platform: string, deviceExtra: Record<string, unknown
 
 function defaultCapabilities(profile: DeviceCapabilityProfile): DeviceCapabilityFlags {
   if (profile === "android_lsp") {
-    return { freeze: true, unfreeze: true, vibrate: true, screen_off: true, screenshot: true, say: true, risk_app_monitor: true, app_time_limit: true };
+    return { freeze: true, unfreeze: true, vibrate: true, screen_off: true, screenshot: true, say: true, risk_app_monitor: true, app_time_limit: true, web_allowlist: true };
   }
   if (profile === "android_normal") {
-    return { freeze: false, unfreeze: false, vibrate: true, screen_off: false, screenshot: false, say: true, risk_app_monitor: false, app_time_limit: false };
+    return { freeze: false, unfreeze: false, vibrate: true, screen_off: false, screenshot: false, say: true, risk_app_monitor: false, app_time_limit: false, web_allowlist: false };
   }
   if (profile === "desktop_message") {
-    return { freeze: false, unfreeze: false, vibrate: false, screen_off: false, screenshot: false, say: true, risk_app_monitor: false, app_time_limit: false };
+    return { freeze: false, unfreeze: false, vibrate: false, screen_off: false, screenshot: false, say: true, risk_app_monitor: false, app_time_limit: false, web_allowlist: false };
   }
-  return { freeze: false, unfreeze: false, vibrate: false, screen_off: false, screenshot: false, say: false, risk_app_monitor: false, app_time_limit: false };
+  return { freeze: false, unfreeze: false, vibrate: false, screen_off: false, screenshot: false, say: false, risk_app_monitor: false, app_time_limit: false, web_allowlist: false };
 }
 
 function boundedCapabilities(maxCapabilities: DeviceCapabilityFlags, reported: Record<string, unknown>): DeviceCapabilityFlags {
@@ -302,6 +307,7 @@ function boundedCapabilities(maxCapabilities: DeviceCapabilityFlags, reported: R
     say: capabilityFlag(maxCapabilities.say, reported.say, hasReportedCapabilities),
     risk_app_monitor: capabilityFlag(maxCapabilities.risk_app_monitor, reported.risk_app_monitor, hasReportedCapabilities),
     app_time_limit: capabilityFlag(maxCapabilities.app_time_limit, reported.app_time_limit, hasReportedCapabilities),
+    web_allowlist: reportedCapabilityFlag(maxCapabilities.web_allowlist, reported.web_allowlist),
   };
 }
 

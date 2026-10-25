@@ -41,6 +41,7 @@ function device(input: {
         say: true,
         risk_app_monitor: true,
         app_time_limit: true,
+        web_allowlist: true,
       },
     },
     frozen_packages: [],
@@ -48,5 +49,6 @@ function device(input: {
     installed_apps_updated_at: "",
     sleeping: input.sleeping ?? false,
     device_kind: input.device_kind ?? "phone",
+    web_allowlist: null,
   };
 }

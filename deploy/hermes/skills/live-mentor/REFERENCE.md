@@ -38,7 +38,7 @@ When `memory_cursor` is null, query with `since=memory_since` and save `next_sin
 | `complete_controller_ai_request` | Settle one claimed Live request with the claim's `request_id` and `claim_token` after real completion | required completion write |
 | `claim_controller_ai_requests` | Atomic 30-minute lease and per-item claim token for the dedicated Live controller batch consumer | supervision job only |
 | `send_device_commands` | One-shot action | bounded by saved settings |
-| `set_supervision_policy` | Hermes-authored review triggers and explicit time limits | persistently delegated by user |
+| `set_supervision_policy` | Hermes-authored review triggers, explicit time limits, and the strict system-browser web allowlist | persistently delegated by user |
 | other settings/mode/persona writes | Administration | explicit request |
 | `start_ai_job`, `run_supervision_check`, `get_ai_job` | Live fallback | forbidden while active |
 

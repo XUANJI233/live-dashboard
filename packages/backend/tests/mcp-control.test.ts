@@ -1010,6 +1010,8 @@ describe("mcp control plane", () => {
       say: true,
       risk_app_monitor: true,
       app_time_limit: true,
+      // Like screenshot, web allowlist enforcement needs an explicit true from the device.
+      web_allowlist: false,
     });
 
     const sent = sendDeviceCommands({

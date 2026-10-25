@@ -50,6 +50,7 @@ export interface SupervisionPolicyInput {
   risk_app_regex: string[];
   risk_trigger_minutes: number;
   app_time_limits: unknown[];
+  web_allowlist?: unknown;
   device_ids?: string[];
   expires_in_seconds?: number;
   request_id?: string;
@@ -65,6 +66,7 @@ export function setAndSendSupervisionPolicy(input: SupervisionPolicyInput): Supe
     risk_app_regex: input.risk_app_regex,
     risk_trigger_minutes: input.risk_trigger_minutes,
     app_time_limits: input.app_time_limits,
+    web_allowlist: input.web_allowlist,
   });
   return sendSupervisionPolicySnapshot(supervisionPolicySnapshot(settings), input);
 }
@@ -194,7 +196,7 @@ function targetDeviceIds(values: unknown): string[] {
   const source = requested.length > 0
     ? requested
     : listDeviceContexts()
-      .filter((device) => device.capability.capabilities.risk_app_monitor || device.capability.capabilities.app_time_limit)
+      .filter((device) => supportsAnyPolicyCapability(device))
       .map((device) => device.device_id);
   const out: string[] = [];
   for (const item of source) {
@@ -220,15 +222,28 @@ function supervisionPolicyPayload(policy: ReturnType<typeof supervisionPolicySna
       limit_minutes: item.limit_minutes,
       reason: cleanText(item.reason, 120),
     })),
+    web_allowlist: {
+      allowed_domains: policy.web_allowlist.allowed_domains,
+      active_windows: policy.web_allowlist.active_windows,
+    },
   };
 }
 
+// Older LSP builds ignore web_allowlist, so it never blocks the rest of the policy;
+// each device reports whether it enforces it through the web_allowlist capability.
 function deviceSupportsPolicy(device: DeviceContext, policy: ReturnType<typeof supervisionPolicySnapshot>): boolean {
   const capabilities = device.capability.capabilities;
   if (device.capability.profile !== "android_lsp") return false;
   if (policy.risk_app_regex.length > 0 && capabilities.risk_app_monitor !== true) return false;
   if (policy.app_time_limits.length > 0 && capabilities.app_time_limit !== true) return false;
-  return capabilities.risk_app_monitor === true || capabilities.app_time_limit === true;
+  return supportsAnyPolicyCapability(device);
+}
+
+function supportsAnyPolicyCapability(device: DeviceContext): boolean {
+  const capabilities = device.capability.capabilities;
+  return capabilities.risk_app_monitor === true
+    || capabilities.app_time_limit === true
+    || capabilities.web_allowlist === true;
 }
 
 function markSkipped(commandId: string, reason: string, resultStatus: "ignored" | "unsupported"): void {
@@ -292,6 +307,7 @@ function policySyncHash(policy: SupervisionPolicySnapshot): string {
     risk_app_regex: policy.risk_app_regex,
     risk_trigger_minutes: policy.risk_trigger_minutes,
     app_time_limits: policy.app_time_limits,
+    web_allowlist: policy.web_allowlist,
   });
 }
 

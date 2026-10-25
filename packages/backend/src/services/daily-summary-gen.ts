@@ -25,6 +25,7 @@ import {
   type SupervisionAppTimeLimit,
   type SupervisionPolicyOwner,
 } from "./supervision-policy-settings";
+import { emptyWebAllowlistPolicy, type WebAllowlistPolicy } from "./web-allowlist";
 
 /**
  * AI Summary Generator
@@ -73,6 +74,7 @@ export interface SummarySettings {
   supervision_policy_reason: string;
   supervision_policy_updated_at: string | null;
   supervision_app_time_limits: SupervisionAppTimeLimit[];
+  supervision_web_allowlist: WebAllowlistPolicy;
   supervision_rules: SupervisionRules;
   supervision_rules_updated_at: string | null;
   supervision_rules_error: string | null;
@@ -197,6 +199,7 @@ export function getSummarySettings(): SummarySettings {
       supervision_policy_reason: policy.strategy_reason,
       supervision_policy_updated_at: policy.policy_updated_at,
       supervision_app_time_limits: policy.app_time_limits,
+      supervision_web_allowlist: policy.web_allowlist,
       supervision_rules: normalizeSupervisionRules(parsed.supervision_rules),
       supervision_rules_updated_at: typeof parsed.supervision_rules_updated_at === "string" ? parsed.supervision_rules_updated_at : null,
       supervision_rules_error: typeof parsed.supervision_rules_error === "string" ? parsed.supervision_rules_error : null,
@@ -278,6 +281,7 @@ export function updateSummarySettings(input: unknown): SummarySettings {
     supervision_policy_reason: current.supervision_policy_reason,
     supervision_policy_updated_at: current.supervision_policy_updated_at,
     supervision_app_time_limits: current.supervision_app_time_limits,
+    supervision_web_allowlist: current.supervision_web_allowlist,
     supervision_rules: current.supervision_rules,
     supervision_rules_updated_at: current.supervision_rules_updated_at,
     supervision_rules_error: current.supervision_rules_error,
@@ -301,6 +305,7 @@ export function updateSupervisionPolicy(input: unknown): SummarySettings {
     supervision_policy_reason: policy.strategy_reason,
     supervision_policy_updated_at: policy.policy_updated_at,
     supervision_app_time_limits: policy.app_time_limits,
+    supervision_web_allowlist: policy.web_allowlist,
     supervision_rules: {
       ...current.supervision_rules,
       risk_app_regex: policy.risk_app_regex,
@@ -322,6 +327,7 @@ export function supervisionPolicySnapshot(settings = getSummarySettings()): {
   risk_app_regex: string[];
   risk_trigger_minutes: number;
   app_time_limits: SupervisionAppTimeLimit[];
+  web_allowlist: WebAllowlistPolicy;
 } {
   return {
     policy_owner: settings.supervision_policy_owner,
@@ -331,6 +337,7 @@ export function supervisionPolicySnapshot(settings = getSummarySettings()): {
     risk_app_regex: settings.supervision_rules.risk_app_regex,
     risk_trigger_minutes: settings.supervision_risk_trigger_minutes,
     app_time_limits: settings.supervision_app_time_limits,
+    web_allowlist: settings.supervision_web_allowlist,
   };
 }
 
@@ -347,6 +354,7 @@ export function effectiveSupervisionPolicySnapshot(
     risk_app_regex: [],
     risk_trigger_minutes: policy.risk_trigger_minutes,
     app_time_limits: [],
+    web_allowlist: emptyWebAllowlistPolicy(),
   };
 }
 
@@ -534,6 +542,7 @@ function defaultSummarySettings(): SummarySettings {
     supervision_policy_reason: "",
     supervision_policy_updated_at: null,
     supervision_app_time_limits: [],
+    supervision_web_allowlist: emptyWebAllowlistPolicy(),
     supervision_rules: defaultSupervisionRules(),
     supervision_rules_updated_at: null,
     supervision_rules_error: null,
@@ -677,6 +686,7 @@ function settingsForStorage(settings: SummarySettings): Omit<SummarySettings, "s
     supervision_policy_reason: settings.supervision_policy_reason,
     supervision_policy_updated_at: settings.supervision_policy_updated_at,
     supervision_app_time_limits: settings.supervision_app_time_limits,
+    supervision_web_allowlist: settings.supervision_web_allowlist,
     supervision_rules: settings.supervision_rules,
     supervision_rules_updated_at: settings.supervision_rules_updated_at,
     supervision_rules_error: settings.supervision_rules_error,

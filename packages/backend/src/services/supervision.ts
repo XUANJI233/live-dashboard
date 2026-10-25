@@ -44,6 +44,7 @@ import {
 } from "./supervision-patterns";
 import { promptText } from "./prompt-text";
 import { materialUsageSignature } from "./usage-digest";
+import { emptyWebAllowlistPolicy } from "./web-allowlist";
 import {
   nextScheduledReviewState,
   readScheduledReviewState,
@@ -173,6 +174,7 @@ export async function refreshSupervisionRules(settings = getSummarySettings()): 
       supervision_check_interval_minutes: 60,
       supervision_risk_trigger_minutes: 3,
       supervision_app_time_limits: [],
+      supervision_web_allowlist: emptyWebAllowlistPolicy(),
       supervision_rules: rules,
       supervision_rules_updated_at: policyUpdatedAt,
       supervision_rules_error: null,

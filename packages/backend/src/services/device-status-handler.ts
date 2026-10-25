@@ -4,6 +4,7 @@ import { isNSFW } from "./nsfw-filter";
 const NSFW_FILTER_ENABLED = process.env.NSFW_FILTER_DISABLED !== "true";
 import { processDisplayTitle } from "./privacy-tiers";
 import { publicDeviceExtra } from "./public-device-extra";
+import { cleanWebAllowlistStatus } from "./web-allowlist";
 import { db, insertActivity, insertLocationRecord, upsertDeviceState, hmacTitle } from "../db";
 import { OFFLINE_TIMEOUT_FIELD, validateReportedOfflineTimeoutMinutes } from "../offline-policy";
 import type { DeviceInfo, TimelineSegmentExtra } from "../types";
@@ -14,7 +15,7 @@ const MAX_MEDIUM_LENGTH = 256;
 const MAX_INSTALLED_APPS = 512;
 const VALID_SOURCES = new Set(["normal", "root", "lsposed", "accessibility", "notification"]);
 const VALID_DEVICE_PROFILES = new Set(["android_lsp", "android_normal", "desktop_message"]);
-const DEVICE_CAPABILITY_KEYS = ["freeze", "unfreeze", "vibrate", "screen_off", "screenshot", "say", "risk_app_monitor", "app_time_limit"] as const;
+const DEVICE_CAPABILITY_KEYS = ["freeze", "unfreeze", "vibrate", "screen_off", "screenshot", "say", "risk_app_monitor", "app_time_limit", "web_allowlist"] as const;
 const getPreviousDeviceExtra = db.prepare("SELECT extra FROM device_states WHERE device_id = ?");
 
 export interface PublicDeviceUpdate {
@@ -188,6 +189,8 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (ambientLux != null) deviceExtra.ambient_lux = Math.round(ambientLux * 10) / 10;
       const frozenPackages = cleanFrozenPackages(deviceBody.frozen_packages);
       if (Array.isArray(deviceBody.frozen_packages)) deviceExtra.frozen_packages = frozenPackages;
+      const webAllowlist = cleanWebAllowlistStatus(deviceBody.web_allowlist);
+      if (webAllowlist) deviceExtra.web_allowlist = webAllowlist;
       const installedApps = cleanInstalledApps(deviceBody.installed_apps);
       if (installedApps.length > 0) {
         deviceExtra.installed_apps = installedApps;

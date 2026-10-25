@@ -1,3 +1,5 @@
+import type { WebAllowlistPolicy } from "./web-allowlist";
+
 export const DEVICE_CAPABILITY_SCHEMA = "live_dashboard.device_capabilities.v1";
 export const TIMELINE_SCHEMA = "live_dashboard.timeline.v1";
 export const COMMAND_SCHEMA = "live_dashboard.device_commands.v1";
@@ -42,6 +44,7 @@ export interface DeviceCommandPayload {
   risk_app_regex?: string[];
   risk_trigger_minutes?: number;
   app_time_limits?: SupervisionAppTimeLimitPayload[];
+  web_allowlist?: WebAllowlistPolicy;
   screenshot?: {
     screenshot_id: string;
     max_width: number;
