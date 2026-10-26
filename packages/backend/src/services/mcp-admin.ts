@@ -103,6 +103,7 @@ export function completeServiceAiJob(input: {
   outcome: "succeeded" | "failed" | "skipped";
   detail?: unknown;
 }): Record<string, unknown> {
+  if (!hermesControllerEnabled()) throw new Error("hermes_controller_inactive");
   return {
     ok: true,
     job: completeDelegatedAiJob(input),
@@ -110,6 +111,7 @@ export function completeServiceAiJob(input: {
 }
 
 export function claimServiceAiJobs(input: { owner_id: unknown; limit?: unknown }): Record<string, unknown> {
+  if (!hermesControllerEnabled()) throw new Error("hermes_controller_inactive");
   return {
     ok: true,
     ...claimDelegatedAiJobs(input),

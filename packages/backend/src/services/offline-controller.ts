@@ -12,6 +12,8 @@ import {
 } from "./controller-event-outbox";
 import { hermesControllerEnabled } from "./controller-mode";
 import { controllerExplicitlyPaused } from "./controller-persona";
+import { getDeviceContext } from "./device-context";
+import { trustedWatchSleepingAt } from "./health-context";
 import { cleanIdentifier } from "./mcp-contracts";
 
 interface OfflineTransitionRow {
@@ -29,9 +31,25 @@ const MAX_DEVICE_IDS_PER_EVENT = 20;
 
 const transitionAndQueueOfflineEvents = db.transaction((occurredAt: string, shouldQueue: boolean) => {
   const rows = markOfflineDevices.all() as OfflineTransitionRow[];
-  queueOfflineEvents(rows, occurredAt, shouldQueue);
+  if (shouldQueue) {
+    const userAsleep = trustedWatchSleepingAt(new Date(occurredAt));
+    queueOfflineEvents(rows.filter((row) => !expectedOffline(row.device_id, userAsleep)), occurredAt, true);
+  }
   return rows;
 });
+
+/**
+ * A device that was already asleep or idle, or any device while the trusted watch says the user
+ * sleeps, going quiet is expected: waking the controller for it only ends in [SILENT].
+ * The device is still marked offline; only the controller event is skipped.
+ */
+function expectedOffline(deviceId: string, userAsleep: boolean): boolean {
+  if (userAsleep) return true;
+  const device = getDeviceContext(deviceId);
+  if (!device) return false;
+  const appId = device.current_app.app_id;
+  return device.sleeping || !appId || appId === "idle" || appId === "sleeping";
+}
 
 function queueOfflineEvents(
   rows: OfflineTransitionRow[],

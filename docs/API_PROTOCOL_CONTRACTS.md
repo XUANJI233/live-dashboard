@@ -517,6 +517,8 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
 - 推荐由 OpenClaw/Hermes 读取 memory feed 后自行整理长期记忆和总结，再调用 `live_dashboard.save_controller_summary` 写回服务端。`save_controller_summary` 字段：`kind`（`daily_summary` / `weekly_summary`）、`date`、`week_start`、`summary`、`mode`、`target`；服务端仍会清洗 HTML、链接、脚本、命令和控制字符。
 - `HERMES_CONTROLLER_ENABLED=false` 时，`live_dashboard.start_ai_job` 可启动日总结、周总结、监督规则刷新或监督复核；`live_dashboard.get_ai_job` 按 `request_id` 查询状态；`live_dashboard.run_supervision_check` 会排队一个 `supervision_check` job 并立即返回。
 - `HERMES_CONTROLLER_ENABLED=true` 时，所有客户端 Live AI job 都写入同一 AI job 幂等账本，但 runner 只生成 `ai.work_requested` 控制器事件，不调用 Live 模型。Webhook 接收后 job 状态为 `delegated`，不是提前伪报 `succeeded`；Hermes 原子认领后，完成、跳过或失败时必须用认领返回的 `request_id` 和 `claim_token` 调用 `complete_controller_ai_request` 结算状态。`ai_config_test` 直接返回 `managed_by="hermes"`，不会用冷备用 Key 发模型请求。Hermes 应使用 `get_controller_context` 一次取得有界上下文，再用 `save_controller_summary`、`set_supervision_policy`、`send_device_commands` 等明确工具完成工作。
+  - 委托 job 不会无限挂起：2 小时内未被认领的 `delegated` job 转为 `failed`（`AI_JOB_DELEGATION_TIMEOUT`）；以 `HERMES_CONTROLLER_ENABLED=false` 重启时，遗留的 `delegated` / `processing` job 转为 `failed`（`AI_JOB_CONTROLLER_INACTIVE`）。两者都可重试：客户端用同一 kind/key 重新提交会重启该 job。Live AI 模式下重新提交仍处于 `delegated` 的 job 也会由 Live 重启。Hermes 模式关闭时 `claim_controller_ai_requests` / `complete_controller_ai_request` 返回 `hermes_controller_inactive`。
+- MCP 工具失败时结果带 `isError: true`，`structuredContent` 为 `{ "ok": false, "error": "<code>" }`；带类型的错误（如 AI job 的 `AI_JOB_NOT_FOUND`）以小写保留为 `ai_job_not_found`，不再一律变成 `internal_error`。文本视图是与 `structuredContent` 等价的紧凑 JSON。
 
 ## Hermes 控制模式
 
@@ -555,6 +557,7 @@ Hermes 模式下，Live 可把高价值的确定性监督候选作为最小事�
 - `usage_digest`（schema `live_dashboard.usage_digest.v1`）由 Live 用代码计算，不调用模型，覆盖整个上下文窗口。每台设备（最多 6 台，按活跃时长排序，请求的 `device_id` 排第一）给出 `active_minutes`、`current`（当前应用、类别、开始时间与连续分钟）、`class_minutes`、前 6 个应用的分钟与类别，以及 `app_count` 和 `switches`。类别按已保存的监督规则判定，每段只计入第一个命中的 `blacklist`、`risk`、`target`、`whitelist`，都不命中为 `unclassified`。摘要只含应用名和包名，不含窗口标题；行数超限时保留最新部分并标记 `truncated=true`。
 - `supervision`、`companion`、`followup` 模式的 `timeline` 只保留最近 8 段并带 `recent_only=true`，这本身不算截断，不进入 `bounds.truncated_sections`。摘要留下与决策相关的疑问时，Hermes 对一台设备、一个时间窗调用一次 `live_dashboard.get_device_timeline` 查看细节。其它模式的时间线上限不变。
 - 事件使用上述 V2 HMAC headers；Hermes 应把 `X-Request-ID` 作为幂等键。
+- `device.offline` 只在意外断线时发送：设备下线前已在睡眠、熄屏或空闲（`sleeping`、空应用、`idle`/`sleeping`），或可信手表显示用户正在睡觉时，设备仍会标记离线，但不唤醒控制器。
 - 投递与重试：Live 先把事件写入持久 outbox 再投递。每次投递最多尝试 2 次、每次等待 10 秒（长于 Hermes 触发脚本等待网关回执的 6 秒），只有带匹配 `event_id` 的 ACK 才算送达。失败后按 1、2、4、8、16 分钟、此后每 30 分钟退避重试；连续 3 次网络级失败会让本轮投递提前结束，避免控制器挂掉时逐条超时。到期未送达的事件不会阻塞更新的事件。
 - 死信与过期：4xx（408/429 除外）、`secret_reused`、损坏的 outbox 行或累计 8 次失败的事件转入死信，不再重试。事件有有效期：复核请求 30 分钟，设备离线 2 小时，AI 工作请求 24 小时；过期事件不会在恢复后补发，引入有效期之前写入的旧行超过 24 小时即视为过期。死信与过期行保留 14 天后清理。
 - 复核合并：新复核事件入队时，同设备集合内尚未送达的旧复核事件被标记为 `superseded`，其 `reason_codes` 并入新事件（例如 `device_requested` 不会丢失），Hermes 只需处理携带最新状态的一次复核。已经在投递中的旧事件仍会送达。

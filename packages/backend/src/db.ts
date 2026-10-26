@@ -695,6 +695,26 @@ export const markInterruptedAiJobsFailed = db.prepare(`
   WHERE status IN ('queued', 'running')
 `);
 
+// Controller-owned jobs nobody will finish once Hermes mode is off; failed jobs restart on resubmit.
+export const markControllerAiJobsFailed = db.prepare(`
+  UPDATE ai_jobs
+  SET status = 'failed',
+      error = ?,
+      finished_at = ?,
+      updated_at = ?
+  WHERE status IN ('delegated', 'processing')
+`);
+
+// Delegated jobs the controller never claimed within the cutoff.
+export const markStaleDelegatedAiJobsFailed = db.prepare(`
+  UPDATE ai_jobs
+  SET status = 'failed',
+      error = ?,
+      finished_at = ?,
+      updated_at = ?
+  WHERE status = 'delegated' AND julianday(updated_at) < julianday(?)
+`);
+
 export const insertLocationRecord = db.prepare(`
   INSERT INTO location_records (device_id, latitude, longitude, accuracy_m, provider, recorded_at)
   VALUES (?, ?, ?, ?, ?, ?)

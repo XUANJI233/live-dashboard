@@ -1,4 +1,11 @@
-import { db, getDailySummary, getWeeklySummary, markInterruptedAiJobsFailed } from "../db";
+import {
+  db,
+  getDailySummary,
+  getWeeklySummary,
+  markControllerAiJobsFailed,
+  markInterruptedAiJobsFailed,
+  markStaleDelegatedAiJobsFailed,
+} from "../db";
 import { randomUUID } from "node:crypto";
 import type { DeviceInfo } from "../types";
 import { safeTimezoneOffset } from "./cdn";
@@ -202,7 +209,7 @@ const resetFailedStmt = db.prepare(`
       started_at = '',
       finished_at = '',
       updated_at = ?
-  WHERE request_id = ? AND status = 'failed'
+  WHERE request_id = ? AND status IN ('failed', 'delegated')
 `);
 
 const activeRunners = new Map<string, AiJobRunner>();
@@ -223,6 +230,27 @@ export function recoverInterruptedAiJobs(): void {
     message: "AI job was interrupted by server restart",
     retryable: true,
   }, JOB_ERROR_MAX_BYTES), now, now);
+  // After a handback to Live AI nothing will claim or finish controller-owned jobs.
+  if (!hermesControllerEnabled()) {
+    markControllerAiJobsFailed.run(jsonStringifyBounded({
+      code: "AI_JOB_CONTROLLER_INACTIVE",
+      message: "The controller that owned this AI job is no longer active",
+      retryable: true,
+    }, JOB_ERROR_MAX_BYTES), now, now);
+  }
+}
+
+const DELEGATION_CLAIM_TIMEOUT_MS = 2 * 60 * 60_000;
+
+/** Delegated jobs the controller never claimed fail, so the next resubmission restarts them. */
+export function expireUnclaimedDelegatedAiJobs(now = new Date()): number {
+  const nowIso = now.toISOString();
+  const cutoff = new Date(now.getTime() - DELEGATION_CLAIM_TIMEOUT_MS).toISOString();
+  return markStaleDelegatedAiJobsFailed.run(jsonStringifyBounded({
+    code: "AI_JOB_DELEGATION_TIMEOUT",
+    message: "The controller did not claim this AI job in time",
+    retryable: true,
+  }, JOB_ERROR_MAX_BYTES), nowIso, nowIso, cutoff).changes;
 }
 
 export function submitAiJobFromClient(
@@ -298,7 +326,9 @@ export function submitAiJob(input: {
     const byKindKey = getJobByKindKey(input.kind, normalized.jobKey);
     if (byKindKey) {
       const runner = runnerForJob(byKindKey.request_id);
-      const job = byKindKey.status === "failed"
+      // Without Hermes nothing will ever pick up a delegated job, so it restarts like a failed one.
+      const restartable = byKindKey.status === "failed" || (!managedByHermes && byKindKey.status === "delegated");
+      const job = restartable
         ? restartFailedJob(byKindKey, payloadText, runner)
         : byKindKey;
       maybeAttachRunner(job, runner);

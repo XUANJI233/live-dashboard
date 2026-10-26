@@ -98,6 +98,32 @@ describe("mcp control plane", () => {
     expect(body.result?.structuredContent?.recent_events).toBeDefined();
   });
 
+  test("flags failed tool calls as MCP errors and keeps typed error codes", async () => {
+    const { handleMcpRequest } = await import("../src/routes/mcp");
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
+    try {
+      const response = await handleMcpRequest(mcpRequest({
+        method: "tools/call",
+        params: {
+          name: "live_dashboard.complete_controller_ai_request",
+          arguments: {
+            request_id: "req_missing_delegation",
+            claim_token: `claim_${crypto.randomUUID()}`,
+            outcome: "skipped",
+          },
+        },
+      }), localMcpAccess());
+      const body = await response.json() as {
+        result?: { isError?: boolean; structuredContent?: Record<string, unknown>; content?: Array<{ text: string }> };
+      };
+      expect(body.result?.isError).toBe(true);
+      expect(body.result?.structuredContent).toEqual({ ok: false, error: "ai_job_not_found" });
+      expect(body.result?.content?.[0]?.text).toBe(JSON.stringify({ ok: false, error: "ai_job_not_found" }));
+    } finally {
+      delete process.env.HERMES_CONTROLLER_ENABLED;
+    }
+  });
+
   test("keeps production-scale controller context below Hermes inline spillover", async () => {
     const { db } = await import("../src/db");
     const { handleMcpRequest } = await import("../src/routes/mcp");

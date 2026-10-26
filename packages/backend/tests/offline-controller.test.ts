@@ -286,6 +286,41 @@ describe("offline controller events", () => {
     }
   });
 
+  test("does not wake the controller when an idle or sleeping device goes quiet", async () => {
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_URL = "https://controller.example/webhooks/live-supervision";
+    process.env.CONTROLLER_WEBHOOK_SECRET = "independent-offline-controller-secret";
+    const { db } = await import("../src/db");
+    const { checkOfflineDevices } = await import("../src/services/offline-controller");
+    const insert = db.prepare(`
+      INSERT INTO device_states (
+        device_id, device_name, platform, app_id, app_name, window_title,
+        display_title, last_seen_at, extra, is_online
+      ) VALUES (?, 'Phone', 'android', ?, '', '', '', datetime('now', '-30 minutes'), ?, 1)
+    `);
+    insert.run("quiet-idle-phone", "idle", "{}");
+    insert.run("quiet-sleeping-phone", "com.reader", JSON.stringify({ sleeping: true }));
+    const originalFetch = globalThis.fetch;
+    let requests = 0;
+    globalThis.fetch = (async () => {
+      requests += 1;
+      return new Response(null, { status: 503 });
+    }) as unknown as typeof fetch;
+    try {
+      const result = await checkOfflineDevices(new Date("2026-09-01T05:00:00.000Z"));
+      expect(result.transitioned).toEqual(expect.arrayContaining(["quiet-idle-phone", "quiet-sleeping-phone"]));
+      const queued = db.prepare(`
+        SELECT COUNT(*) AS count FROM controller_event_outbox
+        WHERE event_json LIKE '%quiet-idle-phone%' OR event_json LIKE '%quiet-sleeping-phone%'
+      `).get() as { count: number };
+      expect(queued.count).toBe(0);
+      expect(requests).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("bounds delivered outbox history without deleting pending events", async () => {
     const { cleanupOldControllerEvents, db } = await import("../src/db");
     const insert = db.prepare(`

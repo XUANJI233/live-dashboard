@@ -451,6 +451,84 @@ describe("ai jobs", () => {
     expect(peak).toBeLessThanOrEqual(2);
     expect(peak).toBeGreaterThan(1);
   });
+
+  test("delegated jobs do not get stranded after a handback to Live AI", async () => {
+    const { db } = await import("../src/db");
+    const {
+      expireUnclaimedDelegatedAiJobs,
+      getAiJob,
+      recoverInterruptedAiJobs,
+      submitAiJob,
+    } = await import("../src/services/ai-jobs");
+    const { claimServiceAiJobs } = await import("../src/services/mcp-admin");
+    const originalFetch = globalThis.fetch;
+    process.env.HERMES_CONTROLLER_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_ENABLED = "true";
+    process.env.CONTROLLER_WEBHOOK_URL = "https://controller.example/webhooks/live-supervision";
+    process.env.CONTROLLER_WEBHOOK_SECRET = "independent-handback-secret";
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const event = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+      return Response.json({
+        status: "accepted",
+        ack: { schema: "live_dashboard.controller_ack.v1", v: 1, event_id: event.event_id, accepted: true },
+      }, { status: 202 });
+    }) as typeof fetch;
+    const delegate = async (date: string) => {
+      const submitted = submitAiJob({
+        requestId: `req_handback_${date}`,
+        kind: "daily_summary",
+        payload: { date, tz_offset_minutes: -480 },
+        device: testDevice,
+        deviceToken: "ai-job-token",
+      });
+      return waitForJobStatus(submitted.job.request_id, () => getAiJob(submitted.job.request_id), ["delegated"]);
+    };
+    let restartedRequestId = "";
+    let recoveredRequestId = "";
+    let expiredRequestId = "";
+    try {
+      restartedRequestId = (await delegate("2026-05-01")).request_id;
+      recoveredRequestId = (await delegate("2026-05-02")).request_id;
+      expiredRequestId = (await delegate("2026-05-03")).request_id;
+    } finally {
+      globalThis.fetch = originalFetch;
+      delete process.env.HERMES_CONTROLLER_ENABLED;
+      delete process.env.CONTROLLER_WEBHOOK_ENABLED;
+      delete process.env.CONTROLLER_WEBHOOK_URL;
+      delete process.env.CONTROLLER_WEBHOOK_SECRET;
+    }
+
+    // Live AI is back: resubmitting the same work restarts the delegated job with a Live runner.
+    let liveRuns = 0;
+    const resubmitted = submitAiJob({
+      requestId: "req_handback_resubmit",
+      kind: "daily_summary",
+      payload: { date: "2026-05-01", tz_offset_minutes: -480 },
+      device: testDevice,
+      deviceToken: "ai-job-token",
+      runner: async () => {
+        liveRuns += 1;
+        return completedAiJob({ ok: true, summary: "live after handback" });
+      },
+    });
+    expect(resubmitted.job.request_id).toBe(restartedRequestId);
+    expect((await waitForJob(restartedRequestId, () => getAiJob(restartedRequestId))).status).toBe("succeeded");
+    expect(liveRuns).toBe(1);
+
+    // A delegation the controller never claimed fails after two hours.
+    db.prepare("UPDATE ai_jobs SET updated_at = ? WHERE request_id = ?")
+      .run(new Date(Date.now() - 3 * 60 * 60_000).toISOString(), expiredRequestId);
+    expect(expireUnclaimedDelegatedAiJobs()).toBe(1);
+    expect(getAiJob(expiredRequestId)?.status).toBe("failed");
+
+    // A restart in Live AI mode fails the controller-owned jobs left behind.
+    recoverInterruptedAiJobs();
+    const recovered = getAiJob(recoveredRequestId);
+    expect(recovered?.status).toBe("failed");
+    expect(JSON.stringify(recovered?.error)).toContain("AI_JOB_CONTROLLER_INACTIVE");
+
+    expect(() => claimServiceAiJobs({ owner_id: "late-hermes" })).toThrow("hermes_controller_inactive");
+  });
 });
 
 const testDevice = {

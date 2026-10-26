@@ -15,7 +15,7 @@ import {
 } from "../db";
 import type { DeviceInfo } from "../types";
 import { getSummarySettings } from "./daily-summary-gen";
-import { submitAiJob } from "./ai-jobs";
+import { expireUnclaimedDelegatedAiJobs, submitAiJob } from "./ai-jobs";
 import { collectDueSummaryJobs, initialSummaryScheduleState } from "./summary-scheduler";
 import { runSupervisionTick } from "./supervision";
 import { checkOfflineDevices } from "./offline-controller";
@@ -66,6 +66,15 @@ const hourlyCleanupTimer = setInterval(() => {
     }
   } catch (e) {
     console.error("[cleanup] Device screenshot cleanup failed:", e);
+  }
+
+  try {
+    const expired = expireUnclaimedDelegatedAiJobs();
+    if (expired > 0) {
+      console.warn(`[cleanup] Failed ${expired} delegated AI jobs the controller never claimed`);
+    }
+  } catch (e) {
+    console.error("[cleanup] Delegated AI job expiry failed:", e);
   }
 
   try {
