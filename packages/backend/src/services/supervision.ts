@@ -273,7 +273,7 @@ export async function runSupervisionTick(
       device_ids: deviceIds,
       reason_codes: reasonCodes,
     }, checkedAt);
-    if (!queued) {
+    if (queued === "invalid") {
       return { ok: false, ran: false, reason: "controller_event_invalid", source, checked_at: checkedAt };
     }
     if (reviewGate) writeScheduledReviewState(reviewGate.state);
@@ -397,8 +397,9 @@ export function requestSupervisionCheckForReport(candidate: SupervisionReportCan
       device_ids: [deviceId],
       reason_codes: [candidate.requested ? "device_requested" : "rule_match"],
     }, occurredAt);
-    if (!queued) return false;
-    metaSet(LAST_REPORT_TRIGGER_AT_KEY, occurredAt);
+    if (queued === "invalid") return false;
+    // A report merged into an existing bucket must not extend the throttle window.
+    if (queued === "queued") metaSet(LAST_REPORT_TRIGGER_AT_KEY, occurredAt);
     void flushControllerEvents(now).then(() => {
       if (!controllerEventDelivered(eventId)) {
         console.warn(`[controller-webhook] Hermes review request queued for retry: ${eventId}`);

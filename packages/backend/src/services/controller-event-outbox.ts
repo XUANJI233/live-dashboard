@@ -6,10 +6,19 @@ import {
   type ControllerWebhookDelivery,
 } from "./controller-webhook";
 import { cleanIdentifier } from "./mcp-contracts";
+import {
+  LEGACY_EXPIRY_MS,
+  MAX_DELIVERY_ATTEMPTS,
+  controllerEventExpiresAt,
+  nextAttemptAt,
+  permanentDeliveryFailure,
+  unreachableDelivery,
+} from "./controller-event-retry";
 
 interface OutboxRow {
   event_id: string;
   event_json: string;
+  attempt_count: number;
 }
 
 export interface ControllerEventFlushResult {
@@ -17,8 +26,14 @@ export interface ControllerEventFlushResult {
   pending: number;
 }
 
+export type ControllerEnqueueResult = "queued" | "duplicate" | "invalid";
+export type ControllerEventState = "delivered" | "dead" | "pending" | "missing";
+
 const MAX_DEVICE_IDS_PER_EVENT = 20;
 const MAX_EVENTS_PER_FLUSH = 20;
+const MAX_REASON_CODES = 20;
+// Stop a flush after this many consecutive unreachable attempts instead of timing out on every row.
+const MAX_UNREACHABLE_STREAK = 3;
 const SAFE_ID = /^[A-Za-z0-9_.:-]{1,160}$/;
 const SAFE_REASON = /^[a-z][a-z0-9_.:-]{0,79}$/;
 const SUPPORTED_EVENT_TYPES = new Set<ControllerEvent["event_type"]>([
@@ -29,50 +44,107 @@ const SUPPORTED_EVENT_TYPES = new Set<ControllerEvent["event_type"]>([
 ]);
 
 const insertControllerEvent = db.prepare(`
-  INSERT OR IGNORE INTO controller_event_outbox (event_id, event_json, created_at)
-  VALUES (?, ?, ?)
+  INSERT OR IGNORE INTO controller_event_outbox (event_id, event_json, created_at, expires_at)
+  VALUES (?, ?, ?, ?)
 `);
 
-const pendingControllerEvents = db.prepare(`
-  SELECT event_id, event_json
+const pendingReviewEvents = db.prepare(`
+  SELECT event_id, event_json, attempt_count
   FROM controller_event_outbox
-  WHERE delivered_at IS NULL
+  WHERE delivered_at IS NULL AND dead_at IS NULL
+    AND json_extract(event_json, '$.event_type') = 'supervision.review_requested'
+`);
+
+const expireStaleEvents = db.prepare(`
+  UPDATE controller_event_outbox
+  SET dead_at = ?, last_error = 'expired'
+  WHERE delivered_at IS NULL AND dead_at IS NULL
+    AND (
+      (expires_at IS NOT NULL AND julianday(expires_at) <= julianday(?))
+      OR (expires_at IS NULL AND julianday(created_at) <= julianday(?))
+    )
+`);
+
+const dueControllerEvents = db.prepare(`
+  SELECT event_id, event_json, attempt_count
+  FROM controller_event_outbox
+  WHERE delivered_at IS NULL AND dead_at IS NULL
+    AND (next_attempt_at IS NULL OR julianday(next_attempt_at) <= julianday(?))
   ORDER BY created_at, event_id
   LIMIT ?
 `);
 
+// An event superseded while its request was already in flight still reached the controller.
 const recordControllerDelivery = db.prepare(`
   UPDATE controller_event_outbox
   SET delivered_at = ?, attempt_count = attempt_count + 1,
-      last_attempt_at = ?, last_error = ''
+      last_attempt_at = ?, last_error = '', next_attempt_at = NULL, dead_at = NULL
   WHERE event_id = ? AND delivered_at IS NULL
 `);
 
 const recordControllerFailure = db.prepare(`
   UPDATE controller_event_outbox
-  SET attempt_count = attempt_count + 1, last_attempt_at = ?, last_error = ?
+  SET attempt_count = attempt_count + 1, last_attempt_at = ?, last_error = ?, next_attempt_at = ?
   WHERE event_id = ? AND delivered_at IS NULL
+`);
+
+const recordControllerDeadLetter = db.prepare(`
+  UPDATE controller_event_outbox
+  SET attempt_count = attempt_count + ?, last_attempt_at = ?, last_error = ?, dead_at = ?
+  WHERE event_id = ? AND delivered_at IS NULL AND dead_at IS NULL
 `);
 
 const pendingControllerEventCount = db.prepare(`
   SELECT COUNT(*) AS count
   FROM controller_event_outbox
-  WHERE delivered_at IS NULL
+  WHERE delivered_at IS NULL AND dead_at IS NULL
 `);
 
-const controllerEventState = db.prepare(`
-  SELECT delivered_at FROM controller_event_outbox WHERE event_id = ?
+const controllerEventRow = db.prepare(`
+  SELECT delivered_at, dead_at FROM controller_event_outbox WHERE event_id = ?
 `);
 let flushInFlight: Promise<ControllerEventFlushResult> | null = null;
 
-export function enqueueControllerEvent(event: ControllerEvent, createdAt = event.occurred_at): boolean {
-  if (!validatedControllerEvent(event) || Number.isNaN(Date.parse(createdAt))) return false;
-  insertControllerEvent.run(event.event_id, JSON.stringify(event), createdAt);
-  return true;
+const enqueueTransaction = db.transaction((event: ControllerEvent, createdAt: string): ControllerEnqueueResult => {
+  if (controllerEventRow.get(event.event_id)) return "duplicate";
+  const stored = event.event_type === "supervision.review_requested"
+    ? absorbPendingReviews(event, createdAt)
+    : event;
+  insertControllerEvent.run(
+    stored.event_id,
+    JSON.stringify(stored),
+    createdAt,
+    controllerEventExpiresAt(stored.event_type, createdAt),
+  );
+  return "queued";
+});
+
+export function enqueueControllerEvent(event: ControllerEvent, createdAt = event.occurred_at): ControllerEnqueueResult {
+  if (!validatedControllerEvent(event) || Number.isNaN(Date.parse(createdAt))) return "invalid";
+  return enqueueTransaction(event, createdAt) as ControllerEnqueueResult;
+}
+
+/**
+ * A new review carries the current state, so older undelivered reviews for the same devices
+ * are superseded. Their reason codes move into the new event (a device request is not lost).
+ */
+function absorbPendingReviews(event: ControllerEvent, createdAt: string): ControllerEvent {
+  const covered = new Set(event.device_ids);
+  const reasonCodes = [...event.reason_codes];
+  for (const row of pendingReviewEvents.all() as OutboxRow[]) {
+    const older = storedControllerEvent(row);
+    if (!older || !older.device_ids.every((deviceId) => covered.has(deviceId))) continue;
+    for (const code of older.reason_codes) {
+      if (!reasonCodes.includes(code) && reasonCodes.length < MAX_REASON_CODES) reasonCodes.push(code);
+    }
+    recordControllerDeadLetter.run(0, createdAt, "superseded", createdAt, row.event_id);
+  }
+  return { ...event, reason_codes: reasonCodes };
 }
 
 export function flushControllerEvents(now = new Date()): Promise<ControllerEventFlushResult> {
-  if (flushInFlight) return flushInFlight;
+  // A caller arriving mid-flush gets another pass: rows it just queued were not in the running batch.
+  if (flushInFlight) return flushInFlight.then(() => flushControllerEvents(now));
   const run = flushControllerEventsOnce(now);
   flushInFlight = run;
   const clear = () => {
@@ -84,29 +156,47 @@ export function flushControllerEvents(now = new Date()): Promise<ControllerEvent
 
 async function flushControllerEventsOnce(now: Date): Promise<ControllerEventFlushResult> {
   const attemptedAt = validIsoTimestamp(now);
+  const legacyCutoff = new Date(now.getTime() - LEGACY_EXPIRY_MS).toISOString();
+  expireStaleEvents.run(attemptedAt, attemptedAt, legacyCutoff);
   const deliveredIds: string[] = [];
-  const pending = pendingControllerEvents.all(MAX_EVENTS_PER_FLUSH) as OutboxRow[];
-  for (const row of pending) {
+  const due = dueControllerEvents.all(attemptedAt, MAX_EVENTS_PER_FLUSH) as OutboxRow[];
+  let unreachableStreak = 0;
+  for (const row of due) {
     const event = storedControllerEvent(row);
     if (!event) {
-      recordControllerFailure.run(attemptedAt, "invalid_outbox_event", row.event_id);
+      recordControllerDeadLetter.run(1, attemptedAt, "invalid_outbox_event", attemptedAt, row.event_id);
       continue;
     }
     const delivery = await notifyControllerEvent(event);
     if (delivery.sent) {
       recordControllerDelivery.run(attemptedAt, attemptedAt, row.event_id);
       deliveredIds.push(row.event_id);
-    } else {
-      recordControllerFailure.run(attemptedAt, deliveryFailureReason(delivery), row.event_id);
+      unreachableStreak = 0;
+      continue;
     }
+    const reason = deliveryFailureReason(delivery);
+    const attempts = row.attempt_count + 1;
+    if (permanentDeliveryFailure(delivery) || attempts >= MAX_DELIVERY_ATTEMPTS) {
+      recordControllerDeadLetter.run(1, attemptedAt, reason, attemptedAt, row.event_id);
+    } else {
+      recordControllerFailure.run(attemptedAt, reason, nextAttemptAt(attempts, now), row.event_id);
+    }
+    unreachableStreak = unreachableDelivery(delivery) ? unreachableStreak + 1 : 0;
+    if (unreachableStreak >= MAX_UNREACHABLE_STREAK) break;
   }
   const countRow = pendingControllerEventCount.get() as { count: number };
   return { delivered_ids: deliveredIds, pending: countRow.count };
 }
 
+export function controllerEventState(eventId: string): ControllerEventState {
+  const row = controllerEventRow.get(eventId) as { delivered_at: string | null; dead_at: string | null } | null;
+  if (!row) return "missing";
+  if (row.delivered_at) return "delivered";
+  return row.dead_at ? "dead" : "pending";
+}
+
 export function controllerEventDelivered(eventId: string): boolean {
-  const row = controllerEventState.get(eventId) as { delivered_at: string | null } | undefined;
-  return Boolean(row?.delivered_at);
+  return controllerEventState(eventId) === "delivered";
 }
 
 export function controllerEventPendingCount(): number {

@@ -3,6 +3,8 @@ import { hermesControllerEnabled } from "./controller-mode";
 
 export const CONTROLLER_EVENT_SCHEMA = "live_dashboard.controller_event.v1" as const;
 export const CONTROLLER_ACK_SCHEMA = "live_dashboard.controller_ack.v1" as const;
+const WEBHOOK_ATTEMPTS = 2;
+export const WEBHOOK_ATTEMPT_TIMEOUT_MS = 10_000;
 
 export interface ControllerEvent {
   schema: typeof CONTROLLER_EVENT_SCHEMA;
@@ -62,8 +64,10 @@ export async function notifyControllerEvent(event: ControllerEvent): Promise<Con
     .update(`${timestamp}.${body}`)
     .digest("hex");
 
+  // Two attempts per flush; the outbox backs off between flushes. Each attempt waits longer than
+  // the Hermes trigger's 6 s gateway receipt so an accepted event is not reported as a failure.
   let failure: ControllerWebhookDelivery = { enabled: true, sent: false, reason: "request_failed" };
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < WEBHOOK_ATTEMPTS; attempt += 1) {
     try {
       const response = await fetch(url, {
         method: "POST",
@@ -74,7 +78,7 @@ export async function notifyControllerEvent(event: ControllerEvent): Promise<Con
           "X-Webhook-Signature-V2": signature,
         },
         body,
-        signal: AbortSignal.timeout(3_000),
+        signal: AbortSignal.timeout(WEBHOOK_ATTEMPT_TIMEOUT_MS),
       });
       if (response.ok) {
         if (await responseHasControllerAck(response, event.event_id)) {

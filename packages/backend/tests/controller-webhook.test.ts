@@ -145,7 +145,8 @@ describe("controller webhook", () => {
     const { notifyControllerEvent } = await import("../src/services/controller-webhook");
     const result = await notifyControllerEvent(event);
 
-    expect(attempts).toBe(3);
+    // Two attempts per flush; the outbox backs off before the next one.
+    expect(attempts).toBe(2);
     expect(result).toEqual({ enabled: true, sent: false, status: 200, reason: "invalid_ack" });
   });
 
@@ -171,8 +172,9 @@ describe("controller webhook", () => {
     const { notifyControllerEvent } = await import("../src/services/controller-webhook");
     const result = await notifyControllerEvent(event);
 
-    expect(timeoutMs).toBe(3_000);
-    expect(attempts).toBe(3);
+    // Longer than the Hermes trigger's 6 s gateway receipt wait.
+    expect(timeoutMs).toBe(10_000);
+    expect(attempts).toBe(2);
     expect(result).toEqual({ enabled: true, sent: false, status: 503, reason: "http_503" });
     expect(JSON.stringify(result)).not.toContain(process.env.CONTROLLER_WEBHOOK_SECRET!);
     expect(JSON.stringify(result)).not.toContain("upstream detail");

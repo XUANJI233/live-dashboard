@@ -417,6 +417,11 @@ db.run(`
   ON controller_event_outbox(created_at)
   WHERE delivered_at IS NULL
 `);
+// Retry schedule, expiry and dead letter: a failing head must not block newer events,
+// and an outage must not replay hours-old reviews.
+addColumnIfMissing("controller_event_outbox", "next_attempt_at", "next_attempt_at TEXT DEFAULT NULL");
+addColumnIfMissing("controller_event_outbox", "expires_at", "expires_at TEXT DEFAULT NULL");
+addColumnIfMissing("controller_event_outbox", "dead_at", "dead_at TEXT DEFAULT NULL");
 
 addColumnIfMissing("device_commands", "message_id", "message_id TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("device_commands", "delivery_status", "delivery_status TEXT NOT NULL DEFAULT 'queued'");
@@ -645,17 +650,20 @@ export const cleanupOldActivities = db.prepare(`
 
 export const cleanupOldControllerEvents = db.prepare(`
   DELETE FROM controller_event_outbox
-  WHERE delivered_at IS NOT NULL
-  AND (
-    datetime(delivered_at) < datetime('now', '-14 days')
-    OR event_id NOT IN (
-      SELECT event_id
-      FROM controller_event_outbox
-      WHERE delivered_at IS NOT NULL
-      ORDER BY datetime(delivered_at) DESC, event_id DESC
-      LIMIT 1000
+  WHERE (
+    delivered_at IS NOT NULL
+    AND (
+      datetime(delivered_at) < datetime('now', '-14 days')
+      OR event_id NOT IN (
+        SELECT event_id
+        FROM controller_event_outbox
+        WHERE delivered_at IS NOT NULL
+        ORDER BY datetime(delivered_at) DESC, event_id DESC
+        LIMIT 1000
+      )
     )
   )
+  OR (dead_at IS NOT NULL AND datetime(dead_at) < datetime('now', '-14 days'))
 `);
 
 export const cleanupExpiredMessages = db.prepare(`

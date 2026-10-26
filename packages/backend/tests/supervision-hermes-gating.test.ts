@@ -72,13 +72,15 @@ describe("Hermes wake gating", () => {
     const result = await runScenario("request_inside_throttle");
     expect(result.results).toEqual([true, true, true]);
     expect(result.other_calls).toBe(0);
-    // The third request comes through the report payload entry point at the real clock time,
-    // so it opens its own one-minute bucket.
+    // Report-path flushes are fire-and-forget, so each newer review supersedes the undelivered
+    // older one for the same device and inherits its reasons. The rule-match review was already
+    // in flight when the request arrived, so Hermes gets it plus one review carrying both reasons.
+    // (The third request uses the real clock, so it opens its own one-minute bucket.)
     expect(result.events.map((event) => event.reason_codes)).toEqual([
       ["rule_match"],
-      ["device_requested"],
-      ["device_requested"],
+      ["device_requested", "rule_match"],
+      ["device_requested", "rule_match"],
     ]);
-    expect(result.webhook_calls).toBe(3);
+    expect(result.webhook_calls).toBe(2);
   });
 });

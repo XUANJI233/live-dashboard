@@ -65,18 +65,18 @@ describe("offline controller events", () => {
       expect(first.transitioned).toContain(deviceId);
       expect(first.delivered).toBe(0);
       expect(first.pending).toBeGreaterThanOrEqual(1);
-      expect(requests.length).toBe(first.pending * 3);
+      expect(requests.length).toBe(first.pending * 2);
 
       accept = true;
       const second = await checkOfflineDevices(new Date("2026-09-01T03:01:00.000Z"));
       expect(second.transitioned).toEqual([]);
       expect(second.delivered).toBe(first.pending);
       expect(second.pending).toBe(0);
-      expect(requests.length).toBe(first.pending * 4);
+      expect(requests.length).toBe(first.pending * 3);
 
       const third = await checkOfflineDevices(new Date("2026-09-01T03:02:00.000Z"));
       expect(third).toMatchObject({ transitioned: [], delivered: 0, pending: 0 });
-      expect(requests.length).toBe(first.pending * 4);
+      expect(requests.length).toBe(first.pending * 3);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -144,18 +144,18 @@ describe("offline controller events", () => {
     }) as unknown as typeof fetch;
 
     try {
-      expect(enqueueControllerEvent(event)).toBe(true);
+      expect(enqueueControllerEvent(event)).toBe("queued");
       const first = await flushControllerEvents(new Date("2026-09-01T04:00:00.000Z"));
       expect(first.delivered_ids).toEqual([]);
       expect(first.pending).toBeGreaterThanOrEqual(1);
       expect(controllerEventDelivered(event.event_id)).toBe(false);
-      expect(requests).toBe(3);
+      expect(requests).toBe(2);
 
       validAck = true;
       const second = await flushControllerEvents(new Date("2026-09-01T04:01:00.000Z"));
       expect(second.delivered_ids).toContain(event.event_id);
       expect(controllerEventDelivered(event.event_id)).toBe(true);
-      expect(requests).toBe(4);
+      expect(requests).toBe(3);
     } finally {
       globalThis.fetch = originalFetch;
       db.prepare("DELETE FROM controller_event_outbox WHERE event_id = ?").run(event.event_id);

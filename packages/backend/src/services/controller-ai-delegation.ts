@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { completedAiJob, delegatedAiJob, type AiJobRunnerResult } from "./ai-job-runner";
 import {
   controllerEventDelivered,
+  controllerEventState,
   enqueueControllerEvent,
   flushControllerEvents,
 } from "./controller-event-outbox";
@@ -37,10 +38,12 @@ export async function delegateAiJobToHermes(input: {
   }
 
   const event = controllerAiEvent({ ...input, kind });
-  if (controllerEventDelivered(event.event_id)) {
+  // A delivered or dead-lettered request id is settled; a resubmission needs a fresh event.
+  const prior = controllerEventState(event.event_id);
+  if (prior === "delivered" || prior === "dead") {
     event.event_id = controllerAiRetryEventId(input.requestId);
   }
-  if (!enqueueControllerEvent(event)) {
+  if (enqueueControllerEvent(event) === "invalid") {
     throw Object.assign(new Error("Failed to enqueue Hermes AI request"), {
       code: "HERMES_AI_REQUEST_INVALID",
     });
