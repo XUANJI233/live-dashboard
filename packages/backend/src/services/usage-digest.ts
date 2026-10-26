@@ -12,7 +12,9 @@ const MAX_DIGEST_ROWS = 4_000;
 // An app needs this much of a window before its presence or class can count as a
 // material change between periodic reviews; shorter visits stay noise.
 const MATERIAL_APP_SECONDS = 5 * 60;
-const CLASS_RULE = "Each segment counts once, in the first matching saved-policy class: blacklist, risk, target, whitelist; otherwise unclassified.";
+const CLASS_RULE = "Each segment counts once, in the first matching saved-policy class: blacklist, risk, target, whitelist; a whitelist match masks blacklist and risk; otherwise unclassified.";
+// Duration buckets for the review gate: a shift of this much time share counts as a change.
+const SIGNATURE_BUCKET_SECONDS = 15 * 60;
 
 export type UsageClass = "blacklist" | "risk" | "target" | "whitelist" | "unclassified";
 const USAGE_CLASSES: readonly UsageClass[] = ["blacklist", "risk", "target", "whitelist", "unclassified"];
@@ -107,8 +109,9 @@ export function buildUsageDigest(
 
 /**
  * Stable fingerprint of what a review would see: which apps held at least five
- * minutes on each device and in which policy class. Growing minutes alone do not
- * change it; a new app, a vanished app, or a class change does.
+ * minutes on each device, in which policy class, and roughly for how long (15-minute
+ * buckets). A new app, a vanished app, a class change, or a shift of a quarter hour
+ * in an app's share of the window changes it.
  */
 export function materialUsageSignature(segments: TimelineSegment[], rules: CompiledSupervisionRules): string {
   const material = summarizeDeviceUsage(segments, rules)
@@ -116,7 +119,11 @@ export function materialUsageSignature(segments: TimelineSegment[], rules: Compi
       device.deviceId,
       Array.from(device.apps, ([key, app]) => ({ key, app }))
         .filter(({ app }) => app.seconds >= MATERIAL_APP_SECONDS)
-        .map(({ key, app }) => `${key}\u0000${dominantClass(app.classSeconds)}`)
+        .map(({ key, app }) => [
+          key,
+          dominantClass(app.classSeconds),
+          Math.floor(app.seconds / SIGNATURE_BUCKET_SECONDS),
+        ].join("\u0000"))
         .sort(),
     ] as const)
     .filter(([, apps]) => apps.length > 0)

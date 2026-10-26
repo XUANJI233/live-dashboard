@@ -503,7 +503,12 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
 - 郊狼工具只作用于 Android 集成当前已连接的 Coyote V2/V3：`coyote_start` 冷启动强度上限 10，`coyote_adjust` 单步上限 ±10，且 Android 会再次按用户 A/B 通道上限裁剪；`coyote_change_wave` 不改变强度。上述三项需要 Android 本地显式开启远程控制；`coyote_stop` 与 `coyote_emergency_stop` 不受启动授权限制，紧急停止会立即归零并清空波形。
 - `live_dashboard.set_supervision_policy` 是外部 AI 控制器编写持久监督策略的唯一接口：AI 根据当前目标和证据主动创建、修改或清空复核触发规则、触发分钟数和明确的离线应用限时；不要让部署者预填固定名单，也不要用于一次性提醒、一次性冻结/解冻或普通聊天消息。
   - 输入必须是完整快照：`policy_owner`、`strategy_reason`、`review_interval_minutes`、`risk_app_regex`、`risk_trigger_minutes`、`app_time_limits` 缺一不可；`web_allowlist` 可省略，省略等同于空白名单（关闭网页过滤），不会保留旧值。
+  - 分类规则也由控制器维护并属于快照：`whitelist_app_regex`（服务目标的应用，会屏蔽黑名单与风险命中）、`blacklist_app_regex`（明确偏离目标的应用）、`target_app_regex`（当前目标需要的应用），各最多 12 条、每条最多 120 字符；省略即清空。它们驱动服务端的规则命中复核、目标不足判断和 `usage_digest` 分类。
+  - 所有正则（含应用限时的 `app_regex`）都按服务端编译规则校验；服务端会丢弃的危险或无效正则（如 `.*`、`(a+)+`）直接返回 `unsafe_policy_regex`，整次写入不生效，避免设备执行一条服务端自己忽略的规则。
+  - 可选 `expected_policy_updated_at`：填上次读到的 `policy_updated_at`，若期间已有其它写入则返回 `policy_conflict` 且不改动，控制器应重读后再写。
+  - 策略写入只更新 `supervision_policy_updated_at` / `supervision_rules_updated_at`，不改用户设置的 `updated_at`，因此不会让手机随后的设置保存被判为 `ignored_stale`。
   - `policy_owner` 必须与已启用的控制器 persona 一致（`openclaw` / `hermes` / `custom`）；Live 冷备 AI 接管时服务端内部记录为 `live_ai`，不冒充外部控制器。
+  - 交回 Live AI 后，Live AI 的规则刷新只改写分类规则；之前由外部控制器写入的复核间隔、风险触发、风险正则、应用限时和网页白名单保持生效且 owner 不变，直到某个控制器整体替换策略或用户关闭监督。只有当前 owner 已是 `live_ai`（或从未写过策略）时，刷新才会重置为 Live AI 默认值。刷新以模型返回后的最新设置为基础保存，期间用户的设置修改不会被覆盖。
   - 服务端整体替换旧策略，不接受依赖旧字段的部分更新。执行设备只接收三项执行字段，作者、理由与更新时间留在服务端设置中用于审计。
 - `live_dashboard.update_service_settings` 只接受 snake_case 字段和真布尔，不接受手机端同义 camelCase。`live_dashboard.set_summary_mode` 是服务端控制语气的唯一远程工具；如果 `AI_SUMMARY_MODE` 环境变量存在，则环境变量优先。
 - `live_dashboard.update_controller_persona` 用于同步 OpenClaw/Hermes 人设或附属关系。字段全部为 snake_case：`enabled`、`controller`（`openclaw` / `hermes` / `custom`）、`controller_name`、`persona`、`relationship`、`style_notes`。同步内容会加入日/周总结和监督 system prompt，使服务口吻保持控制器一致；它不能覆盖安全、隐私、JSON schema、输出格式或设备能力约束。

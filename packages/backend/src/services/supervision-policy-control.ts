@@ -1,10 +1,12 @@
 import { metaGet, metaSet } from "../db";
 import {
   effectiveSupervisionPolicySnapshot,
+  getSummarySettings,
   supervisionPolicySnapshot,
   updateSupervisionPolicy,
   type SummarySettings,
 } from "./daily-summary-gen";
+import { policyVersionMatches, unsafePolicyPatterns } from "./supervision-policy-validation";
 import { getDeviceContext, listDeviceContexts, type DeviceContext } from "./device-context";
 import { getCommandStatuses, insertDeviceCommand, recordCommandDelivery, recordServerCommandResult } from "./device-command-ledger";
 import {
@@ -51,6 +53,10 @@ export interface SupervisionPolicyInput {
   risk_trigger_minutes: number;
   app_time_limits: unknown[];
   web_allowlist?: unknown;
+  whitelist_app_regex?: string[];
+  blacklist_app_regex?: string[];
+  target_app_regex?: string[];
+  expected_policy_updated_at?: string;
   device_ids?: string[];
   expires_in_seconds?: number;
   request_id?: string;
@@ -59,6 +65,10 @@ export interface SupervisionPolicyInput {
 
 export function setAndSendSupervisionPolicy(input: SupervisionPolicyInput): SupervisionPolicySendResult {
   requireActivePolicyOwner(input.policy_owner);
+  if (unsafePolicyPatterns(input).length > 0) throw new Error("unsafe_policy_regex");
+  if (!policyVersionMatches(input.expected_policy_updated_at, getSummarySettings().supervision_policy_updated_at)) {
+    throw new Error("policy_conflict");
+  }
   const settings = updateSupervisionPolicy({
     policy_owner: input.policy_owner,
     strategy_reason: input.strategy_reason,
@@ -67,6 +77,9 @@ export function setAndSendSupervisionPolicy(input: SupervisionPolicyInput): Supe
     risk_trigger_minutes: input.risk_trigger_minutes,
     app_time_limits: input.app_time_limits,
     web_allowlist: input.web_allowlist,
+    whitelist_app_regex: input.whitelist_app_regex,
+    blacklist_app_regex: input.blacklist_app_regex,
+    target_app_regex: input.target_app_regex,
   });
   return sendSupervisionPolicySnapshot(supervisionPolicySnapshot(settings), input);
 }

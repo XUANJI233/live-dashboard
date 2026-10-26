@@ -307,13 +307,16 @@ export function updateSupervisionPolicy(input: unknown): SummarySettings {
     supervision_app_time_limits: policy.app_time_limits,
     supervision_web_allowlist: policy.web_allowlist,
     supervision_rules: {
-      ...current.supervision_rules,
+      whitelist_app_regex: policy.whitelist_app_regex,
+      blacklist_app_regex: policy.blacklist_app_regex,
       risk_app_regex: policy.risk_app_regex,
+      target_app_regex: policy.target_app_regex,
       reason: policy.strategy_reason,
     },
     supervision_rules_updated_at: updatedAt,
     supervision_rules_error: null,
-    updated_at: updatedAt,
+    // updated_at is the phone's last-write-wins clock for user settings; a controller policy
+    // write must not make the phone's next edit look stale.
   };
   metaSet(SUMMARY_SETTINGS_KEY, JSON.stringify(settingsForStorage(next)));
   return getSummarySettings();

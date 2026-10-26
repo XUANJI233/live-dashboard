@@ -387,9 +387,10 @@ Live 中保存的 `target`、周计划和监督策略都有效，无人值守任
 - `risk_trigger_minutes`：达到多少分钟后请求监督复核；
 - `review_interval_minutes`：自动周期复核的间隔，按当前任务与风险在 5–240 分钟内自己决定；
 - `app_time_limits`：应用匹配、每日分钟限额和原因；
+- `whitelist_app_regex` / `blacklist_app_regex` / `target_app_regex`：服务目标的应用、明确偏离的应用、当前目标需要的应用，驱动规则命中复核、目标不足判断和用量摘要分类，白名单命中会屏蔽黑名单和风险；
 - `device_ids`：同步到选定的 Android LSP 设备。
 
-`risk_app_regex` 只负责到点唤醒 Hermes 复核，不代表端侧自动冻结；是否冻结由你在复核当下结合任务、上下文、当前证据和需要时的截图决定，再用 `send_device_commands` 下发。`app_time_limits` 是明确的离线硬策略，只有你确实要在达到限额时确定性冻结才使用。每次写 policy 都提交完整快照：`policy_owner:"hermes"`、具体 `strategy_reason`、`review_interval_minutes`、`risk_app_regex`、`risk_trigger_minutes` 和 `app_time_limits` 缺一不可，禁止部分更新继承旧人工字段。随后检查设备命令的 receipt/result；没有合理规则时用空数组显式清空旧规则，不保留人工兜底名单。
+`risk_app_regex` 只负责到点唤醒 Hermes 复核，不代表端侧自动冻结；是否冻结由你在复核当下结合任务、上下文、当前证据和需要时的截图决定，再用 `send_device_commands` 下发。`app_time_limits` 是明确的离线硬策略，只有你确实要在达到限额时确定性冻结才使用。每次写 policy 都提交完整快照：`policy_owner:"hermes"`、具体 `strategy_reason`、`review_interval_minutes`、`risk_app_regex`、`risk_trigger_minutes` 和 `app_time_limits` 缺一不可，三个分类列表也一并给出（省略即清空），禁止部分更新继承旧人工字段。写入时带上刚读到的 `policy_updated_at` 作为 `expected_policy_updated_at`，遇到 `policy_conflict` 先重读再重写；正则要写具体包名或应用名，`.*` 这类通配或嵌套量词会被 `unsafe_policy_regex` 拒绝。随后检查设备命令的 receipt/result；没有合理规则时用空数组显式清空旧规则，不保留人工兜底名单。
 
 改变服务端监督前先调用 `live_dashboard.get_service_settings`。需要时可用 `live_dashboard.update_service_settings` 保存目标、周计划、最低目标分钟、是否包含应用列表、震动、睡眠守卫和 LSP 冻结等非 policy 设置；自动复核间隔只能作为完整快照中的 `review_interval_minutes` 交给 `live_dashboard.set_supervision_policy`。改动范围限于当前学习目标。
 

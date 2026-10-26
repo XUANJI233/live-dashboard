@@ -93,11 +93,14 @@ describe("usage digest", () => {
     expect(preferred.devices.map((device) => device.device_id)).toEqual(["pc", "phone", "tablet"]);
   });
 
-  test("material signature ignores growing minutes but changes for new apps and class changes", async () => {
+  test("material signature tolerates small minute changes but changes for new apps, class changes and quarter-hour shifts", async () => {
     const { materialUsageSignature } = await import("../src/services/usage-digest");
     const base = materialUsageSignature([segment("phone", "com.example.study", "Study", 0, 30)], await rules());
 
-    expect(materialUsageSignature([segment("phone", "com.example.study", "Study", 0, 45)], await rules())).toBe(base);
+    // Same 15-minute bucket: a few more minutes of the same app is not new information.
+    expect(materialUsageSignature([segment("phone", "com.example.study", "Study", 0, 40)], await rules())).toBe(base);
+    // A quarter hour more of the same app is.
+    expect(materialUsageSignature([segment("phone", "com.example.study", "Study", 0, 45)], await rules())).not.toBe(base);
     // A short visit stays below the five-minute materiality floor.
     expect(materialUsageSignature([
       segment("phone", "com.example.study", "Study", 0, 30),

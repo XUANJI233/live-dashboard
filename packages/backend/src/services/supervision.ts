@@ -44,7 +44,7 @@ import {
 } from "./supervision-patterns";
 import { promptText } from "./prompt-text";
 import { materialUsageSignature } from "./usage-digest";
-import { emptyWebAllowlistPolicy } from "./web-allowlist";
+import { applyLiveAiRules } from "./supervision-rules-merge";
 import {
   nextScheduledReviewState,
   readScheduledReviewState,
@@ -136,7 +136,7 @@ export async function refreshSupervisionRules(settings = getSummarySettings()): 
   const aiConfig = await getAiRuntimeConfig();
   if (!aiConfig) {
     return saveSummarySettings({
-      ...settings,
+      ...getSummarySettings(),
       supervision_rules_error: "AI not configured",
     });
   }
@@ -166,19 +166,8 @@ export async function refreshSupervisionRules(settings = getSummarySettings()): 
       outcome: "updated",
       reason: rules.reason,
     });
-    return saveSummarySettings({
-      ...settings,
-      supervision_policy_owner: "live_ai",
-      supervision_policy_reason: rules.reason,
-      supervision_policy_updated_at: policyUpdatedAt,
-      supervision_check_interval_minutes: 60,
-      supervision_risk_trigger_minutes: 3,
-      supervision_app_time_limits: [],
-      supervision_web_allowlist: emptyWebAllowlistPolicy(),
-      supervision_rules: rules,
-      supervision_rules_updated_at: policyUpdatedAt,
-      supervision_rules_error: null,
-    });
+    // Re-read: the user may have saved settings while the model was answering.
+    return saveSummarySettings(applyLiveAiRules(getSummarySettings(), rules, policyUpdatedAt));
   } catch (e) {
     const message = e instanceof Error ? e.message : "supervision rule generation failed";
     appendSupervisionHistory({
@@ -188,7 +177,7 @@ export async function refreshSupervisionRules(settings = getSummarySettings()): 
       reason: message.slice(0, 160),
     });
     return saveSummarySettings({
-      ...settings,
+      ...getSummarySettings(),
       supervision_rules_error: message.slice(0, 160),
     });
   }
@@ -276,9 +265,11 @@ export async function runSupervisionTick(
     if (queued === "invalid") {
       return { ok: false, ran: false, reason: "controller_event_invalid", source, checked_at: checkedAt };
     }
-    if (reviewGate) writeScheduledReviewState(reviewGate.state);
     await flushControllerEvents(now);
     const delivered = controllerEventDelivered(eventId);
+    // The gate compares against the last review Hermes actually received; an undelivered one
+    // is retried or superseded by the outbox and must not count.
+    if (reviewGate && delivered) writeScheduledReviewState(reviewGate.state);
     return {
       ok: true,
       ran: true,
@@ -287,6 +278,17 @@ export async function runSupervisionTick(
       checked_at: checkedAt,
       ai_checked: false,
     };
+  }
+
+  // Live AI fallback uses the same unchanged-usage gate, so a due scheduled round does not call
+  // the model when nothing material changed since the last reviewed round.
+  const liveReviewGate = source === "scheduled" && !options.force
+    ? nextScheduledReviewState(readScheduledReviewState(), materialUsageSignature(segments, rules), now)
+    : null;
+  if (liveReviewGate?.skip) {
+    markAiCheckStarted(source, now);
+    writeScheduledReviewState(liveReviewGate.state);
+    return { ok: true, ran: false, reason: "usage_unchanged_since_review", source, checked_at: checkedAt };
   }
 
   supervisionInFlight = true;
@@ -316,6 +318,7 @@ export async function runSupervisionTick(
       await releasePendingRiskFreezes(settings, "AI监督失败，解除临时冻结");
       return { ok: false, ran: true, reason: "ai_supervision_failed", source, checked_at: checkedAt, ai_checked: true };
     }
+    if (liveReviewGate) writeScheduledReviewState(liveReviewGate.state);
     appendSupervisionHistory({
       at: now.toISOString(),
       kind: "verify",

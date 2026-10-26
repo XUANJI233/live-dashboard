@@ -10,6 +10,7 @@ const deviceId = "gating-test-phone";
 const start = new Date("2026-09-07T14:00:00.000Z");
 let webhookCalls = 0;
 let otherCalls = 0;
+let webhookDown = false;
 
 globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
   const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
@@ -18,6 +19,7 @@ globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters
     throw new Error(`Unexpected outbound request: ${url}`);
   }
   webhookCalls += 1;
+  if (webhookDown) return new Response(null, { status: 503 });
   const event = JSON.parse(String(init?.body || "{}")) as { event_id: string };
   return Response.json({
     status: "accepted",
@@ -88,6 +90,16 @@ async function unchangedReview(): Promise<string[]> {
   return reasons;
 }
 
+// A review Hermes never received must not become the baseline for the unchanged-usage skip.
+async function undeliveredReview(): Promise<string[]> {
+  seedVideoTimeline();
+  webhookDown = true;
+  const first = (await runSupervisionTick(at(0))).reason;
+  webhookDown = false;
+  const second = (await runSupervisionTick(at(30))).reason;
+  return [first, second];
+}
+
 // A saved persona switched off is a user pause: nothing wakes Hermes, not even a device request.
 async function pausedController(): Promise<Array<boolean | string>> {
   const { updateControllerPersona } = await import("../../src/services/controller-persona");
@@ -153,7 +165,9 @@ try {
       ? await pausedController()
       : scenario === "request_inside_throttle"
         ? await requestInsideThrottle()
-        : await unchangedReview();
+        : scenario === "undelivered_review"
+          ? await undeliveredReview()
+          : await unchangedReview();
   const rows = db.query("SELECT event_json FROM controller_event_outbox ORDER BY created_at").all() as Array<{ event_json: string }>;
   console.log(JSON.stringify({
     results,

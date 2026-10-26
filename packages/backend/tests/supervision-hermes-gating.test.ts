@@ -61,6 +61,13 @@ describe("Hermes wake gating", () => {
     }
   });
 
+  test("a review that never reached Hermes does not let the next due round be skipped", async () => {
+    const result = await runScenario("undelivered_review");
+    expect(result.results).toEqual(["hermes_review_queued", "hermes_review_requested"]);
+    // The second review superseded the undelivered first one, so Hermes got exactly one.
+    expect(result.events.map((event) => event.source)).toEqual(["scheduled", "scheduled"]);
+  });
+
   test("a user pause stops every Hermes wake, including explicit device requests", async () => {
     const result = await runScenario("paused_controller");
     expect(result.results).toEqual(["controller_paused", false]);

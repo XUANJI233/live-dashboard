@@ -145,6 +145,14 @@ export const SupervisionPolicySchema = z.object({
       .describe("Optional windows; empty means whenever supervision is enabled."),
   }).optional()
     .describe("Strict Android LSP web allowlist: while active only the system browser runs, other browsers are paused, and it opens only these domains. Part of the complete snapshot; omitting it disables web filtering."),
+  whitelist_app_regex: z.array(z.string().max(120)).max(12).optional()
+    .describe("Controller-maintained regexes for apps that serve the goal; they mask blacklist and risk matches. Part of the complete snapshot; omitting clears the list."),
+  blacklist_app_regex: z.array(z.string().max(120)).max(12).optional()
+    .describe("Controller-maintained regexes for clearly off-goal apps; drives rule-matched reviews and usage classes. Part of the complete snapshot; omitting clears the list."),
+  target_app_regex: z.array(z.string().max(120)).max(12).optional()
+    .describe("Controller-maintained regexes for the apps the current goal needs; drives target-shortfall checks. Part of the complete snapshot; omitting clears the list."),
+  expected_policy_updated_at: z.string().max(40).optional()
+    .describe("Optional optimistic-concurrency check: the policy_updated_at you last read. If another write happened since, the call fails with policy_conflict and nothing changes; re-read and retry."),
   device_ids: z.array(z.string().min(1).max(160)).max(20).optional()
     .describe("Optional Android LSP device ids to sync; omit to sync all capable devices."),
   expires_in_seconds: z.number().int().min(10).max(3600).optional()
