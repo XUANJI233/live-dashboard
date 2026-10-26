@@ -158,6 +158,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
     var supervisionRules by remember { mutableStateOf(SupervisionRules.empty()) }
     var supervisionRulesUpdatedAt by remember { mutableStateOf<String?>(null) }
     var supervisionRulesError by remember { mutableStateOf<String?>(null) }
+    var controllerHealth by remember { mutableStateOf<ReportClient.ControllerHealth?>(null) }
     var supervisionRulesRefreshing by remember { mutableStateOf(false) }
     var unfreezeCountdown by rememberSaveable { mutableIntStateOf(0) }
     var unfreezeReady by rememberSaveable { mutableStateOf(false) }
@@ -222,6 +223,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     supervisionRulesError = it.supervisionRulesError
                     supervisionRulesRefreshing = it.rulesRefreshJobStatus in setOf("queued", "running", "delegated")
                     updatedAt = it.updatedAt
+                    controllerHealth = it.controllerHealth
                     localEditedAt = null
                     status = "已同步服务器设置"
                 }
@@ -290,6 +292,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     supervisionRulesError = it.supervisionRulesError
                     supervisionRulesRefreshing = it.rulesRefreshJobStatus in setOf("queued", "running", "delegated")
                     updatedAt = it.updatedAt
+                    controllerHealth = it.controllerHealth
                     localEditedAt = null
                     if (it.syncStatus == "ignored_stale") {
                         status = "服务器已有较新的计划，已同步最新配置"
@@ -591,6 +594,7 @@ private fun SummarySettingsPane(settings: SettingsStore) {
                     ),
                     style = MaterialTheme.typography.bodyMedium,
                 )
+                com.monika.dashboard.ui.components.ControllerHealthLine(controllerHealth)
                 com.monika.dashboard.ui.components.PreferenceSwitchRow(
                     checked = supervisionIncludeInstalledApps,
                     title = "发送应用列表辅助判断",

@@ -33,6 +33,23 @@ internal fun parseSupervisionRules(json: JSONObject?): SupervisionRules {
     )
 }
 
+internal fun parseControllerHealth(json: JSONObject?): ReportClient.ControllerHealth? {
+    if (json == null) return null
+    return ReportClient.ControllerHealth(
+        hermesEnabled = json.optBoolean("hermes_enabled", false),
+        paused = json.optBoolean("paused", false),
+        lastAckAt = json.optNullableString("last_ack_at"),
+        lastFailureAt = json.optNullableString("last_failure_at"),
+        lastError = json.optString("last_error").take(80),
+        pendingCount = json.optInt("pending_count", 0).coerceAtLeast(0),
+        deadLast24h = json.optInt("dead_last_24h", 0).coerceAtLeast(0),
+        unreachable = json.optBoolean("unreachable", false),
+    )
+}
+
+private fun JSONObject.optNullableString(key: String): String? =
+    optString(key).takeIf { value -> value.isNotBlank() && value != "null" }
+
 private fun parseStringArray(arr: JSONArray?): List<String> {
     if (arr == null) return emptyList()
     return buildList {

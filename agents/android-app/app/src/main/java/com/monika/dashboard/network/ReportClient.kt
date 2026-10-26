@@ -436,6 +436,19 @@ class ReportClient(
         val rulesRefreshRequestId: String?,
         val updatedAt: String?,
         val syncStatus: String?,
+        val controllerHealth: ControllerHealth? = null,
+    )
+
+    /** Read-only reachability of the external supervision controller (Hermes). */
+    data class ControllerHealth(
+        val hermesEnabled: Boolean,
+        val paused: Boolean,
+        val lastAckAt: String?,
+        val lastFailureAt: String?,
+        val lastError: String,
+        val pendingCount: Int,
+        val deadLast24h: Int,
+        val unreachable: Boolean,
     )
 
     data class SummarySettingsUpdate(
@@ -1002,6 +1015,7 @@ class ReportClient(
                             ?.takeIf { value -> value.isNotBlank() && value != "null" },
                         updatedAt = json.optString("updated_at").takeIf { value -> value.isNotBlank() && value != "null" },
                         syncStatus = json.optString("sync_status").takeIf { value -> value.isNotBlank() && value != "null" },
+                        controllerHealth = parseControllerHealth(json.optJSONObject("controller_health")),
                     ),
                 )
             }
