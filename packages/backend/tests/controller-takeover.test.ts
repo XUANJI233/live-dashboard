@@ -171,7 +171,7 @@ describe("Hermes controller takeover", () => {
     expect(events[0]?.device_ids).toEqual(expect.arrayContaining([deviceId]));
   });
 
-  test("does not send a quiet scheduled check to Hermes", async () => {
+  test("does not send a quiet condition check to Hermes", async () => {
     const { db } = await import("../src/db");
     const { getSummarySettings, saveSummarySettings } = await import("../src/services/daily-summary-gen");
     const { runSupervisionTick } = await import("../src/services/supervision");
@@ -221,12 +221,12 @@ describe("Hermes controller takeover", () => {
       return Response.json({ status: "unexpected" });
     }) as typeof fetch;
     try {
-      const result = await runSupervisionTick(now, { source: "scheduled" });
+      const result = await runSupervisionTick(now, { source: "report" });
       expect(result).toMatchObject({
         ok: true,
         ran: false,
         reason: "trigger_not_met",
-        source: "scheduled",
+        source: "report",
       });
       expect(webhookCalls).toBe(0);
     } finally {

@@ -15,7 +15,7 @@ describe("supervision trigger plan", () => {
     supervision_heuristic_triggers: false,
   };
 
-  test("filters a scheduled check when the rule scorer found no review candidate", () => {
+  test("keeps scheduled reviews independent of rule candidates and report checks conditional", () => {
     const quietStats = {
       blacklistMinutes: 0,
       riskMinutes: 0,
@@ -28,8 +28,8 @@ describe("supervision trigger plan", () => {
     });
 
     expect(supervisionWindowMinutes(settings, "scheduled")).toBe(45);
-    expect(shouldRunSupervisionAi("scheduled", decision)).toBe(false);
-    expect(shouldRunSupervisionAi("report", decision)).toBe(true);
+    expect(shouldRunSupervisionAi("scheduled", decision)).toBe(true);
+    expect(shouldRunSupervisionAi("report", decision)).toBe(false);
     expect(decision.heuristicTriggered).toBe(false);
   });
 
@@ -50,7 +50,7 @@ describe("supervision trigger plan", () => {
     expect(shouldRunSupervisionAi("report", decision)).toBe(true);
   });
 
-  test("keeps every deterministic review candidate eligible on scheduled checks", () => {
+  test("keeps every deterministic review candidate eligible for extra condition checks", () => {
     const baseDecision = {
       blacklistTriggered: false,
       riskTriggered: false,
@@ -69,10 +69,14 @@ describe("supervision trigger plan", () => {
         ...baseDecision,
         [trigger]: true,
       })).toBe(true);
+      expect(shouldRunSupervisionAi("report", {
+        ...baseDecision,
+        [trigger]: true,
+      })).toBe(true);
     }
   });
 
-  test("does not turn disabled zero thresholds into permanent scheduled candidates", () => {
+  test("does not turn disabled zero thresholds into permanent condition candidates", () => {
     const decision = supervisionTriggerDecision({
       ...settings,
       supervision_blacklist_minutes: 0,
@@ -92,7 +96,8 @@ describe("supervision trigger plan", () => {
     expect(decision.riskTriggered).toBe(false);
     expect(decision.targetTriggered).toBe(false);
     expect(decision.heuristicTriggered).toBe(false);
-    expect(shouldRunSupervisionAi("scheduled", decision)).toBe(false);
+    expect(shouldRunSupervisionAi("scheduled", decision)).toBe(true);
+    expect(shouldRunSupervisionAi("report", decision)).toBe(false);
   });
 
   test("uses heuristics to catch early dominant risk before the hard threshold", () => {

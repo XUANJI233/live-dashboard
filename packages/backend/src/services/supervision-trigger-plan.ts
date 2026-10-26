@@ -59,7 +59,8 @@ export function supervisionTriggerDecision(
 }
 
 export function shouldRunSupervisionAi(source: SupervisionRunSource, decision: SupervisionTriggerDecision): boolean {
-  if (source !== "scheduled") return true;
+  // Scheduled reviews are already interval-gated; rules only gate extra condition checks.
+  if (source === "scheduled") return true;
   return decision.blacklistTriggered || decision.riskTriggered || decision.targetTriggered || decision.heuristicTriggered;
 }
 
