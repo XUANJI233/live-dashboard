@@ -76,11 +76,14 @@ export function getControllerContext(input: {
   // A recent-only timeline is complete by design: the digest covers the whole window.
   if (timeline.truncated && !recentOnly) truncatedSections.add("timeline");
 
+  const actionMode = input.mode === "supervision" || input.mode === "policy";
   const recentEvents = getControllerMemoryFeed({
     limit: input.mode === "memory" ? 40 : 24,
     include_messages: true,
+    // Anonymous visitors must not be able to steer a turn that freezes or reconfigures devices.
+    include_public_messages: !actionMode,
     include_summaries: true,
-    include_device_commands: input.mode === "supervision" || input.mode === "policy",
+    include_device_commands: actionMode,
   });
   const recentEventCount = Array.isArray(recentEvents.events) ? recentEvents.events.length : 0;
   Object.assign(recentEvents, {

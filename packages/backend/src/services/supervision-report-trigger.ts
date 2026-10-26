@@ -21,7 +21,8 @@ function supervisionCandidateFromReport(
 
   const foreground = plainObject(extra?.foreground);
   const appId = cleanText(body.app_id) || cleanText(foreground?.package_name);
-  if (!appId) return null;
+  // An explicit request is the user asking for a review; it does not need a foreground app.
+  if (!appId && !requested) return null;
 
   return {
     requested,

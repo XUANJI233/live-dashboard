@@ -496,6 +496,8 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
   - `live_dashboard.get_ai_job`
   - `live_dashboard.run_supervision_check`
 - `live_dashboard.send_device_commands` 只用于一次性设备动作：提醒文本、震动、息屏、即时冻结/解冻；服务端会按设备显式上报能力裁剪。
+  - 用户的监督开关在服务端对所有控制器强制生效：监督总开关关闭时冻结、震动、息屏都会被去掉（备注 `supervision_disabled`）；“LSP 短时冻结”关闭时去掉冻结（`freeze_disabled_by_user`）；“偏离时震动”关闭时去掉震动（`vibrate_disabled_by_user`）。解冻、说话和截图不受开关限制。只剩被用户开关去掉的动作时，命令结果为 `ignored`，原因即上述备注。
+  - 传入 `request_id` 即为幂等：同一 `request_id` 带相同命令重试时直接返回已记录的命令状态并带 `duplicate: true`，不会再次下发；同一 `request_id` 换了命令内容则返回 `request_id_conflict`。
 - `live_dashboard.capture_device_screenshot` 用于按需抓取 Android LSP 当前画面；默认事件式等待上传，超时返回 `screenshot_id`。`live_dashboard.get_device_screenshot` 用该 ID 取回一次图片。
 - `live_dashboard.get_accounting_bills` 只查询 AutoAccounting 已处理完成并同步到服务端的原始主账单字段；默认先通过 Android `integration` WS 请求指定时间范围的事件式刷新，不重新解释账务汇总语义。最多返回 200 条；`truncated=true` 时必须把 `next_cursor` 原样传入下一次调用，直到 `next_cursor=null`。
 - 郊狼工具只作用于 Android 集成当前已连接的 Coyote V2/V3：`coyote_start` 冷启动强度上限 10，`coyote_adjust` 单步上限 ±10，且 Android 会再次按用户 A/B 通道上限裁剪；`coyote_change_wave` 不改变强度。上述三项需要 Android 本地显式开启远程控制；`coyote_stop` 与 `coyote_emergency_stop` 不受启动授权限制，紧急停止会立即归零并清空波形。
@@ -505,7 +507,8 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
   - 服务端整体替换旧策略，不接受依赖旧字段的部分更新。执行设备只接收三项执行字段，作者、理由与更新时间留在服务端设置中用于审计。
 - `live_dashboard.update_service_settings` 只接受 snake_case 字段和真布尔，不接受手机端同义 camelCase。`live_dashboard.set_summary_mode` 是服务端控制语气的唯一远程工具；如果 `AI_SUMMARY_MODE` 环境变量存在，则环境变量优先。
 - `live_dashboard.update_controller_persona` 用于同步 OpenClaw/Hermes 人设或附属关系。字段全部为 snake_case：`enabled`、`controller`（`openclaw` / `hermes` / `custom`）、`controller_name`、`persona`、`relationship`、`style_notes`。同步内容会加入日/周总结和监督 system prompt，使服务口吻保持控制器一致；它不能覆盖安全、隐私、JSON schema、输出格式或设备能力约束。
-- `live_dashboard.get_controller_memory_feed` 用于把公开/私聊消息、设备回复、服务端下发的提醒/控制命令以及已保存的日/周总结回流给 OpenClaw/Hermes。字段：`since`、`cursor`、`limit`、`include_messages`、`include_summaries`、`include_device_commands`，布尔必须是真布尔。分页应优先传回上次响应的 `next_cursor`；只用 `next_since` 可能重复同一时间戳事件，不能保证无重复。
+  - 暂停：已保存过的人设被设为 `enabled=false` 即为用户暂停。暂停期间 Live 不再因定时复核、规则命中、设备显式请求或设备离线唤醒控制器，结果分别为 `controller_paused` 或不入队；用户主动发起的 AI 工作（日/周总结、设置保存后的规则刷新）照常委托。已下发到手机的硬限制（应用限时、网页白名单）继续生效，暂停期间控制器也不能改写策略。从未保存过人设不算暂停。
+- `live_dashboard.get_controller_memory_feed` 用于把公开/私聊消息、设备回复、服务端下发的提醒/控制命令以及已保存的日/周总结回流给 OpenClaw/Hermes。字段：`since`、`cursor`、`limit`、`include_messages`、`include_public_messages`、`include_summaries`、`include_device_commands`，布尔必须是真布尔。`get_controller_context` 在 `supervision` 和 `policy` 模式下不带匿名公开留言及公开回复（`include_public_messages=false`），避免访客文本进入会冻结或改配置设备的回合。分页应优先传回上次响应的 `next_cursor`；只用 `next_since` 可能重复同一时间戳事件，不能保证无重复。
 - 推荐由 OpenClaw/Hermes 读取 memory feed 后自行整理长期记忆和总结，再调用 `live_dashboard.save_controller_summary` 写回服务端。`save_controller_summary` 字段：`kind`（`daily_summary` / `weekly_summary`）、`date`、`week_start`、`summary`、`mode`、`target`；服务端仍会清洗 HTML、链接、脚本、命令和控制字符。
 - `HERMES_CONTROLLER_ENABLED=false` 时，`live_dashboard.start_ai_job` 可启动日总结、周总结、监督规则刷新或监督复核；`live_dashboard.get_ai_job` 按 `request_id` 查询状态；`live_dashboard.run_supervision_check` 会排队一个 `supervision_check` job 并立即返回。
 - `HERMES_CONTROLLER_ENABLED=true` 时，所有客户端 Live AI job 都写入同一 AI job 幂等账本，但 runner 只生成 `ai.work_requested` 控制器事件，不调用 Live 模型。Webhook 接收后 job 状态为 `delegated`，不是提前伪报 `succeeded`；Hermes 原子认领后，完成、跳过或失败时必须用认领返回的 `request_id` 和 `claim_token` 调用 `complete_controller_ai_request` 结算状态。`ai_config_test` 直接返回 `managed_by="hermes"`，不会用冷备用 Key 发模型请求。Hermes 应使用 `get_controller_context` 一次取得有界上下文，再用 `save_controller_summary`、`set_supervision_policy`、`send_device_commands` 等明确工具完成工作。
@@ -538,7 +541,7 @@ Hermes 模式下，Live 可把高价值的确定性监督候选作为最小事�
 }
 ```
 
-- 事件只表示“请 Hermes 复核”，不是 Live 已确认偏离。显式设备请求可直接成为候选；普通报告仍经过白名单/黑名单/风险规则；定时检查只在到达 AI 保存的复核间隔时唤醒 Hermes 做一次周期复核，规则未覆盖的应用也由这次复核判断，未到间隔的轮次在模型前结束。到点的周期复核会先与上次已投递的周期复核比较时长摘要的实质内容（每台设备占用至少 5 分钟的应用及其规则类别）：没有变化就不唤醒 Hermes，结果为 `usage_unchanged_since_review`；最多连续跳过 2 轮，且距上次已投递的复核满 4 小时必定复核。规则命中和设备显式请求不受此限制。
+- 事件只表示“请 Hermes 复核”，不是 Live 已确认偏离。显式设备请求可直接成为候选，不受报告共享的 60 秒节流限制，也不要求报告带前台应用；普通报告仍经过白名单/黑名单/风险规则；定时检查只在到达 AI 保存的复核间隔时唤醒 Hermes 做一次周期复核，规则未覆盖的应用也由这次复核判断，未到间隔的轮次在模型前结束。到点的周期复核会先与上次已投递的周期复核比较时长摘要的实质内容（每台设备占用至少 5 分钟的应用及其规则类别）：没有变化就不唤醒 Hermes，结果为 `usage_unchanged_since_review`；最多连续跳过 2 轮，且距上次已投递的复核满 4 小时必定复核。规则命中和设备显式请求不受此限制。
 - `v` 当前固定为 `1`；`event_id`、`device_ids` 和 `reason_codes` 只允许协议规定的 ASCII 安全集合。
 - `event_id` 由通知冷却时间桶和已验证设备集合稳定派生；同一时间桶内的重试必须复用同一 ID。
 - 普通上报的规则命中按设备使用 10 分钟冷却桶：应用持续打开时每次上报都会命中，同一窗口内只产生一次复核事件，与 LSP 同一应用的请求冷却一致。设备显式请求（`device_requested`）仍用 1 分钟桶，由设备端节流。

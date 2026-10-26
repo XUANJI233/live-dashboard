@@ -18,7 +18,7 @@ import { formatPromptDateTime, formatPromptMinute, localDateStringForOffset } fr
 import { promptOverride } from "./prompt-overrides";
 import { cleanIdentifier } from "./mcp-contracts";
 import { hermesControllerEnabled } from "./controller-mode";
-import { withControllerPersonaPrompt } from "./controller-persona";
+import { controllerExplicitlyPaused, withControllerPersonaPrompt } from "./controller-persona";
 import {
   CONTROLLER_EVENT_SCHEMA,
   controllerWebhookEventId,
@@ -237,6 +237,10 @@ export async function runSupervisionTick(
   }
 
   if (hermesControllerEnabled()) {
+    // A user pause stops waking the controller; hard limits already on the phone stay in force.
+    if (controllerExplicitlyPaused()) {
+      return { ok: true, ran: false, reason: "controller_paused", source, checked_at: checkedAt };
+    }
     markAiCheckStarted(source, now);
     const deviceIds = controllerDevices
       .map((device) => cleanIdentifier(device.device_id))
@@ -362,13 +366,16 @@ export function requestSupervisionCheckForReport(candidate: SupervisionReportCan
   if (!settings.supervision_enabled) return false;
   if (!candidate.requested && !settings.supervision_heuristic_triggers) return false;
   if (settings.supervision_skip_watch_sleep && trustedWatchSleepingAt(now)) return false;
-  if (!isReportTriggerDue(now)) return false;
+  // The shared throttle only spaces out rule matches; explicit requests are deduped per device
+  // by their 1-minute event bucket instead.
+  if (!candidate.requested && !isReportTriggerDue(now)) return false;
 
   const rules = compileSupervisionRules(settings.supervision_rules);
   const ruleMatched = matchesReportCandidate(candidate, rules);
   if (!candidate.requested && !ruleMatched) return false;
 
   if (hermesControllerEnabled()) {
+    if (controllerExplicitlyPaused()) return false;
     const deviceId = cleanIdentifier(candidate.deviceId);
     if (!deviceId) {
       console.warn("[controller-webhook] ignored a supervision candidate with an invalid device id");

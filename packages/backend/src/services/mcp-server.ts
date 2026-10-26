@@ -217,9 +217,9 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.send_device_commands", {
     title: "Send device commands",
-    description: "Immediate one-shot device action tool. Use only to send current supervision/reminder actions to specific devices: say, vibrate, screen_off, freeze_commands, or unfreeze_commands. Do not use for persistent risk-app policy, app time limits, or changing supervision settings. Returns command_id values for status queries.",
+    description: "Immediate one-shot device action tool. Use only to send current supervision/reminder actions to specific devices: say, vibrate, screen_off, freeze_commands, or unfreeze_commands. Do not use for persistent risk-app policy, app time limits, or changing supervision settings. The user's supervision switches are enforced here: freeze, vibrate and screen_off are dropped with a note (supervision_disabled, freeze_disabled_by_user, vibrate_disabled_by_user) when the user has not allowed them. Returns command_id values for status queries.",
     inputSchema: SendCommandsSchema,
-    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(() => sendDeviceCommands(args)));
 
   server.registerTool("live_dashboard.set_supervision_policy", {

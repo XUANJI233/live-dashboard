@@ -59,7 +59,7 @@ async function reportCooldown(): Promise<boolean[]> {
 
 // A blacklisted app fills every 30-minute window (so the round is due under any
 // trigger polarity); a reader app appears for six minutes only before the last round.
-async function unchangedReview(): Promise<string[]> {
+function seedVideoTimeline(): void {
   db.prepare(`
     INSERT INTO device_states (
       device_id, device_name, platform, app_id, app_name, window_title, display_title, last_seen_at, extra, is_online
@@ -77,11 +77,57 @@ async function unchangedReview(): Promise<string[]> {
     const appName = reader ? "Reader" : "Video";
     insertActivity.run(deviceId, appId, appName, appName, `gating-${minute}`, minute, at(minute).toISOString());
   }
+}
+
+async function unchangedReview(): Promise<string[]> {
+  seedVideoTimeline();
   const reasons: string[] = [];
   for (const minute of [0, 30, 60, 90, 120]) {
     reasons.push((await runSupervisionTick(at(minute))).reason);
   }
   return reasons;
+}
+
+// A saved persona switched off is a user pause: nothing wakes Hermes, not even a device request.
+async function pausedController(): Promise<Array<boolean | string>> {
+  const { updateControllerPersona } = await import("../../src/services/controller-persona");
+  updateControllerPersona({ enabled: false, controller: "hermes" });
+  seedVideoTimeline();
+  const tick = (await runSupervisionTick(at(120))).reason;
+  const requested = requestSupervisionCheckForReport(candidate(true), at(120.5));
+  await flushControllerEvents(at(121));
+  return [tick, requested];
+}
+
+// An explicit request right after a rule match is not swallowed by the shared report throttle,
+// and a request without a foreground app still reaches Hermes.
+async function requestInsideThrottle(): Promise<boolean[]> {
+  const { requestSupervisionCheckFromReportPayload } = await import("../../src/services/supervision-report-trigger");
+  const accepted = [
+    requestSupervisionCheckForReport(candidate(false), at(0.5)),
+    requestSupervisionCheckForReport(candidate(true), at(0.8)),
+    requestSupervisionCheckFromReportPayload(
+      { extra: { device: { supervision_check_requested: true } } },
+      { device_id: deviceId, device_name: "Gating phone", platform: "android" } as never,
+    ),
+  ];
+  // Report-path flushes are fire-and-forget; drain whatever they left queued.
+  await flushControllerEvents(at(1));
+  await flushControllerEvents(at(1.1));
+  return accepted;
+}
+
+function candidate(requested: boolean) {
+  return {
+    requested,
+    deviceId,
+    deviceName: "Gating phone",
+    platform: "android",
+    appId: "com.example.game",
+    appName: "Game",
+    title: "",
+    source: "lsposed",
+  };
 }
 
 try {
@@ -101,7 +147,13 @@ try {
       reason: "Hermes-authored rule fixture for controller wake gating",
     },
   });
-  const results = scenario === "report_cooldown" ? await reportCooldown() : await unchangedReview();
+  const results = scenario === "report_cooldown"
+    ? await reportCooldown()
+    : scenario === "paused_controller"
+      ? await pausedController()
+      : scenario === "request_inside_throttle"
+        ? await requestInsideThrottle()
+        : await unchangedReview();
   const rows = db.query("SELECT event_json FROM controller_event_outbox ORDER BY created_at").all() as Array<{ event_json: string }>;
   console.log(JSON.stringify({
     results,

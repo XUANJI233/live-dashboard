@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { enableSupervisionActions } from "./fixtures/supervision-switches";
 
 const tempDir = mkdtempSync(join(tmpdir(), "live-mcp-control-"));
 process.env.DB_PATH = join(tempDir, "test.db");
@@ -873,6 +874,7 @@ describe("mcp control plane", () => {
   });
 
   test("sends device commands through the ledger and records receipt/results", async () => {
+    const restoreSwitches = await enableSupervisionActions();
     const { db } = await import("../src/db");
     const { sendDeviceCommands } = await import("../src/services/device-control");
     const { getCommandStatuses } = await import("../src/services/device-command-ledger");
@@ -974,9 +976,11 @@ describe("mcp control plane", () => {
     expect(status.receipt.status).toBe("received");
     expect(status.result.status).toBe("applied");
     expect(status.result.result_id).toBe("res_test");
+    restoreSwitches();
   });
 
   test("uses explicit boolean device capabilities and bounds them by profile", async () => {
+    const restoreSwitches = await enableSupervisionActions();
     const { db } = await import("../src/db");
     const { sendDeviceCommands } = await import("../src/services/device-control");
     const { getDeviceContext } = await import("../src/services/device-context");
@@ -1032,6 +1036,7 @@ describe("mcp control plane", () => {
       say: "回到目标",
       notes: ["freeze_not_supported"],
     });
+    restoreSwitches();
   });
 
   test("sends supervision policy only to devices with policy capabilities", async () => {

@@ -100,7 +100,7 @@ export const GetScreenshotSchema = z.object({
 
 export const SendCommandsSchema = z.object({
   request_id: z.string().min(1).max(160).optional()
-    .describe("Stable idempotency id for this one-shot action batch."),
+    .describe("Stable idempotency id for this one-shot action batch. Retrying the same id with the same commands returns the stored statuses (duplicate: true) without re-sending; different commands under a used id fail with request_id_conflict."),
   created_by: z.enum(["mcp", "supervision"]).optional()
     .describe("Use supervision only for automated supervision decisions; ordinary MCP callers should omit it."),
   commands: z.array(z.object({
@@ -209,6 +209,8 @@ export const ControllerMemoryFeedSchema = z.object({
     .describe("Maximum merged memory events to return. Defaults to 120."),
   include_messages: z.boolean().optional()
     .describe("true/false only. Include public/private/reply conversation messages. Defaults to true."),
+  include_public_messages: z.boolean().optional()
+    .describe("true/false only. Include anonymous public messages and public replies. Defaults to true; get_controller_context leaves them out in supervision and policy modes."),
   include_summaries: z.boolean().optional()
     .describe("true/false only. Include daily and weekly summaries. Defaults to true."),
   include_device_commands: z.boolean().optional()

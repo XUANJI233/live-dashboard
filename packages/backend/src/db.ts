@@ -430,6 +430,7 @@ addColumnIfMissing("device_commands", "result_at", "result_at TEXT NOT NULL DEFA
 addColumnIfMissing("device_commands", "result_payload", "result_payload TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("device_commands", "created_by", "created_by TEXT NOT NULL DEFAULT 'mcp'");
 addColumnIfMissing("device_commands", "updated_at", "updated_at TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("device_commands", "request_fingerprint", "request_fingerprint TEXT NOT NULL DEFAULT ''");
 
 db.run(`
   CREATE INDEX IF NOT EXISTS idx_device_commands_request

@@ -11,6 +11,7 @@ import {
   flushControllerEvents,
 } from "./controller-event-outbox";
 import { hermesControllerEnabled } from "./controller-mode";
+import { controllerExplicitlyPaused } from "./controller-persona";
 import { cleanIdentifier } from "./mcp-contracts";
 
 interface OfflineTransitionRow {
@@ -70,7 +71,9 @@ function queueOfflineEvents(
 export async function checkOfflineDevices(now = new Date()): Promise<OfflineControllerCheckResult> {
   const occurredAt = validIsoTimestamp(now);
   const controllerActive = hermesControllerEnabled() && controllerWebhookEnabled();
-  const transitionedRows = transitionAndQueueOfflineEvents(occurredAt, controllerActive) as OfflineTransitionRow[];
+  // Devices still go offline while the controller is paused; it just isn't woken for them.
+  const shouldQueue = controllerActive && !controllerExplicitlyPaused();
+  const transitionedRows = transitionAndQueueOfflineEvents(occurredAt, shouldQueue) as OfflineTransitionRow[];
 
   const flush = controllerActive
     ? await flushControllerEvents(now)

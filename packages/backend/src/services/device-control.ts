@@ -22,6 +22,8 @@ import {
 } from "./mcp-contracts";
 import { boundedInteger } from "./bounded-integer";
 import { deliverDeviceCommandMessage } from "./realtime-message-delivery";
+import { deviceActionConsent, USER_CONSENT_NOTES, type DeviceActionConsent } from "./device-command-consent";
+import { deviceCommandRequestFingerprint, inspectDeviceCommandRequest } from "./device-command-replay";
 
 const MAX_COMMANDS_PER_REQUEST = 20;
 const MAX_PATTERN_COUNT = 12;
@@ -54,11 +56,22 @@ export interface SendDeviceCommandsInput {
 
 export function sendDeviceCommands(input: SendDeviceCommandsInput): {
   request_id: string;
+  duplicate?: true;
   commands: ReturnType<typeof getCommandStatuses>["commands"];
 } {
-  const requestId = cleanIdentifier(input.request_id) || generatedRequestId();
+  const suppliedRequestId = cleanIdentifier(input.request_id);
+  const requestId = suppliedRequestId || generatedRequestId();
   const createdBy = input.created_by === "supervision" ? "supervision" : "mcp";
   const commands = input.commands.slice(0, MAX_COMMANDS_PER_REQUEST);
+  const fingerprint = deviceCommandRequestFingerprint(commands);
+  if (suppliedRequestId) {
+    const seen = inspectDeviceCommandRequest(requestId, fingerprint);
+    if (seen === "conflict") throw new Error("request_id_conflict");
+    if (seen === "retry") {
+      return { request_id: requestId, duplicate: true, commands: getCommandStatuses({ requestId }).commands };
+    }
+  }
+  const consent = deviceActionConsent();
   const commandIds: string[] = [];
 
   for (const command of commands) {
@@ -68,7 +81,7 @@ export function sendDeviceCommands(input: SendDeviceCommandsInput): {
     const issuedAt = new Date();
     const expiresAt = new Date(issuedAt.getTime() + expiresSeconds(command.expires_in_seconds) * 1000);
     const device = targetDeviceId ? getDeviceContext(targetDeviceId) : null;
-    const normalized = normalizeCommandPayload(command, device);
+    const normalized = normalizeCommandPayload(command, device, consent);
     const envelope: DeviceCommandEnvelope = {
       type: "device_command",
       v: 1,
@@ -81,7 +94,7 @@ export function sendDeviceCommands(input: SendDeviceCommandsInput): {
       payload: normalized.payload,
     };
 
-    insertDeviceCommand(envelope);
+    insertDeviceCommand(envelope, fingerprint);
 
     if (!targetDeviceId) {
       markSkipped(commandId, "invalid_device_id", "unsupported");
@@ -116,7 +129,11 @@ export function sendDeviceCommands(input: SendDeviceCommandsInput): {
   };
 }
 
-function normalizeCommandPayload(command: DeviceCommandRequest, device: DeviceContext | null): {
+function normalizeCommandPayload(
+  command: DeviceCommandRequest,
+  device: DeviceContext | null,
+  consent: DeviceActionConsent,
+): {
   payload: DeviceCommandPayload;
   hasAction: boolean;
   resultStatus: "ignored" | "unsupported";
@@ -130,19 +147,28 @@ function normalizeCommandPayload(command: DeviceCommandRequest, device: DeviceCo
   const requestedScreenOff = command.screen_off === true;
   const requestedScreenshot = screenshotRequest(command.screenshot);
 
-  const freezeCommands = device && deviceSupportsCommand(device, "freeze") ? requestedFreeze : [];
+  const supportedFreeze = device && deviceSupportsCommand(device, "freeze") ? requestedFreeze : [];
   const unfreezeCommands = device && deviceSupportsCommand(device, "unfreeze") ? requestedUnfreeze : [];
-  const vibrate = !!device && deviceSupportsCommand(device, "vibrate") && requestedVibrate;
+  const supportedVibrate = !!device && deviceSupportsCommand(device, "vibrate") && requestedVibrate;
   const say = device && deviceSupportsCommand(device, "say") ? requestedSay : "";
-  const screenOff = !!device && deviceSupportsCommand(device, "screen_off") && requestedScreenOff;
+  const supportedScreenOff = !!device && deviceSupportsCommand(device, "screen_off") && requestedScreenOff;
   const screenshot = device && deviceSupportsCommand(device, "screenshot") ? requestedScreenshot : null;
+  // The user's switches apply to every controller, not only the Live AI path.
+  const freezeCommands = consent.freeze ? [] : supportedFreeze;
+  const vibrate = supportedVibrate && !consent.vibrate;
+  const screenOff = supportedScreenOff && !consent.screenOff;
 
-  if (requestedFreeze.length > 0 && freezeCommands.length === 0) notes.push("freeze_not_supported");
+  if (requestedFreeze.length > 0 && supportedFreeze.length === 0) notes.push("freeze_not_supported");
+  else if (supportedFreeze.length > 0 && consent.freeze) notes.push(consent.freeze);
   if (requestedUnfreeze.length > 0 && unfreezeCommands.length === 0) notes.push("unfreeze_not_supported");
-  if (requestedVibrate && !vibrate) notes.push("vibrate_not_supported");
+  if (requestedVibrate && !supportedVibrate) notes.push("vibrate_not_supported");
+  else if (supportedVibrate && consent.vibrate) notes.push(consent.vibrate);
   if (requestedSay && !say) notes.push("say_not_supported");
-  if (requestedScreenOff && !screenOff) notes.push("screen_off_not_supported");
+  if (requestedScreenOff && !supportedScreenOff) notes.push("screen_off_not_supported");
+  else if (supportedScreenOff && consent.screenOff) notes.push(consent.screenOff);
   if (requestedScreenshot && !screenshot) notes.push("screenshot_not_supported");
+  const uniqueNotes = [...new Set(notes)];
+  const onlyUserBlocked = uniqueNotes.length > 0 && uniqueNotes.every((note) => USER_CONSENT_NOTES.has(note));
 
   const hasAction = freezeCommands.length > 0 ||
     unfreezeCommands.length > 0 ||
@@ -164,12 +190,12 @@ function normalizeCommandPayload(command: DeviceCommandRequest, device: DeviceCo
       vibrate,
       screen_off: screenOff,
       say,
-      notes,
+      notes: uniqueNotes,
       ...(screenshot ? { screenshot } : {}),
     },
     hasAction,
-    resultStatus: requestedAny ? "unsupported" : "ignored",
-    resultReason: requestedAny ? notes.join(",") || "unsupported_device_capability" : "empty_command",
+    resultStatus: requestedAny && !onlyUserBlocked ? "unsupported" : "ignored",
+    resultReason: requestedAny ? uniqueNotes.join(",") || "unsupported_device_capability" : "empty_command",
   };
 }
 

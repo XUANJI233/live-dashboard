@@ -42,6 +42,7 @@ const recentVisitorMessages = db.prepare(`
   FROM (
     SELECT id, device_id, viewer_id, viewer_name, kind, direction, text, created_at
     FROM visitor_messages
+    WHERE (? = 1 OR kind NOT IN ('public', 'public_reply'))
     ORDER BY created_at DESC, id DESC
     LIMIT ?
   )
@@ -51,7 +52,8 @@ const recentVisitorMessages = db.prepare(`
 const visitorMessagesAfter = db.prepare(`
   SELECT id, device_id, viewer_id, viewer_name, kind, direction, text, created_at
   FROM visitor_messages
-  WHERE julianday(created_at) >= julianday(?)
+  WHERE (? = 1 OR kind NOT IN ('public', 'public_reply'))
+    AND julianday(created_at) >= julianday(?)
   ORDER BY julianday(created_at) ASC, id ASC
   LIMIT ?
 `);
@@ -59,8 +61,9 @@ const visitorMessagesAfter = db.prepare(`
 const visitorMessagesAfterCursor = db.prepare(`
   SELECT id, device_id, viewer_id, viewer_name, kind, direction, text, created_at
   FROM visitor_messages
-  WHERE julianday(created_at) > julianday(?)
-     OR (julianday(created_at) = julianday(?) AND ('visitor_message:' || id) > ?)
+  WHERE (? = 1 OR kind NOT IN ('public', 'public_reply'))
+    AND (julianday(created_at) > julianday(?)
+      OR (julianday(created_at) = julianday(?) AND ('visitor_message:' || id) > ?))
   ORDER BY julianday(created_at) ASC, id ASC
   LIMIT ?
 `);
@@ -159,11 +162,13 @@ export function getControllerMemoryFeed(input: Record<string, unknown>): Record<
   const limit = integerInRange(input.limit, DEFAULT_MEMORY_LIMIT, 1, MAX_MEMORY_LIMIT);
   const scanLimit = Math.min(MAX_MEMORY_SCAN_LIMIT, limit + 1);
   const includeMessages = input.include_messages !== false;
+  // Anonymous public messages stay out of contexts that may take device actions.
+  const includePublicMessages = input.include_public_messages !== false;
   const includeSummaries = input.include_summaries !== false;
   const includeDeviceCommands = input.include_device_commands !== false;
   const events: ControllerMemoryEvent[] = [];
 
-  if (includeMessages) events.push(...messageEvents(since, cursor, scanLimit));
+  if (includeMessages) events.push(...messageEvents(since, cursor, scanLimit, includePublicMessages));
   if (includeSummaries) events.push(...summaryEvents(since, cursor, scanLimit));
   if (includeDeviceCommands) events.push(...deviceCommandEvents(since, cursor, scanLimit));
 
@@ -228,12 +233,18 @@ export function saveControllerSummary(input: Record<string, unknown>): Record<st
   };
 }
 
-function messageEvents(since: string, cursor: MemoryCursor | null, limit: number): ControllerMemoryEvent[] {
+function messageEvents(
+  since: string,
+  cursor: MemoryCursor | null,
+  limit: number,
+  includePublic: boolean,
+): ControllerMemoryEvent[] {
+  const publicFlag = includePublic ? 1 : 0;
   const rows = (cursor
-    ? visitorMessagesAfterCursor.all(cursor.occurredAt, cursor.occurredAt, cursor.eventId, limit)
+    ? visitorMessagesAfterCursor.all(publicFlag, cursor.occurredAt, cursor.occurredAt, cursor.eventId, limit)
     : since
-      ? visitorMessagesAfter.all(since, limit)
-    : recentVisitorMessages.all(limit)) as Array<Record<string, unknown>>;
+      ? visitorMessagesAfter.all(publicFlag, since, limit)
+    : recentVisitorMessages.all(publicFlag, limit)) as Array<Record<string, unknown>>;
   return rows.map((row) => ({
     event_id: `visitor_message:${row.id}`,
     event_type: "visitor_message",

@@ -60,4 +60,25 @@ describe("Hermes wake gating", () => {
       expect(event.reason_codes).toContain("scheduled_check");
     }
   });
+
+  test("a user pause stops every Hermes wake, including explicit device requests", async () => {
+    const result = await runScenario("paused_controller");
+    expect(result.results).toEqual(["controller_paused", false]);
+    expect(result.events).toEqual([]);
+    expect(result.webhook_calls).toBe(0);
+  });
+
+  test("explicit requests are not swallowed by the rule-match throttle or a missing foreground app", async () => {
+    const result = await runScenario("request_inside_throttle");
+    expect(result.results).toEqual([true, true, true]);
+    expect(result.other_calls).toBe(0);
+    // The third request comes through the report payload entry point at the real clock time,
+    // so it opens its own one-minute bucket.
+    expect(result.events.map((event) => event.reason_codes)).toEqual([
+      ["rule_match"],
+      ["device_requested"],
+      ["device_requested"],
+    ]);
+    expect(result.webhook_calls).toBe(3);
+  });
 });

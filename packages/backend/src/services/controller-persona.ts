@@ -39,6 +39,15 @@ export function getControllerPersona(): ControllerPersona {
   return cachedPersona;
 }
 
+/**
+ * A user pause is a saved persona switched off. It stops Live from waking the controller;
+ * a persona that was never saved is not a pause, so unconfigured installs keep working.
+ */
+export function controllerExplicitlyPaused(): boolean {
+  const persona = getControllerPersona();
+  return persona.updated_at !== null && !persona.enabled;
+}
+
 export function updateControllerPersona(input: Record<string, unknown>): ControllerPersona {
   const current = getControllerPersona();
   const next: ControllerPersona = {

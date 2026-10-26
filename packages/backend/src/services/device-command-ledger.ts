@@ -30,9 +30,18 @@ const insertCommandStmt = db.prepare(`
     issued_at,
     expires_at,
     created_by,
+    request_fingerprint,
     updated_at
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+`);
+
+const getRequestFingerprintStmt = db.prepare(`
+  SELECT request_fingerprint
+  FROM device_commands
+  WHERE request_id = ?
+  ORDER BY rowid ASC
+  LIMIT 1
 `);
 
 const updateDeliveryStmt = db.prepare(`
@@ -73,7 +82,7 @@ const getRequestCommandsStmt = db.prepare(`
   SELECT *
   FROM device_commands
   WHERE request_id = ?
-  ORDER BY issued_at ASC
+  ORDER BY issued_at ASC, rowid ASC
   LIMIT ${MAX_STATUS_ROWS}
 `);
 
@@ -148,7 +157,7 @@ interface DeviceCommandRow {
   updated_at: string;
 }
 
-export function insertDeviceCommand(envelope: DeviceCommandEnvelope): void {
+export function insertDeviceCommand(envelope: DeviceCommandEnvelope, requestFingerprint = ""): void {
   insertCommandStmt.run(
     envelope.command_id,
     envelope.request_id,
@@ -159,7 +168,14 @@ export function insertDeviceCommand(envelope: DeviceCommandEnvelope): void {
     envelope.issued_at,
     envelope.expires_at,
     envelope.created_by,
+    requestFingerprint,
   );
+}
+
+/** The fingerprint stored with a request's first command, or null when the request is new. */
+export function storedRequestFingerprint(requestId: string): string | null {
+  const row = getRequestFingerprintStmt.get(requestId) as { request_fingerprint: string } | null;
+  return row ? row.request_fingerprint : null;
 }
 
 export function recordCommandDelivery(input: CommandDeliveryInput): void {

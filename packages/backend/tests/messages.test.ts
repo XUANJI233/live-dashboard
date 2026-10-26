@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { enableSupervisionActions } from "./fixtures/supervision-switches";
 
 const tempDir = mkdtempSync(join(tmpdir(), "live-messages-"));
 process.env.DB_PATH = join(tempDir, "test.db");
@@ -69,6 +70,7 @@ describe("visitor messages", () => {
   });
 
   test("flushes queued device commands through the message payload contract", async () => {
+    const restoreSwitches = await enableSupervisionActions();
     const { db } = await import("../src/db");
     const { sendDeviceCommands } = await import("../src/services/device-control");
     const { deliverQueuedMessages } = await import("../src/services/realtime-message-delivery");
@@ -120,6 +122,7 @@ describe("visitor messages", () => {
     const queued = db.prepare("SELECT delivered_at FROM device_messages WHERE id = ? AND device_id = ?")
       .get(command.command_id, deviceId) as { delivered_at: string } | null;
     expect(queued?.delivered_at).not.toBe("");
+    restoreSwitches();
   });
 
   test("delivers private viewer websocket messages through the shared action", async () => {
