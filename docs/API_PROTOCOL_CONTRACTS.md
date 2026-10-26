@@ -495,6 +495,9 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
   - `live_dashboard.start_ai_job`
   - `live_dashboard.get_ai_job`
   - `live_dashboard.run_supervision_check`
+  - `live_dashboard.get_rest_state`
+- `live_dashboard.get_rest_state` 是给 Hermes 门控脚本的轻量读取，只返回 `{ rest_state, generated_at }`（`asleep` / `screen_off` / `active` / `unknown`），不带时间线或消息；门控脚本经本机 MCP listener 带 token 调用，不再读公开的 `/api/current`。
+- Live 与 Hermes 两侧的事件校验共用 `deploy/hermes/tests/fixtures/controller_events.json` 契约样例：时间戳必须带时区、日期必须是真实日历日、`ai_request` 只允许 `request_id`/`kind`/`payload` 三个键、`settings_updated_at` 最长 80 字符。CI 同时运行两侧测试。
 - `live_dashboard.send_device_commands` 只用于一次性设备动作：提醒文本、震动、息屏、即时冻结/解冻；服务端会按设备显式上报能力裁剪。
   - 用户的监督开关在服务端对所有控制器强制生效：监督总开关关闭时冻结、震动、息屏都会被去掉（备注 `supervision_disabled`）；“LSP 短时冻结”关闭时去掉冻结（`freeze_disabled_by_user`）；“偏离时震动”关闭时去掉震动（`vibrate_disabled_by_user`）。解冻、说话和截图不受开关限制。只剩被用户开关去掉的动作时，命令结果为 `ignored`，原因即上述备注。
   - 传入 `request_id` 即为幂等：同一 `request_id` 带相同命令重试时直接返回已记录的命令状态并带 `duplicate: true`，不会再次下发；同一 `request_id` 换了命令内容则返回 `request_id_conflict`。

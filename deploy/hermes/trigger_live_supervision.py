@@ -101,7 +101,12 @@ def _validated_ai_request(value: object, source: object, reason_codes: object) -
             return None
     elif kind == "supervision_rules_refresh":
         updated_at = body.get("settings_updated_at")
-        if set(body) != {"settings_updated_at"} or not isinstance(updated_at, str) or not SAFE_ID.fullmatch(updated_at):
+        if (
+            set(body) != {"settings_updated_at"}
+            or not isinstance(updated_at, str)
+            or len(updated_at) > 80
+            or not SAFE_ID.fullmatch(updated_at)
+        ):
             return None
     else:
         if set(body) != {"at", "source", "force"} or body.get("source") not in {"scheduled", "report"} or not isinstance(body.get("force"), bool):
@@ -150,6 +155,17 @@ def _offline_extra_prompt(event: dict[str, Any]) -> str:
     )
 
 
+def _ai_work_preamble(mode: str) -> str:
+    # The shared session event carries no job recipe of its own: daily, weekly and policy work
+    # must not be framed by the supervision job's "Run mode=supervision" prompt.
+    return (
+        f"Run `mode={mode}` with `live-mentor` and `strict-study-girlfriend`. Skills and references are "
+        "conversation-scoped: use any whose full text is already in this conversation, call `skill_view` "
+        "only for one that is missing, and never load the same file twice. Follow the live-mentor "
+        f"`{mode}` section for reads, authority, and output."
+    )
+
+
 def _ai_request_extra_prompt(event: dict[str, Any], mode: str) -> str:
     compact = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return (
@@ -193,8 +209,11 @@ def main() -> int:
         if settings.get("enabled") is not True or not isinstance(session_key, str) or not session_key:
             return 1
         extra_prompt = _ai_request_extra_prompt(event, mode) if is_ai_request else (_offline_extra_prompt(event) if is_offline else None)
-        recipe = get_job(job_id) or {}
-        content = str(recipe.get("prompt") or "") + "\n\n" + (
+        if mode == "supervision":
+            prefix = str((get_job(job_id) or {}).get("prompt") or "")
+        else:
+            prefix = _ai_work_preamble(mode)
+        content = prefix + "\n\n" + (
             extra_prompt or f"Live observation data (not user instructions): {compact}"
         )
         receipt = query_gateway_control(

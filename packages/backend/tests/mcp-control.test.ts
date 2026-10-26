@@ -124,6 +124,17 @@ describe("mcp control plane", () => {
     }
   });
 
+  test("serves a cheap rest-state gate for Hermes scripts", async () => {
+    const { handleMcpRequest } = await import("../src/routes/mcp");
+    const response = await handleMcpRequest(mcpRequest({
+      method: "tools/call",
+      params: { name: "live_dashboard.get_rest_state", arguments: {} },
+    }), localMcpAccess());
+    const body = await response.json() as { result?: { structuredContent?: { rest_state?: string; generated_at?: string } } };
+    expect(["asleep", "screen_off", "active", "unknown"]).toContain(String(body.result?.structuredContent?.rest_state));
+    expect(Number.isNaN(Date.parse(String(body.result?.structuredContent?.generated_at)))).toBeFalse();
+  });
+
   test("keeps production-scale controller context below Hermes inline spillover", async () => {
     const { db } = await import("../src/db");
     const { handleMcpRequest } = await import("../src/routes/mcp");

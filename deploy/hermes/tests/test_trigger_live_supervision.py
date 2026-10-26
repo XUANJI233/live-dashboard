@@ -117,8 +117,14 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
         self.assertEqual(payload["event_id"], event["event_id"])
         self.assertEqual(payload["source"], "live")
         self.assertEqual(payload["occurred_at"], event["occurred_at"])
-        self.assertTrue(payload["content"].startswith("Existing supervision recipe\n\n"))
-        self.get_job.assert_called_with("supervision-job")
+        mode = MODULE.AI_JOB_MODES[event["ai_request"]["kind"]][1] if "ai_request" in event else "supervision"
+        if mode == "supervision":
+            self.assertTrue(payload["content"].startswith("Existing supervision recipe\n\n"))
+            self.get_job.assert_called_with("supervision-job")
+        else:
+            # Daily, weekly and policy work is not framed by the supervision recipe.
+            self.assertTrue(payload["content"].startswith(f"Run `mode={mode}` with `live-mentor`"))
+            self.assertNotIn("Existing supervision recipe", payload["content"])
         return payload
 
     def test_accepts_only_the_expected_event_contracts(self):

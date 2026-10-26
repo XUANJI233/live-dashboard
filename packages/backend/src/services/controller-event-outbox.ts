@@ -221,8 +221,7 @@ function validatedControllerEvent(event: Partial<ControllerEvent>): boolean {
     || typeof event.event_id !== "string"
     || !SAFE_ID.test(event.event_id)
     || !SUPPORTED_EVENT_TYPES.has(event.event_type as ControllerEvent["event_type"])
-    || typeof event.occurred_at !== "string"
-    || Number.isNaN(Date.parse(event.occurred_at))
+    || !isoWithZone(event.occurred_at)
     || (event.source !== "scheduled" && event.source !== "report" && event.source !== "client")
     || !Array.isArray(event.device_ids)
     || event.device_ids.length < 1
@@ -251,6 +250,7 @@ function validatedControllerEvent(event: Partial<ControllerEvent>): boolean {
 function validAiRequest(event: Partial<ControllerEvent>): boolean {
   const request = event.ai_request;
   if (!request || event.source !== "client") return false;
+  if (!onlyKeys(request as unknown as Record<string, unknown>, ["request_id", "kind", "payload"])) return false;
   if (cleanIdentifier(request.request_id) !== request.request_id) return false;
   if (event.reason_codes?.length !== 1 || event.reason_codes[0] !== request.kind) return false;
   const payload = request.payload;
@@ -269,7 +269,7 @@ function validAiRequest(event: Partial<ControllerEvent>): boolean {
       && onlyKeys(payload, ["settings_updated_at"]);
   }
   if (request.kind === "supervision_check") {
-    return typeof payload.at === "string" && !Number.isNaN(Date.parse(payload.at))
+    return isoWithZone(payload.at)
       && (payload.source === "scheduled" || payload.source === "report")
       && typeof payload.force === "boolean"
       && onlyKeys(payload, ["at", "source", "force"]);
@@ -282,8 +282,19 @@ function onlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
   return Object.keys(value).every((key) => allowed.has(key)) && Object.keys(value).length === keys.length;
 }
 
+// Rules shared with deploy/hermes/trigger_live_supervision.py; both sides run
+// deploy/hermes/tests/fixtures/controller_events.json.
 function validDate(value: unknown): boolean {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number) as [number, number, number];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function isoWithZone(value: unknown): boolean {
+  return typeof value === "string"
+    && /(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+    && !Number.isNaN(Date.parse(value));
 }
 
 function validTimezone(value: unknown): boolean {

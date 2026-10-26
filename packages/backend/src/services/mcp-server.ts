@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
+  controllerRestState,
   getDeviceInstalledApps,
   getDeviceFrozenList,
   getTimelineContext,
@@ -94,6 +95,15 @@ export function createLiveDashboardMcpServer(): McpServer {
   }, async () => stableToolResult(() => ({
     generated_at: new Date().toISOString(),
     devices: listDeviceContexts(),
+  })));
+
+  server.registerTool("live_dashboard.get_rest_state", {
+    title: "Get rest state",
+    description: "Cheap deterministic gate for scripts: asleep (trusted watch), screen_off (every online phone idle), active, or unknown. No timeline or messages.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async () => stableToolResult(() => ({
+    generated_at: new Date().toISOString(),
+    rest_state: controllerRestState(),
   })));
 
   server.registerTool("live_dashboard.get_all_device_timeline", {

@@ -9,12 +9,12 @@ These assets make Hermes the conversational controller while Live Dashboard rema
 - `prompts/companion.md`: rate-limited proactive opportunity where speaking is the default when grounded context exists.
 - `proactive_candidate.py`: persistent 30-minute probability gate; unchanged output suppresses the agent entirely.
 - `followup_candidate.py`: reawakens Hermes after 5, 15, and 30 minutes, then hourly until a later user reply (12-hour stale-root bound); screen-off starts at 15 minutes and confirmed sleep suppresses the model before invocation.
-- `live_state_gate.py`: deterministic pre-model sleep/screen-off gate fed by Live `/api/current`; failures degrade to the slower unknown-state cadence.
 - `usage_summary.py`: read-only UTC+08:00 per-job cron token accounting from `usage_audit.jsonl`; it observes usage and never enforces a budget.
 - `get_controller_context`: returns equivalent compact JSON text and structured views capped at 24 KB. Compatible clients always see the complete bounded object; the Hermes adapter removes the duplicate before model context, keeping its result below the 50K-character spillover threshold without imposing a model-token budget.
 - `configure_cron_efficiency.py`: replaces the six controller prompts and clears `context_from:self` without changing pause/resume state.
 - `hermes-gateway-strict-skills.conf`: forces the complete strict persona stack into every Weixin DM session instead of relying on implicit skill selection.
-- `trigger_live_supervision.py`: authenticated webhook router for supervision and Live AI work requests; it stores a bounded event, wakes the existing supervision/daily/weekly job, and emits a non-dispatching durable ACK.
+- `trigger_live_supervision.py`: authenticated webhook router for supervision and Live AI work requests; it validates the event (the contract fixture `tests/fixtures/controller_events.json` is shared with Live's outbox), posts it as a `session-event` into the one shared Hermes session through the gateway control socket (6 s wait), and emits the durable ACK only after the gateway's receipt. Supervision events are framed by the supervision job's prompt; daily, weekly, and policy work get a short preamble for their own `live-mentor` mode instead.
+- `live_state_gate.py`: deterministic rest-state read for the candidate scripts. It calls the Live MCP tool `live_dashboard.get_rest_state` on the local listener (`LIVE_DASHBOARD_MCP_URL`, default `http://127.0.0.1:3031/api/mcp`) with `LIVE_DASHBOARD_MCP_TOKEN` (or `MCP_SERVER_TOKEN`); any failure reads as `unknown`, which never suppresses contact.
 - `configure_live_webhook_ack.py`: enables `script_ack_required` on the existing Live subscription so script failure returns a retryable HTTP error and success returns a matching durable ACK.
 
 Production secrets and job IDs are not stored here. Deploy the scripts under the Hermes profile `scripts/` directory, keep configuration files mode `0600`, bind the Hermes webhook only to the Docker bridge, and use an independent random HMAC secret. Configure `HERMES_LIVE_SUPERVISION_JOB_ID`; all on-demand Live AI requests use that one durable batch consumer, while daily/weekly scheduled jobs keep their own schedules.
@@ -27,7 +27,7 @@ Before enabling unattended jobs, obtain the user's explicit consent, save `super
 
 Every Hermes wake is a full agent turn, so cost grows with how often Live wakes Hermes and with what each wake carries. Fixed payload measured on 2026-10-25:
 
-- `live_dashboard` MCP tool schemas: 30 tools, about 30 KB (7-9K tokens), sent with every model call.
+- `live_dashboard` MCP tool schemas: 31 tools, about 30 KB (7-9K tokens), sent with every model call.
 - `strict-study-girlfriend`: `SKILL.md` about 9 KB, `references/voice.md` about 12 KB, `references/conditioning-and-verification.md` about 43 KB (9-14K tokens). A file loaded with `skill_view` stays in the session until compaction.
 - `live-mentor`: `SKILL.md` and `REFERENCE.md` together about 13 KB.
 - `get_controller_context`: up to 24 KB per call.
