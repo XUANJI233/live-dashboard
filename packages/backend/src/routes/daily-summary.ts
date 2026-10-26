@@ -14,6 +14,7 @@ import { syncCurrentSupervisionPolicyToCapableDevices } from "../services/superv
 import { aiJobInputErrorResponse, submitAiJobFromClient } from "../services/ai-jobs";
 import { readJsonObjectRequest, type JsonObjectRead } from "../services/request-body";
 import { hermesControllerEnabled } from "../services/controller-mode";
+import { controllerHealth } from "../services/controller-health";
 
 const MAX_SUMMARY_JSON_BYTES = 128 * 1024;
 
@@ -121,7 +122,8 @@ export async function handleWeeklySummaryRefresh(req: Request, url: URL): Promis
 export function handleSummarySettings(req: Request): Response {
   const unauthorized = requireAdmin(req);
   if (unauthorized) return unauthorized;
-  return noStore(Response.json(getSummarySettings()), ["summary-settings"]);
+  // controller_health sits beside the persisted settings; it is never stored or sent to Hermes.
+  return noStore(Response.json({ ...getSummarySettings(), controller_health: controllerHealth() }), ["summary-settings"]);
 }
 
 export async function handleSummarySettingsUpdate(req: Request): Promise<Response> {
@@ -146,7 +148,10 @@ export async function handleSummarySettingsUpdate(req: Request): Promise<Respons
   if (settings.sync_status === "applied") {
     syncCurrentSupervisionPolicyToCapableDevices(settings);
   }
-  return noStore(Response.json({ ...settings, rules_refresh_job: rulesRefreshJob }), ["summary-settings", "ai-jobs"]);
+  return noStore(
+    Response.json({ ...settings, rules_refresh_job: rulesRefreshJob, controller_health: controllerHealth() }),
+    ["summary-settings", "ai-jobs"],
+  );
 }
 
 export async function handleAiConfig(req: Request): Promise<Response> {

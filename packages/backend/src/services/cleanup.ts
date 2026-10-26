@@ -19,6 +19,7 @@ import { expireUnclaimedDelegatedAiJobs, submitAiJob } from "./ai-jobs";
 import { collectDueSummaryJobs, initialSummaryScheduleState } from "./summary-scheduler";
 import { runSupervisionTick } from "./supervision";
 import { checkOfflineDevices } from "./offline-controller";
+import { maybeNudgeUnreachableController } from "./controller-health";
 
 // Cleanup old activities + old summaries every hour
 const hourlyCleanupTimer = setInterval(() => {
@@ -130,6 +131,9 @@ const offlineTimer = setInterval(() => {
     .then((result) => {
       if (result.pending > 0) {
         console.warn(`[offline-controller] ${result.pending} controller event(s) pending delivery`);
+      }
+      if (maybeNudgeUnreachableController()) {
+        console.warn("[controller-health] controller unreachable; told the phone once");
       }
     })
     .catch((error) => console.error("[offline-controller] device offline check failed:", error))

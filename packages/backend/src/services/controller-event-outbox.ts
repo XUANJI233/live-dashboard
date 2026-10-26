@@ -6,6 +6,7 @@ import {
   type ControllerWebhookDelivery,
 } from "./controller-webhook";
 import { cleanIdentifier } from "./mcp-contracts";
+import { recordControllerDeliveryResult } from "./controller-health-record";
 import {
   LEGACY_EXPIRY_MS,
   MAX_DELIVERY_ATTEMPTS,
@@ -168,6 +169,7 @@ async function flushControllerEventsOnce(now: Date): Promise<ControllerEventFlus
       continue;
     }
     const delivery = await notifyControllerEvent(event);
+    recordControllerDeliveryResult(attemptedAt, delivery.sent, deliveryFailureReason(delivery));
     if (delivery.sent) {
       recordControllerDelivery.run(attemptedAt, attemptedAt, row.event_id);
       deliveredIds.push(row.event_id);

@@ -15,6 +15,7 @@ import { syncCurrentSupervisionPolicyToCapableDevices } from "./supervision-poli
 import type { SupervisionRunSource } from "./supervision-trigger-plan";
 import { hermesControllerEnabled, liveInternalAiEnabled } from "./controller-mode";
 import { controllerWebhookEnabled } from "./controller-webhook";
+import { controllerHealth } from "./controller-health";
 
 const MCP_CONTROLLER_DEVICE: DeviceInfo = {
   device_id: "__mcp__",
@@ -31,6 +32,7 @@ export function getServiceSettings(): Record<string, unknown> {
       internal_ai_enabled: liveInternalAiEnabled(),
       webhook_enabled: controllerWebhookEnabled(),
     },
+    controller_health: controllerHealth(),
     settings,
     summary_mode_control: {
       locked: true,

@@ -1,6 +1,7 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createLiveDashboardMcpServer } from "../services/mcp-server";
 import { readLimitedRequestText } from "../services/request-body";
+import { recordControllerMcpCall } from "../services/controller-health-record";
 
 const MCP_MAX_REQUEST_BYTES = 256 * 1024;
 
@@ -26,6 +27,8 @@ export async function handleMcpRequest(req: Request, options: {
   if (!isAuthorizedMcpRequest(req)) {
     return noStoreJson({ error: "unauthorized" }, 401);
   }
+  // An external caller with the token reached Live: evidence the controller side is alive.
+  if (!options.internalRequest) recordControllerMcpCall();
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ error: "method_not_allowed" }), {
       status: 405,

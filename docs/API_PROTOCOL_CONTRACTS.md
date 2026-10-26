@@ -134,6 +134,7 @@ App 保存设置时应发送：
 
 - `mode_locked`：固定为 `true`，表示 App 不能修改总结/监督语气。
 - `sync_status`：`applied` 或 `ignored_stale`。
+- `controller_health`：GET/POST `/api/summary-settings` 与 MCP `get_service_settings` 都附带的只读状态，不写入设置、不发给 Hermes：`hermes_enabled`、`webhook_enabled`、`paused`、`last_ack_at`（最近一次收到匹配 ACK）、`last_failure_at` / `last_error`（最近一次投递失败）、`last_mcp_at`（最近一次带 token 的外部 MCP 调用）、`pending_count`、`oldest_pending_at`、`dead_last_24h`、`unreachable`。`unreachable=true` 表示 Live 在 10 分钟内仍在尝试投递、最近一次失败，且已有 30 分钟没有收到 ACK；此时若监督开启、未暂停，Live 每 6 小时最多向在线安卓手机发一次固定提示，不会自动切换控制器。
 - `rules_refresh_job`：监督规则异步刷新 job；`status` 为 `queued` / `running` 时客户端应显示“规则正在生成”，不要把旧 `supervision_rules_updated_at` 当作本次完成时间。
 
 服务端 prompt 覆盖文件：
