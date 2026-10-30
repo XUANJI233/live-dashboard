@@ -35,7 +35,7 @@ The Weixin conversation is the dialogue lane: it carries only his messages, her 
 2. In `config.yaml`, set `session_events.enabled: false` and keep `session_events.session_key`; it names his conversation for `recent_dialogue`.
 3. Stop the gateway, run `configure_isolated_lanes.py` as the Hermes user (with `HERMES_LIVE_RESUME_CONSUMER=true` to start the event consumer), then start the gateway.
 
-`live-memory-sync` stays paused: an isolated run has no file access for the cursor it keeps in `$HERMES_HOME/state`.
+`live-memory-sync` no longer needs a cursor file in `$HERMES_HOME/state`, which an isolated run cannot write: Live keeps its feed position. Each run calls `live_dashboard.get_controller_memory_feed` with `{"consumer_id":"hermes-memory","advance":true,"limit":100}` until `has_more` is false (the very first call may add `since` with the cutover time); see `docs/API_PROTOCOL_CONTRACTS.md`. Keep the job paused until `prompts/memory.md` and the `live-mentor` memory checkpoint describe this call instead of the state file, then resume it.
 
 Each controller job then loads both skills with their preloaded references once per run, gets `memory`, `session_search`, `skills`, and `vision` plus the Live MCP server, and mirrors its delivery into the conversation as a `[Cron delivery: …]` message (`attach_to_session: true`). A job-level `model` and `reasoning_effort` now take effect, so the dialogue lane can use a stronger default model without every automated wake replaying the conversation on it. Every isolated job must be pinned: Hermes skips (`[drift_skip]`) an unpinned run whose creation-time model differs from the global default. The configure script pins the global default unless `HERMES_LIVE_JOB_PROVIDER` / `HERMES_LIVE_JOB_MODEL` name another; jobs created elsewhere need `hermes cron edit <id> --provider <p> --model <m>`.
 
@@ -43,7 +43,7 @@ Each controller job then loads both skills with their preloaded references once 
 
 Every Hermes wake is a full agent turn, so cost grows with how often Live wakes Hermes and with what each wake carries. Fixed payload measured on 2026-10-25:
 
-- `live_dashboard` MCP tool schemas: 35 tools, about 33 KB, sent with every model call. The supervision ledger then replaced `list_commitments` with `ledger_open`, `ledger_update`, and `ledger_search`: 37 tools and about 7 KB more `tools/list` JSON; measure again with `hermes prompt-size`.
+- `live_dashboard` MCP tool schemas: 37 tools, sent with every model call. Live's own `tools/list` JSON measured about 43 KB for 36 tools on 2026-10-30, before the supervision ledger (`ledger_open`, `ledger_update`, `ledger_search`, about 7 KB, replacing `list_commitments`) and `get_activity_history` (replacing both timeline tools) were merged; measure again with `hermes prompt-size`. The 2026-10-25 figure of about 33 KB is not comparable with this count.
 - `strict-study-girlfriend`: `SKILL.md` about 12 KB with `references/voice.md` (about 12 KB) and `references/conditioning-and-verification.md` (about 31 KB) preloaded; `references/device-and-policy.md` (about 15 KB) is read on demand. Hermes silently skips a preloaded reference over 32 KiB or past 64 KiB in total, which is why the 43 KB conditioning page never reached the model before the split; `tests/test_skill_preload_budget.py` guards the limit.
 - `live-mentor`: `SKILL.md` and `REFERENCE.md` together about 13 KB.
 - `get_controller_context`: up to 24 KB per call.

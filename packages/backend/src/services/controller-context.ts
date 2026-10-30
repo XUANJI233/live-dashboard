@@ -17,6 +17,7 @@ import { commitmentsContext } from "./commitments";
 import { resolveControllerTimezone } from "./controller-timezone";
 import { installedAppChangesContext } from "./installed-app-changes";
 import { ledgerContext } from "./ledger-context";
+import { loadEnforcementDigest } from "./controller-context-enforcement";
 
 export type ControllerContextMode = "supervision" | "companion" | "followup" | "memory" | "policy" | "daily" | "weekly";
 
@@ -89,6 +90,10 @@ export function getControllerContext(input: {
   // A recent-only timeline is complete by design: the digest covers the whole window.
   if (timeline.truncated && !recentOnly) truncatedSections.add("timeline");
 
+  // Reviews see what was done to the devices in their own range, which recent_events does not cover.
+  const enforcement = input.mode === "daily" || input.mode === "weekly" ? loadEnforcementDigest(range) : null;
+  if (enforcement?.truncated === true) truncatedSections.add("enforcement");
+
   const actionMode = input.mode === "supervision" || input.mode === "policy";
   const recentEvents = getControllerMemoryFeed({
     limit: input.mode === "memory" ? 40 : 24,
@@ -125,6 +130,7 @@ export function getControllerContext(input: {
     ...(usageToday ? { usage_today: usageToday } : {}),
     installed_changes: installedChanges,
     timeline,
+    ...(enforcement ? { enforcement } : {}),
     recent_events: recentEvents,
   }, truncatedSections);
 }

@@ -14,7 +14,8 @@ import { registerActivityHistoryTools } from "./mcp-activity-history-tools";
 import { registerLedgerTools } from "./mcp-ledger-tools";
 import { stableToolResult, toolResult } from "./mcp-tool-result";
 import { getControllerPersona, updateControllerPersona } from "./controller-persona";
-import { getControllerMemoryFeed, saveControllerSummary } from "./controller-memory";
+import { saveControllerSummary } from "./controller-memory";
+import { getControllerMemoryFeedForConsumer } from "./controller-memory-consumer";
 import { getControllerContext } from "./controller-context";
 import { controllerContextText } from "./controller-context-budget";
 import {
@@ -29,7 +30,6 @@ import {
 } from "./mcp-admin";
 import {
   AiJobStatusSchema,
-  AccountingBillsSchema,
   CaptureScreenshotSchema,
   CommandStatusSchema,
   ClaimControllerAiRequestsSchema,
@@ -61,11 +61,10 @@ import {
   getDeviceScreenshot,
   type ScreenshotCaptureResult,
 } from "./device-screenshot-control";
-import { queryAccountingBills } from "./accounting-bills";
+import { registerAccountingTools } from "./mcp-accounting-tools";
 import {
   executeCoyoteCommand,
   getCoyoteStatuses,
-  requestAccountingSync,
 } from "./android-integration-control";
 
 export function createLiveDashboardMcpServer(): McpServer {
@@ -127,29 +126,7 @@ export function createLiveDashboardMcpServer(): McpServer {
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(() => getDeviceInstalledApps(args.device_id)));
 
-  server.registerTool("live_dashboard.get_accounting_bills", {
-    title: "Get processed AutoAccounting bills",
-    description: "Ask an online Android integration to read AutoAccounting's completed parent bills (Edited/Synced), cache them idempotently, then query the bounded server copy. Recognition rules and pending Wait2Edit data are never reproduced here.",
-    inputSchema: AccountingBillsSchema,
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (args) => stableToolResult(async () => {
-    const refresh = args.refresh_from_android === false
-      ? { ok: true, status: "skipped" }
-      : await requestAccountingSync({ deviceId: args.device_id, start: args.start, end: args.end });
-    return {
-      refresh,
-      ...queryAccountingBills({
-        start: args.start,
-        end: args.end,
-        deviceId: args.device_id,
-        transactionTypes: args.transaction_types,
-        category: args.category,
-        keyword: args.keyword,
-        limit: args.limit,
-        cursor: args.cursor,
-      }),
-    };
-  }));
+  registerAccountingTools(server);
 
   server.registerTool("live_dashboard.get_coyote_status", {
     title: "Get Android Coyote status",
@@ -270,7 +247,7 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.get_controller_context", {
     title: "Get bounded controller context",
-    description: "Preferred first and normally only read for Hermes decisions. Returns settings, persona, commitments, the ledger's due and open records, minimal device state, a whole-window usage digest, today's running usage (supervision, companion, and followup modes), installed-app changes from the last 7 days, one bounded timeline (newest segments only in supervision, companion, and followup modes), and recent controller events in one call. Bounded truncation preserves a decision-complete newest-first view and never by itself requires another read.",
+    description: "Preferred first and normally only read for Hermes decisions. Returns settings, persona, commitments, the ledger's due and open records, minimal device state, a whole-window usage digest, today's running usage (supervision, companion, and followup modes), installed-app changes from the last 7 days, one bounded timeline (newest segments only in supervision, companion, and followup modes), and recent controller events in one call; daily and weekly modes add the range's enforcement (reminders, freezes, rule enforcement). Bounded truncation preserves a decision-complete newest-first view and never by itself requires another read.",
     inputSchema: ControllerContextSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(
@@ -290,10 +267,10 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.get_controller_memory_feed", {
     title: "Get controller memory feed",
-    description: "Return a chronological feed of sent/received messages, device reminders/commands, and saved summaries for OpenClaw/Hermes memory ingestion. This is preferred over letting the service invent long-term memory itself.",
+    description: "Return a chronological feed of sent/received messages, device reminders/commands, and saved summaries for OpenClaw/Hermes memory ingestion. This is preferred over letting the service invent long-term memory itself. A recurring reader passes consumer_id with advance:true so Live keeps its position.",
     inputSchema: ControllerMemoryFeedSchema,
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (args) => stableToolResult(() => getControllerMemoryFeed(args)));
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async (args) => stableToolResult(() => getControllerMemoryFeedForConsumer(args)));
 
   server.registerTool("live_dashboard.save_controller_summary", {
     title: "Save controller summary",
