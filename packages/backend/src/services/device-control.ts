@@ -24,6 +24,7 @@ import { boundedInteger } from "./bounded-integer";
 import { deliverDeviceCommandMessage } from "./realtime-message-delivery";
 import { deviceActionConsent, USER_CONSENT_NOTES, type DeviceActionConsent } from "./device-command-consent";
 import { deviceCommandRequestFingerprint, inspectDeviceCommandRequest } from "./device-command-replay";
+import { commitmentUnfreezeFilter } from "./commitment-unfreeze-lock";
 
 const MAX_COMMANDS_PER_REQUEST = 20;
 const MAX_PATTERN_COUNT = 12;
@@ -54,7 +55,12 @@ export interface SendDeviceCommandsInput {
   commands: DeviceCommandRequest[];
 }
 
-export function sendDeviceCommands(input: SendDeviceCommandsInput): {
+export interface SendDeviceCommandsOptions {
+  /** Live's own commitment enforcement and granted exceptions; never set for controller calls. */
+  bypassCommitments?: boolean;
+}
+
+export function sendDeviceCommands(input: SendDeviceCommandsInput, options: SendDeviceCommandsOptions = {}): {
   request_id: string;
   duplicate?: true;
   commands: ReturnType<typeof getCommandStatuses>["commands"];
@@ -81,7 +87,7 @@ export function sendDeviceCommands(input: SendDeviceCommandsInput): {
     const issuedAt = new Date();
     const expiresAt = new Date(issuedAt.getTime() + expiresSeconds(command.expires_in_seconds) * 1000);
     const device = targetDeviceId ? getDeviceContext(targetDeviceId) : null;
-    const normalized = normalizeCommandPayload(command, device, consent);
+    const normalized = normalizeCommandPayload(command, device, consent, options.bypassCommitments === true);
     const envelope: DeviceCommandEnvelope = {
       type: "device_command",
       v: 1,
@@ -133,6 +139,7 @@ function normalizeCommandPayload(
   command: DeviceCommandRequest,
   device: DeviceContext | null,
   consent: DeviceActionConsent,
+  bypassCommitments: boolean,
 ): {
   payload: DeviceCommandPayload;
   hasAction: boolean;
@@ -148,7 +155,12 @@ function normalizeCommandPayload(
   const requestedScreenshot = screenshotRequest(command.screenshot);
 
   const supportedFreeze = device && deviceSupportsCommand(device, "freeze") ? requestedFreeze : [];
-  const unfreezeCommands = device && deviceSupportsCommand(device, "unfreeze") ? requestedUnfreeze : [];
+  const supportedUnfreeze = device && deviceSupportsCommand(device, "unfreeze") ? requestedUnfreeze : [];
+  // Packages under an active commitment open only through a time-boxed exception.
+  const unfreezeLock = device && !bypassCommitments
+    ? commitmentUnfreezeFilter(device.device_id, supportedUnfreeze)
+    : { allowed: supportedUnfreeze, locked: false };
+  const unfreezeCommands = unfreezeLock.allowed;
   const supportedVibrate = !!device && deviceSupportsCommand(device, "vibrate") && requestedVibrate;
   const say = device && deviceSupportsCommand(device, "say") ? requestedSay : "";
   const supportedScreenOff = !!device && deviceSupportsCommand(device, "screen_off") && requestedScreenOff;
@@ -160,7 +172,8 @@ function normalizeCommandPayload(
 
   if (requestedFreeze.length > 0 && supportedFreeze.length === 0) notes.push("freeze_not_supported");
   else if (supportedFreeze.length > 0 && consent.freeze) notes.push(consent.freeze);
-  if (requestedUnfreeze.length > 0 && unfreezeCommands.length === 0) notes.push("unfreeze_not_supported");
+  if (requestedUnfreeze.length > 0 && supportedUnfreeze.length === 0) notes.push("unfreeze_not_supported");
+  if (unfreezeLock.locked) notes.push("commitment_locked");
   if (requestedVibrate && !supportedVibrate) notes.push("vibrate_not_supported");
   else if (supportedVibrate && consent.vibrate) notes.push(consent.vibrate);
   if (requestedSay && !say) notes.push("say_not_supported");
@@ -168,7 +181,9 @@ function normalizeCommandPayload(
   else if (supportedScreenOff && consent.screenOff) notes.push(consent.screenOff);
   if (requestedScreenshot && !screenshot) notes.push("screenshot_not_supported");
   const uniqueNotes = [...new Set(notes)];
-  const onlyUserBlocked = uniqueNotes.length > 0 && uniqueNotes.every((note) => USER_CONSENT_NOTES.has(note));
+  // A commitment is his own rule, so a refused unfreeze reads like a refused switch.
+  const onlyUserBlocked = uniqueNotes.length > 0 &&
+    uniqueNotes.every((note) => USER_CONSENT_NOTES.has(note) || note === "commitment_locked");
 
   const hasAction = freezeCommands.length > 0 ||
     unfreezeCommands.length > 0 ||

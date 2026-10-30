@@ -20,6 +20,7 @@ import { collectDueSummaryJobs, initialSummaryScheduleState } from "./summary-sc
 import { runSupervisionTick } from "./supervision";
 import { checkOfflineDevices } from "./offline-controller";
 import { maybeNudgeUnreachableController } from "./controller-health";
+import { enforceCommitments } from "./commitment-enforcement";
 
 // Cleanup old activities + old summaries every hour
 const hourlyCleanupTimer = setInterval(() => {
@@ -168,12 +169,25 @@ const summaryTimer = setInterval(() => {
 }, 60_000);
 summaryTimer.unref();
 
+// Commitments hold without a controller: re-freeze, relock exceptions, release closed windows.
+const commitmentTimer = setInterval(() => {
+  try {
+    const result = enforceCommitments();
+    if (result.freeze_requests > 0 || result.unfreeze_requests > 0) {
+      console.log(`[commitments] ${result.freeze_requests} freeze and ${result.unfreeze_requests} release request(s)`);
+    }
+  } catch (e) {
+    console.error("[commitments] enforcement failed:", e);
+  }
+}, 60_000);
+commitmentTimer.unref();
+
 const supervisionTimer = setInterval(() => {
   runSupervisionTick().catch((e) => console.error("[cleanup] AI supervision failed:", e));
 }, 300_000);
 supervisionTimer.unref();
 
-console.log("[cleanup] Scheduled: hourly cleanup, 60s offline check, configurable AI summaries, AI supervision");
+console.log("[cleanup] Scheduled: hourly cleanup, 60s offline check and commitment enforcement, configurable AI summaries, AI supervision");
 
 function hasStoredSummary(kind: "daily" | "weekly", key: string): boolean {
   const row = (kind === "daily"

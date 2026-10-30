@@ -117,6 +117,35 @@ export const SendCommandsSchema = z.object({
   }).describe("One immediate action for one device.")).min(1).max(20),
 }).describe("Use for immediate one-shot device actions only. Do not use to save risk-app rules or app time limits.");
 
+const ClockSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+
+export const RecordCommitmentSchema = z.object({
+  kind: z.enum(["block", "task"])
+    .describe("block: Live keeps the exact packages frozen inside the window until he ends the rule. task: a recorded promise with no device effect."),
+  title: z.string().min(1).max(80).describe("Short label, e.g. 闭关期购物封禁."),
+  user_quote: z.string().min(1).max(300).describe("His own words that set the rule. Record only what he explicitly said."),
+  device_id: z.string().min(1).max(160).optional().describe("Android LSP device for a block rule."),
+  packages: z.array(z.string().min(3).max(160)).max(20).optional().describe("Exact package names for a block rule; no patterns."),
+  window_start: ClockSchema.optional().describe("Local HH:MM the block starts each day; omit both ends for all day."),
+  window_end: ClockSchema.optional().describe("Local HH:MM the block ends; may be earlier than the start for an overnight window."),
+  ends_at: z.string().max(40).optional().describe("ISO time the rule ends by itself, e.g. the end of a retreat; omit for open-ended."),
+  daily_exception_limit: z.number().int().min(0).max(5).optional().describe("Time-boxed exceptions per local day; default 2."),
+  max_exception_minutes: z.number().int().min(5).max(60).optional().describe("Longest single exception; default 30."),
+  timezone_offset_minutes: z.number().int().min(-840).max(840).optional().describe("JavaScript getTimezoneOffset semantics; UTC+08:00 is -480 (default)."),
+});
+
+export const EndCommitmentSchema = z.object({
+  commitment_id: z.string().regex(/^cmt_[0-9a-f-]{36}$/),
+  reason: z.string().min(1).max(200).describe("Why he ended or replaced the rule, in his words."),
+});
+
+export const ExceptionUnfreezeSchema = z.object({
+  device_id: z.string().min(1).max(160),
+  package_name: z.string().min(3).max(160).describe("Exact committed package to open."),
+  purpose: z.string().min(2).max(200).describe("What he needs it for, concretely."),
+  minutes: z.number().int().min(1).max(60).describe("How long; bounded by the rule's max_exception_minutes."),
+});
+
 export const SupervisionPolicySchema = z.object({
   policy_owner: z.enum(["openclaw", "hermes", "custom"])
     .describe("Controller identity that authored this complete snapshot; must match the active controller persona."),

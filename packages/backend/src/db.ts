@@ -475,6 +475,49 @@ db.run(`
   ON device_command_results(command_id, received_at)
 `);
 
+// Rules he set while calm (services/commitments.ts). Live enforces `block` rules itself,
+// so a controller cannot drift from them in the moment.
+db.run(`
+  CREATE TABLE IF NOT EXISTS controller_commitments (
+    commitment_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    user_quote TEXT NOT NULL,
+    device_id TEXT NOT NULL DEFAULT '',
+    packages TEXT NOT NULL DEFAULT '[]',
+    window_start TEXT NOT NULL DEFAULT '',
+    window_end TEXT NOT NULL DEFAULT '',
+    timezone_offset_minutes INTEGER NOT NULL DEFAULT -480,
+    starts_at TEXT NOT NULL,
+    ends_at TEXT NOT NULL DEFAULT '',
+    daily_exception_limit INTEGER NOT NULL DEFAULT 2,
+    max_exception_minutes INTEGER NOT NULL DEFAULT 30,
+    status TEXT NOT NULL DEFAULT 'active',
+    in_window INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL DEFAULT '',
+    end_reason TEXT NOT NULL DEFAULT ''
+  )
+`);
+db.run(`
+  CREATE TABLE IF NOT EXISTS commitment_exceptions (
+    exception_id TEXT PRIMARY KEY,
+    commitment_id TEXT NOT NULL,
+    package_name TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    minutes INTEGER NOT NULL,
+    granted_at TEXT NOT NULL,
+    relock_at TEXT NOT NULL,
+    relocked_at TEXT NOT NULL DEFAULT '',
+    unfreeze_request_id TEXT NOT NULL DEFAULT ''
+  )
+`);
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_commitment_exceptions_commitment
+  ON commitment_exceptions(commitment_id, granted_at)
+`);
+
 // Short-lived, one-time screenshot handoff from a device command to MCP.
 db.run(`
   CREATE TABLE IF NOT EXISTS device_screenshots (

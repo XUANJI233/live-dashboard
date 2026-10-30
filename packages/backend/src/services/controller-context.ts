@@ -12,6 +12,7 @@ import { hermesControllerEnabled } from "./controller-mode";
 import { fitControllerContextToMcpBudget } from "./controller-context-budget";
 import { compileSupervisionRules } from "./supervision-patterns";
 import { loadUsageDigest } from "./usage-digest";
+import { commitmentsContext } from "./commitments";
 
 export type ControllerContextMode = "supervision" | "companion" | "followup" | "memory" | "policy" | "daily" | "weekly";
 
@@ -99,6 +100,7 @@ export function getControllerContext(input: {
     controller_active: hermesControllerEnabled(),
     settings,
     persona: { ...getControllerPersona() },
+    commitments: commitmentsContext(),
     rest_state: controllerRestState(allDevices),
     available_device_count: allDevices.length,
     returned_device_count: devices.length,

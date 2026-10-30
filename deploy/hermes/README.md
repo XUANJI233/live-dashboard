@@ -41,7 +41,7 @@ Each controller job then loads both skills with their preloaded references once 
 
 Every Hermes wake is a full agent turn, so cost grows with how often Live wakes Hermes and with what each wake carries. Fixed payload measured on 2026-10-25:
 
-- `live_dashboard` MCP tool schemas: 31 tools, about 30 KB (7-9K tokens), sent with every model call.
+- `live_dashboard` MCP tool schemas: 35 tools, about 33 KB, sent with every model call.
 - `strict-study-girlfriend`: `SKILL.md` about 12 KB with `references/voice.md` (about 12 KB) and `references/conditioning-and-verification.md` (about 31 KB) preloaded; `references/device-and-policy.md` (about 15 KB) is read on demand. Hermes silently skips a preloaded reference over 32 KiB or past 64 KiB in total, which is why the 43 KB conditioning page never reached the model before the split; `tests/test_skill_preload_budget.py` guards the limit.
 - `live-mentor`: `SKILL.md` and `REFERENCE.md` together about 13 KB.
 - `get_controller_context`: up to 24 KB per call.

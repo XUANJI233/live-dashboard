@@ -37,7 +37,9 @@ When `memory_cursor` is null, query with `since=memory_since` and save `next_sin
 | `save_controller_summary` | Hermes-authored review | pre-authorized write |
 | `complete_controller_ai_request` | Settle one claimed Live request with the claim's `request_id` and `claim_token` after real completion | required completion write |
 | `claim_controller_ai_requests` | Atomic 30-minute lease and per-item claim token for the dedicated Live controller batch consumer | supervision job only |
-| `send_device_commands` | One-shot action | bounded by saved settings |
+| `send_device_commands` | One-shot action; waits about 3 s for the device result, and an unfreeze reaching a committed package is dropped with `commitment_locked` | bounded by saved settings |
+| `record_commitment`, `end_commitment` | A rule he explicitly set or explicitly cancelled, with his words quoted | on his explicit words only |
+| `request_exception_unfreeze` | Open one committed package with a concrete purpose and minutes; Live re-freezes at `relock_at` | bounded by the rule's quota |
 | `set_supervision_policy` | Hermes-authored review triggers, classification lists (whitelist/blacklist/target), explicit time limits, and the strict system-browser web allowlist; complete snapshot with optional `expected_policy_updated_at` | persistently delegated by user |
 | other settings/mode/persona writes | Administration | explicit request |
 | `start_ai_job`, `run_supervision_check`, `get_ai_job` | Live fallback | forbidden while active |

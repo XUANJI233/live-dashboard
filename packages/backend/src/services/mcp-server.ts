@@ -9,6 +9,9 @@ import {
 } from "./device-context";
 import { getCommandStatuses } from "./device-command-ledger";
 import { sendDeviceCommands } from "./device-control";
+import { awaitCommandResults } from "./device-command-wait";
+import { commitmentsContext, endCommitment, recordCommitment } from "./commitments";
+import { requestExceptionUnfreeze } from "./commitment-tools";
 import { getControllerPersona, updateControllerPersona } from "./controller-persona";
 import { getControllerMemoryFeed, saveControllerSummary } from "./controller-memory";
 import { getControllerContext } from "./controller-context";
@@ -41,9 +44,12 @@ import {
   CoyoteStopSchema,
   DateRangeSchema,
   DeviceTimelineSchema,
+  EndCommitmentSchema,
+  ExceptionUnfreezeSchema,
   FrozenListSchema,
   GetScreenshotSchema,
   InstalledAppsSchema,
+  RecordCommitmentSchema,
   RunSupervisionCheckSchema,
   SaveControllerSummarySchema,
   SendCommandsSchema,
@@ -75,7 +81,8 @@ export function createLiveDashboardMcpServer(): McpServer {
       "Live Dashboard MCP exposes local-only device context and control tools.",
       "Read-only tools inspect dashboard state; they never change settings or device state.",
       "Hermes should start each decision with live_dashboard.get_controller_context and avoid separate settings, persona, device, timeline, and memory reads. Its bounds.truncated flag only means older or lower-priority detail was omitted; do not re-read solely for that flag because bounds.decision_complete remains true and bounds.followup_required remains false. Its usage_digest covers the whole window; supervision, companion, and followup timelines keep only the newest segments. Read one specific detail only after choosing an action that requires it, or call get_device_timeline once for one device and window when the digest leaves a decision-relevant question.",
-      "live_dashboard.send_device_commands is only for immediate one-shot device actions such as say, vibrate, screen_off, freeze, or unfreeze.",
+      "live_dashboard.send_device_commands is only for immediate one-shot device actions such as say, vibrate, screen_off, freeze, or unfreeze. It waits about three seconds for the device result; query get_command_status only when results_pending is true.",
+      "Long-lived rules the user set go to live_dashboard.record_commitment. Live itself keeps a block commitment's packages frozen inside its window; a controller opens one only through live_dashboard.request_exception_unfreeze with a purpose and minutes, and Live re-freezes it on time.",
       "live_dashboard.capture_device_screenshot captures the current Android LSP display on demand and may be used whenever current visual evidence is relevant. The screenshot is short-lived and returned once.",
       "Coyote electrostimulation tools only operate an Android-connected device after the user explicitly enables remote control. Cold starts and adjustments are hard-bounded; stop and emergency stop remain available without that grant.",
       "get_accounting_bills reads only AutoAccounting bills that are already Edited or Synced; Live Dashboard does not reproduce AutoAccounting recognition rules.",
@@ -227,10 +234,37 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.send_device_commands", {
     title: "Send device commands",
-    description: "Immediate one-shot device action tool. Use only to send current supervision/reminder actions to specific devices: say, vibrate, screen_off, freeze_commands, or unfreeze_commands. Do not use for persistent risk-app policy, app time limits, or changing supervision settings. The user's supervision switches are enforced here: freeze, vibrate and screen_off are dropped with a note (supervision_disabled, freeze_disabled_by_user, vibrate_disabled_by_user) when the user has not allowed them. Returns command_id values for status queries.",
+    description: "Immediate one-shot device action tool. Use only to send current supervision/reminder actions to specific devices: say, vibrate, screen_off, freeze_commands, or unfreeze_commands. Do not use for persistent risk-app policy, app time limits, or changing supervision settings. The user's supervision switches are enforced here: freeze, vibrate and screen_off are dropped with a note (supervision_disabled, freeze_disabled_by_user, vibrate_disabled_by_user) when the user has not allowed them. An unfreeze that could reach a package under an active commitment is dropped with commitment_locked; use request_exception_unfreeze. Waits about three seconds for device results; results_pending=true means poll get_command_status.",
     inputSchema: SendCommandsSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  }, async (args) => stableToolResult(() => sendDeviceCommands(args)));
+  }, async (args) => stableToolResult(() => awaitCommandResults(sendDeviceCommands(args))));
+
+  server.registerTool("live_dashboard.record_commitment", {
+    title: "Record a commitment",
+    description: "Persist a rule the user explicitly set, quoting his words. A block rule names exact packages and an optional daily window; Live keeps them frozen inside the window by itself, re-freezing after the phone's nightly cleanup, until the rule ends. A task rule only records the promise. Never record a rule from inference or a passing complaint.",
+    inputSchema: RecordCommitmentSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  }, async (args) => stableToolResult(() => ({ ok: true, commitment: recordCommitment(args) })));
+
+  server.registerTool("live_dashboard.end_commitment", {
+    title: "End a commitment",
+    description: "End a rule only when the user explicitly cancels or replaces it; a block rule's packages are released if no other rule holds them.",
+    inputSchema: EndCommitmentSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async (args) => stableToolResult(() => ({ ok: true, commitment: endCommitment(args.commitment_id, args.reason) })));
+
+  server.registerTool("live_dashboard.list_commitments", {
+    title: "List commitments",
+    description: "Active commitments with today's exception usage and open exceptions. get_controller_context already includes this list.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async () => stableToolResult(() => ({ generated_at: new Date().toISOString(), commitments: commitmentsContext() })));
+
+  server.registerTool("live_dashboard.request_exception_unfreeze", {
+    title: "Request a time-boxed exception",
+    description: "Open one package under an active block commitment for a concrete purpose and a bounded number of minutes. Live checks the rule's daily exception quota and maximum length, unfreezes, and re-freezes at relock_at on its own. Errors: not_committed (use a normal unfreeze), commitment_exception_denied (today's quota is used), exception_minutes_out_of_range, exception_purpose_required, device_offline.",
+    inputSchema: ExceptionUnfreezeSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  }, async (args) => stableToolResult(() => requestExceptionUnfreeze(args)));
 
   server.registerTool("live_dashboard.set_supervision_policy", {
     title: "Set supervision policy",
