@@ -1,0 +1,4 @@
+name: live_ledger
+version: 1.0.0
+description: "Live ledger recall: each turn brings back the Live supervision-ledger records related to his message (live_dashboard.ledger_search about); no tools."
+kind: exclusive

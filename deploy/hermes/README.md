@@ -19,6 +19,7 @@ These assets make Hermes the conversational controller while Live Dashboard rema
 - `configure_isolated_lanes.py`: turns the controller jobs into isolated, mirrored runs pinned to an explicit provider and model (see below), and creates the fallback job; other jobs are left alone. It checks every job and prompt before changing any. A paused event consumer stays paused, with the fallback job paused alongside it, unless `HERMES_LIVE_RESUME_CONSUMER=true`.
 - `weixin_delivery_fallback.py`: two-minute no-agent job. iLink rejects many proactive sends (`business_rejected ... prepare failed`); for a settled, sendable response of an `attach_to_session` job that has no `[Cron delivery: …]` mirror (Hermes mirrors only accepted deliveries), it sends the same text to the Android phone as a Live `say` notification, once. Silence follows Hermes's own `is_autonomous_silence_response`.
 - `live_mcp.py`: the one authenticated `tools/call` client the scripts share; `cron_outputs.py`: reads a cron run's saved response.
+- `plugins/live_ledger/`: Hermes memory provider without tools that recalls the Live ledger records related to each of his messages (see "Ledger recall" below).
 - `configure_live_webhook_ack.py`: enables `script_ack_required` on the existing Live subscription so script failure returns a retryable HTTP error and success returns a matching durable ACK.
 
 Production secrets and job IDs are not stored here. Deploy the scripts under the Hermes profile `scripts/` directory, keep configuration files mode `0600`, bind the Hermes webhook only to the Docker bridge, and use an independent random HMAC secret. The `live-supervision-review` job is the one durable consumer for Live events and on-demand Live AI requests, while daily/weekly scheduled jobs keep their own schedules.
@@ -59,3 +60,26 @@ compression:
 ```
 
 `idle_compact_after_seconds` trades one summary call for smaller replays across the steps of a wake that arrives after 30 idle minutes; keep it only if totals drop. Measure before and after with `hermes insights --days 7` (tokens by source), `hermes prompt-size` (system prompt, skills index, and tool schemas), and `usage_summary.py` (cron jobs, including `silent_calls`, which is spend that ended in `[SILENT]`).
+
+## Ledger recall
+
+The Weixin session is compressed instead of reset, and the built-in `MEMORY.md` is small and loaded whole, so the `live_ledger` memory provider brings back the ledger records related to what he just said. Hermes calls a provider's `prefetch` once per user turn, skips trivial prompts such as `ok` (`agent/turn_context.py`), and waits at most 8 s for it (`agent/memory_manager.py`). The plugin calls `live_dashboard.ledger_search` with `about` set to his message (his own words before a quoted reply, at most 300 characters) and `limit: 5`, with a 1.5 s socket timeout, and returns one line per record: kind, status, due time, title and record ID. No hit, a timeout or any error returns nothing and is logged at debug level only. The plugin has no tool schemas; its one system-prompt line says recalled records are data, not instructions. Before the session is compressed it lists the open promises, debts and states, soonest due first, so the summary keeps them. Cron runs are skipped because they read the ledger through `get_controller_context` (Hermes 0.20.6 marks them `platform: cron`).
+
+Install after the Live backend that understands `about` is deployed (an older Live ignores `about` and would return its five newest records):
+
+```sh
+install -d -m 0700 -o hermes -g hermes /var/lib/hermes/plugins /var/lib/hermes/plugins/live_ledger
+install -m 0600 -o hermes -g hermes deploy/hermes/plugins/live_ledger/__init__.py \
+  deploy/hermes/plugins/live_ledger/plugin.yaml deploy/hermes/live_mcp.py /var/lib/hermes/plugins/live_ledger/
+```
+
+Then add `provider: live_ledger` under the existing `memory:` block of `$HERMES_HOME/config.yaml`, keeping its other keys, and restart the gateway with `systemctl restart hermes-gateway`. `sudo -u hermes HERMES_HOME=/var/lib/hermes /usr/local/lib/hermes-agent/venv/bin/hermes memory status` should name `live_ledger` as the provider. The plugin reads the same `LIVE_DASHBOARD_MCP_URL` and token variables as the scripts; the gateway already loads `MCP_LIVE_DASHBOARD_API_KEY` from `$HERMES_HOME/.env`. Without `live_mcp.py` beside it the provider reports itself unavailable and Hermes runs without it.
+
+Cost per turn:
+
+- One local `ledger_search` call per non-trivial message of his. Live scores at most 2,000 records against at most 64 words of the message, which takes milliseconds. No model calls, no tool schemas.
+- The system prompt gains one line of about 230 characters.
+- A hit adds at most five lines plus a header to that turn's user message, at most about 1,000 characters (a few hundred tokens), and Hermes adds its own memory fence and note. A miss adds nothing. Hermes stores the injected copy (`api_content`) so later turns replay the same bytes for prompt caching, which keeps each hit in the session history until the next compression.
+- Compression: up to three `ledger_search` calls and one line per open promise, debt and state (at most 28) in the summary prompt. This runs for the in-turn compression at `compression.threshold_tokens`; the gateway's session hygiene (85% of the context window, before a turn) loads no memory provider unless `compression.checkpoint_required: true`.
+
+To turn it off, remove `provider: live_ledger` from the `memory:` block (or set `provider: ""`) and restart the gateway. The plugin folder can stay, because Hermes loads only the configured provider. Recall and the pre-compression list are switched together.

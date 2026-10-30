@@ -47,8 +47,10 @@ import {
   searchLedgerRows,
   sweepLedgerRecords,
   type EvidenceItem,
+  type LedgerFilter,
   type LedgerRow,
 } from "./ledger-store";
+import { DEFAULT_RECALL_LIMIT, recallLedgerRows } from "./ledger-recall";
 
 // The supervision ledger: promises with a due time, owed tasks and agreed consequences, confirmed
 // false claims, working hypotheses and short-lived states, kept in Live so every fresh Hermes run
@@ -84,6 +86,7 @@ export interface UpdateLedgerInput {
 
 export interface SearchLedgerInput {
   query?: string;
+  about?: string;
   kinds?: LedgerKind[];
   status?: "open" | "closed" | "any";
   outcome?: string;
@@ -230,9 +233,13 @@ export function updateLedgerRecord(input: UpdateLedgerInput, now = new Date()): 
 }
 
 export function searchLedger(input: SearchLedgerInput, now = new Date()): Record<string, unknown> {
-  const limit = Math.min(MAX_SEARCH_LIMIT, Math.max(1, Math.trunc(input.limit ?? DEFAULT_SEARCH_LIMIT)));
+  // `about` ranks by relevance (ledger-recall.ts), so it has no pages.
+  const recall = input.about !== undefined;
+  if (recall && input.cursor !== undefined) throw new Error("invalid_ledger_field");
+  const defaultLimit = recall ? DEFAULT_RECALL_LIMIT : DEFAULT_SEARCH_LIMIT;
+  const limit = Math.min(MAX_SEARCH_LIMIT, Math.max(1, Math.trunc(input.limit ?? defaultLimit)));
   const query = cleanText(input.query, 40);
-  const rows = searchLedgerRows({
+  const filter: LedgerFilter = {
     ...(query ? { pattern: ledgerLikePattern(query) } : {}),
     ...(input.kinds?.length ? { kinds: input.kinds } : {}),
     ...(input.status === "open" || input.status === "closed" ? { status: input.status } : {}),
@@ -240,15 +247,26 @@ export function searchLedger(input: SearchLedgerInput, now = new Date()): Record
     timeField: TIME_FIELDS[input.time_field ?? "created"],
     ...(input.from ? { from: searchTime(input.from) } : {}),
     ...(input.to ? { to: searchTime(input.to) } : {}),
+  };
+  const timezoneOffset = settingsOffset();
+  const view = (row: LedgerRow) => recordView(row, { includeEvidence: input.include_evidence === true, timezoneOffset });
+  if (recall) {
+    return {
+      generated_at: now.toISOString(),
+      records: recallLedgerRows(filter, input.about!, limit).map(view),
+      next_cursor: null,
+    };
+  }
+  const rows = searchLedgerRows({
+    ...filter,
     ...(input.cursor ? { cursor: decodeCursor(input.cursor) } : {}),
     limit: limit + 1,
   });
   const page = rows.slice(0, limit);
   const last = page[page.length - 1];
-  const timezoneOffset = settingsOffset();
   return {
     generated_at: now.toISOString(),
-    records: page.map((row) => recordView(row, { includeEvidence: input.include_evidence === true, timezoneOffset })),
+    records: page.map(view),
     next_cursor: rows.length > limit && last ? encodeCursor(last) : null,
   };
 }

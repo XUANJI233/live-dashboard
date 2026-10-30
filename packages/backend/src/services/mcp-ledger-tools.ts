@@ -22,7 +22,7 @@ export function registerLedgerTools(server: McpServer): void {
 
   server.registerTool("live_dashboard.ledger_search", {
     title: "Search the ledger",
-    description: "Find ledger records, newest first, by keyword, kinds, status, outcome and a time range; page with next_cursor. get_controller_context already carries what is due and open.",
+    description: "Find ledger records, newest first, by keyword, kinds, status, outcome and a time range; page with next_cursor. With about (free text such as his message) it instead returns the few records most related to that text, open ones first, or none. get_controller_context already carries what is due and open.",
     inputSchema: LedgerSearchSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(() => searchLedger(args)));

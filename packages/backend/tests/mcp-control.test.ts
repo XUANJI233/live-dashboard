@@ -185,6 +185,11 @@ describe("mcp control plane", () => {
 
     const found = await call("live_dashboard.ledger_search", { query: "英语作文", status: "open" });
     expect(found?.structuredContent?.records.map((record: { record_id: string }) => record.record_id)).toEqual([recordId]);
+    const recalled = await call("live_dashboard.ledger_search", { about: "英语作文我写了一半，晚点给你" });
+    expect(recalled?.structuredContent?.records.map((record: { record_id: string }) => record.record_id)).toEqual([recordId]);
+    expect(recalled?.structuredContent?.next_cursor).toBeNull();
+    const unrelated = await call("live_dashboard.ledger_search", { about: "外面下雨了，楼下的猫又跑出来" });
+    expect(unrelated?.structuredContent?.records).toEqual([]);
 
     const refused = await call("live_dashboard.ledger_update", { record_id: recordId, outcome: "kept" });
     expect(refused?.isError).toBe(true);

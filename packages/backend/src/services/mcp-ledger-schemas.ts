@@ -5,6 +5,7 @@ import {
   LEDGER_KINDS,
   LEDGER_OUTCOMES,
   LEDGER_SUBTYPE_VALUES,
+  RECALL_TEXT_LIMIT,
   SYSTEM_OUTCOMES,
   TEXT_LIMITS,
 } from "./ledger-rules";
@@ -59,6 +60,8 @@ export const LedgerUpdateSchema = z.object({
 
 export const LedgerSearchSchema = z.object({
   query: z.string().min(1).max(40).optional().describe("Substring of title, detail, stake, note or evidence; Chinese works."),
+  about: z.string().min(1).max(RECALL_TEXT_LIMIT).optional()
+    .describe("Free text such as his message: only records sharing its distinctive words, open first, best first; no cursor."),
   kinds: z.array(z.enum(LEDGER_KINDS)).min(1).max(5).optional(),
   status: z.enum(["open", "closed", "any"]).optional().describe("Default any."),
   outcome: z.enum([...LEDGER_OUTCOMES, ...SYSTEM_OUTCOMES]).optional(),
@@ -66,6 +69,6 @@ export const LedgerSearchSchema = z.object({
   to: OffsetTimeSchema.optional(),
   time_field: z.enum(["created", "due", "closed"]).optional().describe("Which time from/to filter; default created."),
   include_evidence: z.boolean().optional().describe("Default false."),
-  limit: z.number().int().min(1).max(20).optional().describe("Default 10."),
+  limit: z.number().int().min(1).max(20).optional().describe("Default 10, or 5 with about."),
   cursor: z.string().min(1).max(200).optional().describe("next_cursor from the previous page."),
 });
