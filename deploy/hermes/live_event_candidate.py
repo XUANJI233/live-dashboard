@@ -13,10 +13,11 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from candidate_script_gate import script_gate, wake_context
-from live_event_queue import mark_done, pending_records, prune_done
+from live_event_queue import mark_done, move, pending_records, prune_done, stage_records
 
 
 NO_CANDIDATE = '{"selected_this_run":false}'
+CONSUMER_JOB = "live-supervision-review"
 # Mirrors Live's own delivery TTLs (controller-event-retry.ts): an event older than this would
 # already have expired in the outbox, so it no longer describes the present.
 TTL_SECONDS = {
@@ -26,6 +27,9 @@ TTL_SECONDS = {
     "ai.work_requested": 24 * 60 * 60,
 }
 PRIORITY = ("ai.work_requested", "supervision.deviation_detected", "supervision.review_requested", "device.offline")
+MAX_ATTEMPTS = 3
+INFLIGHT_STALE_SECONDS = 30 * 60
+MAX_REASON_CODES = 20
 
 
 def select_event(
@@ -45,7 +49,8 @@ def select_event(
         else:
             live.append((path, record, occurred))
 
-    # Only the newest review of a device describes its present; AI work is a durable queue item.
+    # Only the newest review of a device describes its present; it inherits the reasons of the
+    # reviews it replaces, as Live's outbox would have merged them. AI work is a durable queue item.
     newest: dict[tuple[str, tuple[str, ...]], tuple[Path, dict[str, Any], float]] = {}
     keep: list[tuple[Path, dict[str, Any], float]] = []
     for item in sorted(live, key=lambda value: value[2]):
@@ -56,13 +61,45 @@ def select_event(
         family = "offline" if event["event_type"] == "device.offline" else "supervision"
         key = (family, tuple(sorted(event.get("device_ids") or [])))
         if key in newest:
-            retired.append((newest[key][0], "superseded"))
+            older = newest[key]
+            retired.append((older[0], "superseded"))
+            codes = list(event.get("reason_codes") or [])
+            for code in older[1]["event"].get("reason_codes") or []:
+                if code not in codes and len(codes) < MAX_REASON_CODES:
+                    codes.append(code)
+            event["reason_codes"] = codes
         newest[key] = item
     keep.extend(newest.values())
     if not keep:
         return None, retired
     chosen = min(keep, key=lambda value: (PRIORITY.index(value[1]["event"]["event_type"]), value[2]))
     return (chosen[0], chosen[1]), retired
+
+
+def settle_inflight(home: Path, now: float, last_run: tuple[float | None, str]) -> None:
+    """Settle what the previous tick dispatched, now that its run has finished."""
+    run_at, status = last_run
+    for path, record in stage_records(home, "inflight"):
+        dispatched = float(record.get("dispatched_at") or 0)
+        attempts = int(record.get("attempts") or 1)
+        if run_at is not None and run_at >= dispatched:
+            if status == "error" and attempts < MAX_ATTEMPTS:
+                move(home, path, "pending", {**record, "attempts": attempts + 1})
+            else:
+                mark_done(home, path, "failed" if status == "error" else "handled", record)
+        elif now - dispatched > INFLIGHT_STALE_SECONDS:
+            mark_done(home, path, "stale", record)
+
+
+def consumer_last_run(home: Path) -> tuple[float | None, str]:
+    try:
+        jobs = json.loads((home / "cron" / "jobs.json").read_text(encoding="utf-8"))["jobs"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return None, ""
+    job = next((item for item in jobs if isinstance(item, dict) and item.get("name") == CONSUMER_JOB), None)
+    if not job:
+        return None, ""
+    return _epoch(job.get("last_run_at")), str(job.get("last_status") or "")
 
 
 def candidate_output(record: dict[str, Any]) -> str:
@@ -98,18 +135,20 @@ def main() -> int:
     now = time.time()
     try:
         prune_done(home, now)
+        settle_inflight(home, now, consumer_last_run(home))
         chosen, retired = select_event(pending_records(home), now)
         for path, outcome in retired:
             mark_done(home, path, outcome)
         if chosen is None:
             print(script_gate(NO_CANDIDATE))
             return 0
-        # Retire before the run: a failed run must not replay the same event every minute.
-        mark_done(home, chosen[0], "dispatched")
+        path, record = chosen
+        # Held in inflight/ so a run that fails is retried, while a finished one never replays.
+        move(home, path, "inflight", {**record, "attempts": int(record.get("attempts") or 1), "dispatched_at": now})
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(script_gate(NO_CANDIDATE, error=f"event_queue_unavailable:{type(error).__name__}"))
         return 0
-    output = candidate_output(chosen[1])
+    output = candidate_output(record)
     print(script_gate(output, context=wake_context(home, output)))
     return 0
 

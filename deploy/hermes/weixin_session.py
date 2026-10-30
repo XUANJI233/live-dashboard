@@ -9,6 +9,8 @@ from typing import Any
 
 
 MAX_LINEAGE = 128
+MESSAGE_SEPARATOR = "⟦MSG⟧"
+MIRROR_CLOCK_SLACK_SECONDS = 5
 
 
 def load_routing(root: Path) -> dict[str, Any]:
@@ -52,14 +54,20 @@ def compression_ancestors(connection: sqlite3.Connection, session_id: str) -> li
     return ancestors
 
 
-def mirrored_delivery(connection: sqlite3.Connection, job_name: str, text: str, since: float) -> bool:
-    """True when Hermes mirrored this job's text into the conversation, which it does only after
-    the platform accepted the delivery."""
-    probe = text.strip()[:40]
+MIRROR_PROBE_CHARS = 40
+
+
+def mirrored_delivery(connection: sqlite3.Connection, job_name: str, response: str, written_at: float, until: float) -> bool:
+    """True when Hermes mirrored this run's response into the conversation, which it does only
+    after the platform accepted the delivery. A mirror is written after the run's output file, so
+    only mirrors from `written_at` (less clock slack) up to `until` can belong to this run, and
+    the mirrored body must begin with the response's own first bubble."""
+    first = response.split(MESSAGE_SEPARATOR, 1)[0].strip()[:MIRROR_PROBE_CHARS]
+    expected = f"[Cron delivery: {job_name}]\n{first}"
     row = connection.execute(
-        "SELECT 1 FROM messages WHERE role = 'user' AND timestamp >= ? "
-        "AND substr(content, 1, ?) = ? AND instr(content, ?) > 0 LIMIT 1",
-        (since, len(f"[Cron delivery: {job_name}]"), f"[Cron delivery: {job_name}]", probe),
+        "SELECT 1 FROM messages WHERE role = 'user' AND timestamp >= ? AND timestamp <= ? "
+        "AND substr(content, 1, ?) = ? LIMIT 1",
+        (written_at - MIRROR_CLOCK_SLACK_SECONDS, until, len(expected), expected),
     ).fetchone()
     return row is not None
 

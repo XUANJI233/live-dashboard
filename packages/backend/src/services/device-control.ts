@@ -25,6 +25,7 @@ import { deliverDeviceCommandMessage } from "./realtime-message-delivery";
 import { deviceActionConsent, USER_CONSENT_NOTES, type DeviceActionConsent } from "./device-command-consent";
 import { deviceCommandRequestFingerprint, inspectDeviceCommandRequest } from "./device-command-replay";
 import { commitmentUnfreezeFilter } from "./commitment-unfreeze-lock";
+import { isCatchAll } from "./device-command-packages";
 
 const MAX_COMMANDS_PER_REQUEST = 20;
 const MAX_PATTERN_COUNT = 12;
@@ -159,7 +160,7 @@ function normalizeCommandPayload(
   // Packages under an active commitment open only through a time-boxed exception.
   const unfreezeLock = device && !bypassCommitments
     ? commitmentUnfreezeFilter(device.device_id, supportedUnfreeze)
-    : { allowed: supportedUnfreeze, locked: false };
+    : { allowed: supportedUnfreeze, locked: false, truncated: false };
   const unfreezeCommands = unfreezeLock.allowed;
   const supportedVibrate = !!device && deviceSupportsCommand(device, "vibrate") && requestedVibrate;
   const say = device && deviceSupportsCommand(device, "say") ? requestedSay : "";
@@ -174,6 +175,7 @@ function normalizeCommandPayload(
   else if (supportedFreeze.length > 0 && consent.freeze) notes.push(consent.freeze);
   if (requestedUnfreeze.length > 0 && supportedUnfreeze.length === 0) notes.push("unfreeze_not_supported");
   if (unfreezeLock.locked) notes.push("commitment_locked");
+  if (unfreezeLock.truncated) notes.push("unfreeze_targets_truncated");
   if (requestedVibrate && !supportedVibrate) notes.push("vibrate_not_supported");
   else if (supportedVibrate && consent.vibrate) notes.push(consent.vibrate);
   if (requestedSay && !say) notes.push("say_not_supported");
@@ -251,8 +253,7 @@ function normalizePattern(pattern: string): string {
 
 function isSafePattern(pattern: string, allowAll: boolean): boolean {
   if (!pattern || pattern.length > MAX_PATTERN_LENGTH) return false;
-  const compact = pattern.replace(/\s+/g, "").toLowerCase();
-  if (!allowAll && (compact === "*" || compact === ".*" || compact === "全部" || compact === "all")) return false;
+  if (!allowAll && isCatchAll(pattern)) return false;
   if (/\\[1-9]/.test(pattern)) return false;
   if (/\(\?<?[=!]/.test(pattern)) return false;
   if (/\([^)]*[+*][^)]*\)[+*?]/.test(pattern)) return false;

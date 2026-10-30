@@ -89,3 +89,22 @@ def test_follows_compaction_lineage_and_bounds_the_tail(tmp_path):
 def test_missing_route_or_database_is_an_empty_tail(tmp_path):
     assert MODULE.recent_dialogue(tmp_path, KEY) == []
     assert MODULE.recent_dialogue(build_home(tmp_path, [("dm", "user", "在吗")]), "") == []
+
+
+def test_keeps_weixin_emoji_and_the_words_under_a_quote(tmp_path):
+    home = build_home(tmp_path, [
+        ("dm", "user", "[捂脸]好吧我去背"),
+        ("dm", "user", '[Replying to: "背完了吗"]\n\n背完了'),
+        ("dm", "user", "[SYSTEM note] gateway restarted"),
+    ])
+
+    assert [line["text"] for line in MODULE.recent_dialogue(home, KEY)] == ["[捂脸]好吧我去背", "背完了"]
+
+
+def test_silence_variants_are_never_sendable():
+    sys.path.insert(0, str(SCRIPTS))
+    from cron_outputs import is_sendable_response
+
+    for text in ("[SILENT]", "[SILENT] 他在专注，不打扰", "SILENT", "[静默]", "(No response generated)", "  ", "看了一眼\n[SILENT]"):
+        assert not is_sendable_response(text), text
+    assert is_sendable_response("词呢\n⟦MSG⟧\n截图发我")

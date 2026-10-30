@@ -88,19 +88,67 @@ def run_main(home):
     return json.loads(output.getvalue())
 
 
-def test_main_dispatches_one_event_before_the_run_and_then_goes_quiet(tmp_path):
+def consumer_ran(home, at, status):
+    (home / "cron").mkdir(exist_ok=True)
+    stamp = datetime.fromtimestamp(at, timezone.utc).isoformat()
+    (home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [
+        {"id": "consumer", "name": "live-supervision-review", "last_run_at": stamp, "last_status": status},
+    ]}), encoding="utf-8")
+
+
+def stage_names(home, stage):
+    return [path.name for path in (home / QUEUE.QUEUE_DIR / stage).glob("*.json")]
+
+
+def test_main_dispatches_one_event_and_settles_it_after_the_run(tmp_path):
     QUEUE.enqueue(tmp_path, record(event("offline:1", "device.offline"), task="check the device"))
+    name = QUEUE.record_name("offline:1")
 
     with patch.object(CANDIDATE.time, "time", return_value=NOW):
         woke = run_main(tmp_path)
+        # The run has not finished yet: the event waits in inflight/ and nothing else wakes.
         quiet = run_main(tmp_path)
-
     assert woke["wakeAgent"] is True
     assert woke["candidate_id"] == "offline:1"
     assert woke["task"] == "check the device"
     assert woke["recent_dialogue"] == []
     assert quiet == {"selected_this_run": False, "wakeAgent": False}
-    assert [path.name for path in (tmp_path / QUEUE.QUEUE_DIR / "done").glob("*.json")] == [QUEUE.record_name("offline:1")]
+    assert stage_names(tmp_path, "inflight") == [name]
+
+    consumer_ran(tmp_path, NOW + 30, "ok")
+    with patch.object(CANDIDATE.time, "time", return_value=NOW + 60):
+        run_main(tmp_path)
+    assert stage_names(tmp_path, "done") == [name]
+    # A Live retry of a handled event is still recognised.
+    assert QUEUE.enqueue(tmp_path, record(event("offline:1", "device.offline"))) is False
+
+
+def test_a_failed_run_is_retried_twice_then_retired(tmp_path):
+    QUEUE.enqueue(tmp_path, record(event("review:retry", minutes_ago=1)))
+    at = NOW
+    for attempt in range(1, 4):
+        with patch.object(CANDIDATE.time, "time", return_value=at):
+            woke = run_main(tmp_path)
+        assert woke["candidate_id"] == "review:retry", attempt
+        consumer_ran(tmp_path, at + 20, "error")
+        at += 60
+    with patch.object(CANDIDATE.time, "time", return_value=at):
+        assert run_main(tmp_path)["wakeAgent"] is False
+    done = json.loads((tmp_path / QUEUE.QUEUE_DIR / "done" / QUEUE.record_name("review:retry")).read_text(encoding="utf-8"))
+    assert (done["outcome"], done["attempts"]) == ("failed", 3)
+
+
+def test_a_superseded_review_hands_its_reasons_to_the_newer_one(tmp_path):
+    older = event("review:asked", minutes_ago=5)
+    older["reason_codes"] = ["device_requested"]
+    newer = event("review:rule", minutes_ago=1)
+    newer["reason_codes"] = ["rule_match"]
+    for value in (older, newer):
+        QUEUE.enqueue(tmp_path, record(value))
+    chosen, retired = CANDIDATE.select_event(QUEUE.pending_records(tmp_path), NOW)
+    assert chosen[1]["event"]["event_id"] == "review:rule"
+    assert chosen[1]["event"]["reason_codes"] == ["rule_match", "device_requested"]
+    assert [outcome for _, outcome in retired] == ["superseded"]
 
 
 def test_disabled_controller_never_reads_the_queue(tmp_path):

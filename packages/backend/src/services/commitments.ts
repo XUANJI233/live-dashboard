@@ -3,20 +3,25 @@ import { isClock, localMidnightIso, windowContains } from "./commitment-schedule
 import {
   activeCommitmentRows,
   commitmentPackages,
-  exceptionsSince,
+  exceptionChargesSince,
   getCommitment,
   insertCommitment,
-  insertException,
+  insertExceptionGroup,
   markCommitmentEnded,
+  openExceptionsForDevice,
+  openExceptionsForPackage,
+  refundExceptionGroup,
   type CommitmentKind,
   type CommitmentRow,
   type ExceptionRow,
 } from "./commitment-store";
+import { deviceSupportsCommand, getDeviceContext, getDeviceInstalledApps } from "./device-context";
 
 // A commitment is a rule he set while calm. `block` rules name exact packages that stay frozen
 // inside their window until he explicitly ends the rule; `task` rules are only recorded so every
-// controller run sees the same promise. Exceptions are time-boxed and counted per local day.
-// Persistence is commitment-store.ts, time rules commitment-schedule.ts, enforcement
+// controller run sees the same promise. An exception opens one package on one device for every
+// rule holding it, charged to each rule's own daily quota.
+// Persistence: commitment-store.ts. Time rules: commitment-schedule.ts. Phone sync:
 // commitment-enforcement.ts.
 
 export interface RecordCommitmentInput {
@@ -34,8 +39,9 @@ export interface RecordCommitmentInput {
 }
 
 export interface GrantedException {
-  commitment: CommitmentRow;
-  exception_id: string;
+  group_id: string;
+  reused: boolean;
+  commitment_ids: string[];
   relock_at: string;
   exceptions_left_today: number;
 }
@@ -43,6 +49,8 @@ export interface GrantedException {
 const MAX_ACTIVE_COMMITMENTS = 20;
 const MAX_PACKAGES = 20;
 const PACKAGE_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/;
+// ends_at must say which clock it means; a bare local time would be read as server UTC.
+const EXPLICIT_OFFSET = /(?:Z|[+-]\d{2}:\d{2})$/i;
 const DEFAULT_DAILY_EXCEPTIONS = 2;
 const DEFAULT_MAX_EXCEPTION_MINUTES = 30;
 const MIN_PURPOSE_LENGTH = 2;
@@ -55,15 +63,27 @@ export function recordCommitment(input: RecordCommitmentInput, now = new Date())
   const packages = kind === "block" ? cleanPackages(input.packages) : [];
   const deviceId = kind === "block" ? cleanLine(input.device_id, 160) : "";
   if (kind === "block" && (!deviceId || packages.length === 0)) throw new Error("invalid_commitment");
+  if (kind === "block") {
+    const device = getDeviceContext(deviceId);
+    if (!device) throw new Error("device_not_found");
+    if (!deviceSupportsCommand(device, "freeze")) throw new Error("device_cannot_freeze");
+  }
   const windowStart = cleanLine(input.window_start, 5);
   const windowEnd = cleanLine(input.window_end, 5);
   if ((windowStart || windowEnd) && (!isClock(windowStart) || !isClock(windowEnd) || windowStart === windowEnd)) {
     throw new Error("invalid_commitment_window");
   }
-  const endsAt = input.ends_at ? new Date(input.ends_at) : null;
-  if (endsAt && (!Number.isFinite(endsAt.getTime()) || endsAt.getTime() <= now.getTime())) {
+  const endsText = cleanLine(input.ends_at, 40);
+  const endsAt = endsText ? new Date(endsText) : null;
+  if (endsAt && (!EXPLICIT_OFFSET.test(endsText) || !Number.isFinite(endsAt.getTime()) || endsAt.getTime() <= now.getTime())) {
     throw new Error("invalid_commitment_end");
   }
+  // A rule recorded twice (two runs reading the same words) would split exceptions and quota.
+  const same = activeCommitmentRows().find((row) => row.kind === kind && (kind === "block"
+    ? row.device_id === deviceId && sameSet(commitmentPackages(row), packages)
+      && row.window_start === windowStart && row.window_end === windowEnd
+    : row.title === title && row.user_quote === quote));
+  if (same) return { ...commitmentView(same, now), duplicate: true };
   if (activeCommitmentRows().length >= MAX_ACTIVE_COMMITMENTS) throw new Error("too_many_commitments");
 
   const at = now.toISOString();
@@ -83,7 +103,10 @@ export function recordCommitment(input: RecordCommitmentInput, now = new Date())
     max_exception_minutes: boundedCount(input.max_exception_minutes, 5, 60, DEFAULT_MAX_EXCEPTION_MINUTES),
     created_at: at,
   });
-  return commitmentView(row, now);
+  const installed = new Set(getDeviceInstalledApps(deviceId).installed_apps.map((app) => app.package_name));
+  // Kept in the rule: a reinstalled app is frozen as soon as the phone can find it.
+  const notInstalled = installed.size > 0 ? packages.filter((name) => !installed.has(name)) : [];
+  return { ...commitmentView(row, now), ...(notInstalled.length ? { not_installed: notInstalled } : {}) };
 }
 
 export function endCommitment(commitmentId: string, reason: string, now = new Date()): Record<string, unknown> {
@@ -109,73 +132,87 @@ export function commitmentInWindow(row: CommitmentRow, now = new Date()): boolea
   return windowContains(row, now);
 }
 
-export function openExceptionPackages(commitmentId: string, now = new Date()): Set<string> {
-  const since = new Date(now.getTime() - 24 * 60 * 60_000).toISOString();
-  return new Set(exceptionsSince(commitmentId, since)
-    .filter((row) => isOpen(row, now))
-    .map((row) => row.package_name));
+/** Devices any active block rule targets. */
+export function committedDevices(now = new Date()): string[] {
+  return [...new Set(activeCommitments(now).filter((row) => row.kind === "block").map((row) => row.device_id))];
 }
 
-/** Packages a controller may not unfreeze on this device right now. */
+/** Packages that must be frozen on this device now: in-window rules minus open exceptions. */
 export function lockedPackages(deviceId: string, now = new Date()): Set<string> {
+  const open = new Set(openExceptionsForDevice(deviceId, now.toISOString()).map((row) => row.package_name));
   const locked = new Set<string>();
-  for (const row of activeCommitments(now)) {
-    if (row.kind !== "block" || row.device_id !== deviceId || !commitmentInWindow(row, now)) continue;
-    const open = openExceptionPackages(row.commitment_id, now);
+  for (const row of coveringRules(deviceId, now)) {
     for (const name of commitmentPackages(row)) if (!open.has(name)) locked.add(name);
   }
   return locked;
 }
 
-/** Validate and record one time-boxed exception; the caller sends the unfreeze. */
+/**
+ * Validate and record one time-boxed exception for every in-window rule holding the package;
+ * an exception already open for the package is returned instead of spending more quota.
+ */
 export function grantException(input: {
   device_id: string;
   package_name: string;
   purpose: string;
   minutes: number;
-  unfreeze_request_id: string;
 }, now = new Date()): GrantedException {
   const purpose = cleanLine(input.purpose, 200);
   if (purpose.length < MIN_PURPOSE_LENGTH) throw new Error("exception_purpose_required");
-  const commitment = activeCommitments(now).find((row) => (
-    row.kind === "block"
-    && row.device_id === input.device_id
-    && commitmentInWindow(row, now)
-    && commitmentPackages(row).includes(input.package_name)
-  ));
-  if (!commitment) throw new Error("not_committed");
-  const minutes = Math.trunc(Number(input.minutes));
-  if (!Number.isFinite(minutes) || minutes < 1 || minutes > commitment.max_exception_minutes) {
-    throw new Error("exception_minutes_out_of_range");
+  const rules = coveringRules(input.device_id, now).filter((row) => commitmentPackages(row).includes(input.package_name));
+  if (rules.length === 0) throw new Error("not_committed");
+  const open = openExceptionsForPackage(input.device_id, input.package_name, now.toISOString());
+  if (open.length > 0) {
+    return {
+      group_id: open[0]!.group_id,
+      reused: true,
+      commitment_ids: [...new Set(open.map((row) => row.commitment_id))],
+      relock_at: open[0]!.relock_at,
+      exceptions_left_today: Math.min(...rules.map((row) => exceptionsLeft(row, now))),
+    };
   }
-  const usedToday = exceptionsToday(commitment, now).length;
-  if (usedToday >= commitment.daily_exception_limit) throw new Error("commitment_exception_denied");
-  const exceptionId = `exc_${crypto.randomUUID()}`;
+  const minutes = Math.trunc(Number(input.minutes));
+  const maxMinutes = Math.min(...rules.map((row) => row.max_exception_minutes));
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > maxMinutes) throw new Error("exception_minutes_out_of_range");
+  if (rules.some((row) => exceptionsLeft(row, now) <= 0)) throw new Error("commitment_exception_denied");
+
+  const groupId = `exg_${crypto.randomUUID()}`;
   const relockAt = new Date(now.getTime() + minutes * 60_000).toISOString();
-  insertException({
-    exception_id: exceptionId,
-    commitment_id: commitment.commitment_id,
+  insertExceptionGroup(rules.map((row) => ({
+    exception_id: `exc_${crypto.randomUUID()}`,
+    group_id: groupId,
+    commitment_id: row.commitment_id,
+    device_id: input.device_id,
     package_name: input.package_name,
     purpose,
     minutes,
     granted_at: now.toISOString(),
     relock_at: relockAt,
-    unfreeze_request_id: input.unfreeze_request_id,
-  });
+  })));
   return {
-    commitment,
-    exception_id: exceptionId,
+    group_id: groupId,
+    reused: false,
+    commitment_ids: rules.map((row) => row.commitment_id),
     relock_at: relockAt,
-    exceptions_left_today: commitment.daily_exception_limit - usedToday - 1,
+    exceptions_left_today: Math.min(...rules.map((row) => exceptionsLeft(row, now))),
   };
+}
+
+/** Give the quota back when the exception never reached the phone. */
+export function refundException(groupId: string): void {
+  refundExceptionGroup(groupId);
 }
 
 export function commitmentsContext(now = new Date()): Record<string, unknown>[] {
   return activeCommitments(now).map((row) => commitmentView(row, now));
 }
 
+function coveringRules(deviceId: string, now: Date): CommitmentRow[] {
+  return activeCommitments(now).filter((row) => row.kind === "block" && row.device_id === deviceId && commitmentInWindow(row, now));
+}
+
 function commitmentView(row: CommitmentRow, now: Date): Record<string, unknown> {
-  const today = exceptionsToday(row, now);
+  const today = chargesToday(row, now);
   return {
     commitment_id: row.commitment_id,
     kind: row.kind,
@@ -192,7 +229,7 @@ function commitmentView(row: CommitmentRow, now: Date): Record<string, unknown> 
       exceptions_today: today.length,
       exceptions_left_today: Math.max(0, row.daily_exception_limit - today.length),
       open_exceptions: today
-        .filter((item) => isOpen(item, now))
+        .filter((item) => Date.parse(item.relock_at) > now.getTime())
         .map((item) => ({ package_name: item.package_name, purpose: item.purpose, relock_at: item.relock_at })),
     } : {}),
     starts_at: row.starts_at,
@@ -201,12 +238,12 @@ function commitmentView(row: CommitmentRow, now: Date): Record<string, unknown> 
   };
 }
 
-function exceptionsToday(row: CommitmentRow, now: Date): ExceptionRow[] {
-  return exceptionsSince(row.commitment_id, localMidnightIso(now, row.timezone_offset_minutes));
+function chargesToday(row: CommitmentRow, now: Date): ExceptionRow[] {
+  return exceptionChargesSince(row.commitment_id, localMidnightIso(now, row.timezone_offset_minutes));
 }
 
-function isOpen(exception: ExceptionRow, now: Date): boolean {
-  return !exception.relocked_at && Date.parse(exception.relock_at) > now.getTime();
+function exceptionsLeft(row: CommitmentRow, now: Date): number {
+  return row.daily_exception_limit - chargesToday(row, now).length;
 }
 
 function cleanPackages(value: unknown): string[] {
@@ -219,6 +256,10 @@ function cleanPackages(value: unknown): string[] {
   }
   if (out.length > MAX_PACKAGES) throw new Error("invalid_commitment_package");
   return out;
+}
+
+function sameSet(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((item) => right.includes(item));
 }
 
 function cleanLine(value: unknown, maxLength: number): string {

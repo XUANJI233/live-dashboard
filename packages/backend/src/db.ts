@@ -493,29 +493,52 @@ db.run(`
     daily_exception_limit INTEGER NOT NULL DEFAULT 2,
     max_exception_minutes INTEGER NOT NULL DEFAULT 30,
     status TEXT NOT NULL DEFAULT 'active',
-    in_window INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     ended_at TEXT NOT NULL DEFAULT '',
     end_reason TEXT NOT NULL DEFAULT ''
   )
 `);
+// One exception opens a package on a device for every rule that holds it; each covering rule
+// gets one charge row (same group_id) so its own daily quota is counted.
 db.run(`
   CREATE TABLE IF NOT EXISTS commitment_exceptions (
     exception_id TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL,
     commitment_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
     package_name TEXT NOT NULL,
     purpose TEXT NOT NULL,
     minutes INTEGER NOT NULL,
     granted_at TEXT NOT NULL,
     relock_at TEXT NOT NULL,
-    relocked_at TEXT NOT NULL DEFAULT '',
-    unfreeze_request_id TEXT NOT NULL DEFAULT ''
+    status TEXT NOT NULL DEFAULT 'open'
   )
+`);
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_commitment_exceptions_device
+  ON commitment_exceptions(device_id, package_name, relock_at)
 `);
 db.run(`
   CREATE INDEX IF NOT EXISTS idx_commitment_exceptions_commitment
   ON commitment_exceptions(commitment_id, granted_at)
+`);
+// What Live knows about each committed package on the phone, confirmed by command results:
+// the phone's own report lists at most eight frozen packages, so it cannot be the source.
+db.run(`
+  CREATE TABLE IF NOT EXISTS commitment_package_state (
+    device_id TEXT NOT NULL,
+    package_name TEXT NOT NULL,
+    frozen_until TEXT NOT NULL DEFAULT '',
+    confirmed_at TEXT NOT NULL DEFAULT '',
+    pending_command_id TEXT NOT NULL DEFAULT '',
+    pending_action TEXT NOT NULL DEFAULT '',
+    pending_sent_at TEXT NOT NULL DEFAULT '',
+    release_attempts INTEGER NOT NULL DEFAULT 0,
+    retry_after TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (device_id, package_name)
+  )
 `);
 
 // Short-lived, one-time screenshot handoff from a device command to MCP.

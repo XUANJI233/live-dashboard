@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from collections.abc import Callable
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -16,8 +17,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from live_state_gate import read_live_rest_state
 from candidate_script_gate import candidate_accepted, jobs_by_name, script_gate, session_event_target, wake_context
-from weixin_session import compression_ancestors, open_readonly, routed_session_id
-from cron_outputs import is_sendable_response, latest_output, response_from_output
+from weixin_session import compression_ancestors, mirrored_delivery, open_readonly, routed_session_id
+from cron_outputs import is_sendable_response, outputs_newest_first, response_from_output
 
 
 TIMEZONE = timezone(timedelta(hours=8), name="UTC+08:00")
@@ -26,6 +27,8 @@ DEEP_QUIET_START_MINUTE = 60
 DEEP_QUIET_END_MINUTE = 7 * 60
 FOLLOWUP_SECONDS = 5 * 60
 MAX_OPEN_SECONDS = 12 * 60 * 60
+# Hermes mirrors an accepted delivery within minutes of the run writing its output.
+DELIVERY_WINDOW_SECONDS = 15 * 60
 NO_CANDIDATE = '{"selected_this_run":false}'
 SOURCE_JOB_NAMES = {
     "live-supervision-review",
@@ -102,24 +105,37 @@ def latest_proactive_outbound(root: Path) -> tuple[str | None, float | None]:
     except (OSError, KeyError, TypeError, json.JSONDecodeError):
         return None, None
 
+    # A job's newest output is usually a skipped gate tick (the event consumer runs every minute),
+    # and its last_status describes that tick, so walk back to the newest response Weixin accepted.
+    now = time.time()
     latest: tuple[str | None, float | None] = (None, None)
-    for job in jobs:
-        if not isinstance(job, dict) or job.get("name") not in SOURCE_JOB_NAMES:
-            continue
-        if job.get("last_status") != "ok" or job.get("last_delivery_error"):
-            continue
-        job_id = str(job.get("id") or "")
-        if not job_id:
-            continue
-        output = latest_output(root, job_id)
-        if output is None:
-            continue
-        if not is_sendable_response(response_from_output(output)):
-            continue
-        modified = output.stat().st_mtime
-        if latest[1] is None or modified > latest[1]:
-            latest = (f"{job_id}:{output.name}", modified)
+    try:
+        connection = open_readonly(root)
+    except (OSError, sqlite3.Error):
+        return latest
+    with closing(connection):
+        for job in jobs:
+            if not isinstance(job, dict) or job.get("name") not in SOURCE_JOB_NAMES:
+                continue
+            job_id = str(job.get("id") or "")
+            if not job_id:
+                continue
+            for output in outputs_newest_first(root, job_id):
+                modified = output.stat().st_mtime
+                if now - modified > MAX_OPEN_SECONDS or (latest[1] is not None and modified <= latest[1]):
+                    break
+                response = response_from_output(output)
+                if is_sendable_response(response) and _delivered(connection, job, response, modified):
+                    latest = (f"{job_id}:{output.name}", modified)
+                    break
     return latest
+
+
+def _delivered(connection: sqlite3.Connection, job: dict[str, Any], response: str, written_at: float) -> bool:
+    try:
+        return mirrored_delivery(connection, str(job.get("name")), response, written_at, written_at + DELIVERY_WINDOW_SECONDS)
+    except sqlite3.Error:
+        return False
 
 
 def latest_weixin_user_message(database_path: Path) -> float | None:

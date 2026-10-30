@@ -1,7 +1,8 @@
 """Durable spool between the Live webhook route and the isolated event consumer job.
 
-The webhook acknowledges Live only after a record is fsynced here; the one-minute consumer cron
-moves each record to `done/` before its own run starts, so an event wakes at most one model run.
+The webhook acknowledges Live only after a record is fsynced into `pending/`. The one-minute
+consumer gate moves the record it dispatches to `inflight/` before the run starts; the next gate
+tick settles it into `done/`, or back into `pending/` when the run failed, at most twice.
 `done/` doubles as the replay guard for Live's retries until it is pruned.
 """
 
@@ -16,6 +17,7 @@ from typing import Any
 
 
 QUEUE_DIR = Path("state") / "live-events"
+STAGES = ("pending", "inflight", "done")
 DONE_RETENTION_SECONDS = 2 * 24 * 60 * 60
 
 
@@ -30,23 +32,16 @@ def record_name(event_id: str) -> str:
 def enqueue(home: Path, record: dict[str, Any]) -> bool:
     """Persist a record; False when the event was already queued or handled (a Live retry)."""
     root = queue_root(home)
-    pending, done = _ensure(root / "pending"), _ensure(root / "done")
     name = record_name(record["event"]["event_id"])
-    if (pending / name).exists() or (done / name).exists():
+    if any((root / stage / name).exists() for stage in STAGES):
         return False
-    temporary = pending / f".{name}.tmp"
-    with open(temporary, "w", encoding="utf-8") as handle:
-        json.dump(record, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, pending / name)
-    _fsync_dir(pending)
+    pending = _ensure(root / "pending")
+    _write(pending, name, record)
     return True
 
 
-def pending_records(home: Path) -> list[tuple[Path, dict[str, Any]]]:
-    directory = queue_root(home) / "pending"
+def stage_records(home: Path, stage: str) -> list[tuple[Path, dict[str, Any]]]:
+    directory = queue_root(home) / stage
     records = []
     for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
         try:
@@ -58,20 +53,21 @@ def pending_records(home: Path) -> list[tuple[Path, dict[str, Any]]]:
     return records
 
 
-def mark_done(home: Path, path: Path, outcome: str) -> None:
-    done = _ensure(queue_root(home) / "done")
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        value = {}
-    value["outcome"] = outcome
-    value["handled_at"] = int(time.time())
-    temporary = done / f".{path.name}.tmp"
-    temporary.write_text(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")), encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, done / path.name)
-    path.unlink(missing_ok=True)
-    _fsync_dir(done)
+def pending_records(home: Path) -> list[tuple[Path, dict[str, Any]]]:
+    return stage_records(home, "pending")
+
+
+def move(home: Path, path: Path, stage: str, record: dict[str, Any]) -> Path:
+    """Write the updated record into `stage` and drop it from where it was."""
+    target = _write(_ensure(queue_root(home) / stage), path.name, record)
+    if path != target:
+        path.unlink(missing_ok=True)
+    return target
+
+
+def mark_done(home: Path, path: Path, outcome: str, record: dict[str, Any] | None = None) -> None:
+    value = record if record is not None else _read(path)
+    move(home, path, "done", {**value, "outcome": outcome, "handled_at": int(time.time())})
 
 
 def prune_done(home: Path, now: float) -> None:
@@ -82,6 +78,27 @@ def prune_done(home: Path, now: float) -> None:
                 path.unlink()
         except OSError:
             continue
+
+
+def _read(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _write(directory: Path, name: str, record: dict[str, Any]) -> Path:
+    temporary = directory / f".{name}.tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(record, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, 0o600)
+    target = directory / name
+    os.replace(temporary, target)
+    _fsync_dir(directory)
+    return target
 
 
 def _ensure(path: Path) -> Path:

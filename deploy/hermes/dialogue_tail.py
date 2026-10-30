@@ -23,7 +23,8 @@ SCAN_ROWS = 120
 MESSAGE_SEPARATOR = "⟦MSG⟧"
 CRON_DELIVERY_PREFIX = "[Cron delivery:"
 SKILL_INJECTION_PREFIX = '[IMPORTANT: The "'
-USER_MEDIA_PREFIX = "[The user sent"
+MACHINE_PREFIXES = ("[CONTEXT COMPACTION", "[SILENT]", "[IMPORTANT:", "[SYSTEM", CRON_DELIVERY_PREFIX)
+REPLY_QUOTE_PREFIXES = ("[Replying to", "[引用")
 HIDDEN_DISPLAY_KINDS = ("internal_notification", "hidden", "session_meta")
 
 
@@ -77,15 +78,23 @@ def _dialogue_line(row: Any) -> dict[str, str] | None:
         return _line(row["timestamp"], "她·主动", text)
     if content.startswith(SKILL_INJECTION_PREFIX):
         # The gateway prepends forced skills to the first message of a session and keeps the
-        # user's own words as the last block; anything else here is a machine-built wake.
-        text = content.rsplit("\n\n", 1)[-1].strip()
-        if not text or text.startswith("[") or text.endswith("}]"):
+        # user's own words as the last block; a JSON tail is a machine-built wake.
+        content = content.rsplit("\n\n", 1)[-1].strip()
+        if content.endswith("}]"):
             return None
-        return _line(row["timestamp"], "他", text)
-    if content.startswith("[") and not content.startswith(USER_MEDIA_PREFIX):
-        # Compaction handoffs and other bracketed gateway notes are not something he said.
+    text = _strip_reply_quote(content)
+    # WeChat emoji arrive as "[捂脸]", so only the gateway's own notes are dropped.
+    if not text or text.startswith(MACHINE_PREFIXES):
         return None
-    return _line(row["timestamp"], "他", content)
+    return _line(row["timestamp"], "他", text)
+
+
+def _strip_reply_quote(text: str) -> str:
+    """A quoted reply keeps only what he wrote under the quote header."""
+    if text.startswith(REPLY_QUOTE_PREFIXES):
+        _, separator, rest = text.partition("\n\n")
+        return rest.strip() if separator else ""
+    return text
 
 
 def _line(timestamp: Any, speaker: str, text: str) -> dict[str, str] | None:

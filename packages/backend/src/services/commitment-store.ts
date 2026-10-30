@@ -1,7 +1,7 @@
 import { db } from "../db";
 
-// Persistence for commitments and their exceptions. No rules live here: callers in
-// commitments.ts decide what is valid, and commitment-schedule.ts decides what is in effect.
+// Persistence for commitments and their exceptions. No rules live here: commitments.ts decides
+// what is valid, commitment-schedule.ts decides what is in effect.
 
 export type CommitmentKind = "block" | "task";
 
@@ -20,7 +20,6 @@ export interface CommitmentRow {
   daily_exception_limit: number;
   max_exception_minutes: number;
   status: "active" | "ended";
-  in_window: number;
   created_at: string;
   updated_at: string;
   ended_at: string;
@@ -29,17 +28,18 @@ export interface CommitmentRow {
 
 export interface ExceptionRow {
   exception_id: string;
+  group_id: string;
   commitment_id: string;
+  device_id: string;
   package_name: string;
   purpose: string;
   minutes: number;
   granted_at: string;
   relock_at: string;
-  relocked_at: string;
-  unfreeze_request_id: string;
+  status: "open" | "refunded";
 }
 
-export type NewCommitment = Omit<CommitmentRow, "packages" | "status" | "in_window" | "updated_at" | "ended_at" | "end_reason"> & {
+export type NewCommitment = Omit<CommitmentRow, "packages" | "status" | "updated_at" | "ended_at" | "end_reason"> & {
   packages: string[];
 };
 
@@ -47,36 +47,37 @@ const insertCommitmentStmt = db.prepare(`
   INSERT INTO controller_commitments (
     commitment_id, kind, title, user_quote, device_id, packages, window_start, window_end,
     timezone_offset_minutes, starts_at, ends_at, daily_exception_limit, max_exception_minutes,
-    status, in_window, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?)
+    status, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
 `);
 const getCommitmentStmt = db.prepare("SELECT * FROM controller_commitments WHERE commitment_id = ?");
 const activeCommitmentsStmt = db.prepare(`
   SELECT * FROM controller_commitments WHERE status = 'active' ORDER BY created_at ASC
-`);
-const endedInWindowStmt = db.prepare(`
-  SELECT * FROM controller_commitments WHERE status = 'ended' AND in_window = 1
 `);
 const endCommitmentStmt = db.prepare(`
   UPDATE controller_commitments
   SET status = 'ended', ended_at = ?, end_reason = ?, updated_at = ?
   WHERE commitment_id = ? AND status = 'active'
 `);
-const setInWindowStmt = db.prepare(`
-  UPDATE controller_commitments SET in_window = ?, updated_at = ? WHERE commitment_id = ?
-`);
 const insertExceptionStmt = db.prepare(`
   INSERT INTO commitment_exceptions (
-    exception_id, commitment_id, package_name, purpose, minutes, granted_at, relock_at, unfreeze_request_id
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    exception_id, group_id, commitment_id, device_id, package_name, purpose, minutes, granted_at, relock_at, status
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
 `);
-const exceptionsSinceStmt = db.prepare(`
-  SELECT * FROM commitment_exceptions WHERE commitment_id = ? AND granted_at >= ? ORDER BY granted_at ASC
+const chargesSinceStmt = db.prepare(`
+  SELECT * FROM commitment_exceptions
+  WHERE commitment_id = ? AND granted_at >= ? AND status = 'open'
+  ORDER BY granted_at ASC
 `);
-const dueExceptionsStmt = db.prepare(`
-  SELECT * FROM commitment_exceptions WHERE relocked_at = '' AND relock_at <= ?
+const openForPackageStmt = db.prepare(`
+  SELECT * FROM commitment_exceptions
+  WHERE device_id = ? AND package_name = ? AND status = 'open' AND relock_at > ?
+  ORDER BY relock_at DESC
 `);
-const markRelockedStmt = db.prepare("UPDATE commitment_exceptions SET relocked_at = ? WHERE exception_id = ?");
+const openForDeviceStmt = db.prepare(`
+  SELECT * FROM commitment_exceptions WHERE device_id = ? AND status = 'open' AND relock_at > ?
+`);
+const refundGroupStmt = db.prepare("UPDATE commitment_exceptions SET status = 'refunded' WHERE group_id = ?");
 
 export function insertCommitment(row: NewCommitment): CommitmentRow {
   insertCommitmentStmt.run(
@@ -95,17 +96,8 @@ export function activeCommitmentRows(): CommitmentRow[] {
   return activeCommitmentsStmt.all() as CommitmentRow[];
 }
 
-/** Rules that ended while their window was open; their packages still need releasing. */
-export function endedCommitmentsStillInWindow(): CommitmentRow[] {
-  return endedInWindowStmt.all() as CommitmentRow[];
-}
-
 export function markCommitmentEnded(commitmentId: string, endedAt: string, reason: string, at: string): boolean {
   return endCommitmentStmt.run(endedAt, reason, at, commitmentId).changes > 0;
-}
-
-export function setCommitmentInWindow(commitmentId: string, inWindow: boolean, at: string): void {
-  setInWindowStmt.run(inWindow ? 1 : 0, at, commitmentId);
 }
 
 export function commitmentPackages(row: CommitmentRow): string[] {
@@ -117,21 +109,30 @@ export function commitmentPackages(row: CommitmentRow): string[] {
   }
 }
 
-export function insertException(row: Omit<ExceptionRow, "relocked_at">): void {
-  insertExceptionStmt.run(
-    row.exception_id, row.commitment_id, row.package_name, row.purpose, row.minutes,
-    row.granted_at, row.relock_at, row.unfreeze_request_id,
-  );
+/** One charge row per covering rule, all sharing `group_id`. */
+export function insertExceptionGroup(rows: Omit<ExceptionRow, "status">[]): void {
+  db.transaction(() => {
+    for (const row of rows) {
+      insertExceptionStmt.run(
+        row.exception_id, row.group_id, row.commitment_id, row.device_id, row.package_name,
+        row.purpose, row.minutes, row.granted_at, row.relock_at,
+      );
+    }
+  })();
 }
 
-export function exceptionsSince(commitmentId: string, sinceIso: string): ExceptionRow[] {
-  return exceptionsSinceStmt.all(commitmentId, sinceIso) as ExceptionRow[];
+export function refundExceptionGroup(groupId: string): void {
+  refundGroupStmt.run(groupId);
 }
 
-export function dueExceptions(nowIso: string): ExceptionRow[] {
-  return dueExceptionsStmt.all(nowIso) as ExceptionRow[];
+export function exceptionChargesSince(commitmentId: string, sinceIso: string): ExceptionRow[] {
+  return chargesSinceStmt.all(commitmentId, sinceIso) as ExceptionRow[];
 }
 
-export function markExceptionRelocked(exceptionId: string, at: string): void {
-  markRelockedStmt.run(at, exceptionId);
+export function openExceptionsForPackage(deviceId: string, packageName: string, nowIso: string): ExceptionRow[] {
+  return openForPackageStmt.all(deviceId, packageName, nowIso) as ExceptionRow[];
+}
+
+export function openExceptionsForDevice(deviceId: string, nowIso: string): ExceptionRow[] {
+  return openForDeviceStmt.all(deviceId, nowIso) as ExceptionRow[];
 }

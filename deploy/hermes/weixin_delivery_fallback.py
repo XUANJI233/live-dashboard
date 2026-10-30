@@ -2,10 +2,10 @@
 """Put a proactive message on the phone when Weixin refused to deliver it.
 
 iLink rejects many proactive sends (`business_rejected ... prepare failed`), so a nudge the model
-wrote can silently never arrive. Hermes mirrors a cron delivery into the conversation only after
-the platform accepted it, so a recent sendable cron response with no mirror was not delivered.
-This no-agent job sends such text to the Android phone as a Live `say` notification, once. It
-never calls a model.
+wrote can silently never arrive. For jobs with `attach_to_session: true`, Hermes mirrors a cron
+delivery into the conversation only after the platform accepted it, so a settled, sendable
+response from such a job with no mirror was not delivered. This no-agent job sends that text to
+the Android phone as a Live `say` notification, once. It never calls a model.
 """
 
 from __future__ import annotations
@@ -21,35 +21,39 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cron_outputs import is_sendable_response, response_from_output
+from cron_outputs import is_sendable_response, outputs_newest_first, response_from_output
 from live_mcp import LiveMcpError, call_tool
 from weixin_session import mirrored_delivery, open_readonly
 
 
 STATE_NAME = "weixin-delivery-fallback.json"
 MAX_AGE_SECONDS = 30 * 60
-# Delivery and its mirror happen right after the run writes its output.
-SETTLE_SECONDS = 90
-MIRROR_SLACK_SECONDS = 300
-MAX_SAY_CHARS = 500
+# Hermes may hold a delivery in its queue for a few minutes before sending and mirroring it.
+SETTLE_SECONDS = 6 * 60
+MIRROR_WINDOW_SECONDS = 15 * 60
+# Live's say limit counts UTF-16 units, as JavaScript strings do.
+MAX_SAY_UNITS = 500
 HANDLED_RING = 128
 MESSAGE_SEPARATOR = "⟦MSG⟧"
 
 
 def recent_responses(home: Path, now: float, handled: set[str]) -> list[dict[str, Any]]:
-    """Settled, sendable responses of jobs that deliver to a chat, not yet handled."""
+    """Settled, sendable responses of mirroring jobs, not yet handled, oldest first."""
     try:
         jobs = json.loads((home / "cron" / "jobs.json").read_text(encoding="utf-8"))["jobs"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError):
         return []
     found = []
     for job in jobs:
-        if not isinstance(job, dict) or not isinstance(job.get("id"), str) or job.get("deliver") in (None, "", "local"):
+        # Only an opted-in job leaves a mirror, so only for those does a missing one prove anything.
+        if not isinstance(job, dict) or not isinstance(job.get("id"), str) or job.get("attach_to_session") is not True:
             continue
-        for output in (home / "cron" / "output" / job["id"]).glob("*.md"):
+        for output in outputs_newest_first(home, job["id"]):
             age = now - output.stat().st_mtime
+            if age > MAX_AGE_SECONDS:
+                break
             output_id = f"{job['id']}:{output.name}"
-            if not SETTLE_SECONDS <= age <= MAX_AGE_SECONDS or output_id in handled:
+            if age < SETTLE_SECONDS or output_id in handled:
                 continue
             response = response_from_output(output)
             if is_sendable_response(response):
@@ -65,8 +69,8 @@ def undelivered(home: Path, responses: list[dict[str, Any]]) -> tuple[list[dict[
     missing, delivered = [], []
     with closing(open_readonly(home)) as connection:
         for item in responses:
-            first = item["response"].split(MESSAGE_SEPARATOR, 1)[0]
-            if mirrored_delivery(connection, item["job_name"], first, item["written_at"] - MIRROR_SLACK_SECONDS):
+            until = item["written_at"] + MIRROR_WINDOW_SECONDS
+            if mirrored_delivery(connection, item["job_name"], item["response"], item["written_at"], until):
                 delivered.append(item["id"])
             else:
                 missing.append(item)
@@ -74,8 +78,14 @@ def undelivered(home: Path, responses: list[dict[str, Any]]) -> tuple[list[dict[
 
 
 def phone_text(response: str) -> str:
-    parts = [part.strip() for part in response.split(MESSAGE_SEPARATOR) if part.strip()]
-    return "\n".join(parts)[:MAX_SAY_CHARS]
+    text = "\n".join(part.strip() for part in response.split(MESSAGE_SEPARATOR) if part.strip())
+    kept, units = [], 0
+    for char in text:
+        units += 2 if ord(char) > 0xFFFF else 1
+        if units > MAX_SAY_UNITS:
+            break
+        kept.append(char)
+    return "".join(kept)
 
 
 def phone_device_id() -> str | None:
@@ -115,17 +125,22 @@ def main() -> int:
     handled.extend(delivered)
     try:
         device_id = phone_device_id() if missing else None
-        for item in missing:
-            if device_id:
+    except LiveMcpError:
+        device_id, missing = None, []
+    for item in missing:
+        if device_id:
+            try:
                 call_tool("live_dashboard.send_device_commands", {
                     "request_id": "weixin-fallback-" + hashlib.sha256(item["id"].encode("utf-8")).hexdigest()[:24],
                     "created_by": "supervision",
                     "commands": [{"device_id": device_id, "say": phone_text(item["response"])}],
                 })
-            handled.append(item["id"])
-    except LiveMcpError:
-        # Live unreachable: the rest stays unhandled for the next tick.
-        pass
+            except LiveMcpError as error:
+                if str(error).startswith("unreachable"):
+                    # Live is down: this and the rest are retried next tick.
+                    break
+                # Rejected for good (e.g. invalid input): never let it block newer messages.
+        handled.append(item["id"])
     save_handled(state_path, handled)
     # A no-agent job's stdout would itself be delivered; stay silent.
     return 0

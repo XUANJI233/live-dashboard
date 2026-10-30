@@ -7,6 +7,7 @@ const ALLOWED_TRUNCATED_SECTIONS = new Set([
   "usage_digest",
   "timeline",
   "recent_events",
+  "commitments",
 ]);
 
 interface ControllerContextBounds {
@@ -226,7 +227,31 @@ function compactLargeTextSections(context: BoundedControllerContext): string[] {
   if (assignClippedText(persona, "persona", 1_200)) changed.add("persona");
   if (assignClippedText(persona, "relationship", 400)) changed.add("persona");
   if (assignClippedText(persona, "style_notes", 600)) changed.add("persona");
+  if (Array.isArray(context.commitments)) {
+    const before = serializedBytes(context.commitments);
+    context.commitments = compactCommitments(context.commitments, 120);
+    if (serializedBytes(context.commitments) < before) changed.add("commitments");
+  }
   return Array.from(changed);
+}
+
+// The user's own rules outrank everything else in the envelope: they are clipped, never dropped.
+function compactCommitments(value: unknown[], quoteLength: number): Record<string, unknown>[] {
+  return value.filter(isRecord).map((item) => ({
+    commitment_id: item.commitment_id,
+    kind: item.kind,
+    title: clippedText(item.title, 80),
+    user_quote: clippedText(item.user_quote, quoteLength),
+    ...(item.kind === "block" ? {
+      device_id: item.device_id,
+      packages_count: arrayLength(item.packages),
+      window: item.window ?? null,
+      in_window_now: item.in_window_now === true,
+      exceptions_left_today: numericField(item.exceptions_left_today),
+      open_exceptions: Array.isArray(item.open_exceptions) ? item.open_exceptions.slice(0, 3) : [],
+    } : {}),
+    ends_at: item.ends_at ?? null,
+  }));
 }
 
 function replaceWithMinimalContext(context: BoundedControllerContext): void {
@@ -311,6 +336,7 @@ function absoluteMinimalContext(
       controller_name: clippedText(persona.controller_name, 80),
     },
     rest_state: clippedText(context.rest_state, 20),
+    commitments: Array.isArray(context.commitments) ? compactCommitments(context.commitments, 60) : [],
     available_device_count: numericField(context.available_device_count),
     returned_device_count: 0,
     devices: [],

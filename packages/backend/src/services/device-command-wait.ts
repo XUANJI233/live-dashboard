@@ -14,16 +14,20 @@ export async function awaitCommandResults<T extends { commands: CommandStatus[] 
 ): Promise<T & { results_pending: boolean }> {
   const deadline = Date.now() + waitMs;
   let commands = sent.commands;
-  while (commands.some(awaitingResult) && Date.now() < deadline) {
+  while (commands.some(deliveredAwaitingResult) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     commands = commands.map((command) => (
-      awaitingResult(command) ? getCommandStatuses({ commandId: command.command_id }).commands[0] ?? command : command
+      deliveredAwaitingResult(command) ? getCommandStatuses({ commandId: command.command_id }).commands[0] ?? command : command
     ));
   }
-  return { ...sent, commands, results_pending: commands.some(awaitingResult) };
+  return { ...sent, commands, results_pending: commands.some(resultOutstanding) };
 }
 
-function awaitingResult(command: CommandStatus): boolean {
-  // Only a delivered command can still answer; queued ones wait for the device to reconnect.
+function deliveredAwaitingResult(command: CommandStatus): boolean {
+  // Only a delivered command can answer within the wait; queued ones wait for the phone to reconnect.
   return command.delivery.status === "sent" && command.result.status === "unknown";
+}
+
+function resultOutstanding(command: CommandStatus): boolean {
+  return command.result.status === "unknown" && (command.delivery.status === "sent" || command.delivery.status === "queued");
 }

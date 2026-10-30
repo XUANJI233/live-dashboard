@@ -102,31 +102,37 @@ def test_silent_or_mixed_silent_output_is_not_sendable():
 
 
 def test_discovers_only_successfully_delivered_non_silent_source(tmp_path):
+    import os
+    import time
+
     cron = tmp_path / "cron"
     output = cron / "output" / "source-job"
     output.mkdir(parents=True)
-    (cron / "jobs.json").write_text(
-        json.dumps(
-            {
-                "jobs": [
-                    {
-                        "id": "source-job",
-                        "name": "teacher-friend-companion",
-                        "last_status": "ok",
-                        "last_delivery_error": None,
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    path = output / "run.md"
-    path.write_text("# Cron\n\n## Response\n第几题了", encoding="utf-8")
+    # The job's last tick was a skipped gate, which says nothing about its real message.
+    (cron / "jobs.json").write_text(json.dumps({"jobs": [
+        {"id": "source-job", "name": "live-supervision-review", "last_status": "ok", "last_delivery_error": None},
+    ]}), encoding="utf-8")
+    now = time.time()
+    delivered = output / "delivered.md"
+    delivered.write_text("# Cron\n\n## Response\n第几题了\n⟦MSG⟧\n截图发我", encoding="utf-8")
+    rejected = output / "rejected.md"
+    rejected.write_text("# Cron\n\n## Response\n还在刷？", encoding="utf-8")
+    skipped = output / "skipped.md"
+    skipped.write_text("# Cron\n\nScript gate returned wakeAgent=false — agent skipped.", encoding="utf-8")
+    for path, age in ((delivered, 900), (rejected, 300), (skipped, 30)):
+        os.utime(path, (now - age, now - age))
+    connection = sqlite3.connect(tmp_path / "state.db")
+    connection.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, role TEXT, content TEXT, timestamp REAL)")
+    connection.execute("INSERT INTO messages(role, content, timestamp) VALUES ('user', ?, ?)",
+                       ("[Cron delivery: live-supervision-review]\n第几题了\n截图发我", now - 890))
+    connection.commit()
+    connection.close()
 
     root_id, outbound_at = MODULE.latest_proactive_outbound(tmp_path)
 
-    assert root_id == "source-job:run.md"
-    assert outbound_at == path.stat().st_mtime
+    # The newer message was never accepted by Weixin, so it cannot be followed up on.
+    assert root_id == "source-job:delivered.md"
+    assert outbound_at == delivered.stat().st_mtime
 
 
 def test_cron_delivery_echo_is_not_treated_as_weixin_reply(tmp_path):
