@@ -10,8 +10,8 @@ import {
 import { getCommandStatuses } from "./device-command-ledger";
 import { sendDeviceCommands } from "./device-control";
 import { awaitCommandResults } from "./device-command-wait";
-import { commitmentsContext, endCommitment, recordCommitment } from "./commitments";
-import { requestExceptionUnfreeze } from "./commitment-tools";
+import { registerCommitmentTools } from "./mcp-commitment-tools";
+import { stableToolResult, toolResult } from "./mcp-tool-result";
 import { getControllerPersona, updateControllerPersona } from "./controller-persona";
 import { getControllerMemoryFeed, saveControllerSummary } from "./controller-memory";
 import { getControllerContext } from "./controller-context";
@@ -44,12 +44,9 @@ import {
   CoyoteStopSchema,
   DateRangeSchema,
   DeviceTimelineSchema,
-  EndCommitmentSchema,
-  ExceptionUnfreezeSchema,
   FrozenListSchema,
   GetScreenshotSchema,
   InstalledAppsSchema,
-  RecordCommitmentSchema,
   RunSupervisionCheckSchema,
   SaveControllerSummarySchema,
   SendCommandsSchema,
@@ -239,32 +236,7 @@ export function createLiveDashboardMcpServer(): McpServer {
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(() => awaitCommandResults(sendDeviceCommands(args))));
 
-  server.registerTool("live_dashboard.record_commitment", {
-    title: "Record a commitment",
-    description: "Persist a rule the user explicitly set, quoting his words. A block rule names exact packages and an optional daily window; Live keeps them frozen inside the window by itself, re-freezing after the phone's nightly cleanup, until the rule ends. A task rule only records the promise. Never record a rule from inference or a passing complaint.",
-    inputSchema: RecordCommitmentSchema,
-    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-  }, async (args) => stableToolResult(() => ({ ok: true, commitment: recordCommitment(args) })));
-
-  server.registerTool("live_dashboard.end_commitment", {
-    title: "End a commitment",
-    description: "End a rule only when the user explicitly cancels or replaces it; a block rule's packages are released if no other rule holds them.",
-    inputSchema: EndCommitmentSchema,
-    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  }, async (args) => stableToolResult(() => ({ ok: true, commitment: endCommitment(args.commitment_id, args.reason) })));
-
-  server.registerTool("live_dashboard.list_commitments", {
-    title: "List commitments",
-    description: "Active commitments with today's exception usage and open exceptions. get_controller_context already includes this list.",
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async () => stableToolResult(() => ({ generated_at: new Date().toISOString(), commitments: commitmentsContext() })));
-
-  server.registerTool("live_dashboard.request_exception_unfreeze", {
-    title: "Request a time-boxed exception",
-    description: "Open one package under an active block commitment for a concrete purpose and a bounded number of minutes. Live checks the rule's daily exception quota and maximum length, unfreezes, and re-freezes at relock_at on its own. Errors: not_committed (use a normal unfreeze), commitment_exception_denied (today's quota is used), exception_minutes_out_of_range, exception_purpose_required, device_offline.",
-    inputSchema: ExceptionUnfreezeSchema,
-    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-  }, async (args) => stableToolResult(() => requestExceptionUnfreeze(args)));
+  registerCommitmentTools(server);
 
   server.registerTool("live_dashboard.set_supervision_policy", {
     title: "Set supervision policy",
@@ -414,49 +386,4 @@ function screenshotToolResult(result: ScreenshotCaptureResult): CallToolResult {
       mimeType: result.record.mime_type,
     }],
   };
-}
-
-function toolResult(value: Record<string, unknown>, text?: string): CallToolResult {
-  return {
-    structuredContent: value,
-    // The text view repeats structuredContent, so it stays compact.
-    content: [{ type: "text", text: text ?? JSON.stringify(value) }],
-    // Failures are flagged so MCP clients surface them instead of reading them as results.
-    ...(value.ok === false ? { isError: true } : {}),
-  };
-}
-
-async function stableToolResult(
-  build: () => unknown | Promise<unknown>,
-  textView?: (value: Record<string, unknown>) => string,
-): Promise<CallToolResult> {
-  try {
-    const value = objectResult(await build());
-    return toolResult(value, textView?.(value));
-  } catch (error) {
-    const code = errorCode(error);
-    if (code === "internal_error") {
-      console.error("[mcp] tool failed:", error);
-    }
-    return toolResult({ ok: false, error: code });
-  }
-}
-
-function objectResult(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : { value };
-}
-
-function stableErrorCode(value: string): boolean {
-  return /^[a-z][a-z0-9_]{2,80}$/.test(value);
-}
-
-// A message that is already a code wins; otherwise a typed error's code (AiJobInputError and
-// friends use UPPER_SNAKE) is kept instead of collapsing every sentence to internal_error.
-function errorCode(error: unknown): string {
-  if (error instanceof Error && stableErrorCode(error.message)) return error.message;
-  const code = (error as { code?: unknown } | null)?.code;
-  if (typeof code === "string" && /^[A-Za-z][A-Za-z0-9_]{2,80}$/.test(code)) return code.toLowerCase();
-  return "internal_error";
 }

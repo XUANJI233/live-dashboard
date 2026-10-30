@@ -9,6 +9,7 @@ process.env.HASH_SECRET = Buffer.from(crypto.getRandomValues(new Uint8Array(32))
 
 const { db } = await import("../src/db");
 const commitments = await import("../src/services/commitments");
+const { getCommitment } = await import("../src/services/commitment-store");
 const { enforceCommitments } = await import("../src/services/commitment-enforcement");
 const { requestExceptionUnfreeze } = await import("../src/services/commitment-tools");
 const { sendDeviceCommands } = await import("../src/services/device-control");
@@ -93,8 +94,7 @@ describe("commitments", () => {
   });
 
   test("an overnight window wraps midnight", () => {
-    const row = db.prepare("SELECT * FROM controller_commitments WHERE commitment_id = ?")
-      .get(String(shoppingBlock({ start: "23:00", end: "08:30" }).commitment_id)) as never;
+    const row = getCommitment(String(shoppingBlock({ start: "23:00", end: "08:30" }).commitment_id))!;
     expect(commitments.commitmentInWindow(row, NIGHT)).toBe(true);
     expect(commitments.commitmentInWindow(row, new Date("2026-10-31T00:20:00.000Z"))).toBe(true);
     expect(commitments.commitmentInWindow(row, new Date("2026-10-31T00:30:00.000Z"))).toBe(false);

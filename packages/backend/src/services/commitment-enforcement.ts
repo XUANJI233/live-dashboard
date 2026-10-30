@@ -1,18 +1,15 @@
 import { metaGet, metaSet } from "../db";
 import { getDeviceContext, getDeviceInstalledApps } from "./device-context";
 import { sendDeviceCommands } from "./device-control";
+import { activeCommitments, commitmentInWindow, lockedPackages, openExceptionPackages } from "./commitments";
 import {
-  activeCommitments,
-  commitmentInWindow,
   commitmentPackages,
   dueExceptions,
-  endedCommitmentsStillMarkedInWindow,
-  lockedPackages,
+  endedCommitmentsStillInWindow,
   markExceptionRelocked,
-  openExceptionPackages,
   setCommitmentInWindow,
   type CommitmentRow,
-} from "./commitments";
+} from "./commitment-store";
 
 // Runs every minute. Live itself keeps committed packages frozen, so enforcement no longer waits
 // for a controller to wake: it re-freezes after the Android LSP 03:00 cleanup, after a time-boxed
@@ -28,25 +25,26 @@ export interface EnforcementResult {
 
 export function enforceCommitments(now = new Date()): EnforcementResult {
   const result: EnforcementResult = { freeze_requests: 0, unfreeze_requests: 0 };
-  for (const exception of dueExceptions(now)) {
+  const at = now.toISOString();
+  for (const exception of dueExceptions(at)) {
     // A short exception must not wait out the retry interval of the window's first freeze.
     metaSet(attemptKey(exception.commitment_id, exception.package_name), "");
-    markExceptionRelocked(exception.exception_id, now);
+    markExceptionRelocked(exception.exception_id, at);
   }
 
   const active = activeCommitments(now).filter((row) => row.kind === "block");
-  const closing: CommitmentRow[] = endedCommitmentsStillMarkedInWindow();
+  const closing: CommitmentRow[] = endedCommitmentsStillInWindow();
   for (const row of active) {
     const inWindow = commitmentInWindow(row, now);
     if (inWindow) {
-      if (row.in_window !== 1) setCommitmentInWindow(row.commitment_id, true, now);
+      if (row.in_window !== 1) setCommitmentInWindow(row.commitment_id, true, at);
       if (freezeMissing(row, now)) result.freeze_requests += 1;
     } else if (row.in_window === 1) {
       closing.push(row);
     }
   }
   for (const row of closing) {
-    setCommitmentInWindow(row.commitment_id, false, now);
+    setCommitmentInWindow(row.commitment_id, false, at);
     if (releaseWindow(row, now)) result.unfreeze_requests += 1;
   }
   return result;
