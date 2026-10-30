@@ -70,6 +70,8 @@ export const TEXT_LIMITS = {
   ref: 160,
 } as const;
 export const MAX_EVIDENCE_PER_RECORD = 8;
+// ledger_search's `about`: the free text recall ranks records against (ledger-recall.ts).
+export const RECALL_TEXT_LIMIT = 300;
 
 export const EVIDENCE_MAX_AGE_MS = 30 * DAY_MS;
 export const EVIDENCE_FUTURE_SKEW_MS = 5 * MINUTE_MS;

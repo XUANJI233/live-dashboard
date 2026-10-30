@@ -70,7 +70,7 @@ export interface LedgerRow {
   closed_at: string;
 }
 
-export interface LedgerSearchFilter {
+export interface LedgerFilter {
   pattern?: string;
   kinds?: string[];
   status?: "open" | "closed";
@@ -78,8 +78,20 @@ export interface LedgerSearchFilter {
   timeField: "created_at" | "due_at" | "closed_at";
   from?: string;
   to?: string;
+}
+
+export interface LedgerSearchFilter extends LedgerFilter {
   cursor?: { created_at: string; record_id: string };
   limit: number;
+}
+
+/** The columns recall scores, without the evidence JSON. */
+export interface LedgerRecallCandidate {
+  record_id: string;
+  status: "open" | "closed";
+  created_at: string;
+  search_text: string;
+  selected: number;
 }
 
 const insertRecordStmt = db.prepare(`
@@ -217,6 +229,33 @@ export function lastBrokenPromise(): LedgerRow | null {
 }
 
 export function searchLedgerRows(filter: LedgerSearchFilter): LedgerRow[] {
+  const { where, params } = filterClause(filter);
+  if (filter.cursor) {
+    where.push("(created_at < ? OR (created_at = ? AND record_id < ?))");
+    params.push(filter.cursor.created_at, filter.cursor.created_at, filter.cursor.record_id);
+  }
+  return db.query(`
+    SELECT * FROM ledger_records ${whereSql(where)}
+    ORDER BY created_at DESC, record_id DESC
+    LIMIT ?
+  `).all(...params, filter.limit) as LedgerRow[];
+}
+
+/**
+ * What recall scores: every record (open first, then the newest, at most `limit`) with whether the
+ * filter selects it, so a word's rarity is judged over the whole ledger, not the filtered part.
+ */
+export function ledgerRecallCandidates(filter: LedgerFilter, limit: number): LedgerRecallCandidate[] {
+  const { where, params } = filterClause(filter);
+  const selected = where.length ? where.join(" AND ") : "1";
+  return db.query(`
+    SELECT record_id, status, created_at, search_text, (${selected}) AS selected FROM ledger_records
+    ORDER BY CASE WHEN status = 'open' THEN 0 ELSE 1 END, created_at DESC, record_id DESC
+    LIMIT ?
+  `).all(...params, limit) as LedgerRecallCandidate[];
+}
+
+function filterClause(filter: LedgerFilter): { where: string[]; params: Array<string | number> } {
   const clauses: string[] = [];
   const params: Array<string | number> = [];
   if (filter.pattern) {
@@ -244,17 +283,11 @@ export function searchLedgerRows(filter: LedgerSearchFilter): LedgerRow[] {
     clauses.push(`${filter.timeField} < ?`);
     params.push(filter.to);
   }
-  if (filter.cursor) {
-    clauses.push("(created_at < ? OR (created_at = ? AND record_id < ?))");
-    params.push(filter.cursor.created_at, filter.cursor.created_at, filter.cursor.record_id);
-  }
-  params.push(filter.limit);
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  return db.query(`
-    SELECT * FROM ledger_records ${where}
-    ORDER BY created_at DESC, record_id DESC
-    LIMIT ?
-  `).all(...params) as LedgerRow[];
+  return { where: clauses, params };
+}
+
+function whereSql(clauses: string[]): string {
+  return clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
 }
 
 export interface LedgerSweepCutoffs {
