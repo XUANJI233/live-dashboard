@@ -52,6 +52,18 @@ def compression_ancestors(connection: sqlite3.Connection, session_id: str) -> li
     return ancestors
 
 
+def mirrored_delivery(connection: sqlite3.Connection, job_name: str, text: str, since: float) -> bool:
+    """True when Hermes mirrored this job's text into the conversation, which it does only after
+    the platform accepted the delivery."""
+    probe = text.strip()[:40]
+    row = connection.execute(
+        "SELECT 1 FROM messages WHERE role = 'user' AND timestamp >= ? "
+        "AND substr(content, 1, ?) = ? AND instr(content, ?) > 0 LIMIT 1",
+        (since, len(f"[Cron delivery: {job_name}]"), f"[Cron delivery: {job_name}]", probe),
+    ).fetchone()
+    return row is not None
+
+
 def open_readonly(root: Path) -> sqlite3.Connection:
     connection = sqlite3.connect((root / "state.db").resolve().as_uri() + "?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row

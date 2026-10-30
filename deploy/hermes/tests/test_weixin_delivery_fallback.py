@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -16,15 +17,25 @@ SPEC.loader.exec_module(MODULE)
 
 PHONE = {"device_id": "android-main", "platform": "android", "is_online": True,
          "capability": {"capabilities": {"say": True}}}
+WEIXIN = "weixin:user@im.wechat"
 
 
-def home_with(tmp_path, jobs, responses):
-    (tmp_path / "cron").mkdir()
+def home_with(tmp_path, jobs, responses, mirrored=(), age=300):
+    (tmp_path / "cron").mkdir(parents=True)
     (tmp_path / "cron" / "jobs.json").write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
+    written = time.time() - age
     for job_id, response in responses.items():
         directory = tmp_path / "cron" / "output" / job_id
         directory.mkdir(parents=True)
-        (directory / "run.md").write_text(f"# Cron\n\n## Response\n\n{response}", encoding="utf-8")
+        output = directory / "run.md"
+        output.write_text(f"# Cron\n\n## Response\n\n{response}", encoding="utf-8")
+        os.utime(output, (written, written))
+    connection = sqlite3.connect(tmp_path / "state.db")
+    connection.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, role TEXT, content TEXT, timestamp REAL)")
+    for content in mirrored:
+        connection.execute("INSERT INTO messages(role, content, timestamp) VALUES ('user', ?, ?)", (content, written + 5))
+    connection.commit()
+    connection.close()
     return tmp_path
 
 
@@ -34,20 +45,29 @@ def run(home, tool):
         assert MODULE.main() == 0
 
 
-def test_a_rejected_proactive_message_reaches_the_phone_once(tmp_path):
-    home = home_with(tmp_path, [
-        {"id": "consumer", "last_delivery_error": "iLink sendmessage business_rejected"},
-        {"id": "companion", "last_delivery_error": None},
-        {"id": "silent", "last_delivery_error": "rejected"},
-    ], {"consumer": "月圆之夜我封了\n⟦MSG⟧\n九点前先交十个新的", "companion": "在干嘛", "silent": "[SILENT]"})
-    calls = []
-
+def recording_tool(calls):
     def tool(name, arguments):
         calls.append((name, arguments))
         return {"devices": [PHONE]} if name == "live_dashboard.list_devices" else {"ok": True}
+    return tool
 
-    run(home, tool)
-    run(home, tool)
+
+def test_an_unmirrored_proactive_message_reaches_the_phone_once(tmp_path):
+    home = home_with(tmp_path, [
+        {"id": "consumer", "name": "live-supervision-review", "deliver": WEIXIN},
+        {"id": "companion", "name": "teacher-friend-companion", "deliver": WEIXIN},
+        {"id": "silent", "name": "followup", "deliver": WEIXIN},
+        {"id": "maintenance", "name": "08:30", "deliver": "local"},
+    ], {
+        "consumer": "月圆之夜我封了\n⟦MSG⟧\n九点前先交十个新的",
+        "companion": "在干嘛",
+        "silent": "[SILENT]",
+        "maintenance": "解冻完成",
+    }, mirrored=["[Cron delivery: teacher-friend-companion]\n在干嘛"])
+    calls = []
+
+    run(home, recording_tool(calls))
+    run(home, recording_tool(calls))
 
     sends = [arguments for name, arguments in calls if name == "live_dashboard.send_device_commands"]
     assert len(sends) == 1
@@ -55,15 +75,14 @@ def test_a_rejected_proactive_message_reaches_the_phone_once(tmp_path):
     assert sends[0]["created_by"] == "supervision"
 
 
-def test_old_failures_and_an_unreachable_live_are_left_alone(tmp_path):
-    home = home_with(tmp_path, [{"id": "consumer", "last_delivery_error": "rejected"}], {"consumer": "词呢"})
-    output = home / "cron" / "output" / "consumer" / "run.md"
-    os.utime(output, (time.time() - 3600, time.time() - 3600))
+def test_unsettled_or_old_runs_and_an_unreachable_live_are_left_alone(tmp_path):
+    jobs = [{"id": "consumer", "name": "live-supervision-review", "deliver": WEIXIN}]
     calls = []
-    run(home, lambda name, arguments: calls.append(name) or {})
+    run(home_with(tmp_path / "fresh", jobs, {"consumer": "词呢"}, age=10), recording_tool(calls))
+    run(home_with(tmp_path / "old", jobs, {"consumer": "词呢"}, age=3600), recording_tool(calls))
     assert calls == []
 
-    os.utime(output, None)
+    home = home_with(tmp_path / "down", jobs, {"consumer": "词呢"})
 
     def unreachable(name, arguments):
         raise MODULE.LiveMcpError("unreachable:OSError")
