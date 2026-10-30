@@ -66,6 +66,12 @@ describe("mcp control plane", () => {
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.save_controller_summary");
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.start_ai_job");
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.run_supervision_check");
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "live_dashboard.ledger_open",
+      "live_dashboard.ledger_update",
+      "live_dashboard.ledger_search",
+    ]));
+    expect(tools.map((tool) => tool.name)).not.toContain("live_dashboard.list_commitments");
     expect(tools.find((tool) => tool.name === "live_dashboard.send_device_commands")?.description)
       .toContain("Immediate one-shot");
     expect(tools.find((tool) => tool.name === "live_dashboard.set_supervision_policy")?.description)
@@ -156,6 +162,33 @@ describe("mcp control plane", () => {
     } finally {
       delete process.env.HERMES_CONTROLLER_ENABLED;
     }
+  });
+
+  test("records, finds and closes a ledger promise over MCP", async () => {
+    const { handleMcpRequest } = await import("../src/routes/mcp");
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const response = await handleMcpRequest(mcpRequest({ method: "tools/call", params: { name, arguments: args } }), localMcpAccess());
+      return (await response.json() as {
+        result?: { isError?: boolean; structuredContent?: Record<string, any> };
+      }).result;
+    };
+    const said = new Date(Date.now() - 60_000).toISOString();
+    const opened = await call("live_dashboard.ledger_open", {
+      kind: "promise",
+      title: "交英语作文",
+      evidence: [{ source: "his_words", text: "四十分钟后把英语作文给你", at: said }],
+      due_in_minutes: 40,
+    });
+    expect(opened?.isError).toBeUndefined();
+    expect(opened?.structuredContent).toMatchObject({ ok: true, record: { kind: "promise", status: "open" } });
+    const recordId = String(opened?.structuredContent?.record.record_id);
+
+    const found = await call("live_dashboard.ledger_search", { query: "英语作文", status: "open" });
+    expect(found?.structuredContent?.records.map((record: { record_id: string }) => record.record_id)).toEqual([recordId]);
+
+    const refused = await call("live_dashboard.ledger_update", { record_id: recordId, outcome: "kept" });
+    expect(refused?.isError).toBe(true);
+    expect(refused?.structuredContent).toEqual({ ok: false, error: "ledger_evidence_required" });
   });
 
   test("serves a cheap rest-state gate for Hermes scripts", async () => {

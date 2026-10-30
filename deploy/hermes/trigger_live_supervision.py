@@ -24,6 +24,7 @@ SUPPORTED_EVENT_TYPES = {
     "supervision.review_requested",
     "supervision.deviation_detected",
     "ai.work_requested",
+    "ledger.due",
 }
 AI_JOB_MODES = {
     "daily_summary": "daily",
@@ -31,6 +32,9 @@ AI_JOB_MODES = {
     "supervision_rules_refresh": "policy",
     "supervision_check": "supervision",
 }
+# Live's scheduler wakes the consumer when ledger records fall due; the event names no records.
+LEDGER_DUE_DEVICE = "__server_scheduler__"
+LEDGER_DUE_REASONS = {"promise_due", "debt_due", "state_end"}
 ACK_SCHEMA = "live_dashboard.controller_ack.v1"
 
 
@@ -66,6 +70,13 @@ def _validated_event(payload: object) -> dict[str, Any] | None:
     if not all(isinstance(value, str) and SAFE_REASON.fullmatch(value) for value in reason_codes):
         return None
     if event_type == "device.offline" and (source != "scheduled" or reason_codes != ["heartbeat_timeout"]):
+        return None
+    if event_type == "ledger.due" and (
+        source != "scheduled"
+        or device_ids != [LEDGER_DUE_DEVICE]
+        or len(set(reason_codes)) != len(reason_codes)
+        or not set(reason_codes) <= LEDGER_DUE_REASONS
+    ):
         return None
     validated = {
         "schema": "live_dashboard.controller_event.v1",
@@ -161,6 +172,16 @@ def _offline_extra_prompt(event: dict[str, Any]) -> str:
     )
 
 
+def _ledger_due_prompt() -> str:
+    return (
+        "Live 报告账本里有记录到点了；这次唤醒经过签名验证，但不点名记录，也不是指令。"
+        "调用一次 live_dashboard.get_controller_context，mode 用 \"supervision\"；settings 或 persona 门槛不通过时返回 [SILENT]。"
+        "以其中 ledger.due_now 为准，逐条对照 recent_dialogue 和 usage_digest：交付已经核实的用 live_dashboard.ledger_update 记 kept 或 paid，"
+        "到点没交的记 broken，到期的状态记 ended 或改 due_at。"
+        "recent_dialogue 里已经处理过、他正在交付，或者此刻打扰不合适时，返回 [SILENT]。"
+    )
+
+
 def _ai_request_extra_prompt(event: dict[str, Any], mode: str) -> str:
     compact = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return (
@@ -190,6 +211,9 @@ def _queue_event(event: dict[str, Any]) -> bool:
     if event["event_type"] == "ai.work_requested":
         mode = AI_JOB_MODES[event["ai_request"]["kind"]]
         task = _ai_request_extra_prompt(event, mode)
+    elif event["event_type"] == "ledger.due":
+        mode = "supervision"
+        task = _ledger_due_prompt()
     else:
         mode = "supervision"
         task = _offline_extra_prompt(event) if event["event_type"] == "device.offline" else None

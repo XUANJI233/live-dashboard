@@ -53,6 +53,16 @@ def ai_event(kind="daily_summary", payload=None):
     }
 
 
+def ledger_event(reason_codes=("promise_due",)):
+    return {
+        **supervision_event("ledger.due"),
+        "event_id": "ledger-due:0123456789abcdef0123456789abcdef",
+        "source": "scheduled",
+        "device_ids": ["__server_scheduler__"],
+        "reason_codes": list(reason_codes),
+    }
+
+
 class TriggerLiveSupervisionTest(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -91,7 +101,7 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
         })
 
     def test_accepts_only_the_expected_event_contracts(self):
-        events = [supervision_event(), supervision_event("supervision.deviation_detected"), offline_event(), ai_event()]
+        events = [supervision_event(), supervision_event("supervision.deviation_detected"), offline_event(), ai_event(), ledger_event()]
         for event in events:
             with self.subTest(event_type=event["event_type"]):
                 self.assertEqual(MODULE._validated_event(event), event)
@@ -112,6 +122,11 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
             {**event, "reason_codes": {"bad": True}},
             {**offline_event(), "source": "report"},
             {**offline_event(), "reason_codes": ["device_requested"]},
+            {**ledger_event(), "source": "report"},
+            {**ledger_event(), "device_ids": ["android-main"]},
+            ledger_event(["promise_due", "promise_due"]),
+            ledger_event(["user_asked"]),
+            {**ledger_event(), "ai_request": ai_event()["ai_request"]},
             ai_event(payload={"date": "2026-09-02", "tz_offset_minutes": -480, "api_key": "must-not-cross"}),
         ]
         for payload in invalid:
@@ -124,6 +139,7 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
         cases = [
             (supervision_event(), "supervision", None),
             (offline_event(), "supervision", "<live_offline_event_json>"),
+            (ledger_event(["debt_due", "state_end"]), "supervision", "ledger.due_now"),
             (ai_event("daily_summary"), "daily", "claim_controller_ai_requests"),
             (ai_event("weekly_summary", {"week_start": "2026-08-31", "tz_offset_minutes": -480}), "weekly", "claim_controller_ai_requests"),
             (ai_event("supervision_rules_refresh", {"settings_updated_at": "2026-09-02T12:00:00.000Z"}), "policy", "claim_controller_ai_requests"),

@@ -1,3 +1,5 @@
+import { minimalLedger } from "./ledger-context-trim";
+
 const MAX_STRUCTURED_BYTES = 24_000;
 const ALLOWED_TRUNCATED_SECTIONS = new Set([
   "settings",
@@ -10,6 +12,7 @@ const ALLOWED_TRUNCATED_SECTIONS = new Set([
   "timeline",
   "recent_events",
   "commitments",
+  "ledger",
 ]);
 
 interface ControllerContextBounds {
@@ -281,14 +284,12 @@ function compactCommitments(value: unknown[], quoteLength: number): Record<strin
     kind: item.kind,
     title: clippedText(item.title, 80),
     user_quote: clippedText(item.user_quote, quoteLength),
-    ...(item.kind === "block" ? {
-      device_id: item.device_id,
-      packages_count: arrayLength(item.packages),
-      window: item.window ?? null,
-      in_window_now: item.in_window_now === true,
-      exceptions_left_today: numericField(item.exceptions_left_today),
-      open_exceptions: Array.isArray(item.open_exceptions) ? item.open_exceptions.slice(0, 3) : [],
-    } : {}),
+    device_id: item.device_id,
+    packages_count: arrayLength(item.packages),
+    window: item.window ?? null,
+    in_window_now: item.in_window_now === true,
+    exceptions_left_today: numericField(item.exceptions_left_today),
+    open_exceptions: Array.isArray(item.open_exceptions) ? item.open_exceptions.slice(0, 3) : [],
     ends_at: item.ends_at ?? null,
   }));
 }
@@ -365,6 +366,7 @@ function absoluteMinimalContext(
   for (const section of ["settings", "persona", "devices", "timeline", "recent_events"]) {
     truncatedSections.add(section);
   }
+  if (isRecord(context.ledger)) truncatedSections.add("ledger");
   return {
     schema: context.schema,
     generated_at: clippedText(context.generated_at, 40),
@@ -391,6 +393,8 @@ function absoluteMinimalContext(
     },
     rest_state: clippedText(context.rest_state, 20),
     commitments: Array.isArray(context.commitments) ? compactCommitments(context.commitments, 60) : [],
+    // What is due now survives with the commitments: by id and title only.
+    ...(isRecord(context.ledger) ? { ledger: minimalLedger(context.ledger) } : {}),
     available_device_count: numericField(context.available_device_count),
     returned_device_count: 0,
     devices: [],

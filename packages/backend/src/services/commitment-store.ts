@@ -3,7 +3,7 @@ import { db } from "../db";
 // Persistence for commitments and their exceptions. No rules live here: commitments.ts decides
 // what is valid, commitment-schedule.ts decides what is in effect.
 
-export type CommitmentKind = "block" | "task";
+export type CommitmentKind = "block";
 
 export interface CommitmentRow {
   commitment_id: string;

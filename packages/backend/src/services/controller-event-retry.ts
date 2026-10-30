@@ -17,6 +17,8 @@ const EVENT_TTL_MS: Record<ControllerEvent["event_type"], number> = {
   "device.offline": 2 * 60 * MINUTE_MS,
   // The user is waiting for the result; the AI job ledger has its own retry path.
   "ai.work_requested": 24 * 60 * MINUTE_MS,
+  // An agreed time two hours past no longer describes the present; the record stays in context.
+  "ledger.due": 2 * 60 * MINUTE_MS,
 };
 
 export function controllerEventExpiresAt(eventType: ControllerEvent["event_type"], createdAt: string): string {

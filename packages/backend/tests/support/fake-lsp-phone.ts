@@ -150,7 +150,6 @@ export class FakePhone {
 /** His all-day shopping block on Taobao and JD. */
 export function shoppingRule(): Record<string, unknown> {
   return recordCommitment({
-    kind: "block",
     title: "闭关期购物封禁",
     user_quote: "冻结我淘宝和京东",
     device_id: PHONE,
@@ -161,7 +160,6 @@ export function shoppingRule(): Record<string, unknown> {
 /** His 17-app night block, 23:00-08:30, one 15-minute exception a day. */
 export function nightRule(): Record<string, unknown> {
   return recordCommitment({
-    kind: "block",
     title: "夜间封禁",
     user_quote: "11点手机还开着就全冻结，只留支付宝和微信",
     device_id: PHONE,

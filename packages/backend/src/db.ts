@@ -527,6 +527,8 @@ db.run(`
     end_reason TEXT NOT NULL DEFAULT ''
   )
 `);
+// One-off promises moved to the supervision ledger (services/ledger.ts); only block rules remain.
+db.run("DELETE FROM controller_commitments WHERE kind <> 'block'");
 // One exception opens a package on a device for every rule that holds it; each covering rule
 // gets one charge row (same group_id) so its own daily quota is counted.
 db.run(`

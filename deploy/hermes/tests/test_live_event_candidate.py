@@ -176,3 +176,42 @@ def test_merged_reasons_survive_a_tick_won_by_other_work(tmp_path):
         second = run_main(tmp_path)
     assert second["candidate_id"] == "review:rule"
     assert second["event"]["reason_codes"] == ["rule_match", "device_requested"]
+
+
+def ledger_wake(event_id, reason, *, minutes_ago):
+    value = event(event_id, "ledger.due", minutes_ago=minutes_ago, devices=("__server_scheduler__",))
+    value["reason_codes"] = [reason]
+    return record(value, task="read ledger.due_now")
+
+
+def test_pending_ledger_wakes_collapse_into_the_newest_and_expire_after_two_hours(tmp_path):
+    for value in (
+        ledger_wake("ledger-due:old", "promise_due", minutes_ago=30),
+        ledger_wake("ledger-due:new", "state_end", minutes_ago=3),
+        ledger_wake("ledger-due:late", "debt_due", minutes_ago=121),
+    ):
+        QUEUE.enqueue(tmp_path, value)
+
+    chosen, retired, updated = CANDIDATE.select_event(QUEUE.pending_records(tmp_path), NOW)
+
+    assert chosen[1]["event"]["event_id"] == "ledger-due:new"
+    assert chosen[1]["event"]["reason_codes"] == ["state_end", "promise_due"]
+    assert sorted(outcome for _, outcome in retired) == ["expired", "superseded"]
+    assert [record["event"]["event_id"] for _, record in updated] == ["ledger-due:new"]
+
+
+def test_a_ledger_wake_runs_after_ai_work_and_before_reviews(tmp_path):
+    for value in (
+        record(event("review:1", minutes_ago=1)),
+        ledger_wake("ledger-due:1", "promise_due", minutes_ago=5),
+        record(event("ai:daily", "ai.work_requested", minutes_ago=2), mode="daily", task="claim and run daily"),
+    ):
+        QUEUE.enqueue(tmp_path, value)
+
+    order = []
+    for _ in range(3):
+        chosen, _, _ = CANDIDATE.select_event(QUEUE.pending_records(tmp_path), NOW)
+        order.append(chosen[1]["event"]["event_id"])
+        QUEUE.mark_done(tmp_path, chosen[0], "dispatched")
+
+    assert order == ["ai:daily", "ledger-due:1", "review:1"]

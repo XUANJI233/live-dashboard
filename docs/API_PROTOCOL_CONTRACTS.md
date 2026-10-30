@@ -1,6 +1,6 @@
 # API Protocol Contracts
 
-更新时间：2026-06-13
+更新时间：2026-10-30
 
 本文档记录服务端、Edge Function、Web 前端、Android 普通端、Android LSP、Windows/macOS Agent 之间共享的固定字段、ID、Header 和帧类型。新增或修改通道时先更新这里，再改代码和测试。
 
@@ -36,6 +36,7 @@
 | `__broadcast__` | `device_id` | 服务端历史消息查询中的全设备广播消息。 |
 | `__mcp__` | `viewer_id` | MCP/设备命令排队消息的系统来源。 |
 | `__supervisor__` | `viewer_id` | Android 消息 UI 中 AI 监督会话，不能拉黑或屏蔽。 |
+| `__server_scheduler__` | `device_id` | 服务端调度来源：定时日/周总结 AI job，以及 `ledger.due` 控制器事件的唯一设备 ID。 |
 | `up` | `viewer_name` | 设备/站主对公共留言的回复显示名。 |
 
 ## 通用 ID 字段
@@ -498,8 +499,10 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
   - `live_dashboard.get_rest_state`
   - `live_dashboard.record_commitment`
   - `live_dashboard.end_commitment`
-  - `live_dashboard.list_commitments`
   - `live_dashboard.request_exception_unfreeze`
+  - `live_dashboard.ledger_open`
+  - `live_dashboard.ledger_update`
+  - `live_dashboard.ledger_search`
 - `live_dashboard.get_rest_state` 是给 Hermes 门控脚本的轻量读取，只返回 `{ rest_state, generated_at }`（`asleep` / `screen_off` / `active` / `unknown`），不带时间线或消息；门控脚本经本机 MCP listener 带 token 调用，不再读公开的 `/api/current`。
 - Live 与 Hermes 两侧的事件校验共用 `deploy/hermes/tests/fixtures/controller_events.json` 契约样例：时间戳必须带时区、日期必须是真实日历日、`ai_request` 只允许 `request_id`/`kind`/`payload` 三个键、`settings_updated_at` 最长 80 字符。CI 同时运行两侧测试。
 - `live_dashboard.send_device_commands` 只用于一次性设备动作：提醒文本、震动、息屏、即时冻结/解冻；服务端会按设备显式上报能力裁剪。
@@ -507,9 +510,17 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
   - 调用会等待约 3 秒设备结果再返回（只等已送达的命令）；`results_pending: true` 表示还有命令没出结果（含手机离线、命令排队），之后再用 `get_command_status` 查。
   - 设备上只要有承诺在锁定应用，控制器的解冻模式就不会原样发到手机：每一条都换成它（按 JavaScript 正则、不区分大小写）能命中的应用的精确包名（`^com\.x\.y$`），去掉承诺内的包。候选先是已知冻结应用，再是手机上报的已安装应用（手机自己的应用限时冻结、上报 8 个以外的冻结，Live 不一定知道；对没冻结的应用发精确解冻，手机什么都不做）。已知冻结应用来自手机上报和近一天按顺序重放的冻结/解冻结果，之后又被解冻的会去掉；命中文本包括包名、应用名和冻结原因（取冻结命令的 `reason` 或 `say`）。`全部`/`全量`/`所有`/`all`/`*`/`.*` 只换成已知冻结应用。这样 Java 与 JavaScript 正则的差异只会影响开哪些未锁定的应用，碰不到锁定的。可能碰到承诺应用的模式备注 `commitment_locked`，连锁定应用都没命中的模式备注 `unfreeze_target_unknown`（两种可以同时出现），换出超过 12 个时多出的截掉并备注 `unfreeze_targets_truncated`，已知冻结应用排在前面；什么都没剩时不下发。承诺内应用只能走 `request_exception_unfreeze`。
   - 传入 `request_id` 即为幂等：同一 `request_id` 带相同命令重试时直接返回已记录的命令状态并带 `duplicate: true`，不会再次下发；同一 `request_id` 换了命令内容则返回 `request_id_conflict`。
-- 承诺（`controller_commitments`）是用户在冷静时亲口定下的规则：`record_commitment` 记录原话、`kind`（`block` 封禁 / `task` 只记录）、`block` 的 Android LSP 设备（`device_not_found` / `device_cannot_freeze`）、精确包名（不接受正则，最多 20 个；手机暂未安装的返回在 `not_installed` 里，装上后自动冻结）、可选每日时段 `window_start`/`window_end`（本地 `HH:MM`，可跨午夜，省略为全天）、可选 `ends_at`（必须带 `Z` 或 `+08:00` 这类时区）、每日例外次数（默认 2，0–5）和单次例外上限分钟（默认 30，5–60）。完全相同的规则（设备、包、时段、截止时间、额度、时区都一样）再记一次返回已有那条并带 `duplicate: true`；任何一项不同都另记一条，同时生效时按最严的执行。只有用户明确取消或替换时才用 `end_commitment` 结束；`ends_at` 到期自动结束。`get_controller_context` 各模式都带 `commitments`（上下文超预算时只裁剪、不丢弃），含今天已用和剩余例外、未到期例外。
-  - 服务端每分钟按包同步 `block` 承诺，不依赖控制器唤醒：每个包一条锚定的精确命令（`^com\.taobao\.taobao$`），只有该命令的结果改变包状态。冻结生效后记下手机给的 `until`（本地次日 03:00），过期即补冻；手机上报里列出的冻结应用最多 8 个、解冻时只扫 16 条记录，所以不靠上报判断。同步命令有效期 10 分钟，手机长连接断开时也能在下次 HTTP 上报时取到。时段结束、承诺结束或例外开启时解冻该包；手机没回应就每 2 分钟重发，直到它回应或冻结本身到期，手机明确回应未解冻才计一次，最多 4 次。手机最多暂存 16 条未上传事件（每条命令一个回执一个结果，满了丢最旧的），所以每台手机同时在途的同步命令不超过 6 条，冻结优先，其余下一分钟再发。冻结时发现应用早已被别人冻住（控制器、手机自己的应用限时）的，记为不属于 Live，时段结束时不替别人解冻；但 Live 之前发过、送达了却没收到回应的冻结，如果正好落在这次冻结的有效期内，仍算 Live 自己的。仍被其它生效承诺占用的包不动。手机说没装的包 1 小时后再试，其它失败 10 分钟后再试。执行走用户监督开关：关闭 LSP 冻结后不再冻结。控制器暂停不影响承诺执行。
+- 承诺（`controller_commitments`）是用户在冷静时亲口定下的封禁规则：`record_commitment` 记录原话、Android LSP 设备（`device_not_found` / `device_cannot_freeze`）、精确包名（不接受正则，最多 20 个；手机暂未安装的返回在 `not_installed` 里，装上后自动冻结）、可选每日时段 `window_start`/`window_end`（本地 `HH:MM`，可跨午夜，省略为全天）、可选 `ends_at`（必须带 `Z` 或 `+08:00` 这类时区）、每日例外次数（默认 2，0–5）和单次例外上限分钟（默认 30，5–60）。完全相同的规则（设备、包、时段、截止时间、额度、时区都一样）再记一次返回已有那条并带 `duplicate: true`；任何一项不同都另记一条，同时生效时按最严的执行。只有用户明确取消或替换时才用 `end_commitment` 结束；`ends_at` 到期自动结束。`get_controller_context` 各模式都带 `commitments`（上下文超预算时只裁剪、不丢弃），含今天已用和剩余例外、未到期例外。单次约定不再记成承诺，而是记进督学账本（见下）；旧的 `task` 承诺在启动时删除。
+  - 服务端每分钟按包同步承诺，不依赖控制器唤醒：每个包一条锚定的精确命令（`^com\.taobao\.taobao$`），只有该命令的结果改变包状态。冻结生效后记下手机给的 `until`（本地次日 03:00），过期即补冻；手机上报里列出的冻结应用最多 8 个、解冻时只扫 16 条记录，所以不靠上报判断。同步命令有效期 10 分钟，手机长连接断开时也能在下次 HTTP 上报时取到。时段结束、承诺结束或例外开启时解冻该包；手机没回应就每 2 分钟重发，直到它回应或冻结本身到期，手机明确回应未解冻才计一次，最多 4 次。手机最多暂存 16 条未上传事件（每条命令一个回执一个结果，满了丢最旧的），所以每台手机同时在途的同步命令不超过 6 条，冻结优先，其余下一分钟再发。冻结时发现应用早已被别人冻住（控制器、手机自己的应用限时）的，记为不属于 Live，时段结束时不替别人解冻；但 Live 之前发过、送达了却没收到回应的冻结，如果正好落在这次冻结的有效期内，仍算 Live 自己的。仍被其它生效承诺占用的包不动。手机说没装的包 1 小时后再试，其它失败 10 分钟后再试。执行走用户监督开关：关闭 LSP 冻结后不再冻结。控制器暂停不影响承诺执行。
   - `request_exception_unfreeze` 字段：`device_id`、`package_name`、`purpose`（至少 2 字）、`minutes`。一次例外对所有在时段内持有该包的承诺同时生效：每条承诺都要有剩余额度并各扣一次，分钟数不超过其中最严的上限。例外期间再要同一个包返回已开的那次（`reused: true`），不再扣额度。服务端精确解冻并返回 `relock_at`、`exceptions_left_today`，到点后自动补冻。命令排队（长连接断开）时返回 `results_pending: true`，手机之后取到执行就算数，命令到期仍未执行则自动退还额度。错误码：`not_committed`（不在生效承诺里，用普通解冻）、`commitment_exception_denied`（某条承诺今天额度已用完）、`exception_minutes_out_of_range`、`exception_purpose_required`、`device_offline`、`exception_pending`（Live 发给这个包的上一条命令手机还没回应，过一分钟再试；否则新解冻会盖掉上一条的结果，上一次例外的额度就无法结算）、`exception_not_delivered`、`exception_not_applied`（手机回应了但没解开，例如记录不在它扫描的前 16 条里；都不扣额度）。
+- 督学账本（`ledger_records`）是控制器跨会话记事的唯一位置：每次 Hermes 定时运行都是新会话、微信会话会被压缩，需要记住的约定只放这里。只有控制器的 MCP 调用写入，另外只有 Live 自己的时钟关账和下面的后果债；没有 HTTP 写入口，也不从访客留言或 memory feed 自动生成。
+  - 种类（`kind`）：`promise`（他明确答应、带到点时间的单次约定，依据里必须有 `his_words`，到点 1 分钟到 7 天）、`debt`（`subtype` 为 `task` 欠下的任务或 `consequence` 说好的后果，到点可选，最长 7 天）、`breach`（`false_claim` 对上证据的谎或 `bypass` 绕过，依据里必须有 `his_submission` 或 `live_data`）、`hypothesis`（`helps` / `blocks`，带 `confidence` 低/中/高，默认低）、`state`（`observation` / `streak` / `other`，必须带结束时间，最长 30 天）。各种类在开的上限：promise、debt、breach、hypothesis 各 12 条，state 4 条，满了返回 `ledger_kind_full`。
+  - 每条记录带 1–4 条证据（`evidence`，之后最多累计 8 条）：`source` 为 `his_words`（他的原话）、`his_submission`（他交来且已核看的东西）或 `live_data`（Live 记录），`text` 最多 200 字，`at` 必须带时区且在 30 天内、不晚于现在 5 分钟，`ref` 为可选的命令、账单、账本记录 ID 或设备时间窗（Live 只保存，不核对）。字段上限：`title` 60、`detail` 300、`stake` 120、`note` 160。拒收健康细节（诊断、用药、就诊，`health_detail_rejected`）、手机号/邮箱/证件号/卡号（`private_detail_rejected`），以及出现在 30 天内访客消息里的“他的原话”（`quote_not_his_words`）。
+  - `ledger_open` 字段：`kind`、`subtype`、`title`、`detail`、`evidence`、`due_at`（带时区）或 `due_in_minutes`（二选一）、`stake`（promise/debt）、`confidence`（hypothesis）、`parent_id`。同一种类、同一子类、第一条证据文字相同且仍在开的记录再记一次，返回已有那条并带 `duplicate: true`（不比较到点时间，因为两个会话按各自的“现在”换算 `due_in_minutes`）。
+  - `ledger_update` 补证据（`add_evidence`，可标 `counter: true` 为反证）、改字段或到点时间，或带 `outcome` 关账：promise 为 `kept` / `broken` / `cancelled` / `waived`，debt 为 `paid` / `broken` / `cancelled` / `waived`，breach 为 `resolved` / `forgiven` / `refuted`，hypothesis 为 `refuted` / `retired`，state 为 `ended` / `cancelled`。`kept`、`paid` 必须同一次附 `his_submission` 或 `live_data`；到点前记 `broken`、以及 `refuted` 必须附证据；`cancelled`、`waived`、`forgiven` 必须带 `note` 说明来处；到点后不能取消 promise，也不能改它的到点时间（`ledger_due_passed`），改 promise 到点时间要附他的原话；提高把握要附新证据。改到点时间会清掉已唤醒标记，新时间会再唤醒一次。带 `stake` 的 promise 记为 `broken` 时，Live 在同一事务里开一条 `consequence` 债（`opened` 返回）。已关的记录用同一结果再关一次返回 `duplicate: true`，换结果返回 `ledger_record_closed`。
+  - `ledger_search` 按关键词（标题、细节、后果、备注和证据文字的子串，NFKC 归一化后不区分大小写，`%`/`_` 按字面匹配，两个汉字的词也能搜到）、`kinds`、`status`（`open` / `closed` / `any`）、`outcome`、`from`/`to` 和 `time_field`（`created` / `due` / `closed`）查找，按创建时间新到旧，`limit` 1–20（默认 10），`next_cursor` 原样传回取下一页；`include_evidence=true` 才带证据。
+  - Live 自己的时钟（每小时）：到点 48 小时仍开的 promise/debt 记 `lapsed`（不算兑现也不算失约），无到点时间的 debt 30 天未更新记 `lapsed`，state 结束 24 小时后记 `ended`，breach 30 天后记 `faded`，hypothesis 30 天未更新记 `stale`；关账 180 天后删除。
+  - `get_controller_context` 除 `memory` 外各模式都带 `ledger`：`due_now`（已到点、仍开的 promise/debt/state，最早的在前，最多 8 条，只裁剪不丢弃）、`open`（未到点的，最近到点的在前）、`breaches`（新到旧）、`hypotheses`（把握高的在前）、`daily`/`weekly` 另带 `closed_in_range`，以及 `track`（连续兑现次数、7 天兑现/失约数、上次失约时间）和 `counts`。`supervision`/`policy` 列 4 条 open、2 条 breach、2 条 hypothesis，其它模式 6/3/3，`daily`/`weekly` 另列 8 条 closed。该段自身上限 3,000 字节，超出时依次去掉 closed、hypothesis、breach、open，再裁剪 `due_now` 的后果、细节和标题，并在 `truncated_sections` 里记 `ledger`；整体回落到最小上下文时仍保留 `due_now` 的 ID、种类、标题和到点时间。
 - `live_dashboard.capture_device_screenshot` 用于按需抓取 Android LSP 当前画面；默认事件式等待上传，超时返回 `screenshot_id`。`live_dashboard.get_device_screenshot` 用该 ID 取回一次图片。
 - `live_dashboard.get_accounting_bills` 只查询 AutoAccounting 已处理完成并同步到服务端的原始主账单字段；默认先通过 Android `integration` WS 请求指定时间范围的事件式刷新，不重新解释账务汇总语义。最多返回 200 条；`truncated=true` 时必须把 `next_cursor` 原样传入下一次调用，直到 `next_cursor=null`。
 - 郊狼工具只作用于 Android 集成当前已连接的 Coyote V2/V3：`coyote_start` 冷启动强度上限 10，`coyote_adjust` 单步上限 ±10，且 Android 会再次按用户 A/B 通道上限裁剪；`coyote_change_wave` 不改变强度。上述三项需要 Android 本地显式开启远程控制；`coyote_stop` 与 `coyote_emergency_stop` 不受启动授权限制，紧急停止会立即归零并清空波形。
@@ -565,7 +576,7 @@ Hermes 模式下，Live 可把高价值的确定性监督候选作为最小事�
 - `event_id` 由通知冷却时间桶和已验证设备集合稳定派生；同一时间桶内的重试必须复用同一 ID。
 - 普通上报的规则命中按设备使用 10 分钟冷却桶：应用持续打开时每次上报都会命中，同一窗口内只产生一次复核事件，与 LSP 同一应用的请求冷却一致。设备显式请求（`device_requested`）仍用 1 分钟桶，由设备端节流。
 - Payload 只携带稳定元数据，不携带原始窗口标题、时间线、AI 自由文本、token 或密钥；Hermes 收到后必须通过 MCP 读取必要的最小时间窗并自行复核。
-- `live_dashboard.get_controller_context` 是 Hermes 每轮唯一的聚合读取：一次返回设置、人设、设备/睡眠状态（含 `first_seen_at`）、`usage_digest`、`usage_today`（仅 supervision/companion/followup）、`installed_changes`、有界时间线和近期事件。`content` 是不缩进的完整 JSON，且与 `structuredContent` 语义完全相同，以兼容只识别任一视图的 MCP 客户端；两者各自的 UTF-8 上限为 24 KB。Hermes 适配器在进入模型上下文前对等价视图去重，所以模型侧结果保持在 50K spillover 阈值以内。`bounds.truncated=true` 只代表省略较旧或低优先级信息；当 `decision_complete=true` 且 `followup_required=false` 时不得据此重复读取。只有选定动作确实缺少一个具体事实时，才允许调用对应的单项工具。
+- `live_dashboard.get_controller_context` 是 Hermes 每轮唯一的聚合读取：一次返回设置、人设、承诺、账本、设备/睡眠状态（含 `first_seen_at`）、`usage_digest`、`usage_today`（仅 supervision/companion/followup）、`installed_changes`、有界时间线和近期事件。`content` 是不缩进的完整 JSON，且与 `structuredContent` 语义完全相同，以兼容只识别任一视图的 MCP 客户端；两者各自的 UTF-8 上限为 24 KB。Hermes 适配器在进入模型上下文前对等价视图去重，所以模型侧结果保持在 50K spillover 阈值以内。`bounds.truncated=true` 只代表省略较旧或低优先级信息；当 `decision_complete=true` 且 `followup_required=false` 时不得据此重复读取。只有选定动作确实缺少一个具体事实时，才允许调用对应的单项工具。
 - `usage_digest`（schema `live_dashboard.usage_digest.v1`）由 Live 用代码计算，不调用模型，覆盖整个上下文窗口。每台设备（最多 6 台，按活跃时长排序，请求的 `device_id` 排第一）给出 `active_minutes`、`idle_minutes`、`current`（当前应用、类别、开始时间与连续分钟）、`class_minutes`、前 6 个应用的分钟与类别，以及 `app_count` 和 `switches`。`idle`/`sleeping` 只计入 `idle_minutes`，不算应用使用，也不进入应用排行和类别。类别按已保存的监督规则判定，每段只计入第一个命中的 `blacklist`、`risk`、`target`、`whitelist`，都不命中为 `unclassified`。摘要只含应用名和包名，不含窗口标题；时长规则与 `get_activity_history` 相同，覆盖整个窗口，不再按行数截断。
 - `usage_today`（schema `live_dashboard.usage_today.v1`）只出现在 `supervision`、`companion`、`followup` 模式：这些模式的窗口只有最近 max(60, 复核间隔) 分钟，`usage_today` 补上本地当天 0 点到现在的累计，每台设备（最多 6 台）给出 `active_minutes`、`idle_minutes`、`class_minutes` 和前 6 个应用；计算与 `usage_digest` 相同。超出 24 KB 时先删其应用、再删设备，并标记 `truncated=true` 和 `usage_today` 截断段。
 - `installed_changes`（schema `live_dashboard.installed_app_changes.v1`）列出最近 7 天所有设备的已安装应用增删，按时间倒序最多 20 条，每条含 `device_id`、`package_name`、`app_name`、`change`（`installed`/`removed`）、`detected_at`（Live 收到显示变化的快照的时间）和 `previous_snapshot_at`（上一份快照的设备采集时间；变化发生在两者之间）。卸载后重装表现为一条 `removed` 加一条 `installed`。`total_count`/`has_more` 给出未返回的数量。
@@ -580,9 +591,10 @@ Hermes 模式下，Live 可把高价值的确定性监督候选作为最小事�
 - `live_dashboard.get_device_installed_apps` 额外返回 `changes`：该设备 30 天内的已安装应用增删，最多 50 条。首份快照、心跳和不带列表的上报都不产生记录；达到 512 个上限的快照不做比较。
 - `list_devices` 与上下文中的设备带 `first_seen_at`：Live 第一次保存该设备的时间；早于该字段上线的设备为空字符串。
 - 事件使用上述 V2 HMAC headers；Hermes 应把 `X-Request-ID` 作为幂等键。
+- `ledger.due` 在账本记录到点时由服务端调度发送：`source` 固定 `scheduled`，`device_ids` 固定 `["__server_scheduler__"]`，`reason_codes` 是 `promise_due`、`debt_due`、`state_end` 中不重复的子集，不点名记录也不带文字；Hermes 以 `get_controller_context` 的 `ledger.due_now` 为准。`event_id` 为 `ledger-due:` 加本次到点记录（ID 与到点时间）排序后的 SHA-256 前 32 位，重试复用同一 ID，改过到点时间的记录会产生新 ID。服务端每分钟检查一次，同一分钟内到点的记录合并为一个事件，每条记录只唤醒一次；只在 Hermes 模式、Webhook 开启、人设未暂停、`supervision_enabled=true` 且可信手表未显示睡眠时入队。闸门关闭时记录保持未唤醒、仍在 `due_now` 里，闸门打开后补唤醒；首次检查时已过点 3 小时以上的只标记、不唤醒。Hermes 侧多个待处理的 `ledger.due` 合并为一次运行，优先级仅次于 AI 工作请求。
 - `device.offline` 只在意外断线时发送：设备下线前已在睡眠、熄屏或空闲（`sleeping`、空应用、`idle`/`sleeping`），或可信手表显示用户正在睡觉时，设备仍会标记离线，但不唤醒控制器。
 - 投递与重试：Live 先把事件写入持久 outbox 再投递。每次投递最多尝试 2 次、每次等待 10 秒（长于 Hermes 触发脚本等待网关回执的 6 秒），只有带匹配 `event_id` 的 ACK 才算送达。失败后按 1、2、4、8、16 分钟、此后每 30 分钟退避重试；连续 3 次网络级失败会让本轮投递提前结束，避免控制器挂掉时逐条超时。到期未送达的事件不会阻塞更新的事件。
-- 死信与过期：4xx（408/429 除外）、`secret_reused`、损坏的 outbox 行或累计 8 次失败的事件转入死信，不再重试。事件有有效期：复核请求 30 分钟，设备离线 2 小时，AI 工作请求 24 小时；过期事件不会在恢复后补发，引入有效期之前写入的旧行超过 24 小时即视为过期。死信与过期行保留 14 天后清理。
+- 死信与过期：4xx（408/429 除外）、`secret_reused`、损坏的 outbox 行或累计 8 次失败的事件转入死信，不再重试。事件有有效期：复核请求 30 分钟，设备离线和账本到点 2 小时，AI 工作请求 24 小时；过期事件不会在恢复后补发，引入有效期之前写入的旧行超过 24 小时即视为过期。死信与过期行保留 14 天后清理。
 - 复核合并：新复核事件入队时，同设备集合内尚未送达的旧复核事件被标记为 `superseded`，其 `reason_codes` 并入新事件（例如 `device_requested` 不会丢失），Hermes 只需处理携带最新状态的一次复核。已经在投递中的旧事件仍会送达。
 - 候选节流不复用设备命令的 `supervision_last_alert_at`，避免检测与执行相互抑制。
 - Docker 内的 Live 访问宿主 Hermes 时使用仅宿主/容器可达地址；不要把 Hermes Webhook 端口代理到公网。

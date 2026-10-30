@@ -22,6 +22,9 @@ import { checkOfflineDevices } from "./offline-controller";
 import { maybeNudgeUnreachableController } from "./controller-health";
 import { enforceCommitments } from "./commitment-enforcement";
 import { cleanupOldInstalledAppChanges } from "./installed-app-changes";
+import { flushControllerEvents } from "./controller-event-outbox";
+import { maintainLedger } from "./ledger";
+import { queueDueLedgerWake } from "./ledger-due";
 
 // Cleanup old activities + old summaries every hour
 const hourlyCleanupTimer = setInterval(() => {
@@ -126,6 +129,15 @@ const hourlyCleanupTimer = setInterval(() => {
   }
 
   try {
+    const ledgerResult = maintainLedger();
+    if (ledgerResult.closed > 0 || ledgerResult.pruned > 0) {
+      console.log(`[cleanup] Ledger: closed ${ledgerResult.closed} past their clock, deleted ${ledgerResult.pruned} old records`);
+    }
+  } catch (e) {
+    console.error("[cleanup] Ledger maintenance failed:", e);
+  }
+
+  try {
     optimizeDatabase();
   } catch (e) {
     console.error("[cleanup] SQLite optimize failed:", e);
@@ -192,12 +204,25 @@ const commitmentTimer = setInterval(() => {
 }, 60_000);
 commitmentTimer.unref();
 
+// The ledger wakes the controller when an agreed time arrives.
+const ledgerTimer = setInterval(() => {
+  try {
+    const now = new Date();
+    if (queueDueLedgerWake(now) === "queued") {
+      flushControllerEvents(now).catch((e) => console.error("[ledger] due wake delivery failed:", e));
+    }
+  } catch (e) {
+    console.error("[ledger] due wake failed:", e);
+  }
+}, 60_000);
+ledgerTimer.unref();
+
 const supervisionTimer = setInterval(() => {
   runSupervisionTick().catch((e) => console.error("[cleanup] AI supervision failed:", e));
 }, 300_000);
 supervisionTimer.unref();
 
-console.log("[cleanup] Scheduled: hourly cleanup, 60s offline check and commitment enforcement, configurable AI summaries, AI supervision");
+console.log("[cleanup] Scheduled: hourly cleanup, 60s offline check, commitment enforcement and ledger wakes, configurable AI summaries, AI supervision");
 
 function hasStoredSummary(kind: "daily" | "weekly", key: string): boolean {
   const row = (kind === "daily"
