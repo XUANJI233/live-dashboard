@@ -83,6 +83,8 @@ export interface DeviceContext {
   };
   capability: DeviceCapability;
   frozen_packages: FrozenPackageItem[];
+  /** Every active freeze the phone counted; null from builds that list at most eight. */
+  frozen_packages_total: number | null;
   installed_apps_count: number;
   installed_apps_updated_at: string;
   sleeping: boolean;
@@ -220,6 +222,7 @@ function deviceContextFromRow(row: DeviceState): DeviceContext {
     },
     capability: capabilityForDevice(row.platform, deviceExtra),
     frozen_packages: frozenPackageItems(deviceExtra.frozen_packages),
+    frozen_packages_total: Number.isInteger(deviceExtra.frozen_packages_total) ? deviceExtra.frozen_packages_total as number : null,
     installed_apps_count: installedAppItems(deviceExtra.installed_apps).length,
     installed_apps_updated_at: cleanText(deviceExtra.installed_apps_updated_at, 40),
     sleeping: extra.sleeping === true,
@@ -326,7 +329,7 @@ function frozenPackageItems(value: unknown): FrozenPackageItem[] {
       app_name: appName,
       mode: cleanText(body.mode, 40),
       reason: cleanText(body.reason, 180),
-      since: cleanText(body.since, 40),
+      since: cleanText(body.frozen_at ?? body.since, 40),
       until: cleanText(body.until, 40),
     });
     if (out.length >= MAX_FROZEN_ITEMS) break;

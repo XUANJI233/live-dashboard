@@ -77,6 +77,26 @@ describe("commitment sync against the phone's limits", () => {
     expect(phone.frozen.size).toBe(0);
   });
 
+  test("a current phone's full report shows a freeze it lost, so Live freezes it again", () => {
+    phone.currentFirmware();
+    nightRule();
+    phone.settle(NIGHT, 4);
+    // Something on the phone lifts the twelfth freeze, far past an older build's eight-app report.
+    const lifted = [...phone.frozen.keys()][11]!;
+    phone.frozen.delete(lifted);
+    phone.settle(new Date(NIGHT.getTime() + 10 * 60_000), 2);
+    expect(phone.frozen.has(lifted)).toBe(true);
+  });
+
+  test("an older phone's eight-app report cannot show that loss", () => {
+    nightRule();
+    phone.settle(NIGHT, 4);
+    const lifted = [...phone.frozen.keys()][11]!;
+    phone.frozen.delete(lifted);
+    phone.settle(new Date(NIGHT.getTime() + 10 * 60_000), 2);
+    expect(phone.frozen.has(lifted)).toBe(false);
+  });
+
   test("a new exception waits for the phone's answer to the last one, which keeps its quota", async () => {
     shoppingRule();
     phone.settle(NIGHT, 2);

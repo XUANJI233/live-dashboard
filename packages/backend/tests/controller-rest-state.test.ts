@@ -63,6 +63,7 @@ function device(input: {
       },
     },
     frozen_packages: [],
+    frozen_packages_total: null,
     installed_apps_count: 0,
     installed_apps_updated_at: "",
     sleeping: input.sleeping ?? false,

@@ -10,7 +10,7 @@ import { lockedPackages } from "./commitments";
 // reaches the phone as written: each becomes the exact names of the apps it matches here, minus
 // the locked ones. Java-vs-JavaScript differences can then only change which unlocked apps open,
 // never open a locked one. A named pattern also reaches installed apps Live never saw frozen (the
-// phone's own time limit, a report past its eight slots): an exact unfreeze of an app that is not
+// phone's own time limit, a report an older build cut at eight): an exact unfreeze of an app that is not
 // frozen does nothing on the phone. A catch-all opens only the apps Live knows are frozen.
 
 const MAX_PATTERNS = 12;

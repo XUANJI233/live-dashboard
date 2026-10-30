@@ -42,6 +42,10 @@ export class FakePhone {
   outboxLimit = 8;
   /** Apply commands but never upload their results. */
   dropResults = false;
+  /** An older build's limits by default: eight frozen apps per report, no total, sixteen records per unfreeze. */
+  reportLimit = 8;
+  reportsTotal = false;
+  unfreezeScanLimit = 16;
   socket = {
     data: { role: "device", id: PHONE },
     send: (text: string) => this.receive(JSON.parse(text)),
@@ -60,7 +64,7 @@ export class FakePhone {
   }
 
   report(extra: { reason?: Record<string, string> } = {}): void {
-    const frozen = [...this.frozen.entries()].slice(0, 8).map(([name, record]) => ({
+    const frozen = [...this.frozen.entries()].slice(0, this.reportLimit).map(([name, record]) => ({
       package_name: name, app_name: LABELS[name] ?? name, until: record.until, reason: extra.reason?.[name] ?? record.reason,
     }));
     db.prepare(`
@@ -72,6 +76,7 @@ export class FakePhone {
         profile: "android_lsp",
         capabilities: { freeze: true, unfreeze: true, vibrate: true, say: true },
         frozen_packages: frozen,
+        ...(this.reportsTotal ? { frozen_packages_total: this.frozen.size } : {}),
         installed_apps: [...this.installed].map((name) => ({ package_name: name, app_name: LABELS[name] ?? name })),
       },
     }), this.online ? 1 : 0);
@@ -96,8 +101,8 @@ export class FakePhone {
     for (const pattern of unfreeze) {
       const all = ["全部", "全量", "所有", "all", "*", ".*"].includes(pattern);
       const matcher = all ? null : new RegExp(pattern, "i");
-      // The phone scans only its first 16 frozen records for an unfreeze.
-      const scanned = [...this.frozen.entries()].slice(0, 16);
+      // An older build scans only its first 16 frozen records for an unfreeze.
+      const scanned = [...this.frozen.entries()].slice(0, this.unfreezeScanLimit);
       const hits = scanned.filter(([name, record]) => all || matcher!.test(name) || matcher!.test(LABELS[name] ?? "") || matcher!.test(record.reason));
       if (hits.length === 0) actions.push({ action: "unfreeze", status: "ignored", reason: "no_frozen_app_matched" });
       for (const [name] of hits) {
@@ -121,6 +126,13 @@ export class FakePhone {
     const pending = this.outbox ?? [];
     if (this.outbox) this.outbox = [];
     for (const upload of pending) upload();
+  }
+
+  /** Today's build: every freeze in the report with a total, and a full unfreeze scan. */
+  currentFirmware(): void {
+    this.reportLimit = 80;
+    this.reportsTotal = true;
+    this.unfreezeScanLimit = 256;
   }
 
   clearAtThree(): void {
