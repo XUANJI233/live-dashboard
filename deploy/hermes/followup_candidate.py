@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from live_state_gate import read_live_rest_state
 from candidate_script_gate import candidate_accepted, jobs_by_name, script_gate, session_event_target, wake_context
 from weixin_session import compression_ancestors, open_readonly, routed_session_id
+from cron_outputs import is_sendable_response, latest_output, response_from_output
 
 
 TIMEZONE = timezone(timedelta(hours=8), name="UTC+08:00")
@@ -94,20 +95,6 @@ def followup_wake_slot(age_seconds: float, rest_state: str) -> int:
     return len(thresholds) + int((age_seconds - thresholds[-1]) // (60 * 60))
 
 
-def response_from_output(path: Path) -> str:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-    return text.rsplit("## Response", 1)[-1].strip() if "## Response" in text else ""
-
-
-def is_sendable_response(value: str) -> bool:
-    if not value.strip():
-        return False
-    return all(line.strip() != "[SILENT]" for line in value.splitlines())
-
-
 def latest_proactive_outbound(root: Path) -> tuple[str | None, float | None]:
     jobs_path = root / "cron" / "jobs.json"
     try:
@@ -124,13 +111,9 @@ def latest_proactive_outbound(root: Path) -> tuple[str | None, float | None]:
         job_id = str(job.get("id") or "")
         if not job_id:
             continue
-        outputs = sorted(
-            (root / "cron" / "output" / job_id).glob("*.md"),
-            key=lambda path: path.stat().st_mtime,
-        )
-        if not outputs:
+        output = latest_output(root, job_id)
+        if output is None:
             continue
-        output = outputs[-1]
         if not is_sendable_response(response_from_output(output)):
             continue
         modified = output.stat().st_mtime
