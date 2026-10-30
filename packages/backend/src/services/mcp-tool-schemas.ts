@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { ACCOUNTING_TRANSACTION_TYPES } from "./accounting-contracts";
 import { COYOTE_WAVEFORMS } from "./coyote-control";
+import { MEMORY_EVENT_TYPES } from "./controller-memory";
 
 export const DateRangeSchema = z.object({
   start: z.string().describe("Inclusive ISO timestamp, for reading history only."),
@@ -29,19 +29,6 @@ export const ControllerContextSchema = z.object({
   timezone_offset_minutes: z.number().int().min(-840).max(840).optional(),
   device_id: z.string().min(1).max(160).optional(),
   window_minutes: z.number().int().min(15).max(1440).optional(),
-});
-
-export const AccountingBillsSchema = z.object({
-  start: z.string().describe("Inclusive ISO timestamp for processed AutoAccounting bills."),
-  end: z.string().describe("Exclusive ISO timestamp for processed AutoAccounting bills."),
-  device_id: z.string().min(1).max(160).optional(),
-  transaction_types: z.array(z.enum(ACCOUNTING_TRANSACTION_TYPES)).max(10).optional(),
-  category: z.string().max(100).optional(),
-  keyword: z.string().max(200).optional(),
-  limit: z.number().int().min(1).max(200).optional(),
-  cursor: z.string().max(500).optional(),
-  refresh_from_android: z.boolean().optional()
-    .describe("True by default. Ask the online Android integration to read AutoAccounting's completed bills before querying the server cache."),
 });
 
 const CoyoteDeviceSchema = z.object({
@@ -252,6 +239,12 @@ export const ControllerMemoryFeedSchema = z.object({
     .describe("true/false only. Include daily and weekly summaries. Defaults to true."),
   include_device_commands: z.boolean().optional()
     .describe("true/false only. Include reminders/device-control messages sent by the service. Defaults to true."),
+  until: z.string().max(40).optional().describe("Optional ISO timestamp; only events before it."),
+  event_types: z.array(z.enum(MEMORY_EVENT_TYPES)).min(1).max(MEMORY_EVENT_TYPES.length).optional(),
+  consumer_id: z.string().regex(/^[a-z0-9][a-z0-9_.:-]{0,63}$/).optional()
+    .describe("Reader whose position Live stores, e.g. hermes-memory. Without cursor or since, reads continue from that position (first read: newest events); has_more=true means call again."),
+  advance: z.boolean().optional()
+    .describe("true/false only. true stores the last returned event as consumer_id's position."),
 }).describe("Controller memory feed for OpenClaw/Hermes. Use this to ingest sent messages, replies, summaries, and reminders into controller memory.");
 
 export const SaveControllerSummarySchema = z.object({

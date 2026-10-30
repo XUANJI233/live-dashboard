@@ -15,11 +15,8 @@ import {
   type SummaryKind,
 } from "./daily-summary-gen";
 
-type ControllerMemoryEventType =
-  | "visitor_message"
-  | "device_command"
-  | "daily_summary"
-  | "weekly_summary";
+export const MEMORY_EVENT_TYPES = ["visitor_message", "device_command", "daily_summary", "weekly_summary"] as const;
+type ControllerMemoryEventType = typeof MEMORY_EVENT_TYPES[number];
 
 interface ControllerMemoryEvent {
   event_id: string;
@@ -33,9 +30,17 @@ interface MemoryCursor {
   eventId: string;
 }
 
+interface MemoryWindow {
+  since: string;
+  until: string;
+  cursor: MemoryCursor | null;
+}
+
 const DEFAULT_MEMORY_LIMIT = 120;
 const MAX_MEMORY_LIMIT = 300;
 const MAX_MEMORY_SCAN_LIMIT = MAX_MEMORY_LIMIT + 1;
+// Every read is bounded above by `until`; without one this bound keeps everything.
+const OPEN_UNTIL = "9999-12-31T23:59:59.999Z";
 
 const recentVisitorMessages = db.prepare(`
   SELECT id, device_id, viewer_id, viewer_name, kind, direction, text, created_at
@@ -43,6 +48,7 @@ const recentVisitorMessages = db.prepare(`
     SELECT id, device_id, viewer_id, viewer_name, kind, direction, text, created_at
     FROM visitor_messages
     WHERE (? = 1 OR kind NOT IN ('public', 'public_reply'))
+      AND julianday(created_at) < julianday(?)
     ORDER BY created_at DESC, id DESC
     LIMIT ?
   )
@@ -54,6 +60,7 @@ const visitorMessagesAfter = db.prepare(`
   FROM visitor_messages
   WHERE (? = 1 OR kind NOT IN ('public', 'public_reply'))
     AND julianday(created_at) >= julianday(?)
+    AND julianday(created_at) < julianday(?)
   ORDER BY julianday(created_at) ASC, id ASC
   LIMIT ?
 `);
@@ -64,6 +71,7 @@ const visitorMessagesAfterCursor = db.prepare(`
   WHERE (? = 1 OR kind NOT IN ('public', 'public_reply'))
     AND (julianday(created_at) > julianday(?)
       OR (julianday(created_at) = julianday(?) AND ('visitor_message:' || id) > ?))
+    AND julianday(created_at) < julianday(?)
   ORDER BY julianday(created_at) ASC, id ASC
   LIMIT ?
 `);
@@ -75,6 +83,7 @@ const recentDeviceCommands = db.prepare(`
     SELECT command_id, request_id, target_device_id, kind, payload, issued_at, expires_at,
            delivery_status, receipt_status, result_status, created_by
     FROM device_commands
+    WHERE julianday(issued_at) < julianday(?)
     ORDER BY issued_at DESC, command_id DESC
     LIMIT ?
   )
@@ -86,6 +95,7 @@ const deviceCommandsAfter = db.prepare(`
          delivery_status, receipt_status, result_status, created_by
   FROM device_commands
   WHERE julianday(issued_at) >= julianday(?)
+    AND julianday(issued_at) < julianday(?)
   ORDER BY julianday(issued_at) ASC, command_id ASC
   LIMIT ?
 `);
@@ -94,8 +104,9 @@ const deviceCommandsAfterCursor = db.prepare(`
   SELECT command_id, request_id, target_device_id, kind, payload, issued_at, expires_at,
          delivery_status, receipt_status, result_status, created_by
   FROM device_commands
-  WHERE julianday(issued_at) > julianday(?)
-     OR (julianday(issued_at) = julianday(?) AND ('device_command:' || command_id) > ?)
+  WHERE (julianday(issued_at) > julianday(?)
+      OR (julianday(issued_at) = julianday(?) AND ('device_command:' || command_id) > ?))
+    AND julianday(issued_at) < julianday(?)
   ORDER BY julianday(issued_at) ASC, command_id ASC
   LIMIT ?
 `);
@@ -105,6 +116,7 @@ const recentDailySummaries = db.prepare(`
   FROM (
     SELECT date, summary, mode, target, generated_at
     FROM daily_summaries
+    WHERE julianday(generated_at) < julianday(?)
     ORDER BY generated_at DESC, date DESC
     LIMIT ?
   )
@@ -115,6 +127,7 @@ const dailySummariesAfter = db.prepare(`
   SELECT date, summary, mode, target, generated_at
   FROM daily_summaries
   WHERE julianday(generated_at) >= julianday(?)
+    AND julianday(generated_at) < julianday(?)
   ORDER BY julianday(generated_at) ASC, date ASC
   LIMIT ?
 `);
@@ -122,8 +135,9 @@ const dailySummariesAfter = db.prepare(`
 const dailySummariesAfterCursor = db.prepare(`
   SELECT date, summary, mode, target, generated_at
   FROM daily_summaries
-  WHERE julianday(generated_at) > julianday(?)
-     OR (julianday(generated_at) = julianday(?) AND ('daily_summary:' || date || ':' || generated_at) > ?)
+  WHERE (julianday(generated_at) > julianday(?)
+      OR (julianday(generated_at) = julianday(?) AND ('daily_summary:' || date || ':' || generated_at) > ?))
+    AND julianday(generated_at) < julianday(?)
   ORDER BY julianday(generated_at) ASC, date ASC
   LIMIT ?
 `);
@@ -133,6 +147,7 @@ const recentWeeklySummaries = db.prepare(`
   FROM (
     SELECT week_start, week_end, summary, mode, target, generated_at
     FROM weekly_summaries
+    WHERE julianday(generated_at) < julianday(?)
     ORDER BY generated_at DESC, week_start DESC
     LIMIT ?
   )
@@ -143,6 +158,7 @@ const weeklySummariesAfter = db.prepare(`
   SELECT week_start, week_end, summary, mode, target, generated_at
   FROM weekly_summaries
   WHERE julianday(generated_at) >= julianday(?)
+    AND julianday(generated_at) < julianday(?)
   ORDER BY julianday(generated_at) ASC, week_start ASC
   LIMIT ?
 `);
@@ -150,8 +166,9 @@ const weeklySummariesAfter = db.prepare(`
 const weeklySummariesAfterCursor = db.prepare(`
   SELECT week_start, week_end, summary, mode, target, generated_at
   FROM weekly_summaries
-  WHERE julianday(generated_at) > julianday(?)
-     OR (julianday(generated_at) = julianday(?) AND ('weekly_summary:' || week_start || ':' || generated_at) > ?)
+  WHERE (julianday(generated_at) > julianday(?)
+      OR (julianday(generated_at) = julianday(?) AND ('weekly_summary:' || week_start || ':' || generated_at) > ?))
+    AND julianday(generated_at) < julianday(?)
   ORDER BY julianday(generated_at) ASC, week_start ASC
   LIMIT ?
 `);
@@ -159,18 +176,24 @@ const weeklySummariesAfterCursor = db.prepare(`
 export function getControllerMemoryFeed(input: Record<string, unknown>): Record<string, unknown> {
   const cursor = parseMemoryCursor(input.cursor);
   const since = cursor?.occurredAt ?? validIsoTime(input.since);
+  const until = memoryUntil(input.until);
+  const types = memoryEventTypes(input.event_types);
+  const window: MemoryWindow = { since, until: until || OPEN_UNTIL, cursor };
   const limit = integerInRange(input.limit, DEFAULT_MEMORY_LIMIT, 1, MAX_MEMORY_LIMIT);
   const scanLimit = Math.min(MAX_MEMORY_SCAN_LIMIT, limit + 1);
-  const includeMessages = input.include_messages !== false;
+  const includeMessages = input.include_messages !== false && types.has("visitor_message");
   // Anonymous public messages stay out of contexts that may take device actions.
   const includePublicMessages = input.include_public_messages !== false;
   const includeSummaries = input.include_summaries !== false;
-  const includeDeviceCommands = input.include_device_commands !== false;
+  const includeDaily = includeSummaries && types.has("daily_summary");
+  const includeWeekly = includeSummaries && types.has("weekly_summary");
+  const includeDeviceCommands = input.include_device_commands !== false && types.has("device_command");
   const events: ControllerMemoryEvent[] = [];
 
-  if (includeMessages) events.push(...messageEvents(since, cursor, scanLimit, includePublicMessages));
-  if (includeSummaries) events.push(...summaryEvents(since, cursor, scanLimit));
-  if (includeDeviceCommands) events.push(...deviceCommandEvents(since, cursor, scanLimit));
+  if (includeMessages) events.push(...messageEvents(window, scanLimit, includePublicMessages));
+  if (includeDaily) events.push(...dailySummaryEvents(window, scanLimit));
+  if (includeWeekly) events.push(...weeklySummaryEvents(window, scanLimit));
+  if (includeDeviceCommands) events.push(...deviceCommandEvents(window, scanLimit));
 
   events.sort(compareEvents);
   const filtered = cursor
@@ -181,6 +204,7 @@ export function getControllerMemoryFeed(input: Record<string, unknown>): Record<
   return {
     generated_at: new Date().toISOString(),
     since: since || null,
+    until: until || null,
     cursor: cursor ? encodeMemoryCursor(cursor) : null,
     next_since: (last?.occurred_at ?? since) || null,
     next_cursor: last ? encodeMemoryCursor({ occurredAt: last.occurred_at, eventId: last.event_id }) : null,
@@ -233,18 +257,14 @@ export function saveControllerSummary(input: Record<string, unknown>): Record<st
   };
 }
 
-function messageEvents(
-  since: string,
-  cursor: MemoryCursor | null,
-  limit: number,
-  includePublic: boolean,
-): ControllerMemoryEvent[] {
+function messageEvents(window: MemoryWindow, limit: number, includePublic: boolean): ControllerMemoryEvent[] {
+  const { since, until, cursor } = window;
   const publicFlag = includePublic ? 1 : 0;
   const rows = (cursor
-    ? visitorMessagesAfterCursor.all(publicFlag, cursor.occurredAt, cursor.occurredAt, cursor.eventId, limit)
+    ? visitorMessagesAfterCursor.all(publicFlag, cursor.occurredAt, cursor.occurredAt, cursor.eventId, until, limit)
     : since
-      ? visitorMessagesAfter.all(publicFlag, since, limit)
-    : recentVisitorMessages.all(publicFlag, limit)) as Array<Record<string, unknown>>;
+      ? visitorMessagesAfter.all(publicFlag, since, until, limit)
+    : recentVisitorMessages.all(publicFlag, until, limit)) as Array<Record<string, unknown>>;
   return rows.map((row) => ({
     event_id: `visitor_message:${row.id}`,
     event_type: "visitor_message",
@@ -253,12 +273,13 @@ function messageEvents(
   }));
 }
 
-function deviceCommandEvents(since: string, cursor: MemoryCursor | null, limit: number): ControllerMemoryEvent[] {
+function deviceCommandEvents(window: MemoryWindow, limit: number): ControllerMemoryEvent[] {
+  const { since, until, cursor } = window;
   const rows = (cursor
-    ? deviceCommandsAfterCursor.all(cursor.occurredAt, cursor.occurredAt, cursor.eventId, limit)
+    ? deviceCommandsAfterCursor.all(cursor.occurredAt, cursor.occurredAt, cursor.eventId, until, limit)
     : since
-      ? deviceCommandsAfter.all(since, limit)
-    : recentDeviceCommands.all(limit)) as Array<Record<string, unknown>>;
+      ? deviceCommandsAfter.all(since, until, limit)
+    : recentDeviceCommands.all(until, limit)) as Array<Record<string, unknown>>;
   return rows.map((row) => {
     const payload = safeJsonObject(row.payload);
     return {
@@ -273,31 +294,46 @@ function deviceCommandEvents(since: string, cursor: MemoryCursor | null, limit: 
   });
 }
 
-function summaryEvents(since: string, cursor: MemoryCursor | null, limit: number): ControllerMemoryEvent[] {
-  const dailyRows = (cursor
-    ? dailySummariesAfterCursor.all(cursor.occurredAt, cursor.occurredAt, cursor.eventId, limit)
+function dailySummaryEvents(window: MemoryWindow, limit: number): ControllerMemoryEvent[] {
+  const { since, until, cursor } = window;
+  const rows = (cursor
+    ? dailySummariesAfterCursor.all(cursor.occurredAt, cursor.occurredAt, cursor.eventId, until, limit)
     : since
-      ? dailySummariesAfter.all(since, limit)
-    : recentDailySummaries.all(limit)) as Array<Record<string, unknown>>;
-  const weeklyRows = (cursor
-    ? weeklySummariesAfterCursor.all(cursor.occurredAt, cursor.occurredAt, cursor.eventId, limit)
+      ? dailySummariesAfter.all(since, until, limit)
+    : recentDailySummaries.all(until, limit)) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    event_id: `daily_summary:${row.date}:${row.generated_at}`,
+    event_type: "daily_summary" as const,
+    occurred_at: normalizeSqliteTime(row.generated_at),
+    payload: row,
+  }));
+}
+
+function weeklySummaryEvents(window: MemoryWindow, limit: number): ControllerMemoryEvent[] {
+  const { since, until, cursor } = window;
+  const rows = (cursor
+    ? weeklySummariesAfterCursor.all(cursor.occurredAt, cursor.occurredAt, cursor.eventId, until, limit)
     : since
-      ? weeklySummariesAfter.all(since, limit)
-    : recentWeeklySummaries.all(limit)) as Array<Record<string, unknown>>;
-  return [
-    ...dailyRows.map((row) => ({
-      event_id: `daily_summary:${row.date}:${row.generated_at}`,
-      event_type: "daily_summary" as const,
-      occurred_at: normalizeSqliteTime(row.generated_at),
-      payload: row,
-    })),
-    ...weeklyRows.map((row) => ({
-      event_id: `weekly_summary:${row.week_start}:${row.generated_at}`,
-      event_type: "weekly_summary" as const,
-      occurred_at: normalizeSqliteTime(row.generated_at),
-      payload: row,
-    })),
-  ];
+      ? weeklySummariesAfter.all(since, until, limit)
+    : recentWeeklySummaries.all(until, limit)) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    event_id: `weekly_summary:${row.week_start}:${row.generated_at}`,
+    event_type: "weekly_summary" as const,
+    occurred_at: normalizeSqliteTime(row.generated_at),
+    payload: row,
+  }));
+}
+
+function memoryUntil(value: unknown): string {
+  if (value === undefined || value === null || value === "") return "";
+  const until = validIsoTime(value);
+  if (!until) throw new Error("invalid_memory_until");
+  return until;
+}
+
+function memoryEventTypes(value: unknown): Set<ControllerMemoryEventType> {
+  const requested = Array.isArray(value) ? MEMORY_EVENT_TYPES.filter((type) => value.includes(type)) : [];
+  return new Set(requested.length > 0 ? requested : MEMORY_EVENT_TYPES);
 }
 
 function compareEvents(a: ControllerMemoryEvent, b: ControllerMemoryEvent): number {

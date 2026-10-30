@@ -10,3 +10,6 @@ export const ACCOUNTING_TRANSACTION_TYPES = [
   "IncomeRefund",
   "Transfer",
 ] as const;
+
+export const ACCOUNTING_GROUP_BY = ["category", "shop", "app", "day"] as const;
+export const MAX_ACCOUNTING_GROUP_LIMIT = 50;

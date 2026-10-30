@@ -1,3 +1,6 @@
+import { clippedText } from "./clipped-text";
+import { enforcementTotalsOnly, trimOldestEnforcementCommand } from "./controller-context-enforcement-budget";
+
 const MAX_STRUCTURED_BYTES = 24_000;
 const ALLOWED_TRUNCATED_SECTIONS = new Set([
   "settings",
@@ -6,6 +9,7 @@ const ALLOWED_TRUNCATED_SECTIONS = new Set([
   "devices.frozen_packages",
   "usage_digest",
   "timeline",
+  "enforcement",
   "recent_events",
   "commitments",
 ]);
@@ -53,6 +57,7 @@ export function fitControllerContextToMcpBudget(
   const minimumEvents = context.mode === "memory" ? 8 : 4;
   const minimumSessions = context.mode === "daily" || context.mode === "weekly" ? 12 : 6;
   trimWhileOversized(context, () => trimOldestRecentEvent(context, minimumEvents), truncatedSections, "recent_events");
+  trimWhileOversized(context, () => trimOldestEnforcementCommand(context.enforcement, 8), truncatedSections, "enforcement");
   if (serializedBytes(context) > MAX_STRUCTURED_BYTES && compactTimelineItems(context, 3)) {
     truncatedSections.add("timeline");
     syncBounds(context, truncatedSections);
@@ -68,6 +73,7 @@ export function fitControllerContextToMcpBudget(
   trimWhileOversized(context, () => trimUsageDigestDevice(context, 2), truncatedSections, "usage_digest");
   trimWhileOversized(context, () => trimOldestDevice(context, 4), truncatedSections, "devices");
   trimWhileOversized(context, () => trimOldestRecentEvent(context, 0), truncatedSections, "recent_events");
+  trimWhileOversized(context, () => trimOldestEnforcementCommand(context.enforcement, 0), truncatedSections, "enforcement");
   trimWhileOversized(context, () => trimOldestTimelineSession(context, 1), truncatedSections, "timeline");
   trimWhileOversized(context, () => trimOldestDevice(context, 1), truncatedSections, "devices");
   if (serializedBytes(context) > MAX_STRUCTURED_BYTES) {
@@ -76,6 +82,7 @@ export function fitControllerContextToMcpBudget(
     truncatedSections.add("timeline");
     truncatedSections.add("devices");
     if (isRecord(context.usage_digest)) truncatedSections.add("usage_digest");
+    if (isRecord(context.enforcement)) truncatedSections.add("enforcement");
     syncBounds(context, truncatedSections);
   }
   return serializedBytes(context) <= MAX_STRUCTURED_BYTES
@@ -300,6 +307,7 @@ function replaceWithMinimalContext(context: BoundedControllerContext): void {
   recentEvents.has_more = true;
   recentEvents.events = [];
   recentEvents.returned_event_count = 0;
+  if (isRecord(context.enforcement)) context.enforcement = enforcementTotalsOnly(context.enforcement);
 }
 
 function absoluteMinimalContext(
@@ -311,6 +319,10 @@ function absoluteMinimalContext(
   for (const section of ["settings", "persona", "devices", "timeline", "recent_events"]) {
     truncatedSections.add(section);
   }
+  const enforcement = isRecord(context.enforcement)
+    ? { command_count: numericField(context.enforcement.command_count), returned_count: 0, truncated: true, commands: [] }
+    : null;
+  if (enforcement) truncatedSections.add("enforcement");
   return {
     schema: context.schema,
     generated_at: clippedText(context.generated_at, 40),
@@ -347,6 +359,7 @@ function absoluteMinimalContext(
       segment_count: 0,
       timeline: { devices: [] },
     },
+    ...(enforcement ? { enforcement } : {}),
     recent_events: {
       has_more: true,
       prebudget_event_count: numericField(recordField(context.recent_events).prebudget_event_count),
@@ -363,18 +376,6 @@ function syncBounds(context: BoundedControllerContext, truncatedSections: Set<st
 
 function serializedBytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength;
-}
-
-function clippedText(value: unknown, maxLength: number): string {
-  if (typeof value !== "string") return "";
-  let codePoints = 0;
-  let bodyEnd = 0;
-  for (const character of value) {
-    if (codePoints === maxLength) return `${value.slice(0, bodyEnd)}…`;
-    codePoints += 1;
-    if (codePoints < maxLength) bodyEnd += character.length;
-  }
-  return value;
 }
 
 function assignClippedText(target: Record<string, unknown>, key: string, maxLength: number): boolean {
