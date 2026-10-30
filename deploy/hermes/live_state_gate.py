@@ -12,6 +12,9 @@ MAX_RESPONSE_BYTES = 64 * 1024
 # The local MCP listener: authenticated, not behind REQUIRE_EDGE, and not counted as a visitor.
 DEFAULT_MCP_URL = "http://127.0.0.1:3031/api/mcp"
 REST_STATES = {"asleep", "screen_off", "active", "unknown"}
+# MCP_LIVE_DASHBOARD_API_KEY is the key Hermes already holds for its own Live MCP server; the
+# cron script sandbox passes it through, so the gate needs no second copy of the secret.
+TOKEN_ENV_NAMES = ("LIVE_DASHBOARD_MCP_TOKEN", "MCP_SERVER_TOKEN", "MCP_LIVE_DASHBOARD_API_KEY")
 
 
 def rest_state_from_result(payload: object) -> str:
@@ -26,7 +29,7 @@ def rest_state_from_result(payload: object) -> str:
 
 def read_live_rest_state() -> str:
     url = os.environ.get("LIVE_DASHBOARD_MCP_URL", DEFAULT_MCP_URL).strip() or DEFAULT_MCP_URL
-    token = (os.environ.get("LIVE_DASHBOARD_MCP_TOKEN") or os.environ.get("MCP_SERVER_TOKEN") or "").strip()
+    token = next((os.environ.get(name, "").strip() for name in TOKEN_ENV_NAMES if os.environ.get(name, "").strip()), "")
     headers = {
         "Accept": "application/json, text/event-stream",
         "Content-Type": "application/json",

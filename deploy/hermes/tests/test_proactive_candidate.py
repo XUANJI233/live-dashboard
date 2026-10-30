@@ -35,6 +35,18 @@ class ProactiveCandidateTest(unittest.TestCase):
         self.assertNotEqual(accepted, MODULE.NO_CANDIDATE)
         self.assertEqual(accepted_state["day_count"], 1)
 
+    def test_deep_night_stays_quiet_unless_the_phone_is_in_use(self):
+        night = datetime(2026, 9, 1, 2, 30, tzinfo=TZ)
+        _, idle = MODULE.evaluate_candidate({}, night, 0.0, rest_state="screen_off")
+        _, unknown = MODULE.evaluate_candidate({}, night, 0.0, rest_state="unknown")
+        _, in_use = MODULE.evaluate_candidate({}, night, 0.0, rest_state="active")
+        _, dawn = MODULE.evaluate_candidate({}, datetime(2026, 9, 1, 7, 0, tzinfo=TZ), 0.0, rest_state="screen_off")
+
+        self.assertEqual(idle, MODULE.NO_CANDIDATE)
+        self.assertEqual(unknown, MODULE.NO_CANDIDATE)
+        self.assertNotEqual(in_use, MODULE.NO_CANDIDATE)
+        self.assertNotEqual(dawn, MODULE.NO_CANDIDATE)
+
     def test_screen_off_reduces_probability_and_sleep_suppresses_candidates(self):
         daytime = datetime(2026, 9, 1, 9, 0, tzinfo=TZ)
         _, active = MODULE.evaluate_candidate({}, daytime, 0.2, rest_state="active")

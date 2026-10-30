@@ -26,6 +26,16 @@ def session_event_target() -> tuple[bool, str]:
     return True, key
 
 
+def dialogue_session_key() -> str:
+    """The user's conversation key; `enabled` only says whether timers wake into it."""
+    from hermes_cli.config import load_config
+
+    config = load_config() or {}
+    settings = config.get("session_events") if isinstance(config, dict) else None
+    key = settings.get("session_key") if isinstance(settings, dict) else None
+    return key.strip() if isinstance(key, str) else ""
+
+
 def jobs_by_name(root: Path) -> dict[str, str]:
     records = json.loads((root / "cron" / "jobs.json").read_text(encoding="utf-8"))["jobs"]
     if not isinstance(records, list):
@@ -58,9 +68,24 @@ def candidate_accepted(root: Path, session_key: str, job_id: str, candidate_id: 
     return row is not None
 
 
-def script_gate(output: str, *, error: str | None = None) -> str:
+def script_gate(output: str, *, error: str | None = None, context: dict[str, Any] | None = None) -> str:
     value: dict[str, Any] = json.loads(output)
     value["wakeAgent"] = value.get("selected_this_run") is True
     if error:
         value["gate_error"] = error
+    if context and value["wakeAgent"]:
+        # Context rides only on a real wake; a skipped run never reads or prints it.
+        value.update(context)
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def wake_context(root: Path, output: str) -> dict[str, Any] | None:
+    if json.loads(output).get("selected_this_run") is not True:
+        return None
+    from dialogue_tail import recent_dialogue
+
+    try:
+        key = dialogue_session_key()
+    except (OSError, ValueError, TypeError, ImportError):
+        key = ""
+    return {"recent_dialogue": recent_dialogue(root, key)}

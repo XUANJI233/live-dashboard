@@ -15,7 +15,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from live_state_gate import read_live_rest_state
-from candidate_script_gate import candidate_accepted, jobs_by_name, script_gate, session_event_target
+from candidate_script_gate import candidate_accepted, jobs_by_name, script_gate, session_event_target, wake_context
 
 
 TIMEZONE = timezone(timedelta(hours=8), name="UTC+08:00")
@@ -57,6 +57,8 @@ def evaluate_candidate(
     if count >= DAILY_CANDIDATE_LIMIT or (last_at and local.timestamp() - last_at < COOLDOWN_SECONDS):
         return current, NO_CANDIDATE
 
+    if _deep_quiet_time(local) and rest_state != "active":
+        return current, NO_CANDIDATE
     probability = QUIET_PROBABILITY if _quiet_time(local) else NORMAL_PROBABILITY
     if rest_state == "screen_off":
         probability = min(probability, SCREEN_OFF_PROBABILITY)
@@ -76,6 +78,11 @@ def evaluate_candidate(
 def _quiet_time(value: datetime) -> bool:
     minute = value.hour * 60 + value.minute
     return minute >= 23 * 60 + 30 or minute < 8 * 60
+
+
+def _deep_quiet_time(value: datetime) -> bool:
+    minute = value.hour * 60 + value.minute
+    return 60 <= minute < 7 * 60
 
 
 def _epoch(value: object) -> int:
@@ -164,7 +171,7 @@ def main() -> int:
     except (OSError, ValueError, KeyError, TypeError, ImportError, sqlite3.Error) as error:
         print(script_gate(NO_CANDIDATE, error=f"candidate_state_unavailable:{type(error).__name__}"))
         return 0
-    print(script_gate(output))
+    print(script_gate(output, context=wake_context(path.parent.parent, output)))
     return 0
 
 

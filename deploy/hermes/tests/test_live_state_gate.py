@@ -58,6 +58,18 @@ class LiveStateGateTest(unittest.TestCase):
         self.assertEqual(seen["auth"], "Bearer gate-token")
         self.assertEqual(seen["body"]["params"]["name"], "live_dashboard.get_rest_state")
 
+    def test_falls_back_to_the_key_hermes_holds_for_its_live_mcp_server(self):
+        seen = {}
+
+        def fake_urlopen(request, timeout):
+            seen["auth"] = request.get_header("Authorization")
+            return FakeResponse(json.dumps(tool_result("active")).encode("utf-8"))
+
+        with mock.patch.dict("os.environ", {"MCP_LIVE_DASHBOARD_API_KEY": "hermes-mcp-key"}, clear=True), \
+                mock.patch.object(MODULE, "urlopen", fake_urlopen):
+            self.assertEqual(MODULE.read_live_rest_state(), "active")
+        self.assertEqual(seen["auth"], "Bearer hermes-mcp-key")
+
     def test_an_unreachable_live_is_unknown(self):
         def refused(request, timeout):
             raise OSError("connection refused")

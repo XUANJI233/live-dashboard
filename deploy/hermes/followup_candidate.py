@@ -9,15 +9,20 @@ import sqlite3
 import sys
 from collections.abc import Callable
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from live_state_gate import read_live_rest_state
-from candidate_script_gate import candidate_accepted, jobs_by_name, script_gate, session_event_target
+from candidate_script_gate import candidate_accepted, jobs_by_name, script_gate, session_event_target, wake_context
+from weixin_session import compression_ancestors, open_readonly, routed_session_id
 
 
+TIMEZONE = timezone(timedelta(hours=8), name="UTC+08:00")
+# Deep night: an unanswered message waits for morning unless the phone is actually in use.
+DEEP_QUIET_START_MINUTE = 60
+DEEP_QUIET_END_MINUTE = 7 * 60
 FOLLOWUP_SECONDS = 5 * 60
 MAX_OPEN_SECONDS = 12 * 60 * 60
 NO_CANDIDATE = '{"selected_this_run":false}'
@@ -57,6 +62,8 @@ def evaluate_followup(
     age = max(0.0, now - outbound_at)
     if rest_state == "asleep" or age < FOLLOWUP_SECONDS or age > MAX_OPEN_SECONDS:
         return current, NO_CANDIDATE
+    if rest_state != "active" and deep_quiet(now):
+        return current, NO_CANDIDATE
 
     slot = followup_wake_slot(age, rest_state)
     if slot <= int(current.get("last_wake_slot") or 0):
@@ -71,6 +78,12 @@ def evaluate_followup(
         "minutes_without_reply": int(age // 60),
     }
     return current, json.dumps(output, ensure_ascii=False, separators=(",", ":"))
+
+
+def deep_quiet(now: float) -> bool:
+    local = datetime.fromtimestamp(now, TIMEZONE)
+    minute = local.hour * 60 + local.minute
+    return DEEP_QUIET_START_MINUTE <= minute < DEEP_QUIET_END_MINUTE
 
 
 def followup_wake_slot(age_seconds: float, rest_state: str) -> int:
@@ -157,43 +170,13 @@ def _latest_user_message(connection: sqlite3.Connection, session_ids: list[str] 
     return float(row[0]) if row and row[0] is not None else None
 
 
-def _compression_ancestors(connection: sqlite3.Connection, session_id: str) -> list[str]:
-    ancestors: list[str] = []
-    current = connection.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-    while current is not None and current["id"] not in ancestors:
-        if current["source"] != "weixin":
-            raise ValueError("followup target is not a Weixin conversation")
-        ancestors.append(current["id"])
-        if len(ancestors) > 128:
-            raise ValueError("compression lineage exceeds the bounded read")
-        parent_id = current["parent_session_id"]
-        if not parent_id:
-            break
-        config = json.loads(current["model_config"] or "{}")
-        if not isinstance(config, dict):
-            raise ValueError("invalid session model config")
-        if config.get("_branched_from") == parent_id or config.get("_delegate_from") == parent_id:
-            break
-        parent = connection.execute("SELECT * FROM sessions WHERE id = ?", (parent_id,)).fetchone()
-        if parent is None or parent["end_reason"] != "compression":
-            break
-        current = parent
-    if not ancestors:
-        raise ValueError("native followup session is missing")
-    return ancestors
-
-
 def native_followup_context(root: Path, session_key: str, followup_job_id: str) -> tuple[str | None, float | None, float | None]:
-    routing = load_state(root / "sessions" / "sessions.json")
-    entry = routing.get(session_key)
-    session_id = entry.get("session_id") if isinstance(entry, dict) else None
-    if not isinstance(session_id, str) or not session_id:
+    session_id = routed_session_id(root, session_key)
+    if session_id is None:
         raise ValueError("native followup route is missing")
-    database = (root / "state.db").resolve().as_uri() + "?mode=ro"
-    with closing(sqlite3.connect(database, uri=True)) as connection:
-        connection.row_factory = sqlite3.Row
+    with closing(open_readonly(root)) as connection:
         connection.execute("BEGIN")
-        session_ids = _compression_ancestors(connection, session_id)
+        session_ids = compression_ancestors(connection, session_id)
         inbound_at = _latest_user_message(connection, session_ids)
         rows = connection.execute(
             "SELECT obligation_id, updated_at, trigger_event_ids, content "
@@ -303,7 +286,7 @@ def main() -> int:
     except (OSError, ValueError, KeyError, TypeError, ImportError, sqlite3.Error) as error:
         print(script_gate(NO_CANDIDATE, error=f"candidate_state_unavailable:{type(error).__name__}"))
         return 0
-    print(script_gate(output))
+    print(script_gate(output, context=wake_context(root, output)))
     return 0
 
 

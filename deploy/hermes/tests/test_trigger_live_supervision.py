@@ -263,6 +263,40 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
         self.assertEqual(self.invoke(reordered)[0], 0)
         self.assertEqual(self.control.call_args_list[0], self.control.call_args_list[1])
 
+    def test_queue_mode_spools_the_event_and_acknowledges_without_the_gateway(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as home:
+            sys.modules["hermes_constants"].get_hermes_home.return_value = Path(home)
+            with patch.dict(os.environ, {"HERMES_LIVE_EVENT_QUEUE_ENABLED": "true"}):
+                for event, mode, task_marker in (
+                    (supervision_event(), "supervision", None),
+                    (offline_event(), "supervision", "<live_offline_event_json>"),
+                    (ai_event(), "daily", "claim_controller_ai_requests"),
+                ):
+                    with self.subTest(event_type=event["event_type"]):
+                        result, output = self.invoke(event)
+                        self.assertEqual(result, 0)
+                        self.assert_ack(output, event)
+                        name = __import__("live_event_queue").record_name(event["event_id"])
+                        stored = json.loads((Path(home) / "state" / "live-events" / "pending" / name).read_text(encoding="utf-8"))
+                        self.assertEqual(stored["event"], event)
+                        self.assertEqual(stored["mode"], mode)
+                        if task_marker is None:
+                            self.assertIsNone(stored["task"])
+                        else:
+                            self.assertIn(task_marker, stored["task"])
+                        # A Live retry is acknowledged again without a second record.
+                        self.assertEqual(self.invoke(event), (0, output))
+        self.control.assert_not_called()
+        self.get_job.assert_not_called()
+
+    def test_queue_write_failure_never_acknowledges(self):
+        sys.modules["hermes_constants"].get_hermes_home.side_effect = OSError("home unavailable")
+        with patch.dict(os.environ, {"HERMES_LIVE_EVENT_QUEUE_ENABLED": "true"}):
+            self.assertEqual(self.invoke(supervision_event()), (1, ""))
+        self.control.assert_not_called()
+
     def test_disabled_controller_or_missing_recipe_id_has_no_fallback(self):
         for settings in (
             {"HERMES_CONTROLLER_ENABLED": "false"},

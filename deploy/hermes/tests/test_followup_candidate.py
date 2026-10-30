@@ -156,6 +156,35 @@ def test_cron_delivery_echo_is_not_treated_as_weixin_reply(tmp_path):
     assert MODULE.latest_weixin_user_message(database) == 900
 
 
+def test_deep_night_waits_for_morning_unless_the_phone_is_in_use():
+    # 2026-10-30 01:06 UTC+08:00 outbound, checked an hour later at 02:06.
+    outbound = 1793293560.0
+    later = outbound + 60 * 60
+    _, idle = MODULE.evaluate_followup(
+        {}, root_id="job:night.md", outbound_at=outbound, inbound_at=None, now=later, rest_state="screen_off"
+    )
+    _, in_use = MODULE.evaluate_followup(
+        {}, root_id="job:night.md", outbound_at=outbound, inbound_at=None, now=later, rest_state="active"
+    )
+    assert MODULE.deep_quiet(later)
+    assert not MODULE.deep_quiet(outbound + 6 * 60 * 60)
+    assert not selected(idle)
+    assert selected(in_use)
+
+
+def test_gate_context_rides_only_on_a_real_wake():
+    import sys
+
+    sys.path.insert(0, str(SCRIPT.parent))
+    from candidate_script_gate import script_gate
+
+    context = {"recent_dialogue": [{"at": "10-30 09:00", "who": "他", "text": "在"}]}
+    woke = json.loads(script_gate('{"selected_this_run":true}', context=context))
+    skipped = json.loads(script_gate('{"selected_this_run":false}', context=context))
+    assert woke["recent_dialogue"] == context["recent_dialogue"]
+    assert skipped == {"selected_this_run": False, "wakeAgent": False}
+
+
 class FollowupCandidateUnittest(unittest.TestCase):
     def test_wake_cadence(self):
         test_wakes_with_progressive_backoff_until_reply()

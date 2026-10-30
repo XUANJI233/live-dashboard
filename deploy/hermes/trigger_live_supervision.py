@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Persist an authenticated Live event into the existing Hermes conversation."""
+"""Persist an authenticated Live event for Hermes.
+
+With `HERMES_LIVE_EVENT_QUEUE_ENABLED=true` the event is spooled for the isolated consumer job;
+otherwise it is posted as a session event into the one shared Hermes conversation.
+"""
 
 from __future__ import annotations
 
@@ -7,8 +11,11 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
@@ -198,6 +205,11 @@ def main() -> int:
     if not job_id:
         return 1
     compact = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if os.environ.get("HERMES_LIVE_EVENT_QUEUE_ENABLED", "").strip().lower() == "true":
+        if not _queue_event(event, mode, is_ai_request, is_offline):
+            return 1
+        print(_ack(event))
+        return 0
     try:
         from cron.jobs import get_job
         from gateway.control_socket import query_gateway_control
@@ -226,22 +238,43 @@ def main() -> int:
             return 1
     except Exception:
         return 1
-    print(
-        json.dumps(
-            {
-                "__hermes_ignore__": True,
-                "__hermes_ack__": {
-                    "schema": ACK_SCHEMA,
-                    "v": 1,
-                    "event_id": event["event_id"],
-                    "accepted": True,
-                },
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-    )
+    print(_ack(event))
     return 0
+
+
+def _queue_event(event: dict[str, Any], mode: str, is_ai_request: bool, is_offline: bool) -> bool:
+    # The consumer job's prompt frames every run; the record only carries mode-specific work.
+    task = _ai_request_extra_prompt(event, mode) if is_ai_request else (_offline_extra_prompt(event) if is_offline else None)
+    try:
+        from hermes_constants import get_hermes_home
+        from live_event_queue import enqueue
+
+        enqueue(Path(get_hermes_home()), {
+            "event": event,
+            "mode": mode,
+            "task": task,
+            "queued_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception:
+        return False
+    # A duplicate is already durable, so Live's retry gets the same ACK.
+    return True
+
+
+def _ack(event: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "__hermes_ignore__": True,
+            "__hermes_ack__": {
+                "schema": ACK_SCHEMA,
+                "v": 1,
+                "event_id": event["event_id"],
+                "accepted": True,
+            },
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 if __name__ == "__main__":
