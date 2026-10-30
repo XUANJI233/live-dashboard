@@ -51,7 +51,6 @@ describe("AutoAccounting bill ingestion and MCP query", () => {
     expect(result.bills).toHaveLength(2);
     expect(result.bills.find((item) => item.source_bill_id === "101")).toMatchObject({
       money: 30,
-      state: "Synced",
       shop_name: "Coffee corrected",
     });
     expect(result.bills.some((item) => item.shop_name === "Pending")).toBe(false);

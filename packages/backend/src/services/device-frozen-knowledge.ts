@@ -3,8 +3,8 @@ import { getDeviceContext } from "./device-context";
 import { commandActions, type CommandStatus } from "./device-command-packages";
 import { getCommandStatuses } from "./device-command-ledger";
 
-// What Live can know about the apps frozen on an Android LSP phone. The phone's report lists at
-// most eight frozen packages, so the last day's applied freeze and unfreeze results (a freeze
+// What Live can know about the apps frozen on an Android LSP phone. Older builds list at most
+// eight frozen packages in a report, and a report can lag a command, so the last day's applied freeze and unfreeze results (a freeze
 // lasts until the next local 03:00) fill in the rest, replayed in order so an app that was opened
 // again drops out. Report entries come first: they are current. Each entry carries the texts the
 // phone matches an unfreeze pattern against: package name, app name and freeze reason. The phone

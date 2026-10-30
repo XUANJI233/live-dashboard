@@ -1,17 +1,31 @@
 import { z } from "zod";
-import { ACCOUNTING_TRANSACTION_TYPES } from "./accounting-contracts";
 import { COYOTE_WAVEFORMS } from "./coyote-control";
+import { MEMORY_EVENT_TYPES } from "./controller-memory";
 
-export const DateRangeSchema = z.object({
-  start: z.string().describe("Inclusive ISO timestamp, for reading history only."),
-  end: z.string().describe("Exclusive ISO timestamp, for reading history only."),
-  limit: z.number().int().min(1).max(240).optional().describe("Maximum timeline sessions to return."),
-  timezone_offset_minutes: z.number().int().min(-14 * 60).max(14 * 60).optional()
-    .describe("JavaScript Date.getTimezoneOffset semantics; UTC+08:00 is -480."),
-});
-
-export const DeviceTimelineSchema = DateRangeSchema.extend({
-  device_id: z.string().min(1).max(160),
+export const ActivityHistorySchema = z.object({
+  view: z.enum(["usage", "timeline"])
+    .describe("usage: summed minutes per group; timeline: chronological app sessions."),
+  start: z.string().min(1).max(40)
+    .describe("Inclusive. ISO with Z or +08:00 is absolute; YYYY-MM-DD or YYYY-MM-DDTHH:mm without an offset is local."),
+  end: z.string().min(1).max(40).optional()
+    .describe("Exclusive, same formats; defaults to now. At most 14 days after start."),
+  device_id: z.string().min(1).max(160).optional(),
+  app: z.string().min(1).max(64).optional()
+    .describe("Case-insensitive substring of the app name or id, e.g. 起点."),
+  package: z.string().min(1).max(160).optional()
+    .describe("Exact app id: Android package or desktop process."),
+  title_contains: z.string().min(1).max(80).optional()
+    .describe("Substring of the privacy-filtered display title; hidden-tier apps have none."),
+  group_by: z.enum(["app", "title", "day", "hour"]).optional()
+    .describe("usage only; default app. day/hour are local buckets."),
+  order: z.enum(["newest_first", "oldest_first"]).optional()
+    .describe("timeline only; default newest_first."),
+  limit: z.number().int().min(1).max(100).optional()
+    .describe("usage groups (default 30) or timeline sessions (default 20, max 60) per page."),
+  cursor: z.string().min(1).max(1000).optional()
+    .describe("next_cursor from the previous page; every other argument must stay the same."),
+  timezone_offset_minutes: z.number().int().min(-840).max(840).optional()
+    .describe("getTimezoneOffset semantics (UTC+08:00 is -480); default is the saved summary timezone, else -480."),
 });
 
 export const FrozenListSchema = z.object({
@@ -29,19 +43,6 @@ export const ControllerContextSchema = z.object({
   timezone_offset_minutes: z.number().int().min(-840).max(840).optional(),
   device_id: z.string().min(1).max(160).optional(),
   window_minutes: z.number().int().min(15).max(1440).optional(),
-});
-
-export const AccountingBillsSchema = z.object({
-  start: z.string().describe("Inclusive ISO timestamp for processed AutoAccounting bills."),
-  end: z.string().describe("Exclusive ISO timestamp for processed AutoAccounting bills."),
-  device_id: z.string().min(1).max(160).optional(),
-  transaction_types: z.array(z.enum(ACCOUNTING_TRANSACTION_TYPES)).max(10).optional(),
-  category: z.string().max(100).optional(),
-  keyword: z.string().max(200).optional(),
-  limit: z.number().int().min(1).max(200).optional(),
-  cursor: z.string().max(500).optional(),
-  refresh_from_android: z.boolean().optional()
-    .describe("True by default. Ask the online Android integration to read AutoAccounting's completed bills before querying the server cache."),
 });
 
 const CoyoteDeviceSchema = z.object({
@@ -250,6 +251,12 @@ export const ControllerMemoryFeedSchema = z.object({
     .describe("true/false only. Include daily and weekly summaries. Defaults to true."),
   include_device_commands: z.boolean().optional()
     .describe("true/false only. Include reminders/device-control messages sent by the service. Defaults to true."),
+  until: z.string().max(40).optional().describe("Optional ISO timestamp; only events before it."),
+  event_types: z.array(z.enum(MEMORY_EVENT_TYPES)).min(1).max(MEMORY_EVENT_TYPES.length).optional(),
+  consumer_id: z.string().regex(/^[a-z0-9][a-z0-9_.:-]{0,63}$/).optional()
+    .describe("Reader whose position Live stores, e.g. hermes-memory. Without cursor or since, reads continue from that position (first read: newest events); has_more=true means call again."),
+  advance: z.boolean().optional()
+    .describe("true/false only. true stores the last returned event as consumer_id's position."),
 }).describe("Controller memory feed for OpenClaw/Hermes. Use this to ingest sent messages, replies, summaries, and reminders into controller memory.");
 
 export const SaveControllerSummarySchema = z.object({

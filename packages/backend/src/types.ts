@@ -105,6 +105,7 @@ export interface DeviceState {
   last_seen_at: string;
   is_online: number;
   extra: string; // JSON string
+  first_seen_at?: string;
 }
 
 export interface TimelineSegment {
@@ -118,6 +119,10 @@ export interface TimelineSegment {
   device_id: string;
   device_name: string;
   extra?: TimelineSegmentExtra;
+  /** Set by the controller history engine: segments of one app session share it. */
+  session_id?: string;
+  /** Set by the controller history engine; idle/sleeping reports are away. */
+  kind?: "active" | "away";
 }
 
 export interface TimelineSegmentExtra {

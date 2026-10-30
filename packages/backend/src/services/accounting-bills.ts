@@ -1,13 +1,21 @@
 import { db } from "../db";
 import { cleanLooseIdentifier, cleanText } from "./mcp-contracts";
 import { ACCOUNTING_TRANSACTION_TYPES } from "./accounting-contracts";
+import {
+  accountingRange,
+  accountingWhere,
+  MAX_ACCOUNTING_RANGE_DAYS,
+  type AccountingFilter,
+} from "./accounting-bill-filters";
+import { clippedText } from "./clipped-text";
 
 export const ACCOUNTING_BILLS_SCHEMA = "live_dashboard.accounting_bills.v1";
 export const ACCOUNTING_SOURCE = "autoaccounting";
 
 const MAX_BILLS_PER_UPLOAD = 500;
+const DEFAULT_QUERY_LIMIT = 50;
 const MAX_QUERY_LIMIT = 200;
-const MAX_QUERY_RANGE_DAYS = 3_650;
+const MAX_VIEW_REMARK_LENGTH = 80;
 const COMPLETED_STATES = new Set(["Edited", "Synced"]);
 const TRANSACTION_TYPES = new Set<string>(ACCOUNTING_TRANSACTION_TYPES);
 
@@ -70,10 +78,24 @@ export interface AccountingBillRecord {
   flag: number;
 }
 
-interface AccountingBillRow extends Omit<AccountingBillRecord, "auto" | "tags"> {
-  auto: number;
-  tags: string;
+export interface AccountingBillView {
+  source_bill_id: string;
+  occurred_at: string;
+  type: string;
+  money: number;
+  currency_code?: string;
+  category_name?: string;
+  shop_name?: string;
+  shop_item?: string;
+  app?: string;
+  remark?: string;
 }
+
+type AccountingBillViewRow = Pick<
+  AccountingBillRecord,
+  "device_id" | "source_bill_id" | "occurred_at" | "type" | "money" | "currency_code"
+  | "category_name" | "shop_name" | "shop_item" | "app" | "remark"
+>;
 
 interface AccountingCursor {
   occurred_at: string;
@@ -141,7 +163,7 @@ export function ingestAccountingBills(
   if (!syncId || !rangeStart || !rangeEnd || Date.parse(rangeEnd) <= Date.parse(rangeStart)) {
     throw new Error("invalid_accounting_sync_snapshot");
   }
-  if (Date.parse(rangeEnd) - Date.parse(rangeStart) > MAX_QUERY_RANGE_DAYS * 24 * 60 * 60_000) {
+  if (Date.parse(rangeEnd) - Date.parse(rangeStart) > MAX_ACCOUNTING_RANGE_DAYS * 24 * 60 * 60_000) {
     throw new Error("accounting_range_too_large");
   }
   if (batchCount < 1 || batchCount > 10_000 || batchIndex < 0 || batchIndex >= batchCount) {
@@ -201,13 +223,7 @@ export function ingestAccountingBills(
   return { schema: ACCOUNTING_BILLS_SCHEMA, sync_id: syncId, accepted, skipped, pruned };
 }
 
-export function queryAccountingBills(options: {
-  start: string;
-  end: string;
-  deviceId?: string;
-  transactionTypes?: string[];
-  category?: string;
-  keyword?: string;
+export function queryAccountingBills(options: Omit<AccountingFilter, "currencyCode"> & {
   limit?: number;
   cursor?: string;
 }): {
@@ -216,33 +232,45 @@ export function queryAccountingBills(options: {
   device_id: string | null;
   limit: number;
   truncated: boolean;
-  bills: AccountingBillRecord[];
+  bills: AccountingBillView[];
   next_cursor: string | null;
 } {
-  const start = isoTimestamp(options.start, "invalid_accounting_start");
-  const end = isoTimestamp(options.end, "invalid_accounting_end");
-  if (Date.parse(end) <= Date.parse(start)) throw new Error("invalid_accounting_range");
-  if (Date.parse(end) - Date.parse(start) > MAX_QUERY_RANGE_DAYS * 24 * 60 * 60_000) {
-    throw new Error("accounting_range_too_large");
-  }
-  const limit = integer(options.limit, 1, MAX_QUERY_LIMIT, 100);
+  const range = accountingRange(options.start, options.end);
+  const limit = integer(options.limit, 1, MAX_QUERY_LIMIT, DEFAULT_QUERY_LIMIT);
   const cursor = decodeCursor(options.cursor);
-  const where = accountingWhere({ ...options, start, end, cursor });
+  const where = accountingWhere({ ...options, ...range });
+  if (cursor) {
+    where.conditions.push(`(
+      occurred_at < ? OR
+      (occurred_at = ? AND device_id > ?) OR
+      (occurred_at = ? AND device_id = ? AND source_bill_id < ?)
+    )`);
+    where.params.push(
+      cursor.occurred_at,
+      cursor.occurred_at,
+      cursor.device_id,
+      cursor.occurred_at,
+      cursor.device_id,
+      cursor.source_bill_id,
+    );
+  }
   const rows = db.prepare(`
-    SELECT * FROM accounting_bills
-    WHERE ${where.sql}
+    SELECT device_id, source_bill_id, occurred_at, type, money, currency_code,
+           category_name, shop_name, shop_item, app, remark
+    FROM accounting_bills
+    WHERE ${where.conditions.join(" AND ")}
     ORDER BY occurred_at DESC, device_id ASC, source_bill_id DESC
     LIMIT ?
-  `).all(...where.params, limit + 1) as AccountingBillRow[];
+  `).all(...where.params, limit + 1) as AccountingBillViewRow[];
   const visibleRows = rows.slice(0, limit);
 
   return {
     schema: ACCOUNTING_BILLS_SCHEMA,
-    range: { start, end },
+    range,
     device_id: options.deviceId ? cleanLooseIdentifier(options.deviceId, 160) || null : null,
     limit,
     truncated: rows.length > visibleRows.length,
-    bills: visibleRows.map(publicBill),
+    bills: visibleRows.map(billView),
     next_cursor: rows.length > visibleRows.length && visibleRows.length > 0
       ? encodeCursor(visibleRows[visibleRows.length - 1]!)
       : null,
@@ -287,81 +315,26 @@ function normalizeUploadedBill(value: unknown): AccountingBillRecord | null {
   };
 }
 
-function accountingWhere(options: {
-  start: string;
-  end: string;
-  deviceId?: string;
-  transactionTypes?: string[];
-  category?: string;
-  keyword?: string;
-  cursor?: AccountingCursor | null;
-}): { sql: string; params: Array<string | number> } {
-  const conditions = ["occurred_at >= ?", "occurred_at < ?"];
-  const params: Array<string | number> = [options.start, options.end];
-  const deviceId = cleanLooseIdentifier(options.deviceId, 160);
-  if (deviceId) {
-    conditions.push("device_id = ?");
-    params.push(deviceId);
-  }
-  const transactionTypes = (options.transactionTypes ?? [])
-    .map((item) => cleanText(item, 40))
-    .filter((item, index, all) => TRANSACTION_TYPES.has(item) && all.indexOf(item) === index)
-    .slice(0, TRANSACTION_TYPES.size);
-  if (transactionTypes.length > 0) {
-    conditions.push(`type IN (${transactionTypes.map(() => "?").join(", ")})`);
-    params.push(...transactionTypes);
-  }
-  const category = cleanText(options.category, 100);
-  if (category) {
-    conditions.push("category_name = ?");
-    params.push(category);
-  }
-  const keywords = cleanText(options.keyword, 200).split(" ").filter(Boolean).slice(0, 6);
-  if (keywords.length > 0) {
-    const textColumns = ["shop_name", "shop_item", "category_name", "remark", "app", "channel", "tags"];
-    const keywordClauses = keywords.map(() => `(${textColumns.map((column) => `${column} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
-    conditions.push(`(${keywordClauses.join(" OR ")})`);
-    for (const keyword of keywords) {
-      params.push(...textColumns.map(() => `%${escapeLike(keyword)}%`));
-    }
-  }
-  if (options.cursor) {
-    conditions.push(`(
-      occurred_at < ? OR
-      (occurred_at = ? AND device_id > ?) OR
-      (occurred_at = ? AND device_id = ? AND source_bill_id < ?)
-    )`);
-    params.push(
-      options.cursor.occurred_at,
-      options.cursor.occurred_at,
-      options.cursor.device_id,
-      options.cursor.occurred_at,
-      options.cursor.device_id,
-      options.cursor.source_bill_id,
-    );
-  }
-  return { sql: conditions.join(" AND "), params };
-}
-
-function publicBill(row: AccountingBillRow): AccountingBillRecord {
-  return {
-    ...row,
-    auto: row.auto === 1,
-    tags: parseTags(row.tags),
+// What a supervisor reads per bill; sync bookkeeping stays in the table. Empty text is left out,
+// and the currency only appears when it is not CNY.
+function billView(row: AccountingBillViewRow): AccountingBillView {
+  const view: AccountingBillView = {
+    source_bill_id: row.source_bill_id,
+    occurred_at: row.occurred_at,
+    type: row.type,
+    money: row.money,
   };
+  if (row.currency_code !== "CNY") view.currency_code = row.currency_code;
+  for (const key of ["category_name", "shop_name", "shop_item", "app"] as const) {
+    if (row[key]) view[key] = row[key];
+  }
+  if (row.remark) view.remark = clippedText(row.remark, MAX_VIEW_REMARK_LENGTH);
+  return view;
 }
 
 function cleanTags(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => cleanText(item, 60)).filter(Boolean).slice(0, 20);
-}
-
-function parseTags(value: string): string[] {
-  try {
-    return cleanTags(JSON.parse(value));
-  } catch {
-    return [];
-  }
 }
 
 function numericId(value: unknown): string {
@@ -374,7 +347,7 @@ function cleanSyncId(value: unknown): string {
   return /^accounting_[a-f0-9-]{36}$/.test(text) ? text : "";
 }
 
-function encodeCursor(row: Pick<AccountingBillRow, "occurred_at" | "device_id" | "source_bill_id">): string {
+function encodeCursor(row: Pick<AccountingBillViewRow, "occurred_at" | "device_id" | "source_bill_id">): string {
   return Buffer.from(JSON.stringify({
     occurred_at: row.occurred_at,
     device_id: row.device_id,
@@ -407,12 +380,6 @@ function normalizeIso(value: unknown): string | null {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
-function isoTimestamp(value: string, error: string): string {
-  const normalized = normalizeIso(value);
-  if (!normalized) throw new Error(error);
-  return normalized;
-}
-
 function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -428,8 +395,4 @@ function roundedMoney(value: number): number {
 function integer(value: unknown, min: number, max: number, fallback: number): number {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
-}
-
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
 }

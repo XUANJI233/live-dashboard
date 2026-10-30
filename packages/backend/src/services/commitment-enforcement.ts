@@ -15,13 +15,13 @@ import {
 
 // Runs every minute and reconciles each phone with its committed packages, so a commitment holds
 // without a controller waking up. Each package gets its own exact command, and only that
-// command's result moves the package state: the phone's report lists at most eight frozen apps
-// and scans only sixteen records per unfreeze, so batch patterns and the report cannot confirm a
-// 17-app rule. A freeze lasts until the phone's own `until` (its next local 03:00). A package that
+// command's result moves the package state: older phone builds list at most eight frozen apps
+// and scan only sixteen records per unfreeze, so batch patterns and the report cannot confirm a
+// 17-app rule. Current builds list every freeze with a total, which makes a drop visible. A freeze lasts until the phone's own `until` (its next local 03:00). A package that
 // leaves the desired set is released, if Live froze it, and re-sent until the phone answers.
-// The phone keeps at most sixteen unsent events, a receipt and a result per command, and drops
-// the oldest, so Live keeps only a few commands outstanding per phone; the rest follow on later
-// ticks.
+// Older builds keep at most sixteen unsent events (current ones 64), a receipt and a result per
+// command, dropping the oldest, so Live keeps only a few commands outstanding per phone; the rest
+// follow on later ticks.
 
 // Long enough for a phone whose socket is down to fetch a queued command on its next HTTP report.
 export const COMMITMENT_COMMAND_TTL_SECONDS = 10 * 60;
@@ -31,9 +31,9 @@ const ABSENT_BACKOFF_MS = 60 * 60_000;
 const UNKNOWN_EXPIRY_RECHECK_MS = 60 * 60_000;
 const RELEASE_RETRY_MS = 2 * 60_000;
 const MAX_RELEASE_ATTEMPTS = 4;
-const PHONE_REPORT_LIMIT = 8;
+const LEGACY_REPORT_LIMIT = 8;
 const REPORT_SETTLE_MS = 30_000;
-// Twelve events of the phone's sixteen, leaving room for a controller's own commands.
+// Twelve events of an older phone's sixteen, leaving room for a controller's own commands.
 const MAX_OUTSTANDING_COMMANDS = 6;
 // A phone freeze lasts until its next local 03:00, so it was placed within a day before `until`.
 const FREEZE_LIFETIME_MS = 24 * 60 * 60_000;
@@ -87,7 +87,10 @@ function syncDevice(deviceId: string, now: Date, result: EnforcementResult): voi
   if (!device?.is_online) return;
 
   const reported = new Set(device.frozen_packages.map((item) => item.package_name));
-  const reportComplete = device.frozen_packages.length < PHONE_REPORT_LIMIT;
+  const total = device.frozen_packages_total;
+  const reportComplete = total === null
+    ? device.frozen_packages.length < LEGACY_REPORT_LIMIT
+    : device.frozen_packages.length >= total;
   const reportedAt = Date.parse(device.last_seen_at);
   const freeze: PackageStateRow[] = [];
   const release: PackageStateRow[] = [];

@@ -4,17 +4,18 @@ import {
   controllerRestState,
   getDeviceInstalledApps,
   getDeviceFrozenList,
-  getTimelineContext,
   listDeviceContexts,
 } from "./device-context";
 import { getCommandStatuses } from "./device-command-ledger";
 import { sendDeviceCommands } from "./device-control";
 import { awaitCommandResults } from "./device-command-wait";
 import { registerCommitmentTools } from "./mcp-commitment-tools";
+import { registerActivityHistoryTools } from "./mcp-activity-history-tools";
 import { registerLedgerTools } from "./mcp-ledger-tools";
 import { stableToolResult, toolResult } from "./mcp-tool-result";
 import { getControllerPersona, updateControllerPersona } from "./controller-persona";
-import { getControllerMemoryFeed, saveControllerSummary } from "./controller-memory";
+import { saveControllerSummary } from "./controller-memory";
+import { getControllerMemoryFeedForConsumer } from "./controller-memory-consumer";
 import { getControllerContext } from "./controller-context";
 import { controllerContextText } from "./controller-context-budget";
 import {
@@ -29,7 +30,6 @@ import {
 } from "./mcp-admin";
 import {
   AiJobStatusSchema,
-  AccountingBillsSchema,
   CaptureScreenshotSchema,
   CommandStatusSchema,
   ClaimControllerAiRequestsSchema,
@@ -43,8 +43,6 @@ import {
   CoyoteStartSchema,
   CoyoteStatusSchema,
   CoyoteStopSchema,
-  DateRangeSchema,
-  DeviceTimelineSchema,
   FrozenListSchema,
   GetScreenshotSchema,
   InstalledAppsSchema,
@@ -63,11 +61,10 @@ import {
   getDeviceScreenshot,
   type ScreenshotCaptureResult,
 } from "./device-screenshot-control";
-import { queryAccountingBills } from "./accounting-bills";
+import { registerAccountingTools } from "./mcp-accounting-tools";
 import {
   executeCoyoteCommand,
   getCoyoteStatuses,
-  requestAccountingSync,
 } from "./android-integration-control";
 
 export function createLiveDashboardMcpServer(): McpServer {
@@ -78,7 +75,8 @@ export function createLiveDashboardMcpServer(): McpServer {
     instructions: [
       "Live Dashboard MCP exposes local-only device context and control tools.",
       "Read-only tools inspect dashboard state; they never change settings or device state.",
-      "Hermes should start each decision with live_dashboard.get_controller_context and avoid separate settings, persona, device, timeline, and memory reads. Its bounds.truncated flag only means older or lower-priority detail was omitted; do not re-read solely for that flag because bounds.decision_complete remains true and bounds.followup_required remains false. Its usage_digest covers the whole window; supervision, companion, and followup timelines keep only the newest segments. Read one specific detail only after choosing an action that requires it, or call get_device_timeline once for one device and window when the digest leaves a decision-relevant question.",
+      "Hermes should start each decision with live_dashboard.get_controller_context and avoid separate settings, persona, device, timeline, and memory reads. Its bounds.truncated flag only means older or lower-priority detail was omitted; do not re-read solely for that flag because bounds.decision_complete remains true and bounds.followup_required remains false. Its usage_digest covers the whole window and usage_today the local day so far; supervision, companion, and followup timelines keep only the newest segments. Read one specific detail only after choosing an action that requires it, or call get_activity_history once (view usage for minutes, view timeline for one device and window) when the digest leaves a decision-relevant question.",
+      "The user's own history questions and checkable claims go straight to live_dashboard.get_activity_history; it sums minutes on the server, so quote its totals instead of adding numbers.",
       "live_dashboard.send_device_commands is only for immediate one-shot device actions such as say, vibrate, screen_off, freeze, or unfreeze. It waits about three seconds for the device result; query get_command_status only when results_pending is true.",
       "Long-lived block rules the user set go to live_dashboard.record_commitment. Live itself keeps a commitment's packages frozen inside its window; a controller opens one only through live_dashboard.request_exception_unfreeze with a purpose and minutes, and Live re-freezes it on time.",
       "One-off promises with a due time, owed tasks and agreed consequences, confirmed false claims, working hypotheses, and short states such as an observation period go to the Live ledger (ledger_open, ledger_update; older records through ledger_search). get_controller_context carries what is due and open, and Live wakes the controller with a ledger.due event when an agreed time arrives.",
@@ -96,7 +94,7 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.list_devices", {
     title: "List devices and capabilities",
-    description: "Return known devices, current app state, command capability profile, and frozen packages.",
+    description: "Return known devices, first_seen_at, current app state, command capability profile, and frozen packages.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => stableToolResult(() => ({
     generated_at: new Date().toISOString(),
@@ -112,30 +110,7 @@ export function createLiveDashboardMcpServer(): McpServer {
     rest_state: controllerRestState(),
   })));
 
-  server.registerTool("live_dashboard.get_all_device_timeline", {
-    title: "Get all-device timeline",
-    description: "Return a sanitized, device-grouped activity timeline for every device in an ISO time range.",
-    inputSchema: DateRangeSchema,
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (args) => stableToolResult(() => getTimelineContext({
-    start: args.start,
-    end: args.end,
-    limit: args.limit,
-    timezoneOffsetMinutes: args.timezone_offset_minutes,
-  })));
-
-  server.registerTool("live_dashboard.get_device_timeline", {
-    title: "Get device timeline",
-    description: "Return a sanitized activity timeline for one device in an ISO time range.",
-    inputSchema: DeviceTimelineSchema,
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (args) => stableToolResult(() => getTimelineContext({
-    start: args.start,
-    end: args.end,
-    deviceId: args.device_id,
-    limit: args.limit,
-    timezoneOffsetMinutes: args.timezone_offset_minutes,
-  })));
+  registerActivityHistoryTools(server);
 
   server.registerTool("live_dashboard.get_device_frozen_list", {
     title: "Get frozen list",
@@ -146,34 +121,12 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.get_device_installed_apps", {
     title: "Get device installed apps",
-    description: "Return the latest non-system installed app snapshot reported by one Android LSP device.",
+    description: "Return the latest non-system installed app snapshot reported by one Android LSP device, plus the packages added or removed between snapshots in the last 30 days (newest 50).",
     inputSchema: InstalledAppsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(() => getDeviceInstalledApps(args.device_id)));
 
-  server.registerTool("live_dashboard.get_accounting_bills", {
-    title: "Get processed AutoAccounting bills",
-    description: "Ask an online Android integration to read AutoAccounting's completed parent bills (Edited/Synced), cache them idempotently, then query the bounded server copy. Recognition rules and pending Wait2Edit data are never reproduced here.",
-    inputSchema: AccountingBillsSchema,
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (args) => stableToolResult(async () => {
-    const refresh = args.refresh_from_android === false
-      ? { ok: true, status: "skipped" }
-      : await requestAccountingSync({ deviceId: args.device_id, start: args.start, end: args.end });
-    return {
-      refresh,
-      ...queryAccountingBills({
-        start: args.start,
-        end: args.end,
-        deviceId: args.device_id,
-        transactionTypes: args.transaction_types,
-        category: args.category,
-        keyword: args.keyword,
-        limit: args.limit,
-        cursor: args.cursor,
-      }),
-    };
-  }));
+  registerAccountingTools(server);
 
   server.registerTool("live_dashboard.get_coyote_status", {
     title: "Get Android Coyote status",
@@ -294,7 +247,7 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.get_controller_context", {
     title: "Get bounded controller context",
-    description: "Preferred first and normally only read for Hermes decisions. Returns settings, persona, commitments, the ledger's due and open records, minimal device state, a whole-window usage digest, one bounded timeline (newest segments only in supervision, companion, and followup modes), and recent controller events in one call. Bounded truncation preserves a decision-complete newest-first view and never by itself requires another read.",
+    description: "Preferred first and normally only read for Hermes decisions. Returns settings, persona, commitments, the ledger's due and open records, minimal device state, a whole-window usage digest, today's running usage (supervision, companion, and followup modes), installed-app changes from the last 7 days, one bounded timeline (newest segments only in supervision, companion, and followup modes), and recent controller events in one call; daily and weekly modes add the range's enforcement (reminders, freezes, rule enforcement). Bounded truncation preserves a decision-complete newest-first view and never by itself requires another read.",
     inputSchema: ControllerContextSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(
@@ -314,10 +267,10 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.get_controller_memory_feed", {
     title: "Get controller memory feed",
-    description: "Return a chronological feed of sent/received messages, device reminders/commands, and saved summaries for OpenClaw/Hermes memory ingestion. This is preferred over letting the service invent long-term memory itself.",
+    description: "Return a chronological feed of sent/received messages, device reminders/commands, and saved summaries for OpenClaw/Hermes memory ingestion. This is preferred over letting the service invent long-term memory itself. A recurring reader passes consumer_id with advance:true so Live keeps its position.",
     inputSchema: ControllerMemoryFeedSchema,
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (args) => stableToolResult(() => getControllerMemoryFeed(args)));
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async (args) => stableToolResult(() => getControllerMemoryFeedForConsumer(args)));
 
   server.registerTool("live_dashboard.save_controller_summary", {
     title: "Save controller summary",

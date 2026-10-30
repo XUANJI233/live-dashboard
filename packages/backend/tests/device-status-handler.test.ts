@@ -138,6 +138,37 @@ describe("device-status-handler", () => {
     expect(JSON.parse(state.extra).device.frozen_packages).toBeUndefined();
   });
 
+  test("keeps the phone's full frozen list with its total, and drops a total an older build no longer sends", async () => {
+    const { processReportPayload } = await import("../src/services/device-status-handler");
+    const { getDeviceContext } = await import("../src/services/device-context");
+    const device = { device_id: "frozen-total-phone", device_name: "Phone", platform: "android" as const };
+    const longPackage = `com.example.${"a".repeat(80)}`;
+    const frozen = Array.from({ length: 20 }, (_, index) => ({
+      package_name: index === 0 ? longPackage : `com.example.app${index}`,
+      frozen_at: "2026-10-30T15:00:00.000Z",
+      until: "2026-10-30T19:00:00.000Z",
+    }));
+
+    processReportPayload({
+      app_id: "com.reader",
+      window_title: "Reading",
+      extra: { device: { profile: "android_lsp", frozen_packages: frozen, frozen_packages_total: 20 } },
+    }, device);
+    let context = getDeviceContext(device.device_id)!;
+    expect(context.frozen_packages).toHaveLength(20);
+    expect(context.frozen_packages_total).toBe(20);
+    expect(context.frozen_packages[0]).toMatchObject({ package_name: longPackage, since: "2026-10-30T15:00:00.000Z" });
+
+    processReportPayload({
+      app_id: "com.reader",
+      window_title: "Reading on",
+      extra: { device: { profile: "android_lsp", frozen_packages: frozen.slice(0, 8) } },
+    }, device);
+    context = getDeviceContext(device.device_id)!;
+    expect(context.frozen_packages).toHaveLength(8);
+    expect(context.frozen_packages_total).toBeNull();
+  });
+
   test("stores installed app snapshots but strips them from public current output", async () => {
     const { processReportPayload } = await import("../src/services/device-status-handler");
     const { db } = await import("../src/db");

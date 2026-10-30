@@ -37,7 +37,7 @@ function localDateForOffset(date: Date, tzOffsetMinutes: number): Date {
   return new Date(date.getTime() - safeTimezoneOffset(tzOffsetMinutes) * 60_000);
 }
 
-function timezoneOffsetLabel(tzOffsetMinutes: number): string {
+export function timezoneOffsetLabel(tzOffsetMinutes: number): string {
   const offsetMinutes = -safeTimezoneOffset(tzOffsetMinutes);
   const sign = offsetMinutes >= 0 ? "+" : "-";
   const abs = Math.abs(offsetMinutes);

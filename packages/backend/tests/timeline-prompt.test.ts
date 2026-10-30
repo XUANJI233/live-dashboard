@@ -51,6 +51,33 @@ describe("timeline-prompt", () => {
     ]);
   });
 
+  test("keeps engine sessions apart and labels the timezone", () => {
+    const doc = buildTimelinePromptDocument([
+      segment({ app_id: "com.taobao.taobao", app_name: "淘宝", started_at: "2026-06-08T00:00:00.000Z", ended_at: "2026-06-08T00:01:00.000Z", session_id: "phone#1" }),
+      segment({ app_id: "com.taobao.taobao", app_name: "淘宝", started_at: "2026-06-08T00:20:00.000Z", ended_at: "2026-06-08T00:21:00.000Z", session_id: "phone#9" }),
+      segment({ app_id: "idle", app_name: "idle", started_at: "2026-06-08T00:21:00.000Z", ended_at: "2026-06-08T00:22:00.000Z", session_id: "phone#10", kind: "away" }),
+    ], { tzOffsetMinutes: -480 });
+
+    expect(doc.timezone_label).toBe("UTC+08:00");
+    // Without engine sessions these two 淘宝 visits 20 minutes apart would merge.
+    expect(doc.devices[0]?.sessions.map((session) => [session.app, session.activity_kind])).toEqual([
+      ["淘宝", "foreground"],
+      ["淘宝", "foreground"],
+      ["idle", "idle"],
+    ]);
+  });
+
+  test("keeps only the newest items of a long session when asked", () => {
+    const segments = Array.from({ length: 5 }, (_, index) => segment({
+      display_title: `Page ${index}`,
+      started_at: new Date(Date.parse("2026-06-08T00:00:00.000Z") + index * 60_000).toISOString(),
+      ended_at: new Date(Date.parse("2026-06-08T00:01:00.000Z") + index * 60_000).toISOString(),
+    }));
+    const session = buildTimelinePromptDocument(segments, { tzOffsetMinutes: 0, maxItemsPerSession: 2 }).devices[0]?.sessions[0];
+    expect(session?.items.map((item) => item.title)).toEqual(["Page 3", "Page 4"]);
+    expect(session).toMatchObject({ available_item_count: 5, items_truncated: true });
+  });
+
   test("keeps background media inside the foreground session item", () => {
     const doc = buildTimelinePromptDocument([
       segment({

@@ -1,7 +1,8 @@
-import type { ActivityRecord, DeviceState, TimelineSegment } from "../types";
+import type { DeviceState } from "../types";
 import { db } from "../db";
-import { buildTimelineSegments } from "../routes/timeline";
-import { safeTimezoneOffset } from "./cdn";
+import { historyTimelineSegment, loadActivityExtras, loadHistory } from "./activity-history-engine";
+import { resolveControllerTimezone } from "./controller-timezone";
+import { deviceInstalledAppChanges, type InstalledAppChange } from "./installed-app-changes";
 import { buildTimelinePromptDocument } from "./timeline-prompt";
 import { trustedWatchSleepingAt } from "./health-context";
 import { cleanWebAllowlistStatus, type WebAllowlistStatus } from "./web-allowlist";
@@ -17,7 +18,6 @@ import {
 
 const MAX_TIMELINE_RANGE_DAYS = 14;
 const MAX_TIMELINE_SEGMENTS = 240;
-const MAX_TIMELINE_ACTIVITY_ROWS = 2_000;
 const MAX_FROZEN_ITEMS = 80;
 const MAX_INSTALLED_APPS = 512;
 
@@ -33,30 +33,6 @@ const getDeviceStateStmt = db.prepare(`
   FROM device_states
   WHERE device_id = ?
   LIMIT 1
-`);
-
-const getActivitiesForRangeStmt = db.prepare(`
-  SELECT *
-  FROM (
-    SELECT *
-    FROM activities
-    WHERE started_at >= ? AND started_at < ?
-    ORDER BY started_at DESC
-    LIMIT ?
-  )
-  ORDER BY started_at ASC
-`);
-
-const getDeviceActivitiesForRangeStmt = db.prepare(`
-  SELECT *
-  FROM (
-    SELECT *
-    FROM activities
-    WHERE device_id = ? AND started_at >= ? AND started_at < ?
-    ORDER BY started_at DESC
-    LIMIT ?
-  )
-  ORDER BY started_at ASC
 `);
 
 export interface DeviceCapability {
@@ -98,6 +74,8 @@ export interface DeviceContext {
   platform: string;
   is_online: boolean;
   last_seen_at: string;
+  /** First report Live stored for this device; '' for devices that predate the field. */
+  first_seen_at: string;
   current_app: {
     app_id: string;
     app_name: string;
@@ -105,6 +83,8 @@ export interface DeviceContext {
   };
   capability: DeviceCapability;
   frozen_packages: FrozenPackageItem[];
+  /** Every active freeze the phone counted; null from builds that list at most eight. */
+  frozen_packages_total: number | null;
   installed_apps_count: number;
   installed_apps_updated_at: string;
   sleeping: boolean;
@@ -144,6 +124,8 @@ export function getDeviceInstalledApps(deviceId: string): {
   app_count: number;
   updated_at: string;
   installed_apps: InstalledAppItem[];
+  /** Packages added or removed between reported snapshots, newest first. */
+  changes: ReturnType<typeof deviceInstalledAppChanges>;
 } {
   const device = getDeviceContext(deviceId);
   const row = device ? getDeviceStateStmt.get(device.device_id) as DeviceState | null : null;
@@ -157,6 +139,9 @@ export function getDeviceInstalledApps(deviceId: string): {
     app_count: installedApps.length,
     updated_at: cleanText(deviceExtra.installed_apps_updated_at, 40),
     installed_apps: installedApps,
+    changes: device
+      ? deviceInstalledAppChanges(device.device_id)
+      : { retention_days: 30, total_count: 0, has_more: false, changes: [] as InstalledAppChange[] },
   };
 }
 
@@ -185,14 +170,20 @@ export function getTimelineContext(options: {
 
   const deviceId = options.deviceId ? cleanLooseIdentifier(options.deviceId, 160) : "";
   const limit = clampInteger(options.limit, 1, MAX_TIMELINE_SEGMENTS, MAX_TIMELINE_SEGMENTS);
-  const rowLimit = Math.min(MAX_TIMELINE_ACTIVITY_ROWS, Math.max(100, limit * 4));
-  const rows = deviceId
-    ? getDeviceActivitiesForRangeStmt.all(deviceId, new Date(startMs).toISOString(), new Date(endMs).toISOString(), rowLimit) as ActivityRecord[]
-    : getActivitiesForRangeStmt.all(new Date(startMs).toISOString(), new Date(endMs).toISOString(), rowLimit) as ActivityRecord[];
-
-  const segments = buildTimelineSegments(rows, { openLast: false })
-    .filter((segment) => segment.duration_seconds > 0);
-  const visibleSegments = segments.length > limit ? segments.slice(-limit) : segments;
+  const nowMs = Date.now();
+  // Same duration rule and sessions as get_activity_history; newest segments win.
+  const segments = loadHistory({
+    window: { startMs, endMs: Math.max(startMs, Math.min(endMs, nowMs)), nowMs },
+    deviceId: deviceId || undefined,
+  })
+    .flatMap(({ device, segments: deviceSegments }) => deviceSegments.map((segment) => ({ segment, deviceName: device.device_name })))
+    .sort((left, right) => left.segment.clip_start_ms - right.segment.clip_start_ms
+      || left.segment.device_id.localeCompare(right.segment.device_id)
+      || left.segment.id - right.segment.id);
+  const visible = segments.length > limit ? segments.slice(-limit) : segments;
+  const extras = loadActivityExtras(visible.map(({ segment }) => segment.id));
+  const visibleSegments = visible
+    .map(({ segment, deviceName }) => historyTimelineSegment(segment, deviceName, extras.get(segment.id)));
 
   return {
     schema: TIMELINE_SCHEMA,
@@ -201,11 +192,11 @@ export function getTimelineContext(options: {
       end: new Date(endMs).toISOString(),
     },
     device_id: deviceId || null,
-    truncated: segments.length > visibleSegments.length || rows.length >= rowLimit,
+    truncated: segments.length > visibleSegments.length,
     segment_count: visibleSegments.length,
     timeline: buildTimelinePromptDocument(visibleSegments, {
       label: deviceId ? "device_timeline" : "all_device_timeline",
-      tzOffsetMinutes: safeTimezoneOffset(options.timezoneOffsetMinutes ?? 0),
+      tzOffsetMinutes: resolveControllerTimezone(options.timezoneOffsetMinutes).offset_minutes,
     }),
   };
 }
@@ -223,6 +214,7 @@ function deviceContextFromRow(row: DeviceState): DeviceContext {
     platform: cleanText(row.platform, 40),
     is_online: row.is_online === 1,
     last_seen_at: cleanText(row.last_seen_at, 40),
+    first_seen_at: cleanText(row.first_seen_at, 40),
     current_app: {
       app_id: cleanText(row.app_id, 160),
       app_name: cleanText(row.app_name, 100),
@@ -230,6 +222,7 @@ function deviceContextFromRow(row: DeviceState): DeviceContext {
     },
     capability: capabilityForDevice(row.platform, deviceExtra),
     frozen_packages: frozenPackageItems(deviceExtra.frozen_packages),
+    frozen_packages_total: Number.isInteger(deviceExtra.frozen_packages_total) ? deviceExtra.frozen_packages_total as number : null,
     installed_apps_count: installedAppItems(deviceExtra.installed_apps).length,
     installed_apps_updated_at: cleanText(deviceExtra.installed_apps_updated_at, 40),
     sleeping: extra.sleeping === true,
@@ -336,7 +329,7 @@ function frozenPackageItems(value: unknown): FrozenPackageItem[] {
       app_name: appName,
       mode: cleanText(body.mode, 40),
       reason: cleanText(body.reason, 180),
-      since: cleanText(body.since, 40),
+      since: cleanText(body.frozen_at ?? body.since, 40),
       until: cleanText(body.until, 40),
     });
     if (out.length >= MAX_FROZEN_ITEMS) break;

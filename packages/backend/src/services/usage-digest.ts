@@ -1,14 +1,12 @@
 import { createHash } from "node:crypto";
-import type { ActivityRecord, TimelineSegment } from "../types";
-import { db } from "../db";
-import { buildTimelineSegments } from "../routes/timeline";
+import type { TimelineSegment } from "../types";
+import { historyTimelineSegment, isAwayApp, loadHistory } from "./activity-history-engine";
 import { promptText } from "./prompt-text";
 import { matchSegmentSupervisionRules, type CompiledSupervisionRules } from "./supervision-patterns";
 
 export const USAGE_DIGEST_SCHEMA = "live_dashboard.usage_digest.v1";
 const MAX_DIGEST_DEVICES = 6;
 const MAX_DIGEST_APPS = 6;
-const MAX_DIGEST_ROWS = 4_000;
 // An app needs this much of a window before its presence or class can count as a
 // material change between periodic reviews; shorter visits stay noise.
 const MATERIAL_APP_SECONDS = 5 * 60;
@@ -28,7 +26,9 @@ export interface UsageDigestApp {
 
 export interface UsageDigestDevice {
   device_id: string;
+  /** App usage only: idle/sleeping time is reported beside it. */
   active_minutes: number;
+  idle_minutes: number;
   class_minutes: Record<UsageClass, number>;
   current: UsageDigestApp & { since: string };
   top_apps: UsageDigestApp[];
@@ -55,36 +55,36 @@ interface AppUsage {
 interface DeviceUsage {
   deviceId: string;
   seconds: number;
+  idleSeconds: number;
   classSeconds: Record<UsageClass, number>;
   apps: Map<string, AppUsage>;
-  current: { key: string; class: UsageClass; since: string; seconds: number };
+  current: { key: string; app_id: string; app_name: string; class: UsageClass; since: string; seconds: number };
   switches: number;
 }
 
-const getDigestRows = db.prepare(`
-  SELECT *
-  FROM activities
-  WHERE started_at >= ? AND started_at < ?
-  ORDER BY started_at DESC
-  LIMIT ?
-`);
-
-/** Whole-window usage digest for the controller; the newest rows win when a window is too large. */
+/** Whole-window usage digest for the controller, folded by the shared history engine. */
 export function loadUsageDigest(options: {
   start: string;
   end: string;
   rules: CompiledSupervisionRules;
   preferDeviceId?: string;
+  now?: Date;
 }): UsageDigest {
-  const rows = getDigestRows.all(options.start, options.end, MAX_DIGEST_ROWS + 1) as ActivityRecord[];
-  const truncated = rows.length > MAX_DIGEST_ROWS;
-  const segments = buildTimelineSegments(rows.slice(0, MAX_DIGEST_ROWS).reverse(), { openLast: false });
-  return buildUsageDigest(segments, options.rules, {
+  return buildUsageDigest(loadUsageSegments(options.start, options.end, options.now), options.rules, {
     start: options.start,
     end: options.end,
     preferDeviceId: options.preferDeviceId,
-    truncated,
   });
+}
+
+/** Every device's folded segments for a window, in the shape buildUsageDigest consumes. */
+export function loadUsageSegments(start: string, end: string, now = new Date()): TimelineSegment[] {
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  const nowMs = now.getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return [];
+  return loadHistory({ window: { startMs, endMs: Math.max(startMs, Math.min(endMs, nowMs)), nowMs } })
+    .flatMap(({ device, segments }) => segments.map((segment) => historyTimelineSegment(segment, device.device_name)));
 }
 
 export function buildUsageDigest(
@@ -147,51 +147,70 @@ function deviceUsage(deviceId: string, segments: TimelineSegment[], rules: Compi
   const usage: DeviceUsage = {
     deviceId,
     seconds: 0,
+    idleSeconds: 0,
     classSeconds: emptyClassSeconds(),
     apps: new Map(),
-    current: { key: "", class: "unclassified", since: "", seconds: 0 },
+    current: { key: "", app_id: "", app_name: "", class: "unclassified", since: "", seconds: 0 },
     switches: 0,
   };
   for (const segment of ordered) {
-    const usageClass = segmentUsageClass(segment, rules);
     const seconds = segment.duration_seconds;
+    const kind = segmentKind(segment);
     const key = segment.app_id || segment.app_name;
-    usage.seconds += seconds;
-    usage.classSeconds[usageClass] += seconds;
-    const app = usage.apps.get(key) ?? {
-      app_id: promptText(segment.app_id, 160),
-      app_name: promptText(segment.app_name, 60) || promptText(segment.app_id, 60),
-      seconds: 0,
-      classSeconds: emptyClassSeconds(),
-    };
-    app.seconds += seconds;
-    app.classSeconds[usageClass] += seconds;
-    usage.apps.set(key, app);
+    // Idle and sleeping keep the current-app trail honest but are never app usage.
+    const usageClass = kind === "active" ? segmentUsageClass(segment, rules) : "unclassified";
+    if (kind === "away") {
+      usage.idleSeconds += seconds;
+    } else {
+      usage.seconds += seconds;
+      usage.classSeconds[usageClass] += seconds;
+      const app = usage.apps.get(key) ?? {
+        app_id: promptText(segment.app_id, 160),
+        app_name: promptText(segment.app_name, 60) || promptText(segment.app_id, 60),
+        seconds: 0,
+        classSeconds: emptyClassSeconds(),
+      };
+      app.seconds += seconds;
+      app.classSeconds[usageClass] += seconds;
+      usage.apps.set(key, app);
+    }
     if (usage.current.key === key) {
       usage.current.seconds += seconds;
       usage.current.class = usageClass;
     } else {
       if (usage.current.key) usage.switches += 1;
-      usage.current = { key, class: usageClass, since: segment.started_at, seconds };
+      usage.current = {
+        key,
+        app_id: promptText(segment.app_id, 160),
+        app_name: promptText(segment.app_name, 60) || promptText(segment.app_id, 60),
+        class: usageClass,
+        since: segment.started_at,
+        seconds,
+      };
     }
   }
   return usage;
+}
+
+function segmentKind(segment: TimelineSegment): "active" | "away" {
+  if (segment.kind) return segment.kind;
+  return isAwayApp(segment.app_id, segment.app_name) ? "away" : "active";
 }
 
 function publicDeviceDigest(usage: DeviceUsage): UsageDigestDevice {
   const apps = Array.from(usage.apps.values()).sort((left, right) =>
     right.seconds - left.seconds || left.app_name.localeCompare(right.app_name)
   );
-  const currentApp = usage.apps.get(usage.current.key);
   return {
     device_id: promptText(usage.deviceId, 160),
     active_minutes: minutes(usage.seconds),
+    idle_minutes: minutes(usage.idleSeconds),
     class_minutes: Object.fromEntries(
       USAGE_CLASSES.map((usageClass) => [usageClass, minutes(usage.classSeconds[usageClass])]),
     ) as Record<UsageClass, number>,
     current: {
-      app_id: currentApp?.app_id ?? "",
-      app_name: currentApp?.app_name ?? "",
+      app_id: usage.current.app_id,
+      app_name: usage.current.app_name,
       minutes: minutes(usage.current.seconds),
       class: usage.current.class,
       since: usage.current.since,

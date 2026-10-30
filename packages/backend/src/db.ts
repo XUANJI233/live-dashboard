@@ -64,11 +64,7 @@ db.run(`
   ON activities(device_id, app_id, title_hash, time_bucket)
 `);
 
-// Query indexes
-db.run(`
-  CREATE INDEX IF NOT EXISTS idx_activities_device_started
-  ON activities(device_id, started_at DESC)
-`);
+// Query indexes (the per-device history index needs display_title, so it follows the migrations below)
 db.run(`
   CREATE INDEX IF NOT EXISTS idx_activities_started
   ON activities(started_at DESC)
@@ -144,6 +140,38 @@ if (!columnExists("device_states", "display_title")) {
 if (!columnExists("device_states", "extra")) {
   db.run("ALTER TABLE device_states ADD COLUMN extra TEXT DEFAULT '{}'");
 }
+
+// device_states.first_seen_at: set on a device's first report; '' for devices that predate it.
+addColumnIfMissing("device_states", "first_seen_at", "first_seen_at TEXT NOT NULL DEFAULT ''");
+
+// Per-device history scans read only this covering index, which deliberately omits window_title.
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_activities_device_history
+  ON activities(device_id, started_at, app_id, app_name, display_title)
+`);
+db.run("DROP INDEX IF EXISTS idx_activities_device_started");
+
+// Installed-app diffs between consecutive reported snapshots of one device.
+db.run(`
+  CREATE TABLE IF NOT EXISTS installed_app_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT NOT NULL,
+    package_name TEXT NOT NULL,
+    app_name TEXT NOT NULL DEFAULT '',
+    change TEXT NOT NULL CHECK (change IN ('installed', 'removed')),
+    detected_at TEXT NOT NULL,
+    previous_snapshot_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_installed_app_changes_device_detected
+  ON installed_app_changes(device_id, detected_at)
+`);
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_installed_app_changes_detected
+  ON installed_app_changes(detected_at)
+`);
 
 // ── Health records table ──
 
@@ -672,8 +700,8 @@ export const insertActivity = db.prepare(`
 `);
 
 export const upsertDeviceState = db.prepare(`
-  INSERT INTO device_states (device_id, device_name, platform, app_id, app_name, window_title, display_title, last_seen_at, extra, is_online)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+  INSERT INTO device_states (device_id, device_name, platform, app_id, app_name, window_title, display_title, last_seen_at, extra, is_online, first_seen_at)
+  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?8)
   ON CONFLICT(device_id) DO UPDATE SET
     device_name = excluded.device_name,
     platform = excluded.platform,

@@ -4,6 +4,7 @@ import { isNSFW } from "./nsfw-filter";
 const NSFW_FILTER_ENABLED = process.env.NSFW_FILTER_DISABLED !== "true";
 import { processDisplayTitle } from "./privacy-tiers";
 import { publicDeviceExtra } from "./public-device-extra";
+import { recordInstalledAppChanges } from "./installed-app-changes";
 import { cleanWebAllowlistStatus } from "./web-allowlist";
 import { db, insertActivity, insertLocationRecord, upsertDeviceState, hmacTitle } from "../db";
 import { OFFLINE_TIMEOUT_FIELD, validateReportedOfflineTimeoutMinutes } from "../offline-policy";
@@ -12,6 +13,9 @@ import type { DeviceInfo, TimelineSegmentExtra } from "../types";
 const MAX_TITLE_LENGTH = 256;
 const MAX_SHORT_LENGTH = 64;
 const MAX_MEDIUM_LENGTH = 256;
+const MAX_PACKAGE_LENGTH = 160;
+// The Android LSP phone lists every active freeze up to this many, with the total beside it.
+const MAX_FROZEN_PACKAGES = 80;
 const MAX_INSTALLED_APPS = 512;
 const VALID_SOURCES = new Set(["normal", "root", "lsposed", "accessibility", "notification"]);
 const VALID_DEVICE_PROFILES = new Set(["android_lsp", "android_normal", "desktop_message"]);
@@ -189,6 +193,8 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (ambientLux != null) deviceExtra.ambient_lux = Math.round(ambientLux * 10) / 10;
       const frozenPackages = cleanFrozenPackages(deviceBody.frozen_packages);
       if (Array.isArray(deviceBody.frozen_packages)) deviceExtra.frozen_packages = frozenPackages;
+      const frozenTotal = cleanFiniteNumber(deviceBody.frozen_packages_total, 0, 100_000);
+      if (frozenTotal != null) deviceExtra.frozen_packages_total = Math.trunc(frozenTotal);
       const webAllowlist = cleanWebAllowlistStatus(deviceBody.web_allowlist);
       if (webAllowlist) deviceExtra.web_allowlist = webAllowlist;
       const installedApps = cleanInstalledApps(deviceBody.installed_apps);
@@ -283,7 +289,8 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (Object.keys(media).length > 0) extra.media = media;
     }
   }
-  mergeStableDeviceExtra(device.device_id, extra);
+  const previousExtra = readPreviousDeviceExtra(device.device_id);
+  mergeStableDeviceExtra(previousExtra, extra);
   const extraJson = JSON.stringify(extra);
   const activityExtraJson = JSON.stringify(activityExtraSnapshot(extra));
   const heartbeatOnly = plainObject(extra.device)?.heartbeat_only === true;
@@ -312,6 +319,7 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
     }
   }
 
+  let deviceStateSaved = false;
   try {
     upsertDeviceState.run(
       device.device_id,
@@ -324,8 +332,25 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       new Date().toISOString(),
       extraJson
     );
+    deviceStateSaved = true;
   } catch (e: any) {
     console.error("[report] Device state update error:", e.message);
+  }
+
+  // Diff only a list this report actually carried, against the snapshot it just replaced.
+  const reportedDevice = plainObject(rawExtra?.device);
+  const savedDevice = plainObject(extra.device);
+  if (deviceStateSaved && Array.isArray(reportedDevice?.installed_apps) && Array.isArray(savedDevice?.installed_apps)) {
+    try {
+      recordInstalledAppChanges(
+        device.device_id,
+        plainObject(previousExtra?.device),
+        savedDevice.installed_apps as Array<Record<string, string>>,
+        startedAt,
+      );
+    } catch (e: any) {
+      console.error("[report] Installed app change insert error:", e.message);
+    }
   }
 
   const update = {
@@ -404,16 +429,18 @@ function copyString<T extends Record<string, unknown>>(source: Record<string, un
   }
 }
 
-function mergeStableDeviceExtra(deviceId: string, extra: Record<string, unknown>) {
+function readPreviousDeviceExtra(deviceId: string): Record<string, unknown> | null {
   const row = getPreviousDeviceExtra.get(deviceId) as { extra?: string } | undefined;
-  if (!row?.extra) return;
-
-  let previous: Record<string, unknown>;
+  if (!row?.extra) return null;
   try {
-    previous = JSON.parse(row.extra);
+    return plainObject(JSON.parse(row.extra));
   } catch {
-    return;
+    return null;
   }
+}
+
+function mergeStableDeviceExtra(previous: Record<string, unknown> | null, extra: Record<string, unknown>) {
+  if (!previous) return;
 
   if (typeof extra.battery_percent !== "number" && typeof previous.battery_percent === "number") {
     extra.battery_percent = previous.battery_percent;
@@ -439,6 +466,10 @@ function mergeStableDeviceExtra(deviceId: string, extra: Record<string, unknown>
   if (fullLspSnapshot && !Object.hasOwn(currentDevice, "frozen_packages")) {
     delete (extra.device as Record<string, unknown>).frozen_packages;
   }
+  // An older build sends no total; a stale one would make its partial list look complete.
+  if (fullLspSnapshot && !Object.hasOwn(currentDevice, "frozen_packages_total")) {
+    delete (extra.device as Record<string, unknown>).frozen_packages_total;
+  }
 }
 
 function cleanFrozenPackages(value: unknown): Record<string, unknown>[] {
@@ -447,7 +478,7 @@ function cleanFrozenPackages(value: unknown): Record<string, unknown>[] {
   for (const item of value) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const body = item as Record<string, unknown>;
-    const packageName = cleanString(body.package_name ?? body.packageName, MAX_SHORT_LENGTH);
+    const packageName = cleanString(body.package_name ?? body.packageName, MAX_PACKAGE_LENGTH);
     if (!packageName) continue;
     const row: Record<string, unknown> = { package_name: packageName };
     const appName = cleanString(body.app_name ?? body.appName, MAX_SHORT_LENGTH);
@@ -461,7 +492,7 @@ function cleanFrozenPackages(value: unknown): Record<string, unknown>[] {
     const reason = cleanString(body.reason, MAX_MEDIUM_LENGTH);
     if (reason) row.reason = reason;
     out.push(row);
-    if (out.length >= 8) break;
+    if (out.length >= MAX_FROZEN_PACKAGES) break;
   }
   return out;
 }
@@ -473,7 +504,7 @@ function cleanInstalledApps(value: unknown): Record<string, string>[] {
   for (const item of value) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const body = item as Record<string, unknown>;
-    const packageName = cleanString(body.package_name, MAX_SHORT_LENGTH);
+    const packageName = cleanString(body.package_name, MAX_PACKAGE_LENGTH);
     if (!packageName || seen.has(packageName)) continue;
     seen.add(packageName);
     const appName = cleanString(body.app_name, MAX_SHORT_LENGTH);
