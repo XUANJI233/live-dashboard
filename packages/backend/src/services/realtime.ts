@@ -113,12 +113,14 @@ export async function handleDeleteDevice(req: Request): Promise<Response> {
   if (!device) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const { deleteDevice, deleteDeviceActivities } = await import("../db");
+  const { deleteDeviceInstalledAppChanges } = await import("./installed-app-changes");
 
   // 1. 断开 WebSocket 连接
   realtimeSocketHub.closeDevice(device.device_id, 4003, "device_deleted");
 
   // 2. 删除数据库记录
   deleteDeviceActivities.run(device.device_id);
+  deleteDeviceInstalledAppChanges.run(device.device_id);
   deleteDevice.run(device.device_id);
 
   return Response.json({ ok: true, deleted: device.device_id });

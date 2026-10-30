@@ -4,13 +4,13 @@ import {
   controllerRestState,
   getDeviceInstalledApps,
   getDeviceFrozenList,
-  getTimelineContext,
   listDeviceContexts,
 } from "./device-context";
 import { getCommandStatuses } from "./device-command-ledger";
 import { sendDeviceCommands } from "./device-control";
 import { awaitCommandResults } from "./device-command-wait";
 import { registerCommitmentTools } from "./mcp-commitment-tools";
+import { registerActivityHistoryTools } from "./mcp-activity-history-tools";
 import { stableToolResult, toolResult } from "./mcp-tool-result";
 import { getControllerPersona, updateControllerPersona } from "./controller-persona";
 import { getControllerMemoryFeed, saveControllerSummary } from "./controller-memory";
@@ -42,8 +42,6 @@ import {
   CoyoteStartSchema,
   CoyoteStatusSchema,
   CoyoteStopSchema,
-  DateRangeSchema,
-  DeviceTimelineSchema,
   FrozenListSchema,
   GetScreenshotSchema,
   InstalledAppsSchema,
@@ -77,7 +75,8 @@ export function createLiveDashboardMcpServer(): McpServer {
     instructions: [
       "Live Dashboard MCP exposes local-only device context and control tools.",
       "Read-only tools inspect dashboard state; they never change settings or device state.",
-      "Hermes should start each decision with live_dashboard.get_controller_context and avoid separate settings, persona, device, timeline, and memory reads. Its bounds.truncated flag only means older or lower-priority detail was omitted; do not re-read solely for that flag because bounds.decision_complete remains true and bounds.followup_required remains false. Its usage_digest covers the whole window; supervision, companion, and followup timelines keep only the newest segments. Read one specific detail only after choosing an action that requires it, or call get_device_timeline once for one device and window when the digest leaves a decision-relevant question.",
+      "Hermes should start each decision with live_dashboard.get_controller_context and avoid separate settings, persona, device, timeline, and memory reads. Its bounds.truncated flag only means older or lower-priority detail was omitted; do not re-read solely for that flag because bounds.decision_complete remains true and bounds.followup_required remains false. Its usage_digest covers the whole window and usage_today the local day so far; supervision, companion, and followup timelines keep only the newest segments. Read one specific detail only after choosing an action that requires it, or call get_activity_history once (view usage for minutes, view timeline for one device and window) when the digest leaves a decision-relevant question.",
+      "The user's own history questions and checkable claims go straight to live_dashboard.get_activity_history; it sums minutes on the server, so quote its totals instead of adding numbers.",
       "live_dashboard.send_device_commands is only for immediate one-shot device actions such as say, vibrate, screen_off, freeze, or unfreeze. It waits about three seconds for the device result; query get_command_status only when results_pending is true.",
       "Long-lived rules the user set go to live_dashboard.record_commitment. Live itself keeps a block commitment's packages frozen inside its window; a controller opens one only through live_dashboard.request_exception_unfreeze with a purpose and minutes, and Live re-freezes it on time.",
       "live_dashboard.capture_device_screenshot captures the current Android LSP display on demand and may be used whenever current visual evidence is relevant. The screenshot is short-lived and returned once.",
@@ -94,7 +93,7 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.list_devices", {
     title: "List devices and capabilities",
-    description: "Return known devices, current app state, command capability profile, and frozen packages.",
+    description: "Return known devices, first_seen_at, current app state, command capability profile, and frozen packages.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => stableToolResult(() => ({
     generated_at: new Date().toISOString(),
@@ -110,30 +109,7 @@ export function createLiveDashboardMcpServer(): McpServer {
     rest_state: controllerRestState(),
   })));
 
-  server.registerTool("live_dashboard.get_all_device_timeline", {
-    title: "Get all-device timeline",
-    description: "Return a sanitized, device-grouped activity timeline for every device in an ISO time range.",
-    inputSchema: DateRangeSchema,
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (args) => stableToolResult(() => getTimelineContext({
-    start: args.start,
-    end: args.end,
-    limit: args.limit,
-    timezoneOffsetMinutes: args.timezone_offset_minutes,
-  })));
-
-  server.registerTool("live_dashboard.get_device_timeline", {
-    title: "Get device timeline",
-    description: "Return a sanitized activity timeline for one device in an ISO time range.",
-    inputSchema: DeviceTimelineSchema,
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (args) => stableToolResult(() => getTimelineContext({
-    start: args.start,
-    end: args.end,
-    deviceId: args.device_id,
-    limit: args.limit,
-    timezoneOffsetMinutes: args.timezone_offset_minutes,
-  })));
+  registerActivityHistoryTools(server);
 
   server.registerTool("live_dashboard.get_device_frozen_list", {
     title: "Get frozen list",
@@ -144,7 +120,7 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.get_device_installed_apps", {
     title: "Get device installed apps",
-    description: "Return the latest non-system installed app snapshot reported by one Android LSP device.",
+    description: "Return the latest non-system installed app snapshot reported by one Android LSP device, plus the packages added or removed between snapshots in the last 30 days (newest 50).",
     inputSchema: InstalledAppsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(() => getDeviceInstalledApps(args.device_id)));
@@ -291,7 +267,7 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.get_controller_context", {
     title: "Get bounded controller context",
-    description: "Preferred first and normally only read for Hermes decisions. Returns settings, persona, minimal device state, a whole-window usage digest, one bounded timeline (newest segments only in supervision, companion, and followup modes), and recent controller events in one call. Bounded truncation preserves a decision-complete newest-first view and never by itself requires another read.",
+    description: "Preferred first and normally only read for Hermes decisions. Returns settings, persona, minimal device state, a whole-window usage digest, today's running usage (supervision, companion, and followup modes), installed-app changes from the last 7 days, one bounded timeline (newest segments only in supervision, companion, and followup modes), and recent controller events in one call. Bounded truncation preserves a decision-complete newest-first view and never by itself requires another read.",
     inputSchema: ControllerContextSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(

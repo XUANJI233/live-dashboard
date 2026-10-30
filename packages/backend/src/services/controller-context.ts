@@ -1,4 +1,4 @@
-import { safeTimezoneOffset, utcRangeForLocalDate } from "./cdn";
+import { utcRangeForLocalDate } from "./cdn";
 import { getControllerMemoryFeed } from "./controller-memory";
 import { getControllerPersona } from "./controller-persona";
 import { controllerRestState, listDeviceContexts, getTimelineContext, type DeviceContext } from "./device-context";
@@ -12,14 +12,17 @@ import { hermesControllerEnabled } from "./controller-mode";
 import { fitControllerContextToMcpBudget } from "./controller-context-budget";
 import { compileSupervisionRules } from "./supervision-patterns";
 import { loadUsageDigest } from "./usage-digest";
+import { loadUsageToday } from "./usage-today";
 import { commitmentsContext } from "./commitments";
+import { resolveControllerTimezone } from "./controller-timezone";
+import { installedAppChangesContext } from "./installed-app-changes";
 
 export type ControllerContextMode = "supervision" | "companion" | "followup" | "memory" | "policy" | "daily" | "weekly";
 
 const MAX_CONTEXT_DEVICES = 12;
 const MAX_CONTEXT_FROZEN_PACKAGES = 6;
-// Frequent wakes read the whole-window usage digest first and keep only the newest
-// timeline segments; Hermes fetches older detail with get_device_timeline when needed.
+// Frequent wakes read the whole-window usage digest and today's running totals first and keep
+// only the newest timeline segments; Hermes fetches older detail with get_activity_history.
 const RECENT_ONLY_MODES = new Set<ControllerContextMode>(["supervision", "companion", "followup"]);
 const RECENT_TIMELINE_SEGMENTS = 8;
 
@@ -32,9 +35,10 @@ export function getControllerContext(input: {
   window_minutes?: number;
 }): Record<string, unknown> {
   const settings = getSummarySettings();
-  const timezoneOffset = safeTimezoneOffset(
-    input.timezone_offset_minutes ?? settings.timezone_offset_minutes ?? -480,
-  );
+  const timezoneOffset = resolveControllerTimezone(
+    input.timezone_offset_minutes,
+    settings.timezone_offset_minutes,
+  ).offset_minutes;
   const range = contextRange(input, timezoneOffset, settings.supervision_check_interval_minutes);
   const allDevices = listDeviceContexts();
   const truncatedSections = new Set<string>();
@@ -53,15 +57,22 @@ export function getControllerContext(input: {
   });
   if (devices.length < allDevices.length) truncatedSections.add("devices");
 
+  const rules = compileSupervisionRules(settings.supervision_rules);
   const usageDigest = loadUsageDigest({
     start: range.start,
     end: range.end,
-    rules: compileSupervisionRules(settings.supervision_rules),
+    rules,
     preferDeviceId: input.device_id,
   });
   if (usageDigest.truncated) truncatedSections.add("usage_digest");
 
   const recentOnly = RECENT_ONLY_MODES.has(input.mode);
+  // Frequent wakes see only the last max(60, interval) minutes; the day so far rides along.
+  const usageToday = recentOnly
+    ? loadUsageToday({ tzOffsetMinutes: timezoneOffset, rules, preferDeviceId: input.device_id })
+    : null;
+  const installedChanges = installedAppChangesContext();
+  if (installedChanges.has_more) truncatedSections.add("installed_changes");
   const timeline = getTimelineContext({
     start: range.start,
     end: range.end,
@@ -106,6 +117,8 @@ export function getControllerContext(input: {
     returned_device_count: devices.length,
     devices,
     usage_digest: usageDigest,
+    ...(usageToday ? { usage_today: usageToday } : {}),
+    installed_changes: installedChanges,
     timeline,
     recent_events: recentEvents,
   }, truncatedSections);

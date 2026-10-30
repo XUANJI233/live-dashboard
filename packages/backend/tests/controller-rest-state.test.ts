@@ -40,6 +40,7 @@ function device(input: {
     platform: input.platform ?? "android",
     is_online: true,
     last_seen_at: "2026-09-02T00:00:00.000Z",
+    first_seen_at: "2026-09-01T00:00:00.000Z",
     current_app: {
       app_id: input.app_id ?? "idle",
       app_name: "",

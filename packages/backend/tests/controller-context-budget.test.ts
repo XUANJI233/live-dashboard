@@ -127,4 +127,64 @@ describe("controller context transport budget", () => {
     expect(target.endsWith("…")).toBe(true);
     expect(target).not.toMatch(/[\uD800-\uDBFF]…$/);
   });
+
+  test("trims today's running usage and old installed-app changes before dropping devices", () => {
+    const app = (index: number) => ({
+      app_id: `com.example.${"long.package.name.".repeat(6)}${index}`,
+      app_name: `应用 ${"很长的应用名称".repeat(6)} ${index}`,
+      minutes: 10 + index,
+      class: "unclassified",
+    });
+    const usageDevice = (index: number) => ({
+      device_id: `device-${index}`,
+      active_minutes: 120,
+      idle_minutes: 30,
+      class_minutes: { blacklist: 0, risk: 0, target: 60, whitelist: 0, unclassified: 60 },
+      top_apps: Array.from({ length: 6 }, (_, appIndex) => app(appIndex)),
+    });
+    const devices = Array.from({ length: 6 }, (_, index) => ({ device_id: `device-${index}`, frozen_packages: [] }));
+    const context = fitControllerContextToMcpBudget({
+      schema: "live_dashboard.controller_context.v1",
+      generated_at: "2026-09-03T00:00:00.000Z",
+      mode: "supervision",
+      controller_active: true,
+      settings: { supervision_enabled: true },
+      persona: { enabled: true },
+      rest_state: "active",
+      available_device_count: devices.length,
+      returned_device_count: devices.length,
+      devices,
+      usage_digest: { devices: Array.from({ length: 6 }, (_, index) => usageDevice(index)) },
+      usage_today: { date: "2026-09-03", devices: Array.from({ length: 6 }, (_, index) => usageDevice(index)) },
+      installed_changes: {
+        window_days: 7,
+        total_count: 20,
+        returned_count: 20,
+        has_more: false,
+        changes: Array.from({ length: 20 }, (_, index) => ({
+          device_id: "device-0",
+          package_name: `com.example.${"installed.package.".repeat(60)}${index}`,
+          app_name: `App ${index}`,
+          change: index % 2 === 0 ? "installed" : "removed",
+          detected_at: new Date(Date.UTC(2026, 8, 3, 0, 20 - index)).toISOString(),
+          previous_snapshot_at: "",
+        })),
+      },
+      timeline: { segment_count: 0, timeline: { devices: [] } },
+      recent_events: { events: [], returned_event_count: 0 },
+    }, []);
+    const usageToday = context.usage_today as { truncated?: boolean; devices: Array<{ top_apps: unknown[] }> };
+    const installed = context.installed_changes as { has_more: boolean; returned_count: number; changes: Array<{ package_name: string }> };
+
+    expect(new TextEncoder().encode(JSON.stringify(context)).byteLength).toBeLessThanOrEqual(24_000);
+    expect(context.bounds.truncated_sections).toEqual(expect.arrayContaining(["usage_today", "installed_changes"]));
+    expect(context.bounds.truncated_sections).not.toContain("devices");
+    expect(usageToday.truncated).toBe(true);
+    expect(usageToday.devices.length).toBeGreaterThanOrEqual(2);
+    expect(installed.has_more).toBe(true);
+    expect(installed.returned_count).toBe(installed.changes.length);
+    // Newest changes survive the trim.
+    expect(installed.changes[0]?.package_name.endsWith(".0")).toBe(true);
+    expect((context.devices as unknown[]).length).toBe(6);
+  });
 });

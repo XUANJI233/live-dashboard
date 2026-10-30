@@ -5,6 +5,8 @@ const ALLOWED_TRUNCATED_SECTIONS = new Set([
   "devices",
   "devices.frozen_packages",
   "usage_digest",
+  "usage_today",
+  "installed_changes",
   "timeline",
   "recent_events",
   "commitments",
@@ -66,9 +68,13 @@ export function fitControllerContextToMcpBudget(
   }
   trimWhileOversized(context, () => trimUsageDigestApp(context, 2), truncatedSections, "usage_digest");
   trimWhileOversized(context, () => trimUsageDigestDevice(context, 2), truncatedSections, "usage_digest");
+  trimWhileOversized(context, () => trimUsageTodayApp(context, 2), truncatedSections, "usage_today");
+  trimWhileOversized(context, () => trimUsageTodayDevice(context, 2), truncatedSections, "usage_today");
+  trimWhileOversized(context, () => trimOldestInstalledChange(context, 5), truncatedSections, "installed_changes");
   trimWhileOversized(context, () => trimOldestDevice(context, 4), truncatedSections, "devices");
   trimWhileOversized(context, () => trimOldestRecentEvent(context, 0), truncatedSections, "recent_events");
   trimWhileOversized(context, () => trimOldestTimelineSession(context, 1), truncatedSections, "timeline");
+  trimWhileOversized(context, () => trimOldestInstalledChange(context, 0), truncatedSections, "installed_changes");
   trimWhileOversized(context, () => trimOldestDevice(context, 1), truncatedSections, "devices");
   if (serializedBytes(context) > MAX_STRUCTURED_BYTES) {
     replaceWithMinimalContext(context);
@@ -76,6 +82,8 @@ export function fitControllerContextToMcpBudget(
     truncatedSections.add("timeline");
     truncatedSections.add("devices");
     if (isRecord(context.usage_digest)) truncatedSections.add("usage_digest");
+    if (isRecord(context.usage_today)) truncatedSections.add("usage_today");
+    if (isRecord(context.installed_changes)) truncatedSections.add("installed_changes");
     syncBounds(context, truncatedSections);
   }
   return serializedBytes(context) <= MAX_STRUCTURED_BYTES
@@ -210,6 +218,37 @@ function trimUsageDigestDevice(context: BoundedControllerContext, minimumDevices
   return true;
 }
 
+function trimUsageTodayApp(context: BoundedControllerContext, minimumApps: number): boolean {
+  const usageToday = recordField(context.usage_today);
+  if (!Array.isArray(usageToday.devices)) return false;
+  const device = usageToday.devices
+    .filter(isRecord)
+    .filter((candidate) => arrayLength(candidate.top_apps) > minimumApps)
+    .sort((left, right) => arrayLength(right.top_apps) - arrayLength(left.top_apps))[0];
+  if (!device || !Array.isArray(device.top_apps)) return false;
+  device.top_apps.pop();
+  usageToday.truncated = true;
+  return true;
+}
+
+function trimUsageTodayDevice(context: BoundedControllerContext, minimumDevices: number): boolean {
+  const usageToday = recordField(context.usage_today);
+  if (!Array.isArray(usageToday.devices) || usageToday.devices.length <= minimumDevices) return false;
+  usageToday.devices.pop();
+  usageToday.truncated = true;
+  return true;
+}
+
+// Changes are newest first; the oldest go first and the counts say how many remain.
+function trimOldestInstalledChange(context: BoundedControllerContext, minimum: number): boolean {
+  const installedChanges = recordField(context.installed_changes);
+  if (!Array.isArray(installedChanges.changes) || installedChanges.changes.length <= minimum) return false;
+  installedChanges.changes.pop();
+  installedChanges.returned_count = installedChanges.changes.length;
+  installedChanges.has_more = true;
+  return true;
+}
+
 function compactLargeTextSections(context: BoundedControllerContext): string[] {
   const changed = new Set<string>();
   const settings = recordField(context.settings);
@@ -290,6 +329,21 @@ function replaceWithMinimalContext(context: BoundedControllerContext): void {
       ...device,
       top_apps: Array.isArray(device.top_apps) ? device.top_apps.slice(0, 2) : [],
     }));
+  }
+  const usageToday = recordField(context.usage_today);
+  if (Array.isArray(usageToday.devices)) {
+    usageToday.devices = usageToday.devices.slice(0, 2).filter(isRecord).map((device) => ({
+      ...device,
+      top_apps: Array.isArray(device.top_apps) ? device.top_apps.slice(0, 2) : [],
+    }));
+    usageToday.truncated = true;
+  }
+  const installedChanges = recordField(context.installed_changes);
+  const changes = installedChanges.changes;
+  if (Array.isArray(changes) && changes.length > 3) {
+    installedChanges.changes = changes.slice(0, 3);
+    installedChanges.returned_count = 3;
+    installedChanges.has_more = true;
   }
   const timeline = recordField(context.timeline);
   timeline.truncated = true;

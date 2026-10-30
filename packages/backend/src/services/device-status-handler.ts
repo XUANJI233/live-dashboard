@@ -4,6 +4,7 @@ import { isNSFW } from "./nsfw-filter";
 const NSFW_FILTER_ENABLED = process.env.NSFW_FILTER_DISABLED !== "true";
 import { processDisplayTitle } from "./privacy-tiers";
 import { publicDeviceExtra } from "./public-device-extra";
+import { recordInstalledAppChanges } from "./installed-app-changes";
 import { cleanWebAllowlistStatus } from "./web-allowlist";
 import { db, insertActivity, insertLocationRecord, upsertDeviceState, hmacTitle } from "../db";
 import { OFFLINE_TIMEOUT_FIELD, validateReportedOfflineTimeoutMinutes } from "../offline-policy";
@@ -283,7 +284,8 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       if (Object.keys(media).length > 0) extra.media = media;
     }
   }
-  mergeStableDeviceExtra(device.device_id, extra);
+  const previousExtra = readPreviousDeviceExtra(device.device_id);
+  mergeStableDeviceExtra(previousExtra, extra);
   const extraJson = JSON.stringify(extra);
   const activityExtraJson = JSON.stringify(activityExtraSnapshot(extra));
   const heartbeatOnly = plainObject(extra.device)?.heartbeat_only === true;
@@ -312,6 +314,7 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
     }
   }
 
+  let deviceStateSaved = false;
   try {
     upsertDeviceState.run(
       device.device_id,
@@ -324,8 +327,25 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
       new Date().toISOString(),
       extraJson
     );
+    deviceStateSaved = true;
   } catch (e: any) {
     console.error("[report] Device state update error:", e.message);
+  }
+
+  // Diff only a list this report actually carried, against the snapshot it just replaced.
+  const reportedDevice = plainObject(rawExtra?.device);
+  const savedDevice = plainObject(extra.device);
+  if (deviceStateSaved && Array.isArray(reportedDevice?.installed_apps) && Array.isArray(savedDevice?.installed_apps)) {
+    try {
+      recordInstalledAppChanges(
+        device.device_id,
+        plainObject(previousExtra?.device),
+        savedDevice.installed_apps as Array<Record<string, string>>,
+        startedAt,
+      );
+    } catch (e: any) {
+      console.error("[report] Installed app change insert error:", e.message);
+    }
   }
 
   const update = {
@@ -404,16 +424,18 @@ function copyString<T extends Record<string, unknown>>(source: Record<string, un
   }
 }
 
-function mergeStableDeviceExtra(deviceId: string, extra: Record<string, unknown>) {
+function readPreviousDeviceExtra(deviceId: string): Record<string, unknown> | null {
   const row = getPreviousDeviceExtra.get(deviceId) as { extra?: string } | undefined;
-  if (!row?.extra) return;
-
-  let previous: Record<string, unknown>;
+  if (!row?.extra) return null;
   try {
-    previous = JSON.parse(row.extra);
+    return plainObject(JSON.parse(row.extra));
   } catch {
-    return;
+    return null;
   }
+}
+
+function mergeStableDeviceExtra(previous: Record<string, unknown> | null, extra: Record<string, unknown>) {
+  if (!previous) return;
 
   if (typeof extra.battery_percent !== "number" && typeof previous.battery_percent === "number") {
     extra.battery_percent = previous.battery_percent;

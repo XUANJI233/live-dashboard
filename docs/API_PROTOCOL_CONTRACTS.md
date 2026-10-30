@@ -472,8 +472,7 @@ WS `device_status` 可带 `status_id`。服务端成功处理后回：
 - Header：`Authorization: Bearer <MCP_SERVER_TOKEN>`。仅显式开启 `MCP_LOOPBACK_TOKENLESS_ENABLED=true` 的本机开发环境可省略。
 - MCP 工具名固定：
   - `live_dashboard.list_devices`
-  - `live_dashboard.get_all_device_timeline`
-  - `live_dashboard.get_device_timeline`
+  - `live_dashboard.get_activity_history`
   - `live_dashboard.get_device_frozen_list`
   - `live_dashboard.get_device_installed_apps`
   - `live_dashboard.get_accounting_bills`
@@ -566,9 +565,20 @@ Hermes 模式下，Live 可把高价值的确定性监督候选作为最小事�
 - `event_id` 由通知冷却时间桶和已验证设备集合稳定派生；同一时间桶内的重试必须复用同一 ID。
 - 普通上报的规则命中按设备使用 10 分钟冷却桶：应用持续打开时每次上报都会命中，同一窗口内只产生一次复核事件，与 LSP 同一应用的请求冷却一致。设备显式请求（`device_requested`）仍用 1 分钟桶，由设备端节流。
 - Payload 只携带稳定元数据，不携带原始窗口标题、时间线、AI 自由文本、token 或密钥；Hermes 收到后必须通过 MCP 读取必要的最小时间窗并自行复核。
-- `live_dashboard.get_controller_context` 是 Hermes 每轮唯一的聚合读取：一次返回设置、人设、设备/睡眠状态、`usage_digest`、有界时间线和近期事件。`content` 是不缩进的完整 JSON，且与 `structuredContent` 语义完全相同，以兼容只识别任一视图的 MCP 客户端；两者各自的 UTF-8 上限为 24 KB。Hermes 适配器在进入模型上下文前对等价视图去重，所以模型侧结果保持在 50K spillover 阈值以内。`bounds.truncated=true` 只代表省略较旧或低优先级信息；当 `decision_complete=true` 且 `followup_required=false` 时不得据此重复读取。只有选定动作确实缺少一个具体事实时，才允许调用对应的单项工具。
-- `usage_digest`（schema `live_dashboard.usage_digest.v1`）由 Live 用代码计算，不调用模型，覆盖整个上下文窗口。每台设备（最多 6 台，按活跃时长排序，请求的 `device_id` 排第一）给出 `active_minutes`、`current`（当前应用、类别、开始时间与连续分钟）、`class_minutes`、前 6 个应用的分钟与类别，以及 `app_count` 和 `switches`。类别按已保存的监督规则判定，每段只计入第一个命中的 `blacklist`、`risk`、`target`、`whitelist`，都不命中为 `unclassified`。摘要只含应用名和包名，不含窗口标题；行数超限时保留最新部分并标记 `truncated=true`。
-- `supervision`、`companion`、`followup` 模式的 `timeline` 只保留最近 8 段并带 `recent_only=true`，这本身不算截断，不进入 `bounds.truncated_sections`。摘要留下与决策相关的疑问时，Hermes 对一台设备、一个时间窗调用一次 `live_dashboard.get_device_timeline` 查看细节。其它模式的时间线上限不变。
+- `live_dashboard.get_controller_context` 是 Hermes 每轮唯一的聚合读取：一次返回设置、人设、设备/睡眠状态（含 `first_seen_at`）、`usage_digest`、`usage_today`（仅 supervision/companion/followup）、`installed_changes`、有界时间线和近期事件。`content` 是不缩进的完整 JSON，且与 `structuredContent` 语义完全相同，以兼容只识别任一视图的 MCP 客户端；两者各自的 UTF-8 上限为 24 KB。Hermes 适配器在进入模型上下文前对等价视图去重，所以模型侧结果保持在 50K spillover 阈值以内。`bounds.truncated=true` 只代表省略较旧或低优先级信息；当 `decision_complete=true` 且 `followup_required=false` 时不得据此重复读取。只有选定动作确实缺少一个具体事实时，才允许调用对应的单项工具。
+- `usage_digest`（schema `live_dashboard.usage_digest.v1`）由 Live 用代码计算，不调用模型，覆盖整个上下文窗口。每台设备（最多 6 台，按活跃时长排序，请求的 `device_id` 排第一）给出 `active_minutes`、`idle_minutes`、`current`（当前应用、类别、开始时间与连续分钟）、`class_minutes`、前 6 个应用的分钟与类别，以及 `app_count` 和 `switches`。`idle`/`sleeping` 只计入 `idle_minutes`，不算应用使用，也不进入应用排行和类别。类别按已保存的监督规则判定，每段只计入第一个命中的 `blacklist`、`risk`、`target`、`whitelist`，都不命中为 `unclassified`。摘要只含应用名和包名，不含窗口标题；时长规则与 `get_activity_history` 相同，覆盖整个窗口，不再按行数截断。
+- `usage_today`（schema `live_dashboard.usage_today.v1`）只出现在 `supervision`、`companion`、`followup` 模式：这些模式的窗口只有最近 max(60, 复核间隔) 分钟，`usage_today` 补上本地当天 0 点到现在的累计，每台设备（最多 6 台）给出 `active_minutes`、`idle_minutes`、`class_minutes` 和前 6 个应用；计算与 `usage_digest` 相同。超出 24 KB 时先删其应用、再删设备，并标记 `truncated=true` 和 `usage_today` 截断段。
+- `installed_changes`（schema `live_dashboard.installed_app_changes.v1`）列出最近 7 天所有设备的已安装应用增删，按时间倒序最多 20 条，每条含 `device_id`、`package_name`、`app_name`、`change`（`installed`/`removed`）、`detected_at`（Live 收到显示变化的快照的时间）和 `previous_snapshot_at`（上一份快照的设备采集时间；变化发生在两者之间）。卸载后重装表现为一条 `removed` 加一条 `installed`。`total_count`/`has_more` 给出未返回的数量。
+- `supervision`、`companion`、`followup` 模式的 `timeline` 只保留最近 8 段并带 `recent_only=true`，这本身不算截断，不进入 `bounds.truncated_sections`。摘要留下与决策相关的疑问时，Hermes 调用一次 `live_dashboard.get_activity_history`（`view:"usage"` 看分钟，`view:"timeline"` 看一台设备一个时间窗的细节）。其它模式的时间线上限不变。
+- 控制器侧的时间线、`usage_digest`、`usage_today` 和 `get_activity_history` 共用一套时长规则：每条上报持续到同一设备的下一条上报，最长 6 分钟（LSP 在前台不变时每 5 分钟才心跳一次）；更长的静默只计 1 分钟，其余为未观测。同一应用相邻上报间隔不超过 30 分钟算同一会话。公开 `/api/timeline` 和 Live AI 总结仍用原来的 2 分钟规则。
+- `live_dashboard.get_activity_history` 是唯一的历史读取工具（只经 MCP 暴露，无 HTTP 路由），取代原 `get_device_timeline`/`get_all_device_timeline`：
+  - 输入：`view`（`usage`/`timeline`）、`start`（必填）、`end`（默认现在，最长 14 天）、`device_id`、`app`（应用名或 ID 子串）、`package`（精确 ID）、`title_contains`（隐私处理后的 `display_title` 子串，从不搜索原始窗口标题）、`group_by`（usage：`app`/`title`/`day`/`hour`）、`order`（timeline：`newest_first`/`oldest_first`）、`limit`（usage 组默认 30 最多 100；timeline 会话默认 20 最多 60）、`cursor`、`timezone_offset_minutes`。
+  - 时区：参数优先，其次已保存的总结时区，否则 -480（UTC+08:00），从不使用服务器时区；带 `Z` 或偏移的 ISO 为绝对时间，不带偏移的 `YYYY-MM-DD[THH:mm]` 按该时区理解。输出的本地时间为 `YYYY-MM-DD HH:mm`，并给出 `timezone.label` 和 `timezone.source`。
+  - 输出：`range`（含 `end_clamped_to_now`）、`retention`（活动保留 7 天，`before_retention=true` 表示更早的数据已删除而非未使用）、`devices`（每台设备的 `active_minutes`、`idle_minutes`、`unobserved_minutes`、命中分钟与会话、当前进行中的会话）和 `totals`，二者始终完整；usage 返回分页的 `groups`（app/title：分钟、会话数、首末会话开始与最后结束时间；day/hour：本地桶的分钟、主要应用、空闲与未观测分钟），timeline 返回分页的 `timeline.v2` 会话（每会话最多 8 个最新条目）。`truncated`/`has_more` 加 `next_cursor` 表示还有下一页；游标绑定其余参数，参数改变返回 `invalid_cursor`。
+  - 错误码：`invalid_time`、`invalid_time_range`、`time_range_too_large`、`device_not_found`、`invalid_cursor`、`history_scan_too_large`。
+  - 查询走覆盖索引 `idx_activities_device_history(device_id, started_at, app_id, app_name, display_title)`，不含 `window_title`；时长与会话由服务端代码在一次扫描内计算。
+- `live_dashboard.get_device_installed_apps` 额外返回 `changes`：该设备 30 天内的已安装应用增删，最多 50 条。首份快照、心跳和不带列表的上报都不产生记录；达到 512 个上限的快照不做比较。
+- `list_devices` 与上下文中的设备带 `first_seen_at`：Live 第一次保存该设备的时间；早于该字段上线的设备为空字符串。
 - 事件使用上述 V2 HMAC headers；Hermes 应把 `X-Request-ID` 作为幂等键。
 - `device.offline` 只在意外断线时发送：设备下线前已在睡眠、熄屏或空闲（`sleeping`、空应用、`idle`/`sleeping`），或可信手表显示用户正在睡觉时，设备仍会标记离线，但不唤醒控制器。
 - 投递与重试：Live 先把事件写入持久 outbox 再投递。每次投递最多尝试 2 次、每次等待 10 秒（长于 Hermes 触发脚本等待网关回执的 6 秒），只有带匹配 `event_id` 的 ACK 才算送达。失败后按 1、2、4、8、16 分钟、此后每 30 分钟退避重试；连续 3 次网络级失败会让本轮投递提前结束，避免控制器挂掉时逐条超时。到期未送达的事件不会阻塞更新的事件。

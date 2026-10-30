@@ -21,6 +21,7 @@ import { runSupervisionTick } from "./supervision";
 import { checkOfflineDevices } from "./offline-controller";
 import { maybeNudgeUnreachableController } from "./controller-health";
 import { enforceCommitments } from "./commitment-enforcement";
+import { cleanupOldInstalledAppChanges } from "./installed-app-changes";
 
 // Cleanup old activities + old summaries every hour
 const hourlyCleanupTimer = setInterval(() => {
@@ -31,6 +32,15 @@ const hourlyCleanupTimer = setInterval(() => {
     }
   } catch (e) {
     console.error("[cleanup] Activities cleanup failed:", e);
+  }
+
+  try {
+    const installedResult = cleanupOldInstalledAppChanges.run();
+    if (installedResult.changes > 0) {
+      console.log(`[cleanup] Deleted ${installedResult.changes} old installed-app changes`);
+    }
+  } catch (e) {
+    console.error("[cleanup] Installed-app changes cleanup failed:", e);
   }
 
   try {

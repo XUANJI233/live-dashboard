@@ -80,6 +80,25 @@ describe("usage digest", () => {
     });
   });
 
+  test("reports idle and sleeping beside app usage instead of as apps", async () => {
+    const { buildUsageDigest, materialUsageSignature } = await import("../src/services/usage-digest");
+    const segments = [
+      segment("phone", "com.example.study", "Study", 0, 20),
+      segment("phone", "idle", "idle", 20, 15),
+      segment("phone", "sleeping", "sleeping", 35, 25),
+    ];
+    const phone = buildUsageDigest(segments, await rules(), range).devices[0]!;
+    expect(phone.active_minutes).toBe(20);
+    expect(phone.idle_minutes).toBe(40);
+    expect(phone.class_minutes.unclassified).toBe(0);
+    expect(phone.top_apps.map((app) => app.app_id)).toEqual(["com.example.study"]);
+    expect(phone.app_count).toBe(1);
+    expect(phone.current).toMatchObject({ app_id: "sleeping", minutes: 25 });
+    // Lying idle for longer is not a material usage change.
+    expect(materialUsageSignature(segments, await rules()))
+      .toBe(materialUsageSignature(segments.slice(0, 1), await rules()));
+  });
+
   test("lists the requested device first, then the most active devices", async () => {
     const { buildUsageDigest } = await import("../src/services/usage-digest");
     const segments = [

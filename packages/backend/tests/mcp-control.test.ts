@@ -51,6 +51,10 @@ describe("mcp control plane", () => {
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.send_device_commands");
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.set_supervision_policy");
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.get_device_installed_apps");
+    expect(tools.map((tool) => tool.name)).toContain("live_dashboard.get_activity_history");
+    expect(tools.map((tool) => tool.name)).not.toContain("live_dashboard.get_device_timeline");
+    expect(tools.map((tool) => tool.name)).not.toContain("live_dashboard.get_all_device_timeline");
+    expect(tools.find((tool) => tool.name === "live_dashboard.get_activity_history")?.annotations?.destructiveHint).toBe(false);
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.get_controller_context");
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.complete_controller_ai_request");
     expect(tools.map((tool) => tool.name)).toContain("live_dashboard.claim_controller_ai_requests");
@@ -96,6 +100,36 @@ describe("mcp control plane", () => {
     expect(body.result?.structuredContent?.devices).toBeArray();
     expect(body.result?.structuredContent?.timeline).toBeDefined();
     expect(body.result?.structuredContent?.recent_events).toBeDefined();
+  });
+
+  test("serves activity history over MCP with an explicit local timezone", async () => {
+    const { handleMcpRequest } = await import("../src/routes/mcp");
+    const response = await handleMcpRequest(mcpRequest({
+      method: "tools/call",
+      params: {
+        name: "live_dashboard.get_activity_history",
+        arguments: { view: "usage", start: "2026-10-26", end: "2026-10-27", app: "起点" },
+      },
+    }), localMcpAccess());
+    const body = await response.json() as {
+      result?: { isError?: boolean; structuredContent?: Record<string, unknown> };
+    };
+    expect(body.result?.isError).toBeUndefined();
+    expect(body.result?.structuredContent).toMatchObject({
+      schema: "live_dashboard.activity_history.v1",
+      view: "usage",
+      range: { start: "2026-10-25T16:00:00.000Z", start_local: "2026-10-26 00:00" },
+      filters: { app: "起点" },
+      totals: { matched_minutes: 0, matched_sessions: 0 },
+    });
+    expect((body.result?.structuredContent?.timezone as { label?: string })?.label).toMatch(/^UTC[+-]\d{2}:\d{2}$/);
+
+    const invalid = await handleMcpRequest(mcpRequest({
+      method: "tools/call",
+      params: { name: "live_dashboard.get_activity_history", arguments: { view: "usage", start: "last week" } },
+    }), localMcpAccess());
+    const invalidBody = await invalid.json() as { result?: { structuredContent?: Record<string, unknown> } };
+    expect(invalidBody.result?.structuredContent).toEqual({ ok: false, error: "invalid_time" });
   });
 
   test("flags failed tool calls as MCP errors and keeps typed error codes", async () => {
