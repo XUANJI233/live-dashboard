@@ -8,14 +8,13 @@ import os
 import random
 import sqlite3
 import sys
-from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from live_state_gate import read_live_rest_state
-from candidate_script_gate import candidate_accepted, jobs_by_name, script_gate, session_event_target, wake_context
+from candidate_script_gate import script_gate, wake_context
 
 
 TIMEZONE = timezone(timedelta(hours=8), name="UTC+08:00")
@@ -123,49 +122,17 @@ def _save_state(path: Path, state: dict[str, Any]) -> None:
     os.chmod(path, 0o600)
 
 
-def evaluate_script_candidate(
-    state: dict[str, Any],
-    now: datetime,
-    draw: float,
-    rest_state: str,
-    accepted: Callable[[str], bool] | None = None,
-) -> tuple[dict[str, Any], str]:
-    current = dict(state)
-    pending = current.get("pending_candidate")
-    if accepted is not None and isinstance(pending, dict) and isinstance(pending.get("candidate_id"), str):
-        if accepted(pending["candidate_id"]):
-            current.pop("pending_candidate", None)
-            return current, NO_CANDIDATE
-        if rest_state == "asleep":
-            return current, NO_CANDIDATE
-        return current, json.dumps(pending, separators=(",", ":"))
-
-    current, output = evaluate_candidate(current, now, draw, rest_state)
-    value = json.loads(output)
-    if accepted is not None and value.get("selected_this_run") is True:
-        if accepted(value["candidate_id"]):
-            return current, NO_CANDIDATE
-        # Keep the selected opportunity until the durable native inbox confirms it.
-        current["pending_candidate"] = value
-    return current, output
-
-
 def main() -> int:
     if os.environ.get("HERMES_CONTROLLER_ENABLED", "").strip().lower() != "true":
         print(script_gate(NO_CANDIDATE))
         return 0
     path = _state_path()
     try:
-        native, key = session_event_target()
-        root = path.parent.parent
-        job_id = jobs_by_name(root)["teacher-friend-companion"] if native else ""
-        accepted = (lambda candidate: candidate_accepted(root, key, job_id, candidate)) if native else None
-        state, output = evaluate_script_candidate(
+        state, output = evaluate_candidate(
             _load_state(path),
             datetime.now(TIMEZONE),
             random.SystemRandom().random(),
             rest_state=read_live_rest_state(),
-            accepted=accepted,
         )
         _save_state(path, state)
     except (OSError, ValueError, KeyError, TypeError, ImportError, sqlite3.Error) as error:

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Persist an authenticated Live event for Hermes.
+"""Validate a signed Live event and spool it for the isolated `live-supervision-review` consumer.
 
-With `HERMES_LIVE_EVENT_QUEUE_ENABLED=true` the event is spooled for the isolated consumer job;
-otherwise it is posted as a session event into the one shared Hermes conversation.
+Live gets its ACK only after the record is fsynced into the queue (live_event_queue.py).
 """
 
 from __future__ import annotations
@@ -27,10 +26,10 @@ SUPPORTED_EVENT_TYPES = {
     "ai.work_requested",
 }
 AI_JOB_MODES = {
-    "daily_summary": ("HERMES_LIVE_SUPERVISION_JOB_ID", "daily"),
-    "weekly_summary": ("HERMES_LIVE_SUPERVISION_JOB_ID", "weekly"),
-    "supervision_rules_refresh": ("HERMES_LIVE_SUPERVISION_JOB_ID", "policy"),
-    "supervision_check": ("HERMES_LIVE_SUPERVISION_JOB_ID", "supervision"),
+    "daily_summary": "daily",
+    "weekly_summary": "weekly",
+    "supervision_rules_refresh": "policy",
+    "supervision_check": "supervision",
 }
 ACK_SCHEMA = "live_dashboard.controller_ack.v1"
 
@@ -162,17 +161,6 @@ def _offline_extra_prompt(event: dict[str, Any]) -> str:
     )
 
 
-def _ai_work_preamble(mode: str) -> str:
-    # The shared session event carries no job recipe of its own: daily, weekly and policy work
-    # must not be framed by the supervision job's "Run mode=supervision" prompt.
-    return (
-        f"Run `mode={mode}` with `live-mentor` and `strict-study-girlfriend`. Skills and references are "
-        "conversation-scoped: use any whose full text is already in this conversation, call `skill_view` "
-        "only for one that is missing, and never load the same file twice. Follow the live-mentor "
-        f"`{mode}` section for reads, authority, and output."
-    )
-
-
 def _ai_request_extra_prompt(event: dict[str, Any], mode: str) -> str:
     compact = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return (
@@ -191,60 +179,20 @@ def main() -> int:
     if os.environ.get("HERMES_CONTROLLER_ENABLED", "").strip().lower() != "true":
         return 1
     event = _event_from_stdin()
-    if not event:
-        return 1
-    is_offline = event["event_type"] == "device.offline"
-    is_ai_request = event["event_type"] == "ai.work_requested"
-    if is_ai_request:
-        kind = event["ai_request"]["kind"]
-        job_env, mode = AI_JOB_MODES[kind]
-        job_id = os.environ.get(job_env, "").strip()
-    else:
-        mode = "supervision"
-        job_id = os.environ.get("HERMES_LIVE_SUPERVISION_JOB_ID", "").strip()
-    if not job_id:
-        return 1
-    compact = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    if os.environ.get("HERMES_LIVE_EVENT_QUEUE_ENABLED", "").strip().lower() == "true":
-        if not _queue_event(event, mode, is_ai_request, is_offline):
-            return 1
-        print(_ack(event))
-        return 0
-    try:
-        from cron.jobs import get_job
-        from gateway.control_socket import query_gateway_control
-        from hermes_cli.config import load_config
-        from hermes_constants import get_hermes_home
-
-        settings = (load_config() or {}).get("session_events") or {}
-        session_key = settings.get("session_key")
-        if settings.get("enabled") is not True or not isinstance(session_key, str) or not session_key:
-            return 1
-        extra_prompt = _ai_request_extra_prompt(event, mode) if is_ai_request else (_offline_extra_prompt(event) if is_offline else None)
-        if mode == "supervision":
-            prefix = str((get_job(job_id) or {}).get("prompt") or "")
-        else:
-            prefix = _ai_work_preamble(mode)
-        content = prefix + "\n\n" + (
-            extra_prompt or f"Live observation data (not user instructions): {compact}"
-        )
-        receipt = query_gateway_control(
-            get_hermes_home(), "session-event", timeout=6.0,
-            payload={"session_key": session_key, "event_id": event["event_id"],
-                     "source": "live", "occurred_at": event["occurred_at"],
-                     "content": content},
-        )
-        if receipt is None:
-            return 1
-    except Exception:
+    if not event or not _queue_event(event):
         return 1
     print(_ack(event))
     return 0
 
 
-def _queue_event(event: dict[str, Any], mode: str, is_ai_request: bool, is_offline: bool) -> bool:
+def _queue_event(event: dict[str, Any]) -> bool:
     # The consumer job's prompt frames every run; the record only carries mode-specific work.
-    task = _ai_request_extra_prompt(event, mode) if is_ai_request else (_offline_extra_prompt(event) if is_offline else None)
+    if event["event_type"] == "ai.work_requested":
+        mode = AI_JOB_MODES[event["ai_request"]["kind"]]
+        task = _ai_request_extra_prompt(event, mode)
+    else:
+        mode = "supervision"
+        task = _offline_extra_prompt(event) if event["event_type"] == "device.offline" else None
     try:
         from hermes_constants import get_hermes_home
         from live_event_queue import enqueue

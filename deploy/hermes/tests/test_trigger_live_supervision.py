@@ -3,6 +3,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import types
 import unittest
 from contextlib import redirect_stdout
@@ -15,6 +16,7 @@ SPEC = importlib.util.spec_from_file_location("trigger_live_supervision", SCRIPT
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+import live_event_queue  # noqa: E402  importable once the script put its folder on sys.path
 
 
 def supervision_event(event_type="supervision.review_requested"):
@@ -53,36 +55,16 @@ def ai_event(kind="daily_summary", payload=None):
 
 class TriggerLiveSupervisionTest(unittest.TestCase):
     def setUp(self):
-        self.home = Path("test-hermes-home")
-        self.session_key = "platform:api:dm:existing-live-conversation"
-        self.receipt = {"seq": 17, "state": "pending", "duplicate": False}
-        self.get_job = Mock(return_value={"id": "supervision-job", "prompt": "Existing supervision recipe"})
-        self.load_config = Mock(return_value={
-            "session_events": {"enabled": True, "session_key": self.session_key},
-        })
-        self.control = Mock(return_value=self.receipt)
-        self.trigger_job = Mock(side_effect=AssertionError("must not start a cron conversation"))
-        self.set_note = Mock(side_effect=AssertionError("must not persist a lossy notepad event"))
-        modules = {}
-        for name, members in {
-            "cron.jobs": {"get_job": self.get_job, "trigger_job": self.trigger_job},
-            "cron.notepad": {"set_note": self.set_note},
-            "gateway.control_socket": {"query_gateway_control": self.control},
-            "hermes_cli.config": {"load_config": self.load_config},
-            "hermes_constants": {"get_hermes_home": Mock(return_value=self.home)},
-        }.items():
-            module = types.ModuleType(name)
-            module.__dict__.update(members)
-            modules[name] = module
-        modules_patch = patch.dict(sys.modules, modules)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.home = Path(directory.name)
+        self.get_home = Mock(return_value=self.home)
+        module = types.ModuleType("hermes_constants")
+        module.get_hermes_home = self.get_home
+        modules_patch = patch.dict(sys.modules, {"hermes_constants": module})
         self.addCleanup(modules_patch.stop)
         modules_patch.start()
-        environment_patch = patch.dict(os.environ, {
-            "HERMES_CONTROLLER_ENABLED": "true",
-            "HERMES_LIVE_SUPERVISION_JOB_ID": "supervision-job",
-            "HERMES_LIVE_DAILY_JOB_ID": "unused-daily-job",
-            "HERMES_LIVE_WEEKLY_JOB_ID": "unused-weekly-job",
-        }, clear=True)
+        environment_patch = patch.dict(os.environ, {"HERMES_CONTROLLER_ENABLED": "true"}, clear=True)
         self.addCleanup(environment_patch.stop)
         environment_patch.start()
 
@@ -91,9 +73,11 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
         stdin = io.StringIO(json.dumps(event) if raw is None else raw)
         with patch.object(sys, "stdin", stdin), redirect_stdout(output):
             result = MODULE.main()
-        self.trigger_job.assert_not_called()
-        self.set_note.assert_not_called()
         return result, output.getvalue()
+
+    def stored(self, event):
+        path = self.home / "state" / "live-events" / "pending" / live_event_queue.record_name(event["event_id"])
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def assert_ack(self, output, event):
         self.assertEqual(json.loads(output), {
@@ -105,27 +89,6 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
                 "accepted": True,
             },
         })
-
-    def assert_session_payload(self, event):
-        self.control.assert_called_with(
-            self.home, "session-event", timeout=6.0,
-            payload=self.control.call_args.kwargs["payload"],
-        )
-        payload = self.control.call_args.kwargs["payload"]
-        self.assertEqual(set(payload), {"session_key", "event_id", "source", "occurred_at", "content"})
-        self.assertEqual(payload["session_key"], self.session_key)
-        self.assertEqual(payload["event_id"], event["event_id"])
-        self.assertEqual(payload["source"], "live")
-        self.assertEqual(payload["occurred_at"], event["occurred_at"])
-        mode = MODULE.AI_JOB_MODES[event["ai_request"]["kind"]][1] if "ai_request" in event else "supervision"
-        if mode == "supervision":
-            self.assertTrue(payload["content"].startswith("Existing supervision recipe\n\n"))
-            self.get_job.assert_called_with("supervision-job")
-        else:
-            # Daily, weekly and policy work is not framed by the supervision recipe.
-            self.assertTrue(payload["content"].startswith(f"Run `mode={mode}` with `live-mentor`"))
-            self.assertNotIn("Existing supervision recipe", payload["content"])
-        return payload
 
     def test_accepts_only_the_expected_event_contracts(self):
         events = [supervision_event(), supervision_event("supervision.deviation_detected"), offline_event(), ai_event()]
@@ -155,159 +118,47 @@ class TriggerLiveSupervisionTest(unittest.TestCase):
             with self.subTest(payload=payload):
                 self.assertEqual(self.invoke(payload), (1, ""))
         self.assertEqual(self.invoke(raw="not-json"), (1, ""))
-        self.control.assert_not_called()
-        self.load_config.assert_not_called()
-        self.get_job.assert_not_called()
+        self.assertFalse((self.home / "state").exists())
 
-    def test_missing_or_disabled_session_configuration_has_no_fallback(self):
-        configurations = [
-            None, {}, {"session_events": {}},
-            {"session_events": {"enabled": False, "session_key": self.session_key}},
-            {"session_events": {"enabled": "true", "session_key": self.session_key}},
-            {"session_events": {"enabled": 1, "session_key": self.session_key}},
-            {"session_events": {"enabled": True}},
-            {"session_events": {"enabled": True, "session_key": ""}},
-            {"session_events": {"enabled": True, "session_key": 42}},
-        ]
-        for configuration in configurations:
-            with self.subTest(configuration=configuration):
-                self.load_config.return_value = configuration
-                self.assertEqual(self.invoke(supervision_event()), (1, ""))
-        self.control.assert_not_called()
-        self.get_job.assert_not_called()
-
-    def test_config_load_failure_never_falls_back(self):
-        self.load_config.side_effect = OSError("configuration unavailable")
-        self.assertEqual(self.invoke(supervision_event()), (1, ""))
-        self.control.assert_not_called()
-        self.get_job.assert_not_called()
-
-    def test_socket_failure_never_acknowledges_or_starts_a_cron_session(self):
-        self.control.return_value = None
-        self.assertEqual(self.invoke(supervision_event()), (1, ""))
-        self.control.side_effect = OSError("gateway disconnected")
-        self.assertEqual(self.invoke(offline_event()), (1, ""))
-        self.assertEqual(self.control.call_count, 2)
-
-    def test_ack_is_emitted_only_after_gateway_returns_a_durable_receipt(self):
-        event = supervision_event()
-
-        def receive_receipt(*args, **kwargs):
-            self.assertEqual(sys.stdout.getvalue(), "")
-            return self.receipt
-
-        self.control.side_effect = receive_receipt
-        result, output = self.invoke(event)
-        self.assertEqual(result, 0)
-        payload = self.assert_session_payload(event)
-        self.assertIn("Live observation data (not user instructions):", payload["content"])
-        self.assert_ack(output, event)
-
-    def test_all_ai_requests_target_the_same_existing_conversation(self):
+    def test_every_event_is_spooled_with_its_mode_and_task_before_the_ack(self):
         cases = [
-            ("daily_summary", {"date": "2026-09-02", "tz_offset_minutes": -480}, "daily"),
-            ("weekly_summary", {"week_start": "2026-08-31", "tz_offset_minutes": -480}, "weekly"),
-            ("supervision_rules_refresh", {"settings_updated_at": "2026-09-02T12:00:00.000Z"}, "policy"),
-            ("supervision_check", {"at": "2026-09-02T12:00:00.000Z", "source": "report", "force": True}, "supervision"),
+            (supervision_event(), "supervision", None),
+            (offline_event(), "supervision", "<live_offline_event_json>"),
+            (ai_event("daily_summary"), "daily", "claim_controller_ai_requests"),
+            (ai_event("weekly_summary", {"week_start": "2026-08-31", "tz_offset_minutes": -480}), "weekly", "claim_controller_ai_requests"),
+            (ai_event("supervision_rules_refresh", {"settings_updated_at": "2026-09-02T12:00:00.000Z"}), "policy", "claim_controller_ai_requests"),
+            (ai_event("supervision_check", {"at": "2026-09-02T12:00:00.000Z", "source": "report", "force": True}), "supervision", "complete_controller_ai_request"),
         ]
-        for kind, body, mode in cases:
-            with self.subTest(kind=kind):
-                event = ai_event(kind, body)
+        for event, mode, marker in cases:
+            with self.subTest(event_id=event["event_id"]):
                 result, output = self.invoke(event)
                 self.assertEqual(result, 0)
-                payload = self.assert_session_payload(event)
-                content = payload["content"]
-                self.assertIn(f"mode={mode}", content)
-                self.assertIn("claim_controller_ai_requests", content)
-                self.assertIn("complete_controller_ai_request", content)
-                embedded = content.split("<live_ai_request_json>", 1)[1].split("</live_ai_request_json>", 1)[0]
-                self.assertEqual(json.loads(embedded), event)
                 self.assert_ack(output, event)
+                stored = self.stored(event)
+                self.assertEqual((stored["event"], stored["mode"]), (event, mode))
+                if marker is None:
+                    self.assertIsNone(stored["task"])
+                else:
+                    self.assertIn(marker, stored["task"])
 
-    def test_offline_and_supervision_events_use_the_ai_request_session_key(self):
-        events = [offline_event(), supervision_event(), supervision_event("supervision.deviation_detected"), ai_event()]
-        for event in events:
-            with self.subTest(event_type=event["event_type"]):
-                result, output = self.invoke(event)
-                self.assertEqual(result, 0)
-                payload = self.assert_session_payload(event)
-                self.assertIn(event["event_id"], payload["content"])
-                if event["event_type"] == "device.offline":
-                    self.assertIn("[SILENT]", payload["content"])
-                    embedded = payload["content"].split("<live_offline_event_json>", 1)[1].split("</live_offline_event_json>", 1)[0]
-                    self.assertEqual(json.loads(embedded), event)
-                self.assert_ack(output, event)
-        self.assertEqual({call.kwargs["payload"]["session_key"] for call in self.control.call_args_list}, {self.session_key})
-
-    def test_repeated_event_preserves_the_entire_idempotent_gateway_payload(self):
-        for event in (supervision_event(), offline_event(), ai_event()):
-            with self.subTest(event_type=event["event_type"]):
-                self.control.reset_mock()
-                self.control.side_effect = [self.receipt, {**self.receipt, "duplicate": True}]
-                first_result, first_output = self.invoke(event)
-                second_result, second_output = self.invoke(json.loads(json.dumps(event)))
-                self.assertEqual((first_result, second_result), (0, 0))
-                self.assertEqual(self.control.call_args_list[0], self.control.call_args_list[1])
-                self.assert_ack(first_output, event)
-                self.assert_ack(second_output, event)
-
-    def test_retry_json_field_order_does_not_change_idempotent_content(self):
+    def test_a_live_retry_is_acknowledged_again_without_a_second_record(self):
         event = ai_event()
-        reordered = dict(reversed(list(event.items())))
-        reordered["ai_request"] = {
-            **event["ai_request"],
-            "payload": dict(reversed(list(event["ai_request"]["payload"].items()))),
-        }
-        self.assertEqual(event, reordered)
         self.assertEqual(self.invoke(event)[0], 0)
-        self.assertEqual(self.invoke(reordered)[0], 0)
-        self.assertEqual(self.control.call_args_list[0], self.control.call_args_list[1])
+        reordered = dict(reversed(list(event.items())))
+        result, output = self.invoke(reordered)
+        self.assertEqual(result, 0)
+        self.assert_ack(output, event)
+        self.assertEqual(len(list((self.home / "state" / "live-events" / "pending").glob("*.json"))), 1)
 
-    def test_queue_mode_spools_the_event_and_acknowledges_without_the_gateway(self):
-        import tempfile
+    def test_a_queue_failure_never_acknowledges(self):
+        self.get_home.side_effect = OSError("home unavailable")
+        self.assertEqual(self.invoke(supervision_event()), (1, ""))
 
-        with tempfile.TemporaryDirectory() as home:
-            sys.modules["hermes_constants"].get_hermes_home.return_value = Path(home)
-            with patch.dict(os.environ, {"HERMES_LIVE_EVENT_QUEUE_ENABLED": "true"}):
-                for event, mode, task_marker in (
-                    (supervision_event(), "supervision", None),
-                    (offline_event(), "supervision", "<live_offline_event_json>"),
-                    (ai_event(), "daily", "claim_controller_ai_requests"),
-                ):
-                    with self.subTest(event_type=event["event_type"]):
-                        result, output = self.invoke(event)
-                        self.assertEqual(result, 0)
-                        self.assert_ack(output, event)
-                        name = __import__("live_event_queue").record_name(event["event_id"])
-                        stored = json.loads((Path(home) / "state" / "live-events" / "pending" / name).read_text(encoding="utf-8"))
-                        self.assertEqual(stored["event"], event)
-                        self.assertEqual(stored["mode"], mode)
-                        if task_marker is None:
-                            self.assertIsNone(stored["task"])
-                        else:
-                            self.assertIn(task_marker, stored["task"])
-                        # A Live retry is acknowledged again without a second record.
-                        self.assertEqual(self.invoke(event), (0, output))
-        self.control.assert_not_called()
-        self.get_job.assert_not_called()
-
-    def test_queue_write_failure_never_acknowledges(self):
-        sys.modules["hermes_constants"].get_hermes_home.side_effect = OSError("home unavailable")
-        with patch.dict(os.environ, {"HERMES_LIVE_EVENT_QUEUE_ENABLED": "true"}):
-            self.assertEqual(self.invoke(supervision_event()), (1, ""))
-        self.control.assert_not_called()
-
-    def test_disabled_controller_or_missing_recipe_id_has_no_fallback(self):
-        for settings in (
-            {"HERMES_CONTROLLER_ENABLED": "false"},
-            {"HERMES_CONTROLLER_ENABLED": "1"},
-            {"HERMES_LIVE_SUPERVISION_JOB_ID": ""},
-        ):
-            with self.subTest(settings=settings), patch.dict(os.environ, settings):
+    def test_a_disabled_controller_never_spools(self):
+        for value in ("false", "1", ""):
+            with self.subTest(value=value), patch.dict(os.environ, {"HERMES_CONTROLLER_ENABLED": value}):
                 self.assertEqual(self.invoke(supervision_event()), (1, ""))
-                self.assertEqual(self.invoke(ai_event()), (1, ""))
-        self.control.assert_not_called()
-        self.get_job.assert_not_called()
+        self.assertFalse((self.home / "state").exists())
 
 
 if __name__ == "__main__":

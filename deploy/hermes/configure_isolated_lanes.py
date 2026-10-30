@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run Live controller jobs as isolated sessions that mirror their deliveries into the chat.
 
-Pair with `session_events.enabled: false` and `HERMES_LIVE_EVENT_QUEUE_ENABLED=true`. The Weixin
+Pair with `session_events.enabled: false`, so cron jobs run on their own. The Weixin
 conversation then carries only his messages and what was actually sent, so a stronger dialogue
 model does not replay every automated wake.
 

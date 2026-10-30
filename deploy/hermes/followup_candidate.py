@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate native followups on confirmed delivery and unanswered conversation state."""
+"""Gate follow-ups on a delivered proactive message he has not answered."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import os
 import sqlite3
 import sys
 import time
-from collections.abc import Callable
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,8 +15,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from live_state_gate import read_live_rest_state
-from candidate_script_gate import candidate_accepted, jobs_by_name, script_gate, session_event_target, wake_context
-from weixin_session import compression_ancestors, mirrored_delivery, open_readonly, routed_session_id
+from candidate_script_gate import script_gate, wake_context
+from weixin_session import mirrored_delivery, open_readonly
 from cron_outputs import is_sendable_response, outputs_newest_first, response_from_output
 
 
@@ -147,7 +146,7 @@ def latest_weixin_user_message(database_path: Path) -> float | None:
         return None
 
 
-def _latest_user_message(connection: sqlite3.Connection, session_ids: list[str] | None = None) -> float | None:
+def _latest_user_message(connection: sqlite3.Connection) -> float | None:
     columns = {row[1] for row in connection.execute("PRAGMA table_info(messages)")}
     filters = [
         "sessions.source = 'weixin'", "messages.role = 'user'", "messages.active = 1",
@@ -157,88 +156,11 @@ def _latest_user_message(connection: sqlite3.Connection, session_ids: list[str] 
         filters.append("COALESCE(messages.display_kind, '') NOT IN ('internal_notification', 'hidden', 'session_meta')")
     if "_compressed_summary" in columns:
         filters.append("COALESCE(messages._compressed_summary, 0) = 0")
-    if session_ids is not None:
-        if not session_ids or "display_kind" not in columns:
-            raise ValueError("native reply filtering requires a typed conversation")
-        filters.append(f"messages.session_id IN ({','.join('?' for _ in session_ids)})")
     row = connection.execute(
         "SELECT MAX(messages.timestamp) FROM messages "
         "JOIN sessions ON sessions.id = messages.session_id WHERE " + " AND ".join(filters),
-        session_ids or [],
     ).fetchone()
     return float(row[0]) if row and row[0] is not None else None
-
-
-def native_followup_context(root: Path, session_key: str, followup_job_id: str) -> tuple[str | None, float | None, float | None]:
-    session_id = routed_session_id(root, session_key)
-    if session_id is None:
-        raise ValueError("native followup route is missing")
-    with closing(open_readonly(root)) as connection:
-        connection.execute("BEGIN")
-        session_ids = compression_ancestors(connection, session_id)
-        inbound_at = _latest_user_message(connection, session_ids)
-        rows = connection.execute(
-            "SELECT obligation_id, updated_at, trigger_event_ids, content "
-            "FROM delivery_obligations WHERE session_key = ? AND state = 'delivered' "
-            "ORDER BY updated_at DESC LIMIT 256",
-            (session_key,),
-        )
-        for row in rows:
-            try:
-                event_ids = json.loads(row["trigger_event_ids"])
-            except (TypeError, json.JSONDecodeError):
-                continue
-            if not isinstance(event_ids, list) or not event_ids or not all(isinstance(value, str) and value for value in event_ids):
-                continue
-            if all(value.startswith(f"cron:{followup_job_id}:") for value in event_ids):
-                continue
-            if not is_sendable_response(row["content"] or ""):
-                continue
-            return f"delivery:{row['obligation_id']}", float(row["updated_at"]), inbound_at
-    return None, None, inbound_at
-
-
-def evaluate_script_followup(
-    state: dict[str, Any],
-    *,
-    root_id: str | None,
-    outbound_at: float | None,
-    inbound_at: float | None,
-    now: float,
-    rest_state: str,
-    accepted: Callable[[str], bool] | None = None,
-) -> tuple[dict[str, Any], str]:
-    current = dict(state)
-    pending = current.get("pending_candidate")
-    if accepted is not None and isinstance(pending, dict) and pending.get("root_id") == root_id:
-        if accepted(str(pending.get("candidate_id") or "")):
-            current["last_wake_slot"] = int(current.pop("pending_wake_slot", 0))
-            current.pop("pending_candidate", None)
-        elif outbound_at is not None and not (inbound_at is not None and inbound_at > outbound_at):
-            age = max(0.0, now - outbound_at)
-            if age <= MAX_OPEN_SECONDS:
-                if rest_state == "asleep" or followup_wake_slot(age, rest_state) < int(current.get("pending_wake_slot") or 0):
-                    return current, NO_CANDIDATE
-                return current, json.dumps(pending, ensure_ascii=False, separators=(",", ":"))
-    current.pop("pending_candidate", None)
-    current.pop("pending_wake_slot", None)
-    previous_slot = int(current.get("last_wake_slot") or 0) if current.get("root_id") == root_id else 0
-    current, output = evaluate_followup(
-        current, root_id=root_id, outbound_at=outbound_at, inbound_at=inbound_at,
-        now=now, rest_state=rest_state,
-    )
-    if accepted is None or not json.loads(output).get("selected_this_run"):
-        return current, output
-    slot = int(current["last_wake_slot"])
-    value = json.loads(output)
-    value["candidate_id"] = f"{root_id}:{slot}"
-    if accepted(value["candidate_id"]):
-        return current, NO_CANDIDATE
-    # Advancing the cadence waits for an actual durable enqueue receipt.
-    current["last_wake_slot"] = previous_slot
-    current["pending_wake_slot"] = slot
-    current["pending_candidate"] = value
-    return current, json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def load_state(path: Path) -> dict[str, Any]:
@@ -268,18 +190,11 @@ def main() -> int:
     root = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
     state_path = root / "state" / "proactive-followup.json"
     try:
-        native, key = session_event_target()
-        if native:
-            job_id = jobs_by_name(root)["strict-proactive-followup"]
-            root_id, outbound_at, inbound_at = native_followup_context(root, key, job_id)
-            accepted = lambda candidate: candidate_accepted(root, key, job_id, candidate)
-        else:
-            root_id, outbound_at = latest_proactive_outbound(root)
-            inbound_at = latest_weixin_user_message(root / "state.db")
-            accepted = None
-        state, output = evaluate_script_followup(
+        root_id, outbound_at = latest_proactive_outbound(root)
+        inbound_at = latest_weixin_user_message(root / "state.db")
+        state, output = evaluate_followup(
             load_state(state_path), root_id=root_id, outbound_at=outbound_at, inbound_at=inbound_at,
-            now=datetime.now(timezone.utc).timestamp(), rest_state=read_live_rest_state(), accepted=accepted,
+            now=datetime.now(timezone.utc).timestamp(), rest_state=read_live_rest_state(),
         )
         save_state(state_path, state)
     except (OSError, ValueError, KeyError, TypeError, ImportError, sqlite3.Error) as error:
