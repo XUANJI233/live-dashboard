@@ -105,13 +105,16 @@ Live 中保存的 `target`、周计划和监督策略都有效，无人值守任
 
 ## 读账单
 
-工具是 `live_dashboard.get_accounting_bills`。它只读 AutoAccounting 已经处理完的主账单（`Edited`/`Synced`），没处理完的、待编辑的、子账单都读不到，识别规则也不在里面。
+求总额、笔数、分类/商户/应用/按日汇总时，用 `live_dashboard.get_accounting_summary`；只有核对具体消费才用 `live_dashboard.get_accounting_bills`。不要翻页拉明细再自己相加。两者都只读 AutoAccounting 已处理完成的主账单（`Edited`/`Synced`），未处理、待编辑和子账单不在范围内，识别规则也不在里面。
 
 调用要点：
 
 - 默认会先让 Android 去刷新指定时间范围。看返回里的刷新状态，Android 离线时拿到的是缓存，这时候别当成完整数据用。
-- 一次最多 200 条。`truncated=true` 就把 `next_cursor` 原样传回去，一直取到 `next_cursor=null`。半截数据不能拿来下结论。
+- 明细列表默认 50 条，最多 200 条。确实需要完整明细时，`truncated=true` 就把 `next_cursor` 原样传回去，直到 `next_cursor=null`；不把半截列表当完整明细。要求和仍改用汇总工具。
 - 能筛就筛：时间范围、`transaction_types`、`category`、`keyword`。读当前判断需要的最小窗口，别整年拉回来翻。
+- 汇总的 `start`/`end` 带显式时区（`Z` 或 `+08:00`）；`group_by` 可选 `category`（默认）、`shop`、`app`、`day`，按日分组使用 `start` 的时区。`group_limit` 默认 20、最多 50。
+- 汇总看 `totals.count`、`totals.sum_by_type` 和 `groups`；`truncated=true` 只表示还有分组没列出，不代表总额不完整，不要把已列分组相加代替总计。只算支出传 `transaction_types:["Expend"]`，否则分组金额会合计所有命中的交易类型。
+- 先看 `currency_codes`；命中多种货币时用 `currency_code` 分开汇总，不把不同币种原值相加说成同一种货币总额。汇总同样检查 `refresh`，刷新失败后的缓存汇总不能说成刚核实过手机全部账单。
 
 ## 持久心理画像与账本
 

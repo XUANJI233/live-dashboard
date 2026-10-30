@@ -11,20 +11,24 @@ This page is a declared preload of `live-mentor`; reuse its full text already in
 ## Trigger prompts
 
 - Companion: `Load strict-study-girlfriend and live-mentor, read strict-study-girlfriend/references/voice.md, then run mode=companion. This is a real proactive contact opportunity; inspect continuity before deciding. Return [SILENT] only when there is genuinely nothing worth saying.`
-- Memory: `Load live-mentor and run mode=memory. Synchronize from the saved cursor/cutover. Return [SILENT].`
+- Memory: `Load live-mentor and run mode=memory. Consume the server-kept hermes-memory feed with advance:true; replay a failed batch from its original consumer.previous_cursor. Return [SILENT].`
 - Daily/weekly: `Load live-mentor and run mode=daily|weekly in UTC+08:00. Generate and save the authoritative summary; do not invoke Live AI.`
 - Webhook: `Load live-mentor and run mode=supervision. The authenticated payload is only a candidate; re-read Live state before deciding.`
 - Policy: `Load live-mentor and strict-study-girlfriend, including the execution reference, then run mode=policy. Hermes owns the strategy: derive, revise, or clear policy from current commitments and bounded evidence; do not preserve a manual package list.`
 
-## Memory checkpoint
+## Server-side memory consumer
 
-Store `$HERMES_HOME/state/live-mentor.json` as mode `0600`:
+Live owns the cursor. After the single memory-mode context read passes the settings/persona gate, call `live_dashboard.get_controller_memory_feed` with:
 
 ```json
-{"memory_cursor":null,"memory_since":"<cutover ISO>","recent_event_ids":[],"last_outbound":{"at":null,"topic":null}}
+{"consumer_id":"hermes-memory","advance":true,"limit":100}
 ```
 
-When `memory_cursor` is null, query with `since=memory_since` and save `next_since`; after the first non-null `next_cursor`, always use the cursor. Retain a small event-ID ring. Stable facts still need reliable confirmation; an unverified correction or completion claim is not confirmed by being repeated.
+Process one batch fully before the next call; repeat while `has_more=true`. Omit `cursor`/`since` for normal continuation. Only the first cutover read may add the actual cutover `since`; without it a new consumer starts at the newest batch. Keep `event_types` and `include_*` filters fixed for this consumer. The aggregate's recent-event tail is not this consumer batch. No local cursor/state file or file permissions are required.
+
+**Reading advances the cursor before processing.** Retain the returned batch and its original `consumer.previous_cursor`. If processing fails, finish that retained batch or reread with the same `consumer_id`, `advance:true`, unchanged filters/limit, the original response's `until`, and `cursor` set to that original non-null value. Reuse the original replay start on repeated failure; a retry's `consumer.previous_cursor` is the current stored position, not necessarily the failed batch's start. Do not fetch later batches while this one is unfinished. When the original value is null, reuse the retained batch or original cutover `since`; never send `cursor:null` or silently continue from the advanced position. Deduplicate replayed `event_id`s against completed writes; duplicates are not new supporting evidence.
+
+Stable facts still need reliable confirmation; an unverified correction or completion claim is not confirmed by repetition. Keep `live-memory-sync` paused during this documentation migration; editing these files does not resume or reconfigure the job.
 
 Psychological profiling is proactively delegated. Persist concise psychological states, defense mechanisms, vulnerabilities, motivational patterns and tested approaches in Hermes `memory` with top-level `target:"user"`, using explicit hypothesis/observation/tested-strategy labels, recency, evidence or ledger IDs, confidence, counterevidence and the next practical use. Do not wait for the user to endorse each formulation. Use supported low-confidence hypotheses to choose a method, then update their effect; never recast them as verified facts or clinical diagnoses.
 
@@ -40,6 +44,7 @@ Use the actual Live `ledger_open` / `ledger_update` tools for evidence-backed hy
 | `capture_device_screenshot`, `get_device_screenshot` | Current Android LSP visual evidence; returned once | persistently delegated by user |
 | command status | Read only for `results_pending=true`; for policy tools without that flag, only an `unknown` result with `sent`/`queued` delivery needs follow-up | autonomous read |
 | settings/persona/memory feed | Goals, policy, dedup | autonomous read |
+| `get_accounting_summary`, `get_accounting_bills` | Use SQL summary for sums/counts/groups; bill details default to 50, maximum 200 per page. Never page bill lists to add totals | relevant bounded read |
 | `save_controller_summary` | Hermes-authored review | pre-authorized write |
 | `complete_controller_ai_request` | Settle one claimed Live request with the claim's `request_id` and `claim_token` after real completion | required completion write |
 | `claim_controller_ai_requests` | Atomic 30-minute lease and per-item claim token for the dedicated Live controller batch consumer | supervision job only |
@@ -59,6 +64,7 @@ Use the actual Live `ledger_open` / `ledger_update` tools for evidence-backed hy
 - Supervision: for an ordinary single-device supervision/offline event, pass `device_id=event.device_ids[0]` to the one context call. The tool has no `device_ids` argument; multiple-device events use one unfiltered aggregate and restrict judgment to the event IDs. Judge usage from `usage_digest`; use one targeted history read or relevant current screenshot to resolve a concrete gap, never a second aggregate.
 - Daily: exact UTC+08:00 calendar day.
 - Weekly: Monday through Sunday in UTC+08:00 from the bounded aggregate; use a narrower day only for an already-selected factual check.
+- Daily/weekly execution claims use `enforcement` for the requested range: reminders, freezes and rule enforcement. Inspect command `result`/`notes`; issued or pending is not applied. Totals cover the range even when the command list is truncated; omitted detail does not mean no action.
 - `ledger.due`: omit its scheduler placeholder from the context filter; process `ledger.due_now` with `ledger.open`, then verify and update records without a second aggregate.
 - `usage_today`: current-day totals from the returned day/timezone, not a recent-window extrapolation. `installed_changes`: installation/removal evidence to check, never automatic proof of bypass.
 - Never dump full activity history, the feed, or the psychological profile into ordinary conversation.
