@@ -176,7 +176,7 @@ function normalizeCommandPayload(
   if (requestedUnfreeze.length > 0 && supportedUnfreeze.length === 0) notes.push("unfreeze_not_supported");
   if (unfreezeLock.locked) notes.push("commitment_locked");
   if (unfreezeLock.truncated) notes.push("unfreeze_targets_truncated");
-  if (unfreezeLock.unresolved && !unfreezeLock.locked) notes.push("unfreeze_target_unknown");
+  if (unfreezeLock.unresolved) notes.push("unfreeze_target_unknown");
   if (requestedVibrate && !supportedVibrate) notes.push("vibrate_not_supported");
   else if (supportedVibrate && consent.vibrate) notes.push(consent.vibrate);
   if (requestedSay && !say) notes.push("say_not_supported");

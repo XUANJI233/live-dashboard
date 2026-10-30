@@ -4,10 +4,11 @@ import { commandActions, type CommandStatus } from "./device-command-packages";
 import { getCommandStatuses } from "./device-command-ledger";
 
 // What Live can know about the apps frozen on an Android LSP phone. The phone's report lists at
-// most eight frozen packages, so applied freeze results from the last day (a freeze lasts until
-// the next local 03:00) fill in the rest. Each entry carries the texts the phone matches an
-// unfreeze pattern against: package name, app name and freeze reason. The phone stores a freeze's
-// reason from the command's `reason`, else its `say`.
+// most eight frozen packages, so the last day's applied freeze and unfreeze results (a freeze
+// lasts until the next local 03:00) fill in the rest, replayed in order so an app that was opened
+// again drops out. Report entries come first: they are current. Each entry carries the texts the
+// phone matches an unfreeze pattern against: package name, app name and freeze reason. The phone
+// stores a freeze's reason from the command's `reason`, else its `say`.
 
 export interface FrozenKnowledge {
   package_name: string;
@@ -18,31 +19,49 @@ const RESULT_LOOKBACK_MS = 24 * 60 * 60_000;
 const STATUS_REASONS = new Set(["already_frozen", "ws", "http", ""]);
 const recentFreezeCommandsStmt = db.prepare(`
   SELECT command_id FROM device_commands
-  WHERE target_device_id = ? AND issued_at >= ? AND result_payload LIKE '%"freeze"%'
+  WHERE target_device_id = ? AND issued_at >= ?
+    AND (result_payload LIKE '%"freeze"%' OR result_payload LIKE '%"unfreeze"%')
   ORDER BY issued_at DESC LIMIT 200
 `);
 
 export function knownFrozenPackages(deviceId: string, now = new Date()): Map<string, FrozenKnowledge> {
+  const history = frozenFromResults(deviceId, now);
   const known = new Map<string, FrozenKnowledge>();
-  const add = (packageName: string, ...texts: string[]) => {
-    if (!packageName) return;
-    const entry = known.get(packageName) ?? { package_name: packageName, texts: [packageName] };
-    for (const text of texts) if (text && !entry.texts.includes(text)) entry.texts.push(text);
-    known.set(packageName, entry);
-  };
-  for (const item of getDeviceContext(deviceId)?.frozen_packages ?? []) add(item.package_name, item.app_name, item.reason);
+  for (const item of getDeviceContext(deviceId)?.frozen_packages ?? []) {
+    if (!item.package_name) continue;
+    known.set(item.package_name, entry(item.package_name, [...(history.get(item.package_name)?.texts ?? []), item.app_name, item.reason]));
+  }
+  // Most recently frozen first.
+  for (const [name, value] of [...history].reverse()) if (!known.has(name)) known.set(name, value);
+  return known;
+}
+
+/** Packages whose latest applied result in the last day is an unexpired freeze, oldest first. */
+function frozenFromResults(deviceId: string, now: Date): Map<string, FrozenKnowledge> {
   const since = new Date(now.getTime() - RESULT_LOOKBACK_MS).toISOString();
-  for (const row of recentFreezeCommandsStmt.all(deviceId, since) as { command_id: string }[]) {
+  const rows = (recentFreezeCommandsStmt.all(deviceId, since) as { command_id: string }[]).reverse();
+  const frozen = new Map<string, FrozenKnowledge>();
+  for (const row of rows) {
     const command: CommandStatus | undefined = getCommandStatuses({ commandId: row.command_id }).commands[0];
     const reason = freezeReason(command);
     for (const action of commandActions(command)) {
-      if (action.action === "freeze" && action.status === "applied" && Date.parse(action.until) > now.getTime()) {
+      if (action.status !== "applied" || !action.package_name) continue;
+      const name = action.package_name;
+      if (action.action === "unfreeze") {
+        frozen.delete(name);
+      } else if (action.action === "freeze" && Date.parse(action.until) > now.getTime()) {
         // An adopted freeze keeps its original reason, which this command did not set.
-        add(action.package_name, action.app_name, action.reason === "already_frozen" ? "" : reason);
+        const kept = action.reason === "already_frozen" ? frozen.get(name)?.texts ?? [] : [];
+        frozen.delete(name);
+        frozen.set(name, entry(name, [...kept, action.app_name, action.reason === "already_frozen" ? "" : reason]));
       }
     }
   }
-  return known;
+  return frozen;
+}
+
+function entry(packageName: string, texts: string[]): FrozenKnowledge {
+  return { package_name: packageName, texts: [...new Set([packageName, ...texts.filter(Boolean)])] };
 }
 
 function freezeReason(command: CommandStatus | undefined): string {

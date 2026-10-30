@@ -156,13 +156,14 @@ export function lockedPackages(deviceId: string, now = new Date()): Set<string> 
 /**
  * Validate and record one time-boxed exception for every in-window rule holding the package;
  * an exception already open for the package is returned instead of spending more quota.
+ * `commandPending` says Live still waits on the phone for an earlier command on this package.
  */
 export function grantException(input: {
   device_id: string;
   package_name: string;
   purpose: string;
   minutes: number;
-}, now = new Date()): GrantedException {
+}, now = new Date(), options: { commandPending?: boolean } = {}): GrantedException {
   const purpose = cleanLine(input.purpose, 200);
   if (purpose.length < MIN_PURPOSE_LENGTH) throw new Error("exception_purpose_required");
   const rules = coveringRules(input.device_id, now).filter((row) => commitmentPackages(row).includes(input.package_name));
@@ -177,6 +178,8 @@ export function grantException(input: {
       exceptions_left_today: Math.min(...rules.map((row) => exceptionsLeft(row, now))),
     };
   }
+  // A second unfreeze would hide the first command's answer, and with it the earlier quota.
+  if (options.commandPending === true) throw new Error("exception_pending");
   const minutes = Math.trunc(Number(input.minutes));
   const maxMinutes = Math.min(...rules.map((row) => row.max_exception_minutes));
   if (!Number.isFinite(minutes) || minutes < 1 || minutes > maxMinutes) throw new Error("exception_minutes_out_of_range");

@@ -6,6 +6,7 @@ import { committedDevices, lockedPackages, refundException } from "./commitments
 import {
   emptyPackageState,
   forgetPackageState,
+  packageState,
   packageStates,
   savePackageState,
   trackedDevices,
@@ -18,6 +19,9 @@ import {
 // and scans only sixteen records per unfreeze, so batch patterns and the report cannot confirm a
 // 17-app rule. A freeze lasts until the phone's own `until` (its next local 03:00). A package that
 // leaves the desired set is released, if Live froze it, and re-sent until the phone answers.
+// The phone keeps at most sixteen unsent events, a receipt and a result per command, and drops
+// the oldest, so Live keeps only a few commands outstanding per phone; the rest follow on later
+// ticks.
 
 // Long enough for a phone whose socket is down to fetch a queued command on its next HTTP report.
 export const COMMITMENT_COMMAND_TTL_SECONDS = 10 * 60;
@@ -29,7 +33,10 @@ const RELEASE_RETRY_MS = 2 * 60_000;
 const MAX_RELEASE_ATTEMPTS = 4;
 const PHONE_REPORT_LIMIT = 8;
 const REPORT_SETTLE_MS = 30_000;
-const MAX_COMMANDS_PER_REQUEST = 20;
+// Twelve events of the phone's sixteen, leaving room for a controller's own commands.
+const MAX_OUTSTANDING_COMMANDS = 6;
+// A phone freeze lasts until its next local 03:00, so it was placed within a day before `until`.
+const FREEZE_LIFETIME_MS = 24 * 60 * 60_000;
 
 export interface EnforcementResult {
   freeze_requests: number;
@@ -66,6 +73,12 @@ export function noteExceptionUnfreeze(
   }, command, now);
 }
 
+/** Whether a Live command for this package still waits on the phone, after taking in any answer. */
+export function packageCommandPending(deviceId: string, packageName: string, now = new Date()): boolean {
+  const state = packageState(deviceId, packageName);
+  return !!state && inFlight(absorbPending(state, now), now);
+}
+
 function syncDevice(deviceId: string, now: Date, result: EnforcementResult): void {
   const states = packageStates(deviceId);
   for (const [name, state] of states) states.set(name, absorbPending(state, now));
@@ -92,37 +105,40 @@ function syncDevice(deviceId: string, now: Date, result: EnforcementResult): voi
     if (!frozenKnown(state, now) || !state.owned) forgetPackageState(deviceId, state.package_name);
     else if (!backingOff(state, now)) release.push(state);
   }
-  result.freeze_requests += send(deviceId, freeze, "freeze", now);
-  result.unfreeze_requests += send(deviceId, release, "release", now);
+  // Freezes go first; whatever does not fit is sent on a later tick.
+  let room = MAX_OUTSTANDING_COMMANDS - [...states.values()].filter((state) => inFlight(state, now)).length;
+  const take = (wanted: PackageStateRow[]) => {
+    const chosen = wanted.slice(0, Math.max(0, room));
+    room -= chosen.length;
+    return chosen;
+  };
+  result.freeze_requests += send(deviceId, take(freeze), "freeze", now);
+  result.unfreeze_requests += send(deviceId, take(release), "release", now);
 }
 
 function send(deviceId: string, states: PackageStateRow[], action: "freeze" | "release", now: Date): number {
-  let requests = 0;
-  for (let index = 0; index < states.length; index += MAX_COMMANDS_PER_REQUEST) {
-    const chunk = states.slice(index, index + MAX_COMMANDS_PER_REQUEST);
-    const sent = sendDeviceCommands({
-      request_id: `commitment-sync-${crypto.randomUUID()}`,
-      created_by: "supervision",
-      commands: chunk.map((state) => ({
-        device_id: deviceId,
-        expires_in_seconds: COMMITMENT_COMMAND_TTL_SECONDS,
-        ...(action === "freeze"
-          ? { freeze_commands: [exactPackagePattern(state.package_name)] }
-          : { unfreeze_commands: [exactPackagePattern(state.package_name)] }),
-      })),
-    }, { bypassCommitments: true });
-    chunk.forEach((state, position) => {
-      savePackageState({
-        ...state,
-        pending_command_id: sent.commands[position]?.command_id ?? "",
-        pending_action: action,
-        pending_sent_at: now.toISOString(),
-        updated_at: now.toISOString(),
-      });
+  if (states.length === 0) return 0;
+  const sent = sendDeviceCommands({
+    request_id: `commitment-sync-${crypto.randomUUID()}`,
+    created_by: "supervision",
+    commands: states.map((state) => ({
+      device_id: deviceId,
+      expires_in_seconds: COMMITMENT_COMMAND_TTL_SECONDS,
+      ...(action === "freeze"
+        ? { freeze_commands: [exactPackagePattern(state.package_name)] }
+        : { unfreeze_commands: [exactPackagePattern(state.package_name)] }),
+    })),
+  }, { bypassCommitments: true });
+  states.forEach((state, position) => {
+    savePackageState({
+      ...state,
+      pending_command_id: sent.commands[position]?.command_id ?? "",
+      pending_action: action,
+      pending_sent_at: now.toISOString(),
+      updated_at: now.toISOString(),
     });
-    requests += 1;
-  }
-  return requests;
+  });
+  return 1;
 }
 
 function absorbPending(state: PackageStateRow, now: Date): PackageStateRow {
@@ -147,15 +163,20 @@ function absorbResult(state: PackageStateRow, command: CommandStatus | undefined
   if (kind === "freeze") {
     if (applied) {
       const until = Date.parse(applied.until);
-      // Adopting a freeze that was already there makes it someone else's, unless it was Live's.
-      const alreadyLive = !!state.owned && frozenKnown(state, now);
-      next.owned = applied.reason === "already_frozen" && !alreadyLive ? 0 : 1;
+      // A freeze that was already there is someone else's, unless it is Live's own: one Live already
+      // tracks, or one placed by an earlier Live freeze whose answer never came back.
+      const own = frozenKnown(state, now) ? !!state.owned : lostFreezeCouldHold(state, until);
+      next.owned = applied.reason === "already_frozen" && !own ? 0 : 1;
       next.frozen_until = Number.isFinite(until) ? applied.until : new Date(now.getTime() + UNKNOWN_EXPIRY_RECHECK_MS).toISOString();
       next.confirmed_at = command?.result.result_at || at;
       next.retry_after = "";
+      next.unanswered_freeze_at = "";
     } else {
       const absent = actions.some((item) => item.reason === "no_installed_or_foreground_app_matched");
       next.retry_after = new Date(now.getTime() + (absent ? ABSENT_BACKOFF_MS : FAILURE_BACKOFF_MS)).toISOString();
+      // Delivered but never answered: the phone may have frozen it and lost the result.
+      const delivered = command?.delivery.status === "sent" || command?.delivery.status === "queued";
+      if (delivered && !phoneAnswered) next.unanswered_freeze_at = state.pending_sent_at;
     }
   } else if (applied) {
     // Released. If the package is still wanted frozen (no open exception), the next tick re-freezes it.
@@ -163,6 +184,7 @@ function absorbResult(state: PackageStateRow, command: CommandStatus | undefined
     next.owned = 1;
     next.release_attempts = 0;
     next.exception_group = "";
+    next.unanswered_freeze_at = "";
     next.confirmed_at = command?.result.result_at || at;
   } else {
     if (state.exception_group) {
@@ -197,4 +219,11 @@ function backingOff(state: PackageStateRow, now: Date): boolean {
 
 function frozenKnown(state: PackageStateRow, now: Date): boolean {
   return !!state.frozen_until && Date.parse(state.frozen_until) > now.getTime();
+}
+
+/** Could Live's unanswered freeze be the one that lasts until `until`? */
+function lostFreezeCouldHold(state: PackageStateRow, until: number): boolean {
+  const sentAt = Date.parse(state.unanswered_freeze_at);
+  if (!Number.isFinite(sentAt)) return false;
+  return !Number.isFinite(until) || (sentAt < until && sentAt > until - FREEZE_LIFETIME_MS);
 }

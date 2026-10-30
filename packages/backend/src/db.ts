@@ -538,6 +538,7 @@ db.run(`
     retry_after TEXT NOT NULL DEFAULT '',
     owned INTEGER NOT NULL DEFAULT 1,
     exception_group TEXT NOT NULL DEFAULT '',
+    unanswered_freeze_at TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL,
     PRIMARY KEY (device_id, package_name)
   )

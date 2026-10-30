@@ -3,12 +3,13 @@ import { sendDeviceCommands } from "./device-control";
 import { awaitCommandResults } from "./device-command-wait";
 import { commandActions, exactPackagePattern } from "./device-command-packages";
 import { grantException, refundException } from "./commitments";
-import { COMMITMENT_COMMAND_TTL_SECONDS, noteExceptionUnfreeze } from "./commitment-enforcement";
+import { COMMITMENT_COMMAND_TTL_SECONDS, noteExceptionUnfreeze, packageCommandPending } from "./commitment-enforcement";
 
 // MCP entry for a time-boxed exception: Live checks every rule holding the package, unfreezes it
 // with an exact command, and the enforcement loop re-freezes it once `relock_at` passes. Quota is
 // only spent on an exception the phone actually applies: a queued command may still run when the
 // phone next reports over HTTP, so it is tracked, and its quota comes back if it never applies.
+// One Live command per package is tracked at a time, so a new exception waits for the last answer.
 
 export async function requestExceptionUnfreeze(input: {
   device_id: string;
@@ -17,7 +18,8 @@ export async function requestExceptionUnfreeze(input: {
   minutes: number;
 }, now = new Date()): Promise<Record<string, unknown>> {
   if (!getDeviceContext(input.device_id)?.is_online) throw new Error("device_offline");
-  const granted = grantException(input, now);
+  const commandPending = packageCommandPending(input.device_id, input.package_name, now);
+  const granted = grantException(input, now, { commandPending });
   const summary = {
     ok: true,
     package_name: input.package_name,

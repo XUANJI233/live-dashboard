@@ -5,7 +5,8 @@ import { db } from "../db";
 // 03:00), a confirmed release clears it. `owned` is false when the package was already frozen by
 // someone else (a controller, the phone's own time limit), so Live never releases that freeze.
 // `exception_group` links a pending exception unfreeze, so its quota can be refunded if the
-// phone never applies it.
+// phone never applies it. `unanswered_freeze_at` is when Live last sent a freeze the phone never
+// answered: the phone may still have applied it, so a later "already frozen" can be Live's own.
 
 export type PendingAction = "freeze" | "release" | "";
 
@@ -21,15 +22,17 @@ export interface PackageStateRow {
   retry_after: string;
   owned: number;
   exception_group: string;
+  unanswered_freeze_at: string;
   updated_at: string;
 }
 
 const deviceStatesStmt = db.prepare("SELECT * FROM commitment_package_state WHERE device_id = ?");
+const packageStateStmt = db.prepare("SELECT * FROM commitment_package_state WHERE device_id = ? AND package_name = ?");
 const upsertStmt = db.prepare(`
   INSERT INTO commitment_package_state (
     device_id, package_name, frozen_until, confirmed_at, pending_command_id, pending_action,
-    pending_sent_at, release_attempts, retry_after, owned, exception_group, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    pending_sent_at, release_attempts, retry_after, owned, exception_group, unanswered_freeze_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(device_id, package_name) DO UPDATE SET
     frozen_until = excluded.frozen_until,
     confirmed_at = excluded.confirmed_at,
@@ -40,6 +43,7 @@ const upsertStmt = db.prepare(`
     retry_after = excluded.retry_after,
     owned = excluded.owned,
     exception_group = excluded.exception_group,
+    unanswered_freeze_at = excluded.unanswered_freeze_at,
     updated_at = excluded.updated_at
 `);
 const deleteStmt = db.prepare("DELETE FROM commitment_package_state WHERE device_id = ? AND package_name = ?");
@@ -47,6 +51,10 @@ const devicesStmt = db.prepare("SELECT DISTINCT device_id FROM commitment_packag
 
 export function packageStates(deviceId: string): Map<string, PackageStateRow> {
   return new Map((deviceStatesStmt.all(deviceId) as PackageStateRow[]).map((row) => [row.package_name, row]));
+}
+
+export function packageState(deviceId: string, packageName: string): PackageStateRow | null {
+  return packageStateStmt.get(deviceId, packageName) as PackageStateRow | null;
 }
 
 export function emptyPackageState(deviceId: string, packageName: string, at: string): PackageStateRow {
@@ -62,6 +70,7 @@ export function emptyPackageState(deviceId: string, packageName: string, at: str
     retry_after: "",
     owned: 1,
     exception_group: "",
+    unanswered_freeze_at: "",
     updated_at: at,
   };
 }
@@ -70,7 +79,7 @@ export function savePackageState(row: PackageStateRow): void {
   upsertStmt.run(
     row.device_id, row.package_name, row.frozen_until, row.confirmed_at, row.pending_command_id,
     row.pending_action, row.pending_sent_at, row.release_attempts, row.retry_after, row.owned,
-    row.exception_group, row.updated_at,
+    row.exception_group, row.unanswered_freeze_at, row.updated_at,
   );
 }
 
