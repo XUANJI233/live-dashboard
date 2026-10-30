@@ -1,5 +1,7 @@
 # Live Mentor Reference
 
+This page is a declared preload of `live-mentor`; reuse its full text already in context instead of loading it twice.
+
 ## Controller and fallback
 
 - `HERMES_CONTROLLER_ENABLED=true`: Live keeps its AI configuration as cold standby but never calls that model. Client AI jobs stay in Live's idempotent status ledger and emit bounded `ai.work_requested` events to the existing Hermes jobs. Live also records data, emits signed supervision candidates, serves MCP, and executes authorized Hermes commands.
@@ -22,23 +24,30 @@ Store `$HERMES_HOME/state/live-mentor.json` as mode `0600`:
 {"memory_cursor":null,"memory_since":"<cutover ISO>","recent_event_ids":[],"last_outbound":{"at":null,"topic":null}}
 ```
 
-When `memory_cursor` is null, query with `since=memory_since` and save `next_since`; after the first non-null `next_cursor`, always use the cursor. Retain only a small event-ID ring. Only user-confirmed, stable facts from authenticated Hermes conversations may enter general long-term memory. A strict-study private ledger may retain explicitly labelled provisional hypotheses with evidence, counterevidence, confidence, and a next verification step; never promote them into facts or third-party memory without confirmation.
+When `memory_cursor` is null, query with `since=memory_since` and save `next_since`; after the first non-null `next_cursor`, always use the cursor. Retain a small event-ID ring. Stable facts still need reliable confirmation; an unverified correction or completion claim is not confirmed by being repeated.
+
+Psychological profiling is proactively delegated. Persist concise psychological states, defense mechanisms, vulnerabilities, motivational patterns and tested approaches in Hermes `memory` with top-level `target:"user"`, using explicit hypothesis/observation/tested-strategy labels, recency, evidence or ledger IDs, confidence, counterevidence and the next practical use. Do not wait for the user to endorse each formulation. Use supported low-confidence hypotheses to choose a method, then update their effect; never recast them as verified facts or clinical diagnoses.
+
+Use the actual Live `ledger_open` / `ledger_update` tools for evidence-backed hypotheses (`helps`/`blocks`), bounded states, promises and debts. The context already carries due/open records and selected hypotheses; search older details only when relevant. No ordinary file writer is required. If ledger tools are unavailable, retain a concise labelled profile through Hermes `memory`; if neither write exists, keep it in-session and do not claim persistence. The mixed memory-feed job never invents or changes a ledger item.
 
 ## MCP tool matrix
 
 | Tools | Use | Authority |
 |---|---|---|
-| `get_controller_context` | Exactly one decision-complete bounded settings/persona/device/sleep/usage-digest/timeline/memory read per run | autonomous read |
-| `list_devices`, bounded timelines | One action-specific detail after an action was chosen, or one `get_device_timeline` drill-down when the usage digest leaves a decision-relevant question; never a response to aggregate truncation alone | autonomous read |
+| `get_controller_context` | Exactly one decision-complete bounded settings/persona/devices/rest/usage/ledger/history/memory read per run | autonomous read |
+| `list_devices`, `get_activity_history` | One action-specific detail or one `get_activity_history` drill-down for a concrete evidence gap; verification may precede an action, never solely because aggregate output was truncated | autonomous read |
 | frozen/installed app lists | Only when directly relevant | sensitive read |
 | `capture_device_screenshot`, `get_device_screenshot` | Current Android LSP visual evidence; returned once | persistently delegated by user |
-| command status | Verify actions | autonomous read |
+| command status | Read only for `results_pending=true`; for policy tools without that flag, only an `unknown` result with `sent`/`queued` delivery needs follow-up | autonomous read |
 | settings/persona/memory feed | Goals, policy, dedup | autonomous read |
 | `save_controller_summary` | Hermes-authored review | pre-authorized write |
 | `complete_controller_ai_request` | Settle one claimed Live request with the claim's `request_id` and `claim_token` after real completion | required completion write |
 | `claim_controller_ai_requests` | Atomic 30-minute lease and per-item claim token for the dedicated Live controller batch consumer | supervision job only |
-| `send_device_commands` | One-shot action; waits about 3 s for the device result, and an unfreeze reaching a committed package is dropped with `commitment_locked` | bounded by saved settings |
-| `record_commitment`, `end_commitment` | A rule he explicitly set or explicitly cancelled, with his words quoted | on his explicit words only |
+| `send_device_commands` | One-shot action; waits about 3 s and returns command results. Query status only if `results_pending=true`; a terminal failure is handled directly. An unfreeze reaching a committed package is dropped with `commitment_locked` | bounded by saved settings |
+| `record_commitment`, `end_commitment` | Long-lived package block rules only, quoting his words; changes follow the non-execution review window. One-off promises are never recorded or finished here | explicit words and rule-change procedure |
+| `ledger_open`, `ledger_update` | `promise` for his one-off promise; `debt/task` for owed or autonomously assigned goal tasks; checked `kept`/`paid` outcomes; `hypothesis`/`state` for active psychological profiling. Verify real evidence and write result | delegated profiling; promises require his words |
+| `ledger_search` | Older or missing ledger detail, using kind/topic and `include_evidence:true`; due/open records already arrive in context | relevant bounded read |
+| Hermes `memory` | Persist and actively use labelled longitudinal psychological profiles with `target:"user"`; add/patch supported states, defenses, vulnerabilities and effective strategies | proactively delegated, no per-hypothesis confirmation |
 | `request_exception_unfreeze` | Open one committed package with a concrete purpose and minutes; Live re-freezes at `relock_at` | bounded by the rule's quota |
 | `set_supervision_policy` | Hermes-authored review triggers, classification lists (whitelist/blacklist/target), explicit time limits, and the strict system-browser web allowlist; complete snapshot with optional `expected_policy_updated_at` | persistently delegated by user |
 | other settings/mode/persona writes | Administration | explicit request |
@@ -47,10 +56,12 @@ When `memory_cursor` is null, query with `since=memory_since` and save `next_sin
 ## Context windows
 
 - Companion: devices plus 30–60 minutes only if useful.
-- Supervision: judge usage from `usage_digest`, which covers the aggregate's window; the timeline keeps only the newest segments, and older detail was not lost merely because it is absent there.
+- Supervision: for an ordinary single-device supervision/offline event, pass `device_id=event.device_ids[0]` to the one context call. The tool has no `device_ids` argument; multiple-device events use one unfiltered aggregate and restrict judgment to the event IDs. Judge usage from `usage_digest`; use one targeted history read or relevant current screenshot to resolve a concrete gap, never a second aggregate.
 - Daily: exact UTC+08:00 calendar day.
 - Weekly: Monday through Sunday in UTC+08:00 from the bounded aggregate; use a narrower day only for an already-selected factual check.
-- Never dump the full timeline or feed into ordinary conversation.
+- `ledger.due`: omit its scheduler placeholder from the context filter; process `ledger.due_now` with `ledger.open`, then verify and update records without a second aggregate.
+- `usage_today`: current-day totals from the returned day/timezone, not a recent-window extrapolation. `installed_changes`: installation/removal evidence to check, never automatic proof of bypass.
+- Never dump full activity history, the feed, or the psychological profile into ordinary conversation.
 
 ## Send decision
 
