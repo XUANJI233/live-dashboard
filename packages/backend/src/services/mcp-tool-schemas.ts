@@ -120,12 +120,10 @@ export const SendCommandsSchema = z.object({
 const ClockSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 
 export const RecordCommitmentSchema = z.object({
-  kind: z.enum(["block", "task"])
-    .describe("block: Live keeps the exact packages frozen inside the window until he ends the rule. task: a recorded promise with no device effect."),
   title: z.string().min(1).max(80).describe("Short label, e.g. 闭关期购物封禁."),
   user_quote: z.string().min(1).max(300).describe("His own words that set the rule. Record only what he explicitly said."),
-  device_id: z.string().min(1).max(160).optional().describe("Android LSP device for a block rule."),
-  packages: z.array(z.string().min(3).max(160)).max(20).optional().describe("Exact package names for a block rule; no patterns."),
+  device_id: z.string().min(1).max(160).describe("Android LSP device that keeps the packages frozen."),
+  packages: z.array(z.string().min(3).max(160)).min(1).max(20).describe("Exact package names; no patterns."),
   window_start: ClockSchema.optional().describe("Local HH:MM the block starts each day; omit both ends for all day."),
   window_end: ClockSchema.optional().describe("Local HH:MM the block ends; may be earlier than the start for an overnight window."),
   ends_at: z.string().max(40).optional().describe("ISO time with an explicit offset (Z or +08:00) when the rule ends by itself, e.g. the end of a retreat; omit for open-ended."),

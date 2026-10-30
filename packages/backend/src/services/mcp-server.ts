@@ -11,6 +11,7 @@ import { getCommandStatuses } from "./device-command-ledger";
 import { sendDeviceCommands } from "./device-control";
 import { awaitCommandResults } from "./device-command-wait";
 import { registerCommitmentTools } from "./mcp-commitment-tools";
+import { registerLedgerTools } from "./mcp-ledger-tools";
 import { stableToolResult, toolResult } from "./mcp-tool-result";
 import { getControllerPersona, updateControllerPersona } from "./controller-persona";
 import { getControllerMemoryFeed, saveControllerSummary } from "./controller-memory";
@@ -79,7 +80,8 @@ export function createLiveDashboardMcpServer(): McpServer {
       "Read-only tools inspect dashboard state; they never change settings or device state.",
       "Hermes should start each decision with live_dashboard.get_controller_context and avoid separate settings, persona, device, timeline, and memory reads. Its bounds.truncated flag only means older or lower-priority detail was omitted; do not re-read solely for that flag because bounds.decision_complete remains true and bounds.followup_required remains false. Its usage_digest covers the whole window; supervision, companion, and followup timelines keep only the newest segments. Read one specific detail only after choosing an action that requires it, or call get_device_timeline once for one device and window when the digest leaves a decision-relevant question.",
       "live_dashboard.send_device_commands is only for immediate one-shot device actions such as say, vibrate, screen_off, freeze, or unfreeze. It waits about three seconds for the device result; query get_command_status only when results_pending is true.",
-      "Long-lived rules the user set go to live_dashboard.record_commitment. Live itself keeps a block commitment's packages frozen inside its window; a controller opens one only through live_dashboard.request_exception_unfreeze with a purpose and minutes, and Live re-freezes it on time.",
+      "Long-lived block rules the user set go to live_dashboard.record_commitment. Live itself keeps a commitment's packages frozen inside its window; a controller opens one only through live_dashboard.request_exception_unfreeze with a purpose and minutes, and Live re-freezes it on time.",
+      "One-off promises with a due time, owed tasks and agreed consequences, confirmed false claims, working hypotheses, and short states such as an observation period go to the Live ledger (ledger_open, ledger_update; older records through ledger_search). get_controller_context carries what is due and open, and Live wakes the controller with a ledger.due event when an agreed time arrives.",
       "live_dashboard.capture_device_screenshot captures the current Android LSP display on demand and may be used whenever current visual evidence is relevant. The screenshot is short-lived and returned once.",
       "Coyote electrostimulation tools only operate an Android-connected device after the user explicitly enables remote control. Cold starts and adjustments are hard-bounded; stop and emergency stop remain available without that grant.",
       "get_accounting_bills reads only AutoAccounting bills that are already Edited or Synced; Live Dashboard does not reproduce AutoAccounting recognition rules.",
@@ -237,6 +239,7 @@ export function createLiveDashboardMcpServer(): McpServer {
   }, async (args) => stableToolResult(() => awaitCommandResults(sendDeviceCommands(args))));
 
   registerCommitmentTools(server);
+  registerLedgerTools(server);
 
   server.registerTool("live_dashboard.set_supervision_policy", {
     title: "Set supervision policy",
@@ -291,7 +294,7 @@ export function createLiveDashboardMcpServer(): McpServer {
 
   server.registerTool("live_dashboard.get_controller_context", {
     title: "Get bounded controller context",
-    description: "Preferred first and normally only read for Hermes decisions. Returns settings, persona, minimal device state, a whole-window usage digest, one bounded timeline (newest segments only in supervision, companion, and followup modes), and recent controller events in one call. Bounded truncation preserves a decision-complete newest-first view and never by itself requires another read.",
+    description: "Preferred first and normally only read for Hermes decisions. Returns settings, persona, commitments, the ledger's due and open records, minimal device state, a whole-window usage digest, one bounded timeline (newest segments only in supervision, companion, and followup modes), and recent controller events in one call. Bounded truncation preserves a decision-complete newest-first view and never by itself requires another read.",
     inputSchema: ControllerContextSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(

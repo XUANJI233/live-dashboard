@@ -7,6 +7,7 @@ import {
 } from "./controller-webhook";
 import { cleanIdentifier } from "./mcp-contracts";
 import { recordControllerDeliveryResult } from "./controller-health-record";
+import { validLedgerDue } from "./ledger-due-event";
 import {
   LEGACY_EXPIRY_MS,
   MAX_DELIVERY_ATTEMPTS,
@@ -42,6 +43,7 @@ const SUPPORTED_EVENT_TYPES = new Set<ControllerEvent["event_type"]>([
   "supervision.deviation_detected",
   "supervision.review_requested",
   "ai.work_requested",
+  "ledger.due",
 ]);
 
 const insertControllerEvent = db.prepare(`
@@ -244,6 +246,7 @@ function validatedControllerEvent(event: Partial<ControllerEvent>): boolean {
   ) {
     return false;
   }
+  if (event.event_type === "ledger.due" && !validLedgerDue(event)) return false;
   if (event.event_type === "ai.work_requested" && !validAiRequest(event)) return false;
   if (event.event_type !== "ai.work_requested" && (event.source === "client" || event.ai_request !== undefined)) return false;
   return true;

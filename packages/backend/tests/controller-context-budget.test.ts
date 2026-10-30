@@ -74,6 +74,44 @@ describe("controller context transport budget", () => {
     });
   });
 
+  test("keeps what is due in the ledger even in the fixed fallback envelope", () => {
+    const due = Array.from({ length: 3 }, (_, index) => ({
+      record_id: `led_00000000-0000-4000-8000-00000000000${index}`,
+      kind: "promise",
+      title: `第${index}件到点的事${"很长".repeat(40)}`,
+      detail: "细节".repeat(100),
+      due_at: "2026-10-30T12:00:00.000Z",
+      due_local: "2026-10-30 20:00",
+      overdue_minutes: 5,
+    }));
+    const context = fitControllerContextToMcpBudget({
+      schema: "live_dashboard.controller_context.v1",
+      generated_at: "时间".repeat(100_000),
+      mode: "supervision",
+      controller_active: true,
+      settings: { supervision_enabled: true },
+      persona: { enabled: true },
+      rest_state: "active",
+      ledger: { due_now: due, open: [], track: { kept_streak: 2 } },
+      available_device_count: 0,
+      returned_device_count: 0,
+      devices: [],
+      timeline: { segment_count: 0, timeline: { devices: [] } },
+      recent_events: { events: [] },
+    }, []);
+    const ledger = context.ledger as { due_now: Array<Record<string, unknown>> };
+
+    expect(new TextEncoder().encode(JSON.stringify(context)).byteLength).toBeLessThanOrEqual(24_000);
+    expect(context.bounds.truncated_sections).toContain("ledger");
+    expect(ledger.due_now.map((item) => item.record_id)).toEqual(due.map((item) => item.record_id));
+    expect(ledger.due_now[0]).toEqual({
+      record_id: due[0]!.record_id,
+      kind: "promise",
+      title: expect.stringMatching(/^第0件到点的事.{0,32}…$/),
+      due_at: "2026-10-30T12:00:00.000Z",
+    });
+  });
+
   test("retains one oversized latest session and clips text on code-point boundaries", () => {
     const items = Array.from({ length: 80 }, (_, index) => ({
       time: `2026-09-03 00:${String(index % 60).padStart(2, "0")}`,

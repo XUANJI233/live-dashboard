@@ -28,6 +28,14 @@
     {
       "name": "supervision check request",
       "event": {"schema": "live_dashboard.controller_event.v1", "v": 1, "event_id": "ai-request:req_check_contract", "event_type": "ai.work_requested", "occurred_at": "2026-09-02T12:05:00.000Z", "source": "client", "device_ids": ["android-phone"], "reason_codes": ["supervision_check"], "ai_request": {"request_id": "req_check_contract", "kind": "supervision_check", "payload": {"at": "2026-09-02T12:05:00.000Z", "source": "report", "force": true}}}
+    },
+    {
+      "name": "ledger due for one promise",
+      "event": {"schema": "live_dashboard.controller_event.v1", "v": 1, "event_id": "ledger-due:0f8fad5bd9cb469fa16570867728950e", "event_type": "ledger.due", "occurred_at": "2026-10-30T14:00:00.000Z", "source": "scheduled", "device_ids": ["__server_scheduler__"], "reason_codes": ["promise_due"]}
+    },
+    {
+      "name": "ledger due for a debt and a state end",
+      "event": {"schema": "live_dashboard.controller_event.v1", "v": 1, "event_id": "ledger-due:1a2b3c4d5e6f708192a3b4c5d6e7f809", "event_type": "ledger.due", "occurred_at": "2026-10-30T14:00:00.000Z", "source": "scheduled", "device_ids": ["__server_scheduler__"], "reason_codes": ["debt_due", "state_end"]}
     }
   ],
   "invalid": [
@@ -78,6 +86,30 @@
     {
       "name": "time zone offset out of range",
       "event": {"schema": "live_dashboard.controller_event.v1", "v": 1, "event_id": "ai-request:req_tz_contract", "event_type": "ai.work_requested", "occurred_at": "2026-09-02T12:00:00.000Z", "source": "client", "device_ids": ["android-phone"], "reason_codes": ["daily_summary"], "ai_request": {"request_id": "req_tz_contract", "kind": "daily_summary", "payload": {"date": "2026-09-01", "tz_offset_minutes": 900}}}
+    },
+    {
+      "name": "ledger due from a report",
+      "event": {"schema": "live_dashboard.controller_event.v1", "v": 1, "event_id": "ledger-due:0f8fad5bd9cb469fa16570867728950e", "event_type": "ledger.due", "occurred_at": "2026-10-30T14:00:00.000Z", "source": "report", "device_ids": ["__server_scheduler__"], "reason_codes": ["promise_due"]}
+    },
+    {
+      "name": "ledger due naming a phone",
+      "event": {"schema": "live_dashboard.controller_event.v1", "v": 1, "event_id": "ledger-due:0f8fad5bd9cb469fa16570867728950e", "event_type": "ledger.due", "occurred_at": "2026-10-30T14:00:00.000Z", "source": "scheduled", "device_ids": ["android-phone"], "reason_codes": ["promise_due"]}
+    },
+    {
+      "name": "ledger due with an extra device",
+      "event": {"schema": "live_dashboard.controller_event.v1", "v": 1, "event_id": "ledger-due:0f8fad5bd9cb469fa16570867728950e", "event_type": "ledger.due", "occurred_at": "2026-10-30T14:00:00.000Z", "source": "scheduled", "device_ids": ["__server_scheduler__", "android-phone"], "reason_codes": ["promise_due"]}
+    },
+    {
+      "name": "ledger due with an unknown reason",
+      "event": {"schema": "live_dashboard.controller_event.v1", "v": 1, "event_id": "ledger-due:0f8fad5bd9cb469fa16570867728950e", "event_type": "ledger.due", "occurred_at": "2026-10-30T14:00:00.000Z", "source": "scheduled", "device_ids": ["__server_scheduler__"], "reason_codes": ["user_asked"]}
+    },
+    {
+      "name": "ledger due with a repeated reason",
+      "event": {"schema": "live_dashboard.controller_event.v1", "v": 1, "event_id": "ledger-due:0f8fad5bd9cb469fa16570867728950e", "event_type": "ledger.due", "occurred_at": "2026-10-30T14:00:00.000Z", "source": "scheduled", "device_ids": ["__server_scheduler__"], "reason_codes": ["promise_due", "promise_due"]}
+    },
+    {
+      "name": "ledger due carrying an ai request",
+      "event": {"schema": "live_dashboard.controller_event.v1", "v": 1, "event_id": "ledger-due:0f8fad5bd9cb469fa16570867728950e", "event_type": "ledger.due", "occurred_at": "2026-10-30T14:00:00.000Z", "source": "scheduled", "device_ids": ["__server_scheduler__"], "reason_codes": ["promise_due"], "ai_request": {"request_id": "req_ledger_contract", "kind": "daily_summary", "payload": {"date": "2026-10-30", "tz_offset_minutes": -480}}}
     }
   ]
 }

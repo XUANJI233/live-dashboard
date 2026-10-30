@@ -13,6 +13,7 @@ import { fitControllerContextToMcpBudget } from "./controller-context-budget";
 import { compileSupervisionRules } from "./supervision-patterns";
 import { loadUsageDigest } from "./usage-digest";
 import { commitmentsContext } from "./commitments";
+import { ledgerContext } from "./ledger-context";
 
 export type ControllerContextMode = "supervision" | "companion" | "followup" | "memory" | "policy" | "daily" | "weekly";
 
@@ -93,6 +94,9 @@ export function getControllerContext(input: {
   });
   if (recentEvents.has_more === true) truncatedSections.add("recent_events");
 
+  const ledger = ledgerContext({ mode: input.mode, range, timezoneOffset, now: new Date() });
+  if (ledger.truncated) truncatedSections.add("ledger");
+
   return fitControllerContextToMcpBudget({
     schema: "live_dashboard.controller_context.v1",
     generated_at: new Date().toISOString(),
@@ -101,6 +105,7 @@ export function getControllerContext(input: {
     settings,
     persona: { ...getControllerPersona() },
     commitments: commitmentsContext(),
+    ...(ledger.section ? { ledger: ledger.section } : {}),
     rest_state: controllerRestState(allDevices),
     available_device_count: allDevices.length,
     returned_device_count: devices.length,

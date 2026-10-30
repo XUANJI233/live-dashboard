@@ -10,7 +10,12 @@ export interface ControllerEvent {
   schema: typeof CONTROLLER_EVENT_SCHEMA;
   v: 1;
   event_id: string;
-  event_type: "device.offline" | "supervision.deviation_detected" | "supervision.review_requested" | "ai.work_requested";
+  event_type:
+    | "device.offline"
+    | "supervision.deviation_detected"
+    | "supervision.review_requested"
+    | "ai.work_requested"
+    | "ledger.due";
   occurred_at: string;
   source: "scheduled" | "report" | "client";
   device_ids: string[];

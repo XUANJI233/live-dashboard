@@ -25,8 +25,15 @@ TTL_SECONDS = {
     "supervision.deviation_detected": 30 * 60,
     "device.offline": 2 * 60 * 60,
     "ai.work_requested": 24 * 60 * 60,
+    "ledger.due": 2 * 60 * 60,
 }
-PRIORITY = ("ai.work_requested", "supervision.deviation_detected", "supervision.review_requested", "device.offline")
+PRIORITY = (
+    "ai.work_requested",
+    "ledger.due",
+    "supervision.deviation_detected",
+    "supervision.review_requested",
+    "device.offline",
+)
 MAX_ATTEMPTS = 3
 INFLIGHT_STALE_SECONDS = 30 * 60
 MAX_REASON_CODES = 20
@@ -51,7 +58,9 @@ def select_event(
             live.append((path, record, occurred))
 
     # Only the newest review of a device describes its present; it inherits the reasons of the
-    # reviews it replaces, as Live's outbox would have merged them. AI work is a durable queue item.
+    # reviews it replaces, as Live's outbox would have merged them. Ledger wakes all name Live's
+    # scheduler, so they collapse the same way; each run reads every due record from Live. AI work
+    # is a durable queue item.
     newest: dict[tuple[str, tuple[str, ...]], tuple[Path, dict[str, Any], float]] = {}
     keep: list[tuple[Path, dict[str, Any], float]] = []
     merged: set[Path] = set()

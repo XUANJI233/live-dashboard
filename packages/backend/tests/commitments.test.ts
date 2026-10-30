@@ -7,7 +7,31 @@ const tempDir = mkdtempSync(join(tmpdir(), "live-commitments-"));
 process.env.DB_PATH = join(tempDir, "test.db");
 process.env.HASH_SECRET = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
 
+// A database from before the ledger still holds a recorded-only task promise next to a block rule.
+{
+  const { Database } = await import("bun:sqlite");
+  const legacy = new Database(process.env.DB_PATH, { create: true });
+  legacy.run(`
+    CREATE TABLE controller_commitments (
+      commitment_id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, user_quote TEXT NOT NULL,
+      device_id TEXT NOT NULL DEFAULT '', packages TEXT NOT NULL DEFAULT '[]', window_start TEXT NOT NULL DEFAULT '',
+      window_end TEXT NOT NULL DEFAULT '', timezone_offset_minutes INTEGER NOT NULL DEFAULT -480, starts_at TEXT NOT NULL,
+      ends_at TEXT NOT NULL DEFAULT '', daily_exception_limit INTEGER NOT NULL DEFAULT 2,
+      max_exception_minutes INTEGER NOT NULL DEFAULT 30, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL, ended_at TEXT NOT NULL DEFAULT '', end_reason TEXT NOT NULL DEFAULT ''
+    )
+  `);
+  const insert = legacy.prepare(`
+    INSERT INTO controller_commitments (commitment_id, kind, title, user_quote, starts_at, created_at, updated_at)
+    VALUES (?, ?, 'x', 'y', '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')
+  `);
+  insert.run("cmt_legacy_task", "task");
+  insert.run("cmt_legacy_block", "block");
+  legacy.close();
+}
+
 const { db } = await import("../src/db");
+const legacyKinds = db.prepare("SELECT kind FROM controller_commitments ORDER BY kind").all();
 const commitments = await import("../src/services/commitments");
 const { getCommitment } = await import("../src/services/commitment-store");
 const { packageStates } = await import("../src/services/commitment-sync-store");
@@ -42,7 +66,7 @@ describe("commitments", () => {
   });
 
   test("a block rule needs a freezing device, exact packages, a full window and an explicit end clock", () => {
-    const base = { kind: "block" as const, title: "x", user_quote: "y", device_id: PHONE, packages: [TAOBAO] };
+    const base = { title: "x", user_quote: "y", device_id: PHONE, packages: [TAOBAO] };
     expect(() => commitments.recordCommitment({ ...base, device_id: "missing-phone" })).toThrow("device_not_found");
     expect(() => commitments.recordCommitment({ ...base, packages: ["淘宝"] })).toThrow("invalid_commitment_package");
     expect(() => commitments.recordCommitment({ ...base, window_start: "23:00" })).toThrow("invalid_commitment_window");
@@ -54,8 +78,11 @@ describe("commitments", () => {
 
     const recorded = commitments.recordCommitment({ ...base, packages: [TAOBAO, "com.xingin.xhs"], ends_at: "2099-01-01T00:00:00+08:00" });
     expect(recorded).toMatchObject({ status: "active", ends_at: "2098-12-31T16:00:00.000Z", not_installed: ["com.xingin.xhs"] });
-    const task = commitments.recordCommitment({ kind: "task", title: "每天二十个新词", user_quote: "明天早饭后二十个新的" });
-    expect(task).not.toHaveProperty("packages");
+    expect(() => commitments.recordCommitment({ title: "每天二十个新词", user_quote: "明天早饭后二十个新的" })).toThrow("invalid_commitment");
+  });
+
+  test("task promises from before the ledger are dropped when the database opens", () => {
+    expect(legacyKinds).toEqual([{ kind: "block" }]);
   });
 
   test("recording the same rule twice returns the first one", () => {
@@ -219,7 +246,7 @@ describe("commitments", () => {
 
   test("a freeze someone else placed is not lifted when the rule's window closes", () => {
     commitments.recordCommitment({
-      kind: "block", title: "晚饭后", user_quote: "八点到十点不许购物", device_id: PHONE,
+      title: "晚饭后", user_quote: "八点到十点不许购物", device_id: PHONE,
       packages: [TAOBAO, JD], window_start: "20:00", window_end: "22:00",
     }, RECORDED);
     // 19:00 local: a controller freezes Taobao until 03:00 on its own account.

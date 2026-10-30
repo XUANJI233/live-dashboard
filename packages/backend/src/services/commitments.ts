@@ -11,21 +11,19 @@ import {
   openExceptionsForDevice,
   openExceptionsForPackage,
   refundExceptionGroup,
-  type CommitmentKind,
   type CommitmentRow,
   type ExceptionRow,
 } from "./commitment-store";
 import { deviceSupportsCommand, getDeviceContext, getDeviceInstalledApps } from "./device-context";
 
-// A commitment is a rule he set while calm. `block` rules name exact packages that stay frozen
-// inside their window until he explicitly ends the rule; `task` rules are only recorded so every
-// controller run sees the same promise. An exception opens one package on one device for every
-// rule holding it, charged to each rule's own daily quota.
+// A commitment is a rule he set while calm: exact packages that stay frozen inside their window
+// until he explicitly ends the rule. One-off promises live in the supervision ledger (ledger.ts).
+// An exception opens one package on one device for every rule holding it, charged to each rule's
+// own daily quota.
 // Persistence: commitment-store.ts. Time rules: commitment-schedule.ts. Phone sync:
 // commitment-enforcement.ts.
 
 export interface RecordCommitmentInput {
-  kind: CommitmentKind;
   title: string;
   user_quote: string;
   device_id?: string;
@@ -56,18 +54,15 @@ const DEFAULT_MAX_EXCEPTION_MINUTES = 30;
 const MIN_PURPOSE_LENGTH = 2;
 
 export function recordCommitment(input: RecordCommitmentInput, now = new Date()): Record<string, unknown> {
-  const kind = input.kind === "block" ? "block" : input.kind === "task" ? "task" : null;
   const title = cleanLine(input.title, 80);
   const quote = cleanLine(input.user_quote, 300);
-  if (!kind || !title || !quote) throw new Error("invalid_commitment");
-  const packages = kind === "block" ? cleanPackages(input.packages) : [];
-  const deviceId = kind === "block" ? cleanLine(input.device_id, 160) : "";
-  if (kind === "block" && (!deviceId || packages.length === 0)) throw new Error("invalid_commitment");
-  if (kind === "block") {
-    const device = getDeviceContext(deviceId);
-    if (!device) throw new Error("device_not_found");
-    if (!deviceSupportsCommand(device, "freeze")) throw new Error("device_cannot_freeze");
-  }
+  if (!title || !quote) throw new Error("invalid_commitment");
+  const packages = cleanPackages(input.packages);
+  const deviceId = cleanLine(input.device_id, 160);
+  if (!deviceId || packages.length === 0) throw new Error("invalid_commitment");
+  const device = getDeviceContext(deviceId);
+  if (!device) throw new Error("device_not_found");
+  if (!deviceSupportsCommand(device, "freeze")) throw new Error("device_cannot_freeze");
   const windowStart = cleanLine(input.window_start, 5);
   const windowEnd = cleanLine(input.window_end, 5);
   if ((windowStart || windowEnd) && (!isClock(windowStart) || !isClock(windowEnd) || windowStart === windowEnd)) {
@@ -86,19 +81,18 @@ export function recordCommitment(input: RecordCommitmentInput, now = new Date())
   };
   // The very same rule recorded twice (two runs reading the same words) returns the first one.
   // A rule that differs in any term is recorded alongside; the strictest of them then applies.
-  const same = activeCommitmentRows().find((row) => row.kind === kind && row.ends_at === terms.ends_at
+  const same = activeCommitmentRows().find((row) => row.ends_at === terms.ends_at
     && row.daily_exception_limit === terms.daily_exception_limit && row.max_exception_minutes === terms.max_exception_minutes
-    && row.timezone_offset_minutes === terms.timezone_offset_minutes && (kind === "block"
-      ? row.device_id === deviceId && sameSet(commitmentPackages(row), packages)
-        && row.window_start === windowStart && row.window_end === windowEnd
-      : row.title === title && row.user_quote === quote));
+    && row.timezone_offset_minutes === terms.timezone_offset_minutes
+    && row.device_id === deviceId && sameSet(commitmentPackages(row), packages)
+    && row.window_start === windowStart && row.window_end === windowEnd);
   if (same) return { ...commitmentView(same, now), duplicate: true };
   if (activeCommitmentRows().length >= MAX_ACTIVE_COMMITMENTS) throw new Error("too_many_commitments");
 
   const at = now.toISOString();
   const row = insertCommitment({
     commitment_id: `cmt_${crypto.randomUUID()}`,
-    kind,
+    kind: "block",
     title,
     user_quote: quote,
     device_id: deviceId,
@@ -138,9 +132,9 @@ export function commitmentInWindow(row: CommitmentRow, now = new Date()): boolea
   return windowContains(row, now);
 }
 
-/** Devices any active block rule targets. */
+/** Devices any active rule targets. */
 export function committedDevices(now = new Date()): string[] {
-  return [...new Set(activeCommitments(now).filter((row) => row.kind === "block").map((row) => row.device_id))];
+  return [...new Set(activeCommitments(now).map((row) => row.device_id))];
 }
 
 /** Packages that must be frozen on this device now: in-window rules minus open exceptions. */
@@ -217,7 +211,7 @@ export function commitmentsContext(now = new Date()): Record<string, unknown>[] 
 }
 
 function coveringRules(deviceId: string, now: Date): CommitmentRow[] {
-  return activeCommitments(now).filter((row) => row.kind === "block" && row.device_id === deviceId && commitmentInWindow(row, now));
+  return activeCommitments(now).filter((row) => row.device_id === deviceId && commitmentInWindow(row, now));
 }
 
 function commitmentView(row: CommitmentRow, now: Date): Record<string, unknown> {
@@ -228,19 +222,17 @@ function commitmentView(row: CommitmentRow, now: Date): Record<string, unknown> 
     title: row.title,
     user_quote: row.user_quote,
     status: row.status,
-    ...(row.kind === "block" ? {
-      device_id: row.device_id,
-      packages: commitmentPackages(row),
-      window: row.window_start ? { start: row.window_start, end: row.window_end } : null,
-      in_window_now: row.status === "active" && commitmentInWindow(row, now),
-      daily_exception_limit: row.daily_exception_limit,
-      max_exception_minutes: row.max_exception_minutes,
-      exceptions_today: today.length,
-      exceptions_left_today: Math.max(0, row.daily_exception_limit - today.length),
-      open_exceptions: today
-        .filter((item) => Date.parse(item.relock_at) > now.getTime())
-        .map((item) => ({ package_name: item.package_name, purpose: item.purpose, relock_at: item.relock_at })),
-    } : {}),
+    device_id: row.device_id,
+    packages: commitmentPackages(row),
+    window: row.window_start ? { start: row.window_start, end: row.window_end } : null,
+    in_window_now: row.status === "active" && commitmentInWindow(row, now),
+    daily_exception_limit: row.daily_exception_limit,
+    max_exception_minutes: row.max_exception_minutes,
+    exceptions_today: today.length,
+    exceptions_left_today: Math.max(0, row.daily_exception_limit - today.length),
+    open_exceptions: today
+      .filter((item) => Date.parse(item.relock_at) > now.getTime())
+      .map((item) => ({ package_name: item.package_name, purpose: item.purpose, relock_at: item.relock_at })),
     starts_at: row.starts_at,
     ends_at: row.ends_at || null,
     ...(row.status === "ended" ? { ended_at: row.ended_at, end_reason: row.end_reason } : {}),
