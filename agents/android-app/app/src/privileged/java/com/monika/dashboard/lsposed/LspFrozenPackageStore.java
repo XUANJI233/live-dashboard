@@ -1,9 +1,10 @@
 package com.monika.dashboard.lsposed;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -16,56 +17,47 @@ final class LspFrozenPackageStore {
         void onExpired(Record record);
     }
 
-    private static final int MAX_COMMAND_SNAPSHOT_PACKAGES = 16;
-    private static final int MAX_REPORT_JSON_PACKAGES = 8;
+    /** Bounds an unfreeze scan; far above the 80 apps the report lists. */
+    private static final int MAX_COMMAND_SNAPSHOT_PACKAGES = 256;
+    private static final Comparator<Record> OLDEST_FIRST = (left, right) -> {
+        int byTime = Long.compare(left.frozenAt, right.frozenAt);
+        return byTime != 0 ? byTime : left.packageName.compareTo(right.packageName);
+    };
 
     private final ConcurrentHashMap<String, Record> records = new ConcurrentHashMap<>();
 
     JSONObject frozenState(long now, TimeFormatter formatter, ExpiredRecordHandler expiredHandler) {
-        JSONArray frozen = frozenPackagesJson(now, formatter, expiredHandler);
-        JSONArray packages = new JSONArray();
         try {
-            for (int i = 0; i < frozen.length(); i++) {
-                JSONObject item = frozen.optJSONObject(i);
-                if (item != null) packages.put(item.optString("package_name", ""));
-            }
-        } catch (Throwable ignored) {}
-        JSONObject state = new JSONObject();
-        try {
-            state.put("frozen_apps", frozen);
-            state.put("frozen_packages", packages);
-        } catch (Throwable ignored) {}
-        return state;
+            return LspFrozenPackageReport.stateAfter(activeRecords(now, expiredHandler), formatter);
+        } catch (Throwable ignored) {
+            return new JSONObject();
+        }
     }
 
     List<LspFrozenPackage> frozenPackages(long now, ExpiredRecordHandler expiredHandler) {
-        cleanup(now, expiredHandler);
         ArrayList<LspFrozenPackage> out = new ArrayList<>();
-        for (Record record : records.values()) {
-            if (record == null || record.until <= now) continue;
+        for (Record record : activeRecords(now, expiredHandler)) {
             out.add(new LspFrozenPackage(record.packageName, record.appName, record.mode, record.reason));
             if (out.size() >= MAX_COMMAND_SNAPSHOT_PACKAGES) break;
         }
         return out;
     }
 
-    JSONArray frozenPackagesJson(long now, TimeFormatter formatter, ExpiredRecordHandler expiredHandler) {
-        cleanup(now, expiredHandler);
-        JSONArray arr = new JSONArray();
+    void putReport(JSONObject device, long now, TimeFormatter formatter, ExpiredRecordHandler expiredHandler) {
         try {
-            for (Record record : records.values()) {
-                if (record == null || record.until <= now) continue;
-                arr.put(new JSONObject()
-                        .put("package_name", record.packageName)
-                        .put("app_name", record.appName)
-                        .put("frozen_at", formatter.isoTime(record.frozenAt))
-                        .put("until", formatter.isoTime(record.until))
-                        .put("mode", record.mode)
-                        .put("reason", record.reason));
-                if (arr.length() >= MAX_REPORT_JSON_PACKAGES) break;
-            }
+            LspFrozenPackageReport.putReport(device, activeRecords(now, expiredHandler), formatter);
         } catch (Throwable ignored) {}
-        return arr;
+    }
+
+    /** Unexpired records, oldest freeze first, so every snapshot lists them in the same order. */
+    List<Record> activeRecords(long now, ExpiredRecordHandler expiredHandler) {
+        cleanup(now, expiredHandler);
+        ArrayList<Record> out = new ArrayList<>();
+        for (Record record : records.values()) {
+            if (record != null && record.until > now) out.add(record);
+        }
+        Collections.sort(out, OLDEST_FIRST);
+        return out;
     }
 
     Record record(String packageName) {

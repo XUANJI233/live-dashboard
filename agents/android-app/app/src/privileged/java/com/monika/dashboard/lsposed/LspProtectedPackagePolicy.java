@@ -1,7 +1,5 @@
 package com.monika.dashboard.lsposed;
 
-import android.content.pm.ApplicationInfo;
-
 final class LspProtectedPackagePolicy {
     interface Host {
         boolean isIgnoredPackage(String packageName);
@@ -17,34 +15,35 @@ final class LspProtectedPackagePolicy {
         this.host = host;
     }
 
+    /** Name rules first; the PackageManager checks only run for packages they let through. */
     boolean isProtectedPackage(String packageName) {
         String pkg = safeString(packageName);
-        if (pkg.length() == 0) return true;
-        return isProtectedPackage(pkg, operations.isSystemApplicationPackage(pkg));
+        if (isProtected(pkg, false, false)) return true;
+        return operations.isProtectedSystemPackage(pkg) || operations.isInputMethodPackage(pkg);
     }
 
     /** Protection without the blanket system-app rule, for preinstalled browsers in strict browsing. */
     boolean isProtectedIgnoringSystemFlag(String packageName) {
-        return isProtectedPackage(safeString(packageName), false);
+        String pkg = safeString(packageName);
+        return isProtected(pkg, false, false) || operations.isInputMethodPackage(pkg);
     }
 
-    boolean isProtectedApplication(ApplicationInfo app) {
-        if (app == null) return true;
-        int systemFlags = ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP;
-        return isProtectedPackage(safeString(app.packageName), (app.flags & systemFlags) != 0);
-    }
-
-    private boolean isProtectedPackage(String pkg, boolean systemApplication) {
+    /**
+     * The installed-apps scan already knows whether a package is a protected system app (see
+     * LspPreloadedAppPolicy) and whether it provides an input method.
+     */
+    boolean isProtected(String packageName, boolean protectedSystemApp, boolean inputMethod) {
+        String pkg = safeString(packageName);
         if (pkg.length() == 0) return true;
         if (host.isIgnoredPackage(pkg)) return true;
         if (targetPackage.equals(pkg)) return true;
         if (pkg.startsWith("com.monika.dashboard")) return true;
-        if (systemApplication) return true;
-        if (isInputMethodPackage(pkg)) return true;
+        if (protectedSystemApp) return true;
+        if (inputMethod || hasInputMethodPrefix(pkg)) return true;
         return isCriticalPlatformPackage(pkg);
     }
 
-    private boolean isInputMethodPackage(String packageName) {
+    private boolean hasInputMethodPrefix(String packageName) {
         return packageName.startsWith("com.android.inputmethod")
                 || packageName.startsWith("com.google.android.inputmethod");
     }

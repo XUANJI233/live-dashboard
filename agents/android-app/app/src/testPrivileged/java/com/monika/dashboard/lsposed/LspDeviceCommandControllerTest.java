@@ -1,6 +1,7 @@
 package com.monika.dashboard.lsposed;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.robolectric.Shadows.shadowOf;
 
 import android.os.Handler;
@@ -14,12 +15,16 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executor;
 
 @RunWith(AndroidJUnit4.class)
 @Config(sdk = 35)
 public class LspDeviceCommandControllerTest {
+    private static final String LONG_REASON = repeat("今晚十点前不刷短视频，先把作业写完再说。", 12);
+
     @Test
     public void wsSubmittedEventsFallbackToHttpWhenServerAckIsMissing() throws Exception {
         FakeHost host = new FakeHost();
@@ -80,6 +85,51 @@ public class LspDeviceCommandControllerTest {
         JSONObject result = new JSONObject(host.wsBodies.get(1));
         assertEquals("applied", result.getString("status"));
         assertEquals("com.ztgame.yyzy", host.unfreezeCalls.get(0));
+    }
+
+    @Test
+    public void exactPackageFreezeDoesNotDependOnTheInstalledAppsScan() throws Exception {
+        FakeHost host = new FakeHost();
+        host.installedPackages.add("com.ss.android.ugc.aweme");
+        LspDeviceCommandController controller = new LspDeviceCommandController(host);
+
+        controller.handleCommand(freezeCommand("^com\\.ss\\.android\\.ugc\\.aweme$"), "test");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        JSONObject result = new JSONObject(host.wsBodies.get(1));
+        assertEquals("applied", result.getString("status"));
+        assertEquals("com.ss.android.ugc.aweme", host.freezeCalls.get(0));
+    }
+
+    @Test
+    public void exactUnfreezeReachesRecordsBeyondTheSixteenth() throws Exception {
+        FakeHost host = new FakeHost();
+        host.store = storeWith(30);
+        LspDeviceCommandController controller = new LspDeviceCommandController(host);
+
+        controller.handleCommand(unfreezeCommand("^com\\.example\\.app030$"), "test");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        JSONObject result = new JSONObject(host.wsBodies.get(1));
+        assertEquals("applied", result.getString("status"));
+        assertEquals(1, host.unfreezeCalls.size());
+        assertEquals("com.example.app030", host.unfreezeCalls.get(0));
+    }
+
+    @Test
+    public void catchAllUnfreezeOfManyAppsStaysWithinTheServerResultLimit() throws Exception {
+        FakeHost host = new FakeHost();
+        host.store = storeWith(120);
+        LspDeviceCommandController controller = new LspDeviceCommandController(host);
+
+        controller.handleCommand(unfreezeCommand("全部"), "test");
+        shadowOf(Looper.getMainLooper()).idle();
+
+        JSONObject result = new JSONObject(host.wsBodies.get(1));
+        assertEquals(120, host.unfreezeCalls.size());
+        assertEquals(120, result.getJSONArray("actions").length());
+        assertEquals(120, result.getJSONObject("state_after").getInt("frozen_packages_total"));
+        assertTrue(LspCommandResultBudget.bytes(result) <= LspCommandResultBudget.MAX_RESULT_BYTES);
     }
 
     @Test
@@ -153,7 +203,24 @@ public class LspDeviceCommandControllerTest {
                 .put("command_id", "cmd_unfreeze")
                 .put("payload", new JSONObject()
                         .put("kind", LspDeviceCommandProtocol.KIND_SUPERVISION)
+                        .put("reason", LONG_REASON)
                         .put("unfreeze_commands", new org.json.JSONArray().put(pattern)));
+    }
+
+    private static String repeat(String text, int times) {
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < times; i++) out.append(text);
+        return out.toString();
+    }
+
+    private static LspFrozenPackageStore storeWith(int count) {
+        LspFrozenPackageStore store = new LspFrozenPackageStore();
+        long now = System.currentTimeMillis();
+        for (int i = 1; i <= count; i++) {
+            store.put(LspFrozenPackageStoreTest.pkg(i), "应用" + i, now - 1_000L * (count + 1 - i),
+                    now + 60 * 60_000L, LONG_REASON, "suspended");
+        }
+        return store;
     }
 
     private static JSONObject screenshotCommand() throws Exception {
@@ -177,6 +244,8 @@ public class LspDeviceCommandControllerTest {
         final List<LspFrozenPackage> frozenApps = new ArrayList<>();
         final List<String> freezeCalls = new ArrayList<>();
         final List<String> unfreezeCalls = new ArrayList<>();
+        final Set<String> installedPackages = new HashSet<>();
+        LspFrozenPackageStore store;
         int screenOffCalls = 0;
         int screenshotCalls = 0;
 
@@ -225,7 +294,7 @@ public class LspDeviceCommandControllerTest {
 
         @Override
         public JSONObject frozenState(long now) {
-            return new JSONObject();
+            return store != null ? store.frozenState(now, millis -> "t" + millis, null) : new JSONObject();
         }
 
         @Override
@@ -245,7 +314,7 @@ public class LspDeviceCommandControllerTest {
 
         @Override
         public boolean isInstalledPackage(String packageName) {
-            return false;
+            return installedPackages.contains(packageName);
         }
 
         @Override
@@ -255,7 +324,7 @@ public class LspDeviceCommandControllerTest {
 
         @Override
         public List<LspFrozenPackage> frozenPackages() {
-            return frozenApps;
+            return store != null ? store.frozenPackages(System.currentTimeMillis(), null) : frozenApps;
         }
 
         @Override

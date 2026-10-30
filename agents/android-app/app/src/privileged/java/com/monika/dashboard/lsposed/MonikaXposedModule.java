@@ -344,6 +344,11 @@ public final class MonikaXposedModule extends XposedModule {
             }
 
             @Override
+            public void logInfo(String message) {
+                log(Log.INFO, TAG, message);
+            }
+
+            @Override
             public void logDebug(String message) {
                 MonikaXposedModule.this.logDebug(message);
             }

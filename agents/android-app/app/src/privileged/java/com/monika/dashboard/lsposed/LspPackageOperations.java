@@ -7,31 +7,31 @@ import android.os.Binder;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 
 final class LspPackageOperations {
     interface Host {
         Context systemContext();
         boolean isSystemServerProcess();
+        void logInfo(String message);
         void logDebug(String message);
         void logWarn(String message);
     }
 
-    private static final int MAX_INSTALLED_APPS = 512;
-
     private final LspHookSupport hookSupport;
     private final Host host;
+    private final LspInstalledAppScanner installedAppScanner;
 
     LspPackageOperations(LspHookSupport hookSupport, Host host) {
         this.hookSupport = hookSupport;
         this.host = host;
+        installedAppScanner = new LspInstalledAppScanner(host::logInfo);
     }
 
     boolean isInstalledPackage(String packageName) {
         String pkg = safeString(packageName);
         if (pkg.length() == 0 || pkg.indexOf('.') <= 0) return false;
+        long token = Binder.clearCallingIdentity();
         try {
             Context ctx = host.systemContext();
             if (ctx == null) return false;
@@ -39,6 +39,8 @@ final class LspPackageOperations {
             return true;
         } catch (Throwable ignored) {
             return false;
+        } finally {
+            Binder.restoreCallingIdentity(token);
         }
     }
 
@@ -65,28 +67,20 @@ final class LspPackageOperations {
     }
 
     List<LspInstalledApp> installedApps(LspProtectedPackagePolicy protectedPolicy) {
-        ArrayList<LspInstalledApp> out = new ArrayList<>();
+        // Callers run on the upload thread today. Called from a binder thread, the query would
+        // carry an app's calling uid and package visibility filtering would hide most apps.
+        long token = Binder.clearCallingIdentity();
         try {
             Context ctx = host.systemContext();
-            if (ctx == null) return out;
-            PackageManager pm = ctx.getPackageManager();
-            if (pm == null) return out;
-            List<ApplicationInfo> installed = pm.getInstalledApplications(0);
-            if (installed == null) return out;
-            ArrayList<ApplicationInfo> apps = new ArrayList<>(installed);
-            Collections.sort(apps, Comparator.comparing(
-                    app -> app != null ? safeString(app.packageName) : ""));
-            for (ApplicationInfo app : apps) {
-                if (protectedPolicy.isProtectedApplication(app)) continue;
-                String label = "";
-                try { label = safeString(pm.getApplicationLabel(app).toString()); } catch (Throwable ignored) {}
-                out.add(new LspInstalledApp(app.packageName, label));
-                if (out.size() >= MAX_INSTALLED_APPS) break;
-            }
+            PackageManager pm = ctx != null ? ctx.getPackageManager() : null;
+            if (pm == null) return new ArrayList<>();
+            return installedAppScanner.scan(pm, protectedPolicy);
         } catch (Throwable t) {
             host.logDebug("device command installed apps snapshot failed: " + t.getClass().getSimpleName());
+            return new ArrayList<>();
+        } finally {
+            Binder.restoreCallingIdentity(token);
         }
-        return out;
     }
 
     boolean setPackageSuspended(String packageName, boolean suspended) {
@@ -119,20 +113,40 @@ final class LspPackageOperations {
         return forceStopViaActivityManagerService(packageName);
     }
 
-    boolean isSystemApplicationPackage(String packageName) {
+    /** System-image packages are protected, except third-party preloads the user launches. */
+    boolean isProtectedSystemPackage(String packageName) {
+        if (packageName == null || packageName.length() == 0) return false;
+        if (packageName.startsWith("com.android.")) return true;
+        long token = Binder.clearCallingIdentity();
         try {
-            if (packageName == null || packageName.length() == 0) return false;
-            if (packageName.startsWith("com.android.")) return true;
             Context ctx = host.systemContext();
             if (ctx == null) return false;
             PackageManager pm = ctx.getPackageManager();
             if (pm == null) return false;
             ApplicationInfo info = pm.getApplicationInfo(packageName, 0);
-            int systemFlags = ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP;
-            return (info.flags & systemFlags) != 0;
+            if (!LspPreloadedAppPolicy.isSystemImage(info)) return false;
+            return !LspPreloadedAppPolicy.isThirdPartyPreload(
+                    pm, info, LspPreloadedAppPolicy.hasLauncherEntry(pm, packageName));
         } catch (Throwable t) {
             host.logDebug("system app freeze guard failed: " + t.getClass().getSimpleName());
-            return packageName != null && packageName.startsWith("com.android.");
+            return false;
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    boolean isInputMethodPackage(String packageName) {
+        if (packageName == null || packageName.length() == 0) return false;
+        long token = Binder.clearCallingIdentity();
+        try {
+            Context ctx = host.systemContext();
+            PackageManager pm = ctx != null ? ctx.getPackageManager() : null;
+            return pm != null && LspInstalledAppScanner.providesInputMethod(pm, packageName);
+        } catch (Throwable t) {
+            host.logDebug("input method guard failed: " + t.getClass().getSimpleName());
+            return false;
+        } finally {
+            Binder.restoreCallingIdentity(token);
         }
     }
 

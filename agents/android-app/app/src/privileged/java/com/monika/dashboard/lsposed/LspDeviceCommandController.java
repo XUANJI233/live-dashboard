@@ -11,7 +11,11 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 final class LspDeviceCommandController {
-    private static final int MAX_PENDING_EVENTS = 16;
+    // Each command queues a receipt and a result. Commands posted in one burst all run before
+    // the flushes they schedule, so the queue must hold a whole burst: 32 commands, well above
+    // the server's 6 outstanding commitment commands plus a controller's own. Results are capped
+    // by LspCommandResultBudget, so a full queue stays below about 2 MiB.
+    private static final int MAX_PENDING_EVENTS = 64;
     private static final int MAX_COMPLETED_RESULTS = 80;
     private static final long WS_EVENT_ACK_FALLBACK_MS = 4_000L;
 

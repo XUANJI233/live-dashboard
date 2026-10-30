@@ -19,6 +19,8 @@ final class LspDeviceCommandProtocol {
     static final String KIND_SUPERVISION_POLICY = "supervision_policy";
     static final String KIND_SCREENSHOT = "screenshot";
     static final long VIBRATE_MS = 650L;
+    private static final Pattern EXACT_PACKAGE_PATTERN =
+            Pattern.compile("\\^[A-Za-z0-9_]+(?:\\\\\\.[A-Za-z0-9_]+)+\\$");
 
     private LspDeviceCommandProtocol() {}
 
@@ -63,6 +65,16 @@ final class LspDeviceCommandProtocol {
             if (out.size() >= 12) break;
         }
         return out;
+    }
+
+    /**
+     * The package an exact pattern such as {@code ^com\.example\.app$} names (what the server's
+     * exactPackagePattern sends), or "" for any other pattern.
+     */
+    static String exactPackageName(String pattern) {
+        String value = safeString(pattern);
+        if (!EXACT_PACKAGE_PATTERN.matcher(value).matches()) return "";
+        return value.substring(1, value.length() - 1).replace("\\.", ".");
     }
 
     static boolean containsAllCommand(JSONArray arr) {

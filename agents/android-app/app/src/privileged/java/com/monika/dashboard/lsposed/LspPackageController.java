@@ -2,7 +2,6 @@ package com.monika.dashboard.lsposed;
 
 import android.content.Context;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.List;
@@ -16,6 +15,7 @@ final class LspPackageController {
         String isoTime(long millis);
         void postFreezeNotification(String packageName, String appName, String reason, long until);
         void cancelFreezeNotification(String packageName);
+        void logInfo(String message);
         void logDebug(String message);
         void logWarn(String message);
     }
@@ -115,8 +115,9 @@ final class LspPackageController {
         return operations.installedApps(protectedPolicy);
     }
 
-    JSONArray frozenPackagesJson(long now) {
-        return store.frozenPackagesJson(now, host::isoTime, this::releaseExpiredRecord);
+    /** Puts {@code frozen_packages} and {@code frozen_packages_total} into a report's device object. */
+    void putFrozenReport(JSONObject device, long now) {
+        store.putReport(device, now, host::isoTime, this::releaseExpiredRecord);
     }
 
     boolean clear(String reason) {
@@ -159,6 +160,11 @@ final class LspPackageController {
             @Override
             public boolean isSystemServerProcess() {
                 return controllerHost.isSystemServerProcess();
+            }
+
+            @Override
+            public void logInfo(String message) {
+                controllerHost.logInfo(message);
             }
 
             @Override

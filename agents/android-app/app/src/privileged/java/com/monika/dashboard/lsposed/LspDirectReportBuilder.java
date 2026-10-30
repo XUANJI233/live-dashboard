@@ -1,6 +1,5 @@
 package com.monika.dashboard.lsposed;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 final class LspDirectReportBuilder {
@@ -94,8 +93,7 @@ final class LspDirectReportBuilder {
             if (heartbeatOnly) {
                 device.put("heartbeat_only", true);
             }
-            JSONArray frozen = deviceControlFeature.frozenPackagesJson(now);
-            device.put("frozen_packages", frozen);
+            deviceControlFeature.putFrozenPackages(device, now);
             if (deviceControlFeature.webAllowlistSupported()) {
                 device.put("web_allowlist", deviceControlFeature.webAllowlistStatus(now));
             }

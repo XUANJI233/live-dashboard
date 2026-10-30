@@ -3,7 +3,6 @@ package com.monika.dashboard.lsposed;
 import android.content.Context;
 import android.os.Handler;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.List;
@@ -25,6 +24,7 @@ final class LspDeviceControlFeature {
         String isoTime(long millis);
         String localClock(long millis);
         void requestDirectUpload(boolean force);
+        void logInfo(String message);
         void logDebug(String message);
         void logWarn(String message);
     }
@@ -73,8 +73,8 @@ final class LspDeviceControlFeature {
         return packageController.frozenPackages(now);
     }
 
-    JSONArray frozenPackagesJson(long now) {
-        return packageController.frozenPackagesJson(now);
+    void putFrozenPackages(JSONObject device, long now) {
+        packageController.putFrozenReport(device, now);
     }
 
     boolean unfreezePackage(String packageName) {
@@ -199,6 +199,11 @@ final class LspDeviceControlFeature {
             @Override
             public void cancelFreezeNotification(String packageName) {
                 feedback.cancelSupervisionFreeze(packageName);
+            }
+
+            @Override
+            public void logInfo(String message) {
+                host.logInfo(message);
             }
 
             @Override

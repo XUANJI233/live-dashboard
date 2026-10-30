@@ -16,6 +16,12 @@ final class LspDeviceCommandExecutor {
     }
 
     JSONObject execute(JSONObject command, String resultId, String source) {
+        JSONObject payload = command.optJSONObject("payload");
+        String reason = payload != null ? LspDeviceCommandProtocol.reason(payload, payload.optString("say", "")) : "";
+        return LspCommandResultBudget.fit(executeUnbounded(command, resultId, source), reason);
+    }
+
+    private JSONObject executeUnbounded(JSONObject command, String resultId, String source) {
         String commandId = LspDeviceCommandProtocol.cleanId(command.optString("command_id", ""));
         String requestId = LspDeviceCommandProtocol.cleanId(command.optString("request_id", ""));
         JSONArray actions = new JSONArray();
@@ -218,16 +224,25 @@ final class LspDeviceCommandExecutor {
             targets.add(foregroundPackage);
         }
         for (int i = 0; i < commands.length(); i++) {
+            // A bare package name or the server's exact `^pkg$` pattern names one package, which
+            // must not depend on the installed-apps scan.
             String raw = LspDeviceCommandProtocol.safeString(commands.optString(i, ""));
-            if (host.isInstalledPackage(raw)) targets.add(raw);
+            String exact = LspDeviceCommandProtocol.exactPackageName(raw);
+            String candidate = exact.length() > 0 ? exact : raw;
+            if (host.isInstalledPackage(candidate)) targets.add(candidate);
+            else if (exact.length() > 0) host.logDebug("freeze target not installed for this user: " + exact);
             if (targets.size() >= 12) return targets;
         }
-        for (LspInstalledApp app : host.installedApps()) {
+        List<LspInstalledApp> installed = host.installedApps();
+        for (LspInstalledApp app : installed) {
             if (app == null || app.packageName == null || app.packageName.length() == 0) continue;
             if (LspDeviceCommandProtocol.matchesAnyField(patterns, app.packageName, app.label)) {
                 targets.add(app.packageName);
                 if (targets.size() >= 12) break;
             }
+        }
+        if (targets.isEmpty()) {
+            host.logDebug("freeze matched no app: patterns=" + patterns.size() + " installed=" + installed.size());
         }
         return targets;
     }
