@@ -91,3 +91,11 @@ def test_a_missing_job_prompt_or_model_changes_nothing(tmp_path):
 
     with pytest.raises(ValueError, match="explicit provider and model"):
         MODULE.configure_jobs(PROMPTS, cron, {"provider": "custom", "model": ""}, resume_consumer=True)
+
+
+def test_resuming_the_consumer_also_resumes_a_paused_fallback():
+    jobs = {**all_jobs(consumer_enabled=False), "weixin-delivery-fallback": {"id": "fallback", "enabled": False}}
+    cron, calls = fake_cron(jobs)
+    MODULE.configure_jobs(PROMPTS, cron, INFERENCE, resume_consumer=True)
+    assert calls["resumed"] == ["id-live-supervision-review", "fallback"]
+    assert calls["paused"] == []

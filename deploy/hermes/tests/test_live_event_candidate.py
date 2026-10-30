@@ -68,7 +68,7 @@ def test_newest_review_per_device_wins_and_ai_work_goes_first(tmp_path):
     ):
         QUEUE.enqueue(tmp_path, value)
 
-    chosen, retired = CANDIDATE.select_event(QUEUE.pending_records(tmp_path), NOW)
+    chosen, retired, _ = CANDIDATE.select_event(QUEUE.pending_records(tmp_path), NOW)
 
     assert chosen[1]["event"]["event_id"] == "ai:daily"
     assert sorted(outcome for _, outcome in retired) == ["expired", "superseded"]
@@ -76,7 +76,7 @@ def test_newest_review_per_device_wins_and_ai_work_goes_first(tmp_path):
     for path, outcome in retired:
         QUEUE.mark_done(tmp_path, path, outcome)
     QUEUE.mark_done(tmp_path, chosen[0], "dispatched")
-    chosen, _ = CANDIDATE.select_event(QUEUE.pending_records(tmp_path), NOW)
+    chosen, _, _ = CANDIDATE.select_event(QUEUE.pending_records(tmp_path), NOW)
     assert chosen[1]["event"]["event_id"] == "review:other-device"
 
 
@@ -145,7 +145,7 @@ def test_a_superseded_review_hands_its_reasons_to_the_newer_one(tmp_path):
     newer["reason_codes"] = ["rule_match"]
     for value in (older, newer):
         QUEUE.enqueue(tmp_path, record(value))
-    chosen, retired = CANDIDATE.select_event(QUEUE.pending_records(tmp_path), NOW)
+    chosen, retired, _ = CANDIDATE.select_event(QUEUE.pending_records(tmp_path), NOW)
     assert chosen[1]["event"]["event_id"] == "review:rule"
     assert chosen[1]["event"]["reason_codes"] == ["rule_match", "device_requested"]
     assert [outcome for _, outcome in retired] == ["superseded"]
@@ -159,3 +159,20 @@ def test_disabled_controller_never_reads_the_queue(tmp_path):
         CANDIDATE.main()
     assert json.loads(output.getvalue())["wakeAgent"] is False
     assert len(QUEUE.pending_records(tmp_path)) == 1
+
+
+def test_merged_reasons_survive_a_tick_won_by_other_work(tmp_path):
+    older = event("review:asked", minutes_ago=5)
+    older["reason_codes"] = ["device_requested"]
+    newer = event("review:rule", minutes_ago=1)
+    newer["reason_codes"] = ["rule_match"]
+    for value in (older, newer, event("ai:daily", "ai.work_requested", minutes_ago=2)):
+        QUEUE.enqueue(tmp_path, record(value, mode="daily" if value["event_type"] == "ai.work_requested" else "supervision"))
+
+    with patch.object(CANDIDATE.time, "time", return_value=NOW):
+        assert run_main(tmp_path)["candidate_id"] == "ai:daily"
+    consumer_ran(tmp_path, NOW + 30, "ok")
+    with patch.object(CANDIDATE.time, "time", return_value=NOW + 60):
+        second = run_main(tmp_path)
+    assert second["candidate_id"] == "review:rule"
+    assert second["event"]["reason_codes"] == ["rule_match", "device_requested"]

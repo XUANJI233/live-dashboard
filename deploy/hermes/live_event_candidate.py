@@ -34,8 +34,9 @@ MAX_REASON_CODES = 20
 
 def select_event(
     records: list[tuple[Path, dict[str, Any]]], now: float,
-) -> tuple[tuple[Path, dict[str, Any]] | None, list[tuple[Path, str]]]:
-    """Return the record to run now and the records to retire without a run."""
+) -> tuple[tuple[Path, dict[str, Any]] | None, list[tuple[Path, str]], list[tuple[Path, dict[str, Any]]]]:
+    """Return the record to run now, the records to retire without a run, and the surviving
+    records whose reason codes absorbed a superseded review (to be written back)."""
     retired: list[tuple[Path, str]] = []
     live: list[tuple[Path, dict[str, Any], float]] = []
     for path, record in records:
@@ -53,6 +54,7 @@ def select_event(
     # reviews it replaces, as Live's outbox would have merged them. AI work is a durable queue item.
     newest: dict[tuple[str, tuple[str, ...]], tuple[Path, dict[str, Any], float]] = {}
     keep: list[tuple[Path, dict[str, Any], float]] = []
+    merged: set[Path] = set()
     for item in sorted(live, key=lambda value: value[2]):
         event = item[1]["event"]
         if event["event_type"] == "ai.work_requested":
@@ -68,12 +70,15 @@ def select_event(
                 if code not in codes and len(codes) < MAX_REASON_CODES:
                     codes.append(code)
             event["reason_codes"] = codes
+            merged.discard(older[0])
+            merged.add(item[0])
         newest[key] = item
     keep.extend(newest.values())
+    updated = [(path, record) for path, record, _ in keep if path in merged]
     if not keep:
-        return None, retired
+        return None, retired, updated
     chosen = min(keep, key=lambda value: (PRIORITY.index(value[1]["event"]["event_type"]), value[2]))
-    return (chosen[0], chosen[1]), retired
+    return (chosen[0], chosen[1]), retired, updated
 
 
 def settle_inflight(home: Path, now: float, last_run: tuple[float | None, str]) -> None:
@@ -136,7 +141,11 @@ def main() -> int:
     try:
         prune_done(home, now)
         settle_inflight(home, now, consumer_last_run(home))
-        chosen, retired = select_event(pending_records(home), now)
+        chosen, retired, updated = select_event(pending_records(home), now)
+        # Persist merged reasons before retiring what they came from, so a crash loses nothing.
+        for path, merged_record in updated:
+            if chosen is None or path != chosen[0]:
+                move(home, path, "pending", merged_record)
         for path, outcome in retired:
             mark_done(home, path, outcome)
         if chosen is None:

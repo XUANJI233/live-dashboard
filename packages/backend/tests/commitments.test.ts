@@ -79,7 +79,7 @@ class FakePhone {
     }), this.online ? 1 : 0);
   }
 
-  private receive(envelope: { command_id: string; request_id: string; payload: { freeze_commands: string[]; unfreeze_commands: string[] } }): void {
+  receive(envelope: { command_id: string; request_id: string; payload: { freeze_commands: string[]; unfreeze_commands: string[]; say?: string } }): void {
     const { freeze_commands: freeze, unfreeze_commands: unfreeze } = envelope.payload;
     this.received.push({ freeze, unfreeze });
     const actions: Array<Record<string, unknown>> = [];
@@ -90,7 +90,8 @@ class FakePhone {
       if (targets.length === 0) actions.push({ action: "freeze", status: "ignored", reason: "no_installed_or_foreground_app_matched" });
       for (const name of targets) {
         const existing = this.frozen.get(name);
-        if (!existing) this.frozen.set(name, { until, reason: "" });
+        // The phone keeps the command's say as the freeze reason.
+        if (!existing) this.frozen.set(name, { until, reason: envelope.payload.say ?? "" });
         actions.push({ action: "freeze", status: "applied", package_name: name, until: existing?.until ?? until, ...(existing ? { reason: "already_frozen" } : {}) });
       }
     }
@@ -243,31 +244,38 @@ describe("commitments", () => {
     expect(phone.received.map((command) => command.freeze[0])).toEqual(["^com\\.xingin\\.xhs$"]);
   });
 
-  test("a controller unfreeze cannot reach a committed package by name, label, reason, alias or Java syntax", () => {
+  test("while anything is locked, a controller unfreeze only ever reaches the phone as exact unlocked names", () => {
     shopping();
     tick(NIGHT);
-    sendDeviceCommands({ request_id: "req_game", commands: [{ device_id: PHONE, freeze_commands: [GAME] }] });
+    const freeze = (name: string, say: string, id: string) =>
+      sendDeviceCommands({ request_id: id, commands: [{ device_id: PHONE, freeze_commands: [name], say }] });
+    freeze(GAME, "学习时间", "req_game");
+    freeze("com.qidian.QDReader", "", "req_reader");
     phone.report({ reason: { [TAOBAO]: "购物先停一下" } });
 
     const send = (patterns: string[], id: string) => sendDeviceCommands({ request_id: id, commands: [{ device_id: PHONE, unfreeze_commands: patterns }] }).commands[0]!;
+    const sentPatterns = (command: ReturnType<typeof send>) => (command.payload.payload as { unfreeze_commands: string[] }).unfreeze_commands;
     for (const alias of ["所有", "全量", "全部"]) {
       const sent = send([alias], `req_alias_${alias}`);
-      expect(sent.payload.payload).toMatchObject({ unfreeze_commands: ["^com\\.ztgame\\.yyzy$"] });
+      expect(sentPatterns(sent).sort()).toEqual(["^com\\.qidian\\.QDReader$", "^com\\.ztgame\\.yyzy$"]);
       expect((sent.payload.payload as { notes: string[] }).notes).toContain("commitment_locked");
-      sendDeviceCommands({ request_id: `req_refreeze_${alias}`, commands: [{ device_id: PHONE, freeze_commands: [GAME] }] });
+      freeze(GAME, "学习时间", `req_regame_${alias}`);
+      freeze("com.qidian.QDReader", "", `req_rereader_${alias}`);
     }
-    // 淘\p{L} compiles in JavaScript as a literal "p{L}" but is a letter class to the phone's Java regex.
-    for (const pattern of ["淘宝", "京东", "购物", TAOBAO, String.raw`淘\p{L}`]) {
+    // Names, labels, the locked app's reason, and Java-only syntax JavaScript reads differently.
+    for (const pattern of ["淘宝", "京东", "购物", TAOBAO, String.raw`淘\p{L}`, String.raw`t\x{61}obao`, String.raw`\b淘宝`, String.raw`t\0141obao`]) {
       const sent = send([pattern], `req_locked_${pattern}`);
-      expect(sent.result).toMatchObject({ status: "ignored" });
-      expect(sent.delivery).toMatchObject({ status: "skipped", reason: "commitment_locked" });
+      expect(sentPatterns(sent)).toEqual([]);
+      expect(sent.delivery.status).toBe("skipped");
     }
     expect(phone.frozen.has(TAOBAO) && phone.frozen.has(JD)).toBe(true);
 
-    const unrelated = send(["com.qidian"], "req_unrelated");
-    expect(unrelated.payload.payload).toMatchObject({ unfreeze_commands: ["com.qidian"] });
+    // Unlocked apps still open, by name, group syntax, or the freeze reason Live learned from the command.
+    expect(sentPatterns(send(["(?i:com\\.qidian)"], "req_group"))).toEqual(["^com\\.qidian\\.QDReader$"]);
+    freeze("com.qidian.QDReader", "", "req_rereader_group");
+    expect(sentPatterns(send(["学习时间"], "req_reason"))).toEqual(["^com\\.ztgame\\.yyzy$"]);
     const enforced = sendDeviceCommands({ request_id: "req_bypass", commands: [{ device_id: PHONE, unfreeze_commands: [TAOBAO] }] }, { bypassCommitments: true }).commands[0]!;
-    expect(enforced.payload.payload).toMatchObject({ unfreeze_commands: [TAOBAO] });
+    expect(sentPatterns(enforced)).toEqual([TAOBAO]);
   });
 
   test("an exception opens a package held by two rules, spends each quota once and is relocked", async () => {
@@ -300,17 +308,76 @@ describe("commitments", () => {
     expect(phone.frozen.has(TAOBAO)).toBe(true);
   });
 
-  test("an exception that never reaches the phone spends no quota", async () => {
+  test("a queued exception is kept if the phone runs it later and refunded if it never does", async () => {
     shopping();
     tick(NIGHT);
+    const openCount = () => (db.prepare("SELECT COUNT(*) AS count FROM commitment_exceptions WHERE status = 'open'").get() as { count: number }).count;
     phone.disconnect();
-    await expect(requestExceptionUnfreeze({ device_id: PHONE, package_name: TAOBAO, purpose: "买药", minutes: 10 }, NIGHT))
-      .rejects.toThrow("exception_not_delivered");
+    const queued = await requestExceptionUnfreeze({ device_id: PHONE, package_name: TAOBAO, purpose: "买药", minutes: 10 }, NIGHT);
+    expect(queued).toMatchObject({ ok: true, results_pending: true });
+    expect(openCount()).toBe(1);
+    // The phone never fetched it: once the command expires the quota comes back.
+    tick(new Date(NIGHT.getTime() + 11 * 60_000));
+    expect(openCount()).toBe(0);
+
+    const later = new Date(NIGHT.getTime() + 12 * 60_000);
+    await requestExceptionUnfreeze({ device_id: PHONE, package_name: JD, purpose: "交电费", minutes: 10 }, later);
+    // The phone fetches the queued command over HTTP and runs it.
+    const row = db.prepare("SELECT payload FROM device_commands WHERE request_id LIKE 'commitment-exception-%' ORDER BY issued_at DESC LIMIT 1").get() as { payload: string };
+    phone.receive(JSON.parse(row.payload));
+    tick(new Date(later.getTime() + 60_000));
+    expect(openCount()).toBe(1);
+    expect(phone.frozen.has(JD)).toBe(false);
+
     phone.online = false;
     phone.report();
-    await expect(requestExceptionUnfreeze({ device_id: PHONE, package_name: TAOBAO, purpose: "买药", minutes: 10 }, NIGHT))
+    await expect(requestExceptionUnfreeze({ device_id: PHONE, package_name: TAOBAO, purpose: "买药", minutes: 10 }, later))
       .rejects.toThrow("device_offline");
+  });
+
+  test("an exception the phone cannot apply is reported and refunded", async () => {
+    phone.installed.add("com.xingin.xhs");
+    night();
+    tick(NIGHT);
+    expect(phone.frozen.size).toBe(17);
+    // The 17th record sits past the phone's 16-record unfreeze scan.
+    const hidden = [...phone.frozen.keys()][16]!;
+    await expect(requestExceptionUnfreeze({ device_id: PHONE, package_name: hidden, purpose: "查个东西", minutes: 5 }, NIGHT))
+      .rejects.toThrow("exception_not_applied");
     expect(db.prepare("SELECT COUNT(*) AS count FROM commitment_exceptions WHERE status = 'open'").get()).toEqual({ count: 0 });
+  });
+
+  test("a freeze someone else placed is not lifted when the rule's window closes", () => {
+    commitments.recordCommitment({
+      kind: "block", title: "晚饭后", user_quote: "八点到十点不许购物", device_id: PHONE,
+      packages: [TAOBAO, JD], window_start: "20:00", window_end: "22:00",
+    }, RECORDED);
+    // 19:00 local: a controller freezes Taobao until 03:00 on its own account.
+    phone.now = new Date("2026-10-30T11:00:00.000Z");
+    sendDeviceCommands({ request_id: "req_controller_freeze", commands: [{ device_id: PHONE, freeze_commands: [TAOBAO] }] });
+    const evening = new Date("2026-10-30T12:30:00.000Z");
+    tick(evening);
+    tick(new Date(evening.getTime() + 60_000));
+    expect(packageStates(PHONE).get(TAOBAO)?.owned).toBe(0);
+    // 22:05 local: Live releases its own freeze of JD and leaves the controller's freeze alone.
+    const closed = new Date("2026-10-30T14:05:00.000Z");
+    for (let minute = 0; minute < 6; minute += 1) tick(new Date(closed.getTime() + minute * 60_000));
+    expect([...phone.frozen.keys()]).toEqual([TAOBAO]);
+  });
+
+  test("a release the phone never answered is re-sent until it lands", () => {
+    night();
+    tick(NIGHT);
+    phone.clearAtThree();
+    tick(AFTER_THREE);
+    tick(new Date(AFTER_THREE.getTime() + 60_000));
+    phone.disconnect();
+    for (let minute = 0; minute <= 40; minute += 5) tick(new Date(NOON.getTime() + minute * 60_000));
+    expect(phone.frozen.size).toBe(16);
+    expect([...packageStates(PHONE).values()].every((state) => state.release_attempts === 0)).toBe(true);
+    phone.connect();
+    for (let minute = 41; minute < 60; minute += 1) tick(new Date(NOON.getTime() + minute * 60_000));
+    expect(phone.frozen.size).toBe(0);
   });
 
   test("ending a rule releases its packages unless another rule still holds them", () => {

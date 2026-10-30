@@ -88,14 +88,21 @@ def configure_jobs(prompt_dir: Path, cron: CronApi, inference: dict[str, str], r
         if JOBS[name].get("consumer") and job.get("enabled") is not True and resume_consumer:
             if cron.resume(job["id"]) is None:
                 raise ValueError(f"job resume failed: {name}")
-    created = False
-    if cron.resolve(FALLBACK_JOB["name"]) is None:
+    # The fallback only makes sense while the consumer runs: keep the two in step.
+    fallback = cron.resolve(FALLBACK_JOB["name"])
+    created = fallback is None
+    if created:
         # No model ever runs here; the script itself sends the phone notification.
         fallback = cron.create(prompt=None, schedule=FALLBACK_JOB["schedule"], name=FALLBACK_JOB["name"],
                                deliver="local", script=FALLBACK_JOB["script"], no_agent=True)
-        created = True
-        if consumer_paused and isinstance(fallback, dict) and isinstance(fallback.get("id"), str):
-            cron.pause(fallback["id"])
+    fallback_id = fallback.get("id") if isinstance(fallback, dict) else None
+    if not isinstance(fallback_id, str):
+        raise ValueError("fallback job unavailable")
+    fallback_enabled = True if created else fallback.get("enabled") is True
+    if consumer_paused and fallback_enabled:
+        cron.pause(fallback_id)
+    elif not consumer_paused and not fallback_enabled and cron.resume(fallback_id) is None:
+        raise ValueError("fallback job resume failed")
     return {"updated": [name for name, _, _ in planned], "fallback_created": created, "consumer_paused": consumer_paused}
 
 

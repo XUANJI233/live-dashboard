@@ -78,11 +78,20 @@ export function recordCommitment(input: RecordCommitmentInput, now = new Date())
   if (endsAt && (!EXPLICIT_OFFSET.test(endsText) || !Number.isFinite(endsAt.getTime()) || endsAt.getTime() <= now.getTime())) {
     throw new Error("invalid_commitment_end");
   }
-  // A rule recorded twice (two runs reading the same words) would split exceptions and quota.
-  const same = activeCommitmentRows().find((row) => row.kind === kind && (kind === "block"
-    ? row.device_id === deviceId && sameSet(commitmentPackages(row), packages)
-      && row.window_start === windowStart && row.window_end === windowEnd
-    : row.title === title && row.user_quote === quote));
+  const terms = {
+    timezone_offset_minutes: safeTimezoneOffset(input.timezone_offset_minutes ?? -480),
+    ends_at: endsAt ? endsAt.toISOString() : "",
+    daily_exception_limit: boundedCount(input.daily_exception_limit, 0, 5, DEFAULT_DAILY_EXCEPTIONS),
+    max_exception_minutes: boundedCount(input.max_exception_minutes, 5, 60, DEFAULT_MAX_EXCEPTION_MINUTES),
+  };
+  // The very same rule recorded twice (two runs reading the same words) returns the first one.
+  // A rule that differs in any term is recorded alongside; the strictest of them then applies.
+  const same = activeCommitmentRows().find((row) => row.kind === kind && row.ends_at === terms.ends_at
+    && row.daily_exception_limit === terms.daily_exception_limit && row.max_exception_minutes === terms.max_exception_minutes
+    && row.timezone_offset_minutes === terms.timezone_offset_minutes && (kind === "block"
+      ? row.device_id === deviceId && sameSet(commitmentPackages(row), packages)
+        && row.window_start === windowStart && row.window_end === windowEnd
+      : row.title === title && row.user_quote === quote));
   if (same) return { ...commitmentView(same, now), duplicate: true };
   if (activeCommitmentRows().length >= MAX_ACTIVE_COMMITMENTS) throw new Error("too_many_commitments");
 
@@ -96,11 +105,8 @@ export function recordCommitment(input: RecordCommitmentInput, now = new Date())
     packages,
     window_start: windowStart,
     window_end: windowEnd,
-    timezone_offset_minutes: safeTimezoneOffset(input.timezone_offset_minutes ?? -480),
     starts_at: at,
-    ends_at: endsAt ? endsAt.toISOString() : "",
-    daily_exception_limit: boundedCount(input.daily_exception_limit, 0, 5, DEFAULT_DAILY_EXCEPTIONS),
-    max_exception_minutes: boundedCount(input.max_exception_minutes, 5, 60, DEFAULT_MAX_EXCEPTION_MINUTES),
+    ...terms,
     created_at: at,
   });
   const installed = new Set(getDeviceInstalledApps(deviceId).installed_apps.map((app) => app.package_name));
