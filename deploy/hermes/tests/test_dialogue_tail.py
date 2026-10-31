@@ -75,7 +75,7 @@ def test_reads_his_words_after_forced_skills_and_drops_machine_wakes(tmp_path):
 
 
 def test_follows_compaction_lineage_and_bounds_the_tail(tmp_path):
-    rows = [("old", "user", f"旧{index}") for index in range(3)] + [("dm", "user", "x" * 300)]
+    rows = [("old", "user", f"旧{index}") for index in range(3)] + [("dm", "user", "x" * (MODULE.MAX_TEXT_CHARS + 100))]
     home = build_home(
         tmp_path, rows,
         sessions=(("old", None, "compression"), ("dm", "old", None)),
@@ -88,7 +88,41 @@ def test_follows_compaction_lineage_and_bounds_the_tail(tmp_path):
 
 def test_missing_route_or_database_is_an_empty_tail(tmp_path):
     assert MODULE.recent_dialogue(tmp_path, KEY) == []
+    assert MODULE.chat_summary(tmp_path, KEY) == ""
     assert MODULE.recent_dialogue(build_home(tmp_path, [("dm", "user", "在吗")]), "") == []
+
+
+def test_the_tail_stops_at_its_character_budget_newest_first(tmp_path):
+    line = "字" * MODULE.MAX_TEXT_CHARS
+    count = MODULE.TAIL_CHAR_BUDGET // MODULE.MAX_TEXT_CHARS + 5
+    home = build_home(tmp_path, [("dm", "user", f"{index:03d}{line}") for index in range(count)])
+
+    tail = MODULE.recent_dialogue(home, KEY)
+
+    assert sum(len(item["text"]) for item in tail) <= MODULE.TAIL_CHAR_BUDGET + MODULE.MAX_TEXT_CHARS + 1
+    assert tail[-1]["text"].startswith(f"{count - 1:03d}")
+    assert len(tail) < count
+
+
+def test_a_compaction_carrier_splits_into_her_message_and_the_summary(tmp_path):
+    carrier = (
+        "[PRIOR CONTEXT — for reference only; not a new message]\n控制，调教\n⟦MSG⟧\n说过了\n"
+        "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n\n"
+        "[CONTEXT COMPACTION — REFERENCE ONLY] 他答应 07:30 起床，九点前报今天的计划。"
+    )
+    home = build_home(tmp_path, [
+        ("dm", "user", "早"),
+        ("dm", "assistant", carrier),
+        ("dm", "user", "醒了"),
+    ])
+
+    assert [(line["who"], line["text"]) for line in MODULE.recent_dialogue(home, KEY)] == [
+        ("他", "早"),
+        ("她", "控制，调教 / 说过了"),
+        ("他", "醒了"),
+    ]
+    assert MODULE.chat_summary(home, KEY) == "[CONTEXT COMPACTION — REFERENCE ONLY] 他答应 07:30 起床，九点前报今天的计划。"
+    assert MODULE.chat_summary(home, KEY, max_chars=10).endswith("…")
 
 
 def test_keeps_weixin_emoji_and_the_words_under_a_quote(tmp_path):

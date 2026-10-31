@@ -31,10 +31,11 @@ def script_gate(output: str, *, error: str | None = None, context: dict[str, Any
 def wake_context(root: Path, output: str) -> dict[str, Any] | None:
     if json.loads(output).get("selected_this_run") is not True:
         return None
-    from dialogue_tail import recent_dialogue
+    from dialogue_tail import chat_summary, recent_dialogue
 
     try:
         key = dialogue_session_key()
     except (OSError, ValueError, TypeError, ImportError):
         key = ""
-    return {"recent_dialogue": recent_dialogue(root, key)}
+    summary = chat_summary(root, key)
+    return {"recent_dialogue": recent_dialogue(root, key), **({"chat_summary": summary} if summary else {})}
