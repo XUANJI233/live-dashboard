@@ -6,7 +6,8 @@ import { useConfig, useConfigLoader, ConfigContext } from "@/hooks/useConfig";
 import type { DeviceState, HealthRecord } from "@/lib/api";
 import { fetchHealthData } from "@/lib/api";
 import { shouldMaskAppDescription } from "@/lib/app-descriptions";
-import { deviceCapabilitiesLabel, deviceProfileLabel } from "@/lib/device-profile";
+import DeviceInfoCard, { type DeviceInfoItem } from "@/components/DeviceInfoCard";
+import { deviceCapabilityNames, deviceProfileLabel, energyPolicyLabel } from "@/lib/device-profile";
 import Header from "@/components/Header";
 import CurrentStatus from "@/components/CurrentStatus";
 import DeviceCard from "@/components/DeviceCard";
@@ -548,7 +549,6 @@ function getOverviewAppLabel(device: DeviceState, nsfwFilterEnabled: boolean) {
   return device.app_name || "不知道在忙什么";
 }
 
-type DeviceInfoItem = { label: string; value: string; unit?: string };
 type HealthItem = { type: string; label: string; value: string; unit: string; source: string; records: HealthRecord[] };
 type HealthGroup = { latest: HealthRecord; all: HealthRecord[] };
 const SLEEP_DETAIL_TYPES = ["sleep", "sleep_status", "sleep_start", "sleep_end", "sleep_duration", "deep_sleep_duration", "sleep_score", "sleep_stage_count", "nap_start", "nap_end", "nap_duration"];
@@ -559,18 +559,6 @@ const HEALTH_TYPE_ORDER = new Map([
   "nap_start", "nap_end", "nap_duration", "sleep_stage_count", "wear_status", "stress", "steps",
   "active_calories", "stand_count", "stand_target", "air_pressure", "altitude",
 ].map((type, index) => [type, index]));
-
-function DeviceInfoCard({ item }: { item: DeviceInfoItem }) {
-  return (
-    <div className="rounded border border-dashed border-[var(--color-border)] px-3 py-2">
-      <div className="text-[10px] text-[var(--color-text-muted)]">{item.label}</div>
-      <div className="font-mono text-sm text-[var(--color-primary)]">
-        {item.value}
-        {item.unit && <span className="ml-1 text-[10px] text-[var(--color-text-muted)]">{item.unit}</span>}
-      </div>
-    </div>
-  );
-}
 
 function HealthMetricCard({ item, onOpen }: { item: HealthItem; onOpen?: () => void }) {
   return (
@@ -803,16 +791,19 @@ function deviceInfoItems(device: DeviceState): DeviceInfoItem[] {
   if (typeof extra?.device?.vpn_active === "boolean") info.push({ label: "VPN", value: extra.device.vpn_active ? "开启" : "关闭" });
   const profile = deviceProfileLabel(device);
   if (profile) info.push({ label: "采集", value: profile });
-  const capabilities = deviceCapabilitiesLabel(device);
-  if (capabilities) info.push({ label: "能力", value: capabilities });
+  const capabilities = deviceCapabilityNames(device);
+  if (capabilities) info.push({ label: "能力", value: capabilities.join("/") || "无控制能力", chips: capabilities });
   if (extra?.device?.relay_mode) info.push({ label: "中继", value: extra.device.relay_mode });
-  if (extra?.device?.energy_policy) info.push({ label: "节能", value: extra.device.energy_policy });
+  if (extra?.device?.energy_policy) {
+    info.push({ label: "节能", value: energyPolicyLabel(extra.device.energy_policy), title: extra.device.energy_policy });
+  }
   if (typeof extra?.device?.min_interval_ms === "number") info.push({ label: "间隔", value: formatDurationMinutes(extra.device.min_interval_ms / 60_000) });
   if (extra?.device?.window_mode && extra.device.window_mode !== "fullscreen") info.push({ label: "窗口", value: extra.device.window_mode });
   if (typeof extra?.device?.audio_output_connected === "boolean") {
     info.push({
       label: "音频",
       value: extra.device.audio_output_connected ? formatAudioOutputType(extra.device.audio_output_type) : "扬声器",
+      icon: extra.device.audio_output_connected ? "🎧" : "🔈",
       unit: extra.device.audio_output_name || "",
     });
   }

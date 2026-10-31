@@ -19,10 +19,11 @@ export function deviceProfileLabel(device: DeviceState): string | null {
   return null;
 }
 
-export function deviceCapabilitiesLabel(device: DeviceState): string | null {
+/** What the device can be told to do, one short name each; null when it reports no capabilities. */
+export function deviceCapabilityNames(device: DeviceState): string[] | null {
   const capabilities = device.extra?.device?.capabilities;
   if (!capabilities) return null;
-  const parts = [
+  return [
     capabilities.freeze ? "冻结" : "",
     capabilities.unfreeze ? "解冻" : "",
     capabilities.vibrate ? "震动" : "",
@@ -31,5 +32,18 @@ export function deviceCapabilitiesLabel(device: DeviceState): string | null {
     capabilities.risk_app_monitor ? "风险复核" : "",
     capabilities.app_time_limit ? "应用限时" : "",
   ].filter(Boolean);
-  return parts.length > 0 ? parts.join("/") : "无控制能力";
+}
+
+// How each client keeps reporting while the system saves power, as the clients name it.
+const ENERGY_POLICY_LABELS: Record<string, string> = {
+  system_server_direct: "系统进程直报",
+  app_workmanager: "应用定时上报",
+  app_workmanager_root: "应用定时上报（Root）",
+  zepp_alarm_single_execution: "闹钟定时唤醒",
+  zepp_sleep_30m_alarm: "睡眠时每 30 分钟唤醒",
+};
+
+/** A reader's name for a client's energy policy; an unknown code reads with spaces for underscores. */
+export function energyPolicyLabel(policy: string): string {
+  return ENERGY_POLICY_LABELS[policy] ?? policy.replace(/_/g, " ");
 }
