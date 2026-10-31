@@ -45,6 +45,8 @@ SYSTEM_PROMPT_LINE = (
 )
 # The gateway puts a quoted message before his words; recall keeps his words first.
 REPLY_PREFIX = re.compile(r'\A\[Replying to(?: your previous message)?: "(.*?)"\]\n\n', re.DOTALL)
+# The send time Hermes puts before each message under `gateway.message_timestamps`.
+TIME_PREFIX = re.compile(r"\A\[[A-Z][a-z]{2} \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?: [^\]]+)?\]\s*")
 
 
 class LiveLedgerMemoryProvider(MemoryProvider):
@@ -100,8 +102,9 @@ class LiveLedgerMemoryProvider(MemoryProvider):
 
 
 def about_text(query: Any) -> str:
-    """His message for `about`: his own words before a quoted reply, whitespace collapsed, capped."""
-    text = query if isinstance(query, str) else ""
+    """His message for `about`: his own words before a quoted reply, without the send time, whitespace
+    collapsed, capped."""
+    text = TIME_PREFIX.sub("", query) if isinstance(query, str) else ""
     quoted = REPLY_PREFIX.match(text)
     if quoted:
         text = f"{text[quoted.end():]} {quoted.group(1)}"

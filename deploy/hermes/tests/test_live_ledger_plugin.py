@@ -154,6 +154,7 @@ class LiveLedgerPluginTest(unittest.TestCase):
         quoted = '[Replying to: "四十分钟后给我第二章"]\n\n我写完了'
         self.assertEqual(MODULE.about_text(quoted), "我写完了 四十分钟后给我第二章")
         self.assertEqual(MODULE.about_text("[Replying to your previous message: \"好\"]\n\n在写"), "在写 好")
+        self.assertEqual(MODULE.about_text("[Sat 2026-10-31 09:51:56 CST] [Replying to: \"好\"]\n\n在写"), "在写 好")
         self.assertEqual(len(MODULE.about_text("刷" * 400)), 300)
         # Live counts UTF-16 code units, so characters outside the BMP count twice.
         self.assertEqual(len(MODULE.about_text("\U0001F600" * 200)), 150)
