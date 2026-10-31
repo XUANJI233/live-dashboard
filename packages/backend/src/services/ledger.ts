@@ -2,7 +2,7 @@ import { db } from "../db";
 import { safeTimezoneOffset } from "./cdn";
 import { getSummarySettings } from "./daily-summary-gen";
 import { cleanText } from "./mcp-contracts";
-import { formatPromptMinute } from "./prompt-time";
+import { formatPromptMinute, localIsoForOffset } from "./prompt-time";
 import {
   ledgerFingerprint,
   ledgerLikePattern,
@@ -318,18 +318,20 @@ export function recordView(
     status: row.status,
     ...(row.outcome ? { outcome: row.outcome } : {}),
     ...(row.outcome_note ? { outcome_note: row.outcome_note } : {}),
-    ...(row.due_at ? { due_at: row.due_at, due_local: formatPromptMinute(row.due_at, offset) } : {}),
+    // Machine times carry the local offset too: a model copying the UTC clock with "+08:00" was
+    // eight hours off.
+    ...(row.due_at ? { due_at: localIsoForOffset(row.due_at, offset), due_local: formatPromptMinute(row.due_at, offset) } : {}),
     ...(row.parent_id ? { parent_id: row.parent_id } : {}),
-    created_at: row.created_at,
+    created_at: localIsoForOffset(row.created_at, offset),
     created_local: formatPromptMinute(row.created_at, offset),
-    ...(row.closed_at ? { closed_at: row.closed_at } : {}),
+    ...(row.closed_at ? { closed_at: localIsoForOffset(row.closed_at, offset) } : {}),
     evidence_count: evidence.length,
     ...(options.includeEvidence ? {
       evidence: evidence.map((item) => ({
         role: item.role,
         source: item.source,
         text: item.text,
-        at: item.at,
+        at: localIsoForOffset(item.at, offset),
         ...(item.ref ? { ref: item.ref } : {}),
       })),
     } : {}),

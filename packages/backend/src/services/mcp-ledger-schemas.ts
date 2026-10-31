@@ -20,7 +20,8 @@ const EvidenceSchema = z.object({
   source: z.enum(EVIDENCE_SOURCES)
     .describe("his_words: his exact words; his_submission: something he sent that you checked; live_data: a Live record."),
   text: z.string().min(2).max(TEXT_LIMITS.evidence).describe("His words, what he sent, or what the record shows."),
-  at: OffsetTimeSchema.describe("When he said or sent it, or when the data happened; Z or +08:00."),
+  at: OffsetTimeSchema.optional()
+    .describe("Omit when it is now. Otherwise when he said or sent it, as local time with +08:00 like the record times."),
   ref: z.string().min(1).max(TEXT_LIMITS.ref).optional().describe("Optional id: command, bill, ledger record, or device and window."),
 });
 

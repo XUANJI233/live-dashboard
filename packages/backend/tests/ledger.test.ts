@@ -62,12 +62,8 @@ describe("supervision ledger", () => {
 
   test("a promise from his words stores its due time, and the same words again return it", () => {
     const first = promise();
-    expect(first.record).toMatchObject({
-      kind: "promise",
-      status: "open",
-      due_at: at(40 * MINUTE).toISOString(),
-      evidence_count: 1,
-    });
+    expect(first.record).toMatchObject({ kind: "promise", status: "open", evidence_count: 1 });
+    expect(Date.parse(String((first.record as { due_at: string }).due_at))).toBe(at(40 * MINUTE).getTime());
     expect(first.duplicate).toBeUndefined();
 
     // A cron lane quoting the same message minutes later, with its own wording of the title.
@@ -190,7 +186,7 @@ describe("supervision ledger", () => {
     const moved = updateLedgerRecord({
       record_id: promiseId, due_in_minutes: 60, add_evidence: [words("再给我一个小时", at(9 * MINUTE))],
     }, at(10 * MINUTE));
-    expect(moved).toMatchObject({ record: { due_at: at(70 * MINUTE).toISOString() } });
+    expect(Date.parse(String((moved.record as { due_at: string }).due_at))).toBe(at(70 * MINUTE).getTime());
     expect(() => updateLedgerRecord({
       record_id: promiseId, due_in_minutes: 60, add_evidence: [words("再给我一个小时吧", at(80 * MINUTE))],
     }, at(80 * MINUTE))).toThrow("ledger_due_passed");
@@ -304,5 +300,26 @@ describe("supervision ledger", () => {
     expect(maintainLedger(at(210 * DAY - MINUTE)).pruned).toBe(2);
     expect(maintainLedger(at(210 * DAY)).pruned).toBe(3);
     expect(db.prepare("SELECT COUNT(*) AS count FROM ledger_records").get()).toEqual({ count: 0 });
+  });
+});
+
+describe("supervision ledger times", () => {
+  test("evidence without a time is stamped now, and records show local times with their offset", () => {
+    db.run("DELETE FROM ledger_records");
+    const opened = openLedgerRecord({
+      kind: "promise",
+      title: "交第三章",
+      evidence: [{ source: "his_words", text: "半小时后交第三章" }],
+      due_in_minutes: 30,
+    }, NOW) as { record: { record_id: string; due_at: string; created_at: string } };
+    expect(opened.record.due_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+    expect(opened.record.due_at.endsWith("Z")).toBe(false);
+    expect(Date.parse(opened.record.due_at)).toBe(NOW.getTime() + 30 * MINUTE);
+    expect(Date.parse(opened.record.created_at)).toBe(NOW.getTime());
+
+    const found = searchLedger({ query: "第三章", include_evidence: true }, NOW) as {
+      records: Array<{ evidence: Array<{ at: string }> }>;
+    };
+    expect(Date.parse(found.records[0]!.evidence[0]!.at)).toBe(NOW.getTime());
   });
 });

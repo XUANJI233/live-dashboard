@@ -18,7 +18,8 @@ import type { EvidenceItem, EvidenceRole } from "./ledger-store";
 export interface EvidenceInput {
   source: EvidenceSource;
   text: string;
-  at: string;
+  /** Omitted means now. */
+  at?: string;
   ref?: string;
   counter?: boolean;
 }
@@ -49,6 +50,9 @@ export function normalizeEvidence(items: EvidenceInput[] | undefined, role: Evid
   return (items ?? []).map((item) => {
     const text = cleanText(item.text, TEXT_LIMITS.evidence);
     if (text.length < 2) throw new Error("ledger_evidence_required");
+    if (item.at === undefined || item.at === "") {
+      return evidenceItem(item, role, text, now.getTime());
+    }
     const at = Date.parse(item.at);
     if (
       typeof item.at !== "string"
@@ -59,15 +63,19 @@ export function normalizeEvidence(items: EvidenceInput[] | undefined, role: Evid
     ) {
       throw new Error("ledger_evidence_time_invalid");
     }
-    const ref = cleanText(item.ref, TEXT_LIMITS.ref);
-    return {
-      role: item.counter === true ? "counter" : role,
-      source: item.source,
-      text,
-      at: new Date(at).toISOString(),
-      ...(ref ? { ref } : {}),
-    };
+    return evidenceItem(item, role, text, at);
   });
+}
+
+function evidenceItem(item: EvidenceInput, role: EvidenceRole, text: string, at: number): EvidenceItem {
+  const ref = cleanText(item.ref, TEXT_LIMITS.ref);
+  return {
+    role: item.counter === true ? "counter" : role,
+    source: item.source,
+    text,
+    at: new Date(at).toISOString(),
+    ...(ref ? { ref } : {}),
+  };
 }
 
 /** Reject health details and private identifiers in any stored text. */

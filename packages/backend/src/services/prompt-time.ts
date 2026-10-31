@@ -37,6 +37,14 @@ function localDateForOffset(date: Date, tzOffsetMinutes: number): Date {
   return new Date(date.getTime() - safeTimezoneOffset(tzOffsetMinutes) * 60_000);
 }
 
+/** ISO 8601 in local time with its offset ("2026-10-31T03:14:15+08:00"), so a copied value keeps its meaning. */
+export function localIsoForOffset(value: Date | string, tzOffsetMinutes: number): string {
+  const date = dateFromValue(value);
+  if (!date) return String(value || "");
+  const [day, time] = localDateTimeStringForOffset(date, tzOffsetMinutes).split(" ");
+  return `${day}T${time}${timezoneOffsetLabel(tzOffsetMinutes).slice(3)}`;
+}
+
 export function timezoneOffsetLabel(tzOffsetMinutes: number): string {
   const offsetMinutes = -safeTimezoneOffset(tzOffsetMinutes);
   const sign = offsetMinutes >= 0 ? "+" : "-";
