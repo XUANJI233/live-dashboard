@@ -2,8 +2,8 @@ export type DeviceInfoItem = {
   label: string;
   value: string;
   unit?: string;
-  /** Shown as separate tags instead of the value (capabilities). */
-  chips?: string[];
+  /** Shown as separate tags instead of the value (capabilities); the hint is the plain name on hover. */
+  chips?: Array<{ label: string; hint?: string }>;
   icon?: string;
   /** Hover text, such as the raw code behind a friendly value. */
   title?: string;
@@ -18,10 +18,11 @@ export default function DeviceInfoCard({ item }: { item: DeviceInfoItem }) {
         <div className="mt-1 flex flex-wrap gap-1">
           {item.chips.length > 0 ? item.chips.map((chip) => (
             <span
-              key={chip}
+              key={chip.label}
+              title={chip.hint}
               className="rounded-full border border-[var(--color-border)] px-1.5 text-[10px] leading-4 text-[var(--color-primary)]"
             >
-              {chip}
+              {chip.label}
             </span>
           )) : <span className="text-xs text-[var(--color-text-muted)]">{item.value}</span>}
         </div>

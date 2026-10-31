@@ -792,7 +792,9 @@ function deviceInfoItems(device: DeviceState): DeviceInfoItem[] {
   const profile = deviceProfileLabel(device);
   if (profile) info.push({ label: "采集", value: profile });
   const capabilities = deviceCapabilityNames(device);
-  if (capabilities) info.push({ label: "能力", value: capabilities.join("/") || "无控制能力", chips: capabilities });
+  if (capabilities) {
+    info.push({ label: "能力", value: capabilities.map((c) => c.hint).join("/") || "啥也管不了喵~", chips: capabilities });
+  }
   if (extra?.device?.relay_mode) info.push({ label: "中继", value: extra.device.relay_mode });
   if (extra?.device?.energy_policy) {
     info.push({ label: "节能", value: energyPolicyLabel(extra.device.energy_policy), title: extra.device.energy_policy });

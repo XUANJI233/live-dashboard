@@ -19,19 +19,24 @@ export function deviceProfileLabel(device: DeviceState): string | null {
   return null;
 }
 
-/** What the device can be told to do, one short name each; null when it reports no capabilities. */
-export function deviceCapabilityNames(device: DeviceState): string[] | null {
-  const capabilities = device.extra?.device?.capabilities;
+export type DeviceCapability = { label: string; hint: string };
+
+// The card's playful name for each capability, with its plain name for hover.
+const CAPABILITY_NAMES: Array<[string, DeviceCapability]> = [
+  ["freeze", { label: "❄️ 冻住它", hint: "冻结" }],
+  ["unfreeze", { label: "🌸 解冻啦", hint: "解冻" }],
+  ["vibrate", { label: "📳 嗡嗡嗡", hint: "震动" }],
+  ["say", { label: "🔔 叮咚叮咚", hint: "提醒" }],
+  ["screen_off", { label: "🌙 啪嗒熄灯", hint: "息屏" }],
+  ["risk_app_monitor", { label: "👀 盯着你哦", hint: "风险复核" }],
+  ["app_time_limit", { label: "⏳ 沙漏计时", hint: "应用限时" }],
+];
+
+/** What the device can be told to do; null when it reports no capabilities. */
+export function deviceCapabilityNames(device: DeviceState): DeviceCapability[] | null {
+  const capabilities = device.extra?.device?.capabilities as Record<string, unknown> | undefined;
   if (!capabilities) return null;
-  return [
-    capabilities.freeze ? "冻结" : "",
-    capabilities.unfreeze ? "解冻" : "",
-    capabilities.vibrate ? "震动" : "",
-    capabilities.say ? "提醒" : "",
-    capabilities.screen_off ? "息屏" : "",
-    capabilities.risk_app_monitor ? "风险复核" : "",
-    capabilities.app_time_limit ? "应用限时" : "",
-  ].filter(Boolean);
+  return CAPABILITY_NAMES.filter(([key]) => capabilities[key]).map(([, name]) => name);
 }
 
 // How each client keeps reporting while the system saves power, as the clients name it.
