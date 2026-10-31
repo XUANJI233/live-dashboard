@@ -108,7 +108,7 @@ export default function Timeline({ segments, currentAppByDevice, onlineDevices, 
                     </button>
                     {canOpen && isOpen && (
                       <div className="ml-12 space-y-1 border-l-2 border-[var(--color-border)] py-2 pl-3 mr-3 mb-2">
-                        {compactChildren(event.children).map((child, index) => (
+                        {compactChildren(event.children, (a, b) => sameShownLine(a, b, nsfwFilterEnabled)).map((child, index) => (
                           <div key={`${child.started_at}-${index}`} className="text-xs">
                             <div className="flex items-center justify-between gap-3">
                               <span className="font-mono text-[10px] text-[var(--color-text-muted)]">{formatTimeRange(child.started_at, child.ended_at, isDeviceOffline(deviceId, onlineDevices))}</span>
@@ -400,16 +400,11 @@ function isRedundantGeneratedTitle(appName: string, title: string) {
   return false;
 }
 
-function compactChildren(children: TimelineSegment[]) {
+function compactChildren(children: TimelineSegment[], same: (a: TimelineSegment, b: TimelineSegment) => boolean = sameRawState) {
   const compacted: TimelineSegment[] = [];
   for (const child of children) {
     const previous = compacted[compacted.length - 1];
-    if (
-      previous &&
-      previous.app_name === child.app_name &&
-      (previous.display_title || "") === (child.display_title || "") &&
-      backgroundMediaSignature(previous) === backgroundMediaSignature(child)
-    ) {
+    if (previous && same(previous, child)) {
       previous.ended_at = child.ended_at || previous.ended_at;
       previous.duration_seconds = durationSeconds(previous) + durationSeconds(child);
       previous.duration_minutes = Math.round(previous.duration_seconds / 60);
@@ -418,6 +413,16 @@ function compactChildren(children: TimelineSegment[]) {
     }
   }
   return compacted;
+}
+
+function sameRawState(a: TimelineSegment, b: TimelineSegment) {
+  return a.app_name === b.app_name && (a.display_title || "") === (b.display_title || "")
+    && backgroundMediaSignature(a) === backgroundMediaSignature(b);
+}
+
+/** Raw titles change every report while the line shown stays the same; rows that read the same are one row. */
+function sameShownLine(a: TimelineSegment, b: TimelineSegment, nsfwFilterEnabled: boolean) {
+  return a.app_name === b.app_name && describeChild(a, nsfwFilterEnabled) === describeChild(b, nsfwFilterEnabled);
 }
 
 function hasUsefulChildDetail(children: TimelineSegment[], nsfwFilterEnabled = true) {
