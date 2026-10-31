@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -37,6 +37,7 @@ describe("commitment sync against the phone's limits", () => {
     saveSummarySettings({ ...getSummarySettings(), supervision_enabled: true, supervision_lsp_freeze: true });
     phone = freshPhone();
   });
+  afterEach(() => setSystemTime());
   afterAll(() => {
     try {
       rmSync(tempDir, { recursive: true, force: true });

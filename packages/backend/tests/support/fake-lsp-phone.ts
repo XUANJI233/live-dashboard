@@ -1,3 +1,4 @@
+import { setSystemTime } from "bun:test";
 import { db } from "../../src/db";
 import { recordCommitment } from "../../src/services/commitments";
 import { enforceCommitments } from "../../src/services/commitment-enforcement";
@@ -5,7 +6,8 @@ import { recordCommandResult } from "../../src/services/device-command-ledger";
 import { realtimeSocketHub } from "../../src/services/realtime-socket-hub";
 
 // A stand-in for the Android LSP phone with its real limits, shared by the commitment tests.
-// Import it only after the test file has set DB_PATH.
+// Import it only after the test file has set DB_PATH. Live's clock follows the phone's, so the
+// fixed dates below never expire: a test file using it restores the clock with `setSystemTime()`.
 
 export const PHONE = "android-commitments";
 export const TAOBAO = "com.taobao.taobao";
@@ -143,6 +145,7 @@ export class FakePhone {
   tick(at: Date): ReturnType<typeof enforceCommitments> {
     this.flush();
     this.now = at;
+    setSystemTime(at);
     this.report();
     return enforceCommitments(at);
   }
@@ -189,6 +192,7 @@ export function freshPhone(): FakePhone {
     db.run(`DELETE FROM ${table}`);
   }
   const phone = new FakePhone();
+  setSystemTime(phone.now);
   phone.connect();
   phone.report();
   return phone;
