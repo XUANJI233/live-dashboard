@@ -6,9 +6,10 @@ conversation then carries only his messages and what was actually sent, so a str
 model does not replay every automated wake.
 
 Every job is pinned to an explicit provider and model: Hermes skips an unpinned isolated run
-whose creation-time model differs from the global default (`[drift_skip]`). Re-run with
-`HERMES_LIVE_JOB_MODEL` / `HERMES_LIVE_JOB_PROVIDER` to move the jobs to another model. A paused
-event consumer stays paused (and the fallback job with it) unless
+whose creation-time model differs from the global default (`[drift_skip]`). The jobs that speak
+to him (`voice`) run on the chat model, so they weigh the conversation as the chat does. Re-run
+with `HERMES_LIVE_JOB_MODEL` / `HERMES_LIVE_JOB_PROVIDER` to move the other jobs to another
+model. A paused event consumer stays paused (and the fallback job with it) unless
 `HERMES_LIVE_RESUME_CONSUMER=true`.
 """
 
@@ -26,9 +27,11 @@ SKILLS = ["live-mentor", "strict-study-girlfriend"]
 ISOLATED_TOOLSETS = ["memory", "session_search", "skills", "vision"]
 CONSUMER_SCHEDULE = "every 1m"
 JOBS: dict[str, dict[str, Any]] = {
-    "live-supervision-review": {"prompt": "supervision.md", "script": "live_event_candidate.py", "consumer": True},
-    "teacher-friend-companion": {"prompt": "companion.md"},
-    "strict-proactive-followup": {"prompt": "followup.md"},
+    "live-supervision-review": {
+        "prompt": "supervision.md", "script": "live_event_candidate.py", "consumer": True, "voice": True,
+    },
+    "teacher-friend-companion": {"prompt": "companion.md", "voice": True},
+    "strict-proactive-followup": {"prompt": "followup.md", "voice": True},
     "live-daily-summary": {"prompt": "daily.md", "script": "dialogue_context.py"},
     "live-weekly-summary": {"prompt": "weekly.md", "script": "dialogue_context.py"},
     "live-memory-sync": {"prompt": "memory.md"},
@@ -50,9 +53,14 @@ class CronApi:
     create: Callable[..., object]
 
 
-def configure_jobs(prompt_dir: Path, cron: CronApi, inference: dict[str, str], resume_consumer: bool) -> dict[str, Any]:
-    if not inference.get("provider") or not inference.get("model"):
-        raise ValueError("an explicit provider and model are required")
+def configure_jobs(
+    prompt_dir: Path, cron: CronApi, inference: dict[str, str], resume_consumer: bool,
+    voice_inference: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    voice_inference = voice_inference or inference
+    for value in (inference, voice_inference):
+        if not value.get("provider") or not value.get("model"):
+            raise ValueError("an explicit provider and model are required")
     # Pass 1 changes nothing: a missing job or prompt must not leave a half-applied setup.
     planned: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     for name, spec in JOBS.items():
@@ -72,7 +80,7 @@ def configure_jobs(prompt_dir: Path, cron: CronApi, inference: dict[str, str], r
             "enabled_toolsets": list(ISOLATED_TOOLSETS),
             # Explicit `platform:chat` targets are mirrored into the chat only on this opt-in.
             "attach_to_session": True,
-            **inference,
+            **(voice_inference if spec.get("voice") else inference),
         }
         if "script" in spec:
             updates["script"] = spec["script"]
@@ -106,14 +114,16 @@ def configure_jobs(prompt_dir: Path, cron: CronApi, inference: dict[str, str], r
     return {"updated": [name for name, _, _ in planned], "fallback_created": created, "consumer_paused": consumer_paused}
 
 
-def configured_inference() -> dict[str, str]:
+def configured_inference() -> tuple[dict[str, str], dict[str, str]]:
+    """The other jobs' model (`HERMES_LIVE_JOB_*`, else the chat model) and the chat model."""
     from hermes_cli.config import load_config
 
     model = (load_config() or {}).get("model") or {}
+    chat = {"provider": str(model.get("provider") or ""), "model": str(model.get("default") or "")}
     return {
-        "provider": os.environ.get("HERMES_LIVE_JOB_PROVIDER") or str(model.get("provider") or ""),
-        "model": os.environ.get("HERMES_LIVE_JOB_MODEL") or str(model.get("default") or ""),
-    }
+        "provider": os.environ.get("HERMES_LIVE_JOB_PROVIDER") or chat["provider"],
+        "model": os.environ.get("HERMES_LIVE_JOB_MODEL") or chat["model"],
+    }, chat
 
 
 def main() -> int:
@@ -121,10 +131,11 @@ def main() -> int:
     from cron.jobs import create_job, parse_schedule, pause_job, resolve_job_ref, resume_job, update_job
 
     cron = CronApi(resolve_job_ref, update_job, resume_job, pause_job, parse_schedule, create_job)
-    inference = configured_inference()
+    inference, voice_inference = configured_inference()
     resume_consumer = os.environ.get("HERMES_LIVE_RESUME_CONSUMER", "").strip().lower() == "true"
-    result = configure_jobs(prompt_dir, cron, inference, resume_consumer)
-    print(json.dumps({**result, "isolated": True, **inference}, separators=(",", ":")))
+    result = configure_jobs(prompt_dir, cron, inference, resume_consumer, voice_inference)
+    print(json.dumps({**result, "isolated": True, **inference, "voice": voice_inference}, ensure_ascii=False,
+                     separators=(",", ":")))
     return 0
 
 

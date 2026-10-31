@@ -14,6 +14,8 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 PROMPTS = Path(__file__).parents[1] / "prompts"
 INFERENCE = {"provider": "custom", "model": "dialogue-model"}
+VOICE = {"provider": "custom:chat", "model": "chat-model"}
+VOICE_JOBS = ["live-supervision-review", "teacher-friend-companion", "strict-proactive-followup"]
 
 
 def fake_cron(jobs):
@@ -36,7 +38,7 @@ def all_jobs(consumer_enabled):
 def test_every_controller_job_becomes_an_isolated_pinned_mirrored_run():
     cron, calls = fake_cron(all_jobs(consumer_enabled=False))
 
-    result = MODULE.configure_jobs(PROMPTS, cron, INFERENCE, resume_consumer=True)
+    result = MODULE.configure_jobs(PROMPTS, cron, INFERENCE, resume_consumer=True, voice_inference=VOICE)
 
     assert result == {"updated": list(MODULE.JOBS), "fallback_created": True, "consumer_paused": False}
     for name in MODULE.JOBS:
@@ -46,7 +48,8 @@ def test_every_controller_job_becomes_an_isolated_pinned_mirrored_run():
         assert value["skills"] == ["live-mentor", "strict-study-girlfriend"]
         assert "cronjob" not in value["enabled_toolsets"]
         # Unpinned isolated runs are skipped by Hermes once the global model drifts.
-        assert (value["provider"], value["model"]) == ("custom", "dialogue-model")
+        expected = VOICE if name in VOICE_JOBS else INFERENCE
+        assert (value["provider"], value["model"]) == (expected["provider"], expected["model"])
         assert value["prompt"] == (PROMPTS / MODULE.JOBS[name]["prompt"]).read_text(encoding="utf-8").strip()
     consumer = calls["updates"]["id-live-supervision-review"]
     assert consumer["script"] == "live_event_candidate.py"
@@ -57,6 +60,12 @@ def test_every_controller_job_becomes_an_isolated_pinned_mirrored_run():
     assert calls["created"] == [{"prompt": None, "schedule": "every 2m", "name": "weixin-delivery-fallback",
                                  "deliver": "local", "script": "weixin_delivery_fallback.py", "no_agent": True}]
     assert calls["paused"] == []
+
+
+def test_without_a_chat_model_the_voice_jobs_share_the_job_model():
+    cron, calls = fake_cron(all_jobs(consumer_enabled=True))
+    MODULE.configure_jobs(PROMPTS, cron, INFERENCE, resume_consumer=False)
+    assert {calls["updates"][f"id-{name}"]["model"] for name in MODULE.JOBS} == {"dialogue-model"}
 
 
 def test_a_paused_consumer_stays_paused_and_the_fallback_waits_with_it():
@@ -91,6 +100,9 @@ def test_a_missing_job_prompt_or_model_changes_nothing(tmp_path):
 
     with pytest.raises(ValueError, match="explicit provider and model"):
         MODULE.configure_jobs(PROMPTS, cron, {"provider": "custom", "model": ""}, resume_consumer=True)
+    with pytest.raises(ValueError, match="explicit provider and model"):
+        MODULE.configure_jobs(PROMPTS, cron, INFERENCE, resume_consumer=True,
+                              voice_inference={"provider": "", "model": "m"})
 
 
 def test_resuming_the_consumer_also_resumes_a_paused_fallback():
