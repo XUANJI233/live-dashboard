@@ -1,4 +1,4 @@
-import { resolveAppName } from "./app-mapper";
+import { resolveAppName, resolveHostAppName } from "./app-mapper";
 import { isNSFW } from "./nsfw-filter";
 // NSFW filter can be disabled via environment variable (default: enabled)
 const NSFW_FILTER_ENABLED = process.env.NSFW_FILTER_DISABLED !== "true";
@@ -129,7 +129,7 @@ export function processReportPayload(body: Record<string, unknown>, device: Devi
     ? "sleeping"
     : device.platform === "android" && reportedAppName
     ? reportedAppName
-    : resolveAppName(appId, device.platform);
+    : resolveHostAppName(appId, windowTitle) ?? resolveAppName(appId, device.platform);
 
   const displayTitle = processDisplayTitle(appName, windowTitle);
 

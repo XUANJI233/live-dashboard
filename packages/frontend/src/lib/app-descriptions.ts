@@ -4,7 +4,9 @@
  * Maps app_name (from backend app-names.json) to fun descriptions.
  */
 
-const descriptions: Record<string, string> = {
+import { mergeUpstreamTexts, pickVariant, type DescriptionText } from "./description-variants";
+
+const descriptions: Record<string, DescriptionText> = {
   // Messaging
   Telegram: "正在TG上冲浪喵~",
   QQ: "正在QQ上水群喵~",
@@ -2061,6 +2063,8 @@ for (const [name, description] of Object.entries(personalizedDescriptions)) {
   descriptions[name] = description;
 }
 
+mergeUpstreamTexts(descriptions);
+
 const DEFAULT_DESCRIPTION = "暂时看不到具体活动喵~";
 const DIRECT_DEFAULT_DESCRIPTION = "暂时看不到具体活动喵~";
 const NSFW_MASKED_DESCRIPTION = "正在处理一点不方便展开的私密内容喵~";
@@ -2103,7 +2107,7 @@ export function shouldMaskAppDescription(appName: string, appId?: string, displa
 }
 
 // Pre-build lowercase index for O(1) lookups
-const lowerIndex = new Map<string, string>();
+const lowerIndex = new Map<string, DescriptionText>();
 for (const [key, value] of Object.entries(descriptions)) {
   lowerIndex.set(key.toLowerCase(), value);
 }
@@ -3082,7 +3086,7 @@ function getUnfilteredAppDescription(
     return withUnfilteredPersona(`正在用${appName}查看「${displayTitle}」`, seed, appLower);
   }
 
-  const knownDescription = lowerIndex.get(appLower);
+  const knownDescription = pickVariant(appLower, lowerIndex.get(appLower));
   if (knownDescription) {
     return withUnfilteredPersona(knownDescription, seed, appLower);
   }
@@ -3131,7 +3135,7 @@ export function getAppDescription(
 
   if (!base) {
     // Known app without template → use generic description
-    const desc = lowerIndex.get(appLower);
+    const desc = pickVariant(appLower, lowerIndex.get(appLower));
     if (desc) {
       base = desc;
     }
