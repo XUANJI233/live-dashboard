@@ -10,7 +10,7 @@ import { stableToolResult } from "./mcp-tool-result";
 export function registerAccountingTools(server: McpServer): void {
   server.registerTool("live_dashboard.get_accounting_bills", {
     title: "Get processed AutoAccounting bills",
-    description: "Ask an online Android integration to read AutoAccounting's completed parent bills (Edited/Synced), cache them idempotently, then query the bounded server copy. Returns compact bills, newest first; to add bills up, use get_accounting_summary instead of paging. Recognition rules and pending Wait2Edit data are never reproduced here.",
+    description: "Read individual completed AutoAccounting parent bills (Edited/Synced), newest first: default 50, max 200. For sums/counts/grouping use get_accounting_summary instead of paging and adding. When complete details are needed follow next_cursor until null with unchanged filters. Android refresh is attempted by default: inspect refresh and qualify stale/offline cached data. A bill alone does not prove a bypass; compare its event time with device and exception records. Pending/child bills and recognition rules are excluded.",
     inputSchema: AccountingBillsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(async () => {
@@ -32,7 +32,7 @@ export function registerAccountingTools(server: McpServer): void {
 
   server.registerTool("live_dashboard.get_accounting_summary", {
     title: "Summarize processed AutoAccounting bills",
-    description: "Add up completed AutoAccounting bills (Edited/Synced) in SQL: totals (count, money per transaction type) and the largest groups by category, shop, app, or local day, sorted by amount. Same filters and Android refresh as get_accounting_bills. A group's amount adds every matched type; pass transaction_types (e.g. Expend) to rank spending. truncated=true means more groups exist.",
+    description: "Use for totals/counts or category/shop/app/day groups of completed AutoAccounting parent bills (Edited/Synced), calculated in SQL; never page the bill list to add them yourself. Read totals.count and totals.sum_by_type: truncated=true only omits further groups, totals still cover the full query. group_limit defaults to 20, max 50. Group amounts mix matched types: filter transaction_types:[Expend] for spending. Inspect currency_codes and query each currency_code separately; never present mixed-currency sums as one currency. Day buckets use start's explicit offset. Same filters/refresh as get_accounting_bills; inspect refresh before treating cached data as current or complete.",
     inputSchema: AccountingSummarySchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(async () => {

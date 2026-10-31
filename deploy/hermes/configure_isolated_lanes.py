@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SKILLS = ["live-mentor", "strict-study-girlfriend"]
+# SOUL.md is always loaded by cron; each mode selects its workflow manual on demand.
+SKILLS: list[str] = []
 # MCP servers are layered onto a per-job list by Hermes; cron runs never get cronjob/clarify.
 ISOLATED_TOOLSETS = ["memory", "session_search", "skills", "vision"]
 CONSUMER_SCHEDULE = "every 1m"

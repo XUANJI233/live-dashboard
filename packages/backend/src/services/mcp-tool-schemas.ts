@@ -109,9 +109,9 @@ export const SendCommandsSchema = z.object({
     freeze_commands: z.array(z.string().max(120)).max(12).optional()
       .describe("Immediate one-shot freeze matches. Do not use for app time-limit policy."),
     unfreeze_commands: z.array(z.string().max(120)).max(12).optional()
-      .describe("Immediate one-shot unfreeze matches; use [\"全部\"] to clear all freezes on capable Android LSP devices."),
+      .describe("Unfreeze this supervision action's exact owned packages. Unattended runs never use [\"全部\"]; clearing all requires the user's current explicit request and a checked frozen list. Committed packages use request_exception_unfreeze."),
     vibrate: z.boolean().optional().describe("Immediate vibration request; true/false only."),
-    screen_off: z.boolean().optional().describe("Immediate screen-off request; only delivered when the target explicitly reports screen_off capability."),
+    screen_off: z.boolean().optional().describe("Requires the user's current explicit request and the target's reported screen_off capability."),
     say: z.string().max(500).optional().describe("Immediate device-visible reminder text, not a policy rule."),
     expires_in_seconds: z.number().int().min(10).max(3600).optional()
       .describe("Command freshness TTL, not an automatic unfreeze duration."),
@@ -240,7 +240,7 @@ export const ControllerMemoryFeedSchema = z.object({
   since: z.string().optional()
     .describe("Optional ISO timestamp; events at or after this time are returned. Prefer cursor for pagination."),
   cursor: z.string().optional()
-    .describe("Opaque cursor returned as next_cursor. Prefer this over since for lossless pagination when many events share the same timestamp."),
+    .describe("Opaque next_cursor for pagination; for failed consumer batches replay the original consumer.previous_cursor, never null."),
   limit: z.number().int().min(1).max(300).optional()
     .describe("Maximum merged memory events to return. Defaults to 120."),
   include_messages: z.boolean().optional()
@@ -256,7 +256,7 @@ export const ControllerMemoryFeedSchema = z.object({
   consumer_id: z.string().regex(/^[a-z0-9][a-z0-9_.:-]{0,63}$/).optional()
     .describe("Reader whose position Live stores, e.g. hermes-memory. Without cursor or since, reads continue from that position (first read: newest events); has_more=true means call again."),
   advance: z.boolean().optional()
-    .describe("true/false only. true stores the last returned event as consumer_id's position."),
+    .describe("true stores the last returned event immediately, before processing succeeds. Retain the batch and its original consumer.previous_cursor for failure replay; consumer_id required."),
 }).describe("Controller memory feed for OpenClaw/Hermes. Use this to ingest sent messages, replies, summaries, and reminders into controller memory.");
 
 export const SaveControllerSummarySchema = z.object({

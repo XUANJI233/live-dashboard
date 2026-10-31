@@ -45,7 +45,7 @@ def test_every_controller_job_becomes_an_isolated_pinned_mirrored_run():
         value = calls["updates"][f"id-{name}"]
         assert value["attach_to_session"] is True
         assert value["context_from"] is None
-        assert value["skills"] == ["live-mentor", "strict-study-girlfriend"]
+        assert value["skills"] == []
         assert "cronjob" not in value["enabled_toolsets"]
         # Unpinned isolated runs are skipped by Hermes once the global model drifts.
         expected = VOICE if name in VOICE_JOBS else INFERENCE

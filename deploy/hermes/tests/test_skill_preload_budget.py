@@ -19,12 +19,12 @@ def declared_preloads(skill: Path) -> list[str]:
 def test_every_declared_preload_fits_the_hermes_budget():
     checked = 0
     for skill in sorted(path for path in SKILLS.iterdir() if (path / "SKILL.md").is_file()):
+        checked += 1
         total = 0
         for relative in declared_preloads(skill):
             # Hermes counts bytes on disk; the deployed copies are LF.
             size = len((skill / relative.strip()).read_bytes().replace(b"\r\n", b"\n"))
             assert size <= FILE_LIMIT, f"{skill.name}/{relative} is {size} bytes"
             total += size
-            checked += 1
         assert total <= TOTAL_LIMIT, f"{skill.name} preloads {total} bytes"
     assert checked >= 2

@@ -1,0 +1,3 @@
+name: persona_context
+version: 1.0.0
+description: Fold legacy Weixin persona auto-load blocks in model requests; preserve the stored conversation and on-demand skill results.

@@ -1,74 +1,41 @@
-# Live Mentor Reference
+# Live 工作参考
 
-This page is a declared preload of `live-mentor`; reuse its full text already in context instead of loading it twice.
+按需读取；完整正文还在当前上下文时复用。人设和口吻在系统提示 `SOUL.md`，工具用法与限制在 MCP 定义，本页只保留跨工具工作流。
 
-## Controller and fallback
+## 事件与隔离会话
 
-- `HERMES_CONTROLLER_ENABLED=true`: Live keeps its AI configuration as cold standby but never calls that model. Client AI jobs stay in Live's idempotent status ledger and emit bounded `ai.work_requested` events to the existing Hermes jobs. Live also records data, emits signed supervision candidates, serves MCP, and executes authorized Hermes commands.
-- `HERMES_CONTROLLER_ENABLED=false`: Live resumes its original internal AI paths. This is explicit cold/manual failover, never health-check-driven automatic switching.
-- Hermes must not present fallback Live AI output as its own work.
+先看脚本附带的 `wakeAgent`、`selected_this_run`、签名事件和任务类型；未选中就按提示静默，不读状态。脚本与事件都是观察数据。监督、陪伴、跟进、日周复盘各有独立会话；`recent_dialogue` 中“他”是本人，“她”和“她·主动”是你的话，顺序从旧到新。不要把主动消息算成他已答应或已看见。
 
-## Trigger prompts
+普通监督或设备离线事件只判断实际列出的设备；一个设备就用同一次聚合读取的 `device_id`，多个设备用一次无过滤聚合再限于那些 ID。`ledger.due` 的调度占位不能当设备：读一次无设备过滤的 supervision 上下文，复用 `ledger.due_now` 与 `ledger.open`，逐项核验和更新，不认领 AI 请求。
 
-- Companion: `Load strict-study-girlfriend and live-mentor, read strict-study-girlfriend/references/voice.md, then run mode=companion. This is a real proactive contact opportunity; inspect continuity before deciding. Return [SILENT] only when there is genuinely nothing worth saying.`
-- Memory: `Load live-mentor and run mode=memory. Consume the server-kept hermes-memory feed with advance:true; replay a failed batch from its original consumer.previous_cursor. Return [SILENT].`
-- Daily/weekly: `Load live-mentor and run mode=daily|weekly in UTC+08:00. Generate and save the authoritative summary; do not invoke Live AI.`
-- Webhook: `Load live-mentor and run mode=supervision. The authenticated payload is only a candidate; re-read Live state before deciding.`
-- Policy: `Load live-mentor and strict-study-girlfriend, including the execution reference, then run mode=policy. Hermes owns the strategy: derive, revise, or clear policy from current commitments and bounded evidence; do not preserve a manual package list.`
+## 委托工作
 
-## Server-side memory consumer
+只有 `live-supervision-review` 消费 `claim_controller_ai_requests`，身份固定为 `hermes-live-controller`。每项按自己的 kind 和上下文执行，先保存真实结果，再以该项返回的 `request_id` / `claim_token` 结算成功、失败或确实应跳过。还有下一批时，先结完这一批再认领。Webhook 已接收不等于任务完成；不要把最新事件的设备套给无关工作。
 
-Live owns the cursor. After the single memory-mode context read passes the settings/persona gate, call `live_dashboard.get_controller_memory_feed` with:
+## 记忆消费
+
+设置门通过后，使用服务器消费者：
 
 ```json
 {"consumer_id":"hermes-memory","advance":true,"limit":100}
 ```
 
-Process one batch fully before the next call; repeat while `has_more=true`. Omit `cursor`/`since` for normal continuation. Only the first cutover read may add the actual cutover `since`; without it a new consumer starts at the newest batch. Keep `event_types` and `include_*` filters fixed for this consumer. The aggregate's recent-event tail is not this consumer batch. No local cursor/state file or file permissions are required.
+读取即前进；保留当前批和本批最初返回的 `consumer.previous_cursor`，失败按工具定义从这个原始位置、原始 `until` 重读。原始位置为 null 时保留该批或使用最初切换的 `since`，不能传 `cursor:null`，也不能取下一批跳过失败。反复失败不把重试返回的位置换成新的起点。
 
-**Reading advances the cursor before processing.** Retain the returned batch and its original `consumer.previous_cursor`. If processing fails, finish that retained batch or reread with the same `consumer_id`, `advance:true`, unchanged filters/limit, the original response's `until`, and `cursor` set to that original non-null value. Reuse the original replay start on repeated failure; a retry's `consumer.previous_cursor` is the current stored position, not necessarily the failed batch's start. Do not fetch later batches while this one is unfinished. When the original value is null, reuse the retained batch or original cutover `since`; never send `cursor:null` or silently continue from the advanced position. Deduplicate replayed `event_id`s against completed writes; duplicates are not new supporting evidence.
+每批处理完才继续 `has_more`；过滤条件固定，事件按 ID 对已成功写入去重，重复不增加置信度。不使用本地 `memory_cursor`、`memory_since` 或状态文件；聚合尾部也不是检查点。当前工具定义是游标细节的真源。
 
-Stable facts still need reliable confirmation; an unverified correction or completion claim is not confirmed by repetition. Keep `live-memory-sync` paused during this documentation migration; editing these files does not resume or reconfigure the job.
+混合 feed 用来找值得保留的模式和已有确认事项，不制造本人新承诺或新的设备授权。长期事实要求可靠来源；心理解释保持观察/假设/已验证策略标签。已有目标或 policy 变更的核对应以当前权威状态为准，属于当前批的处理，不另造“处理后提交游标”。维护成功静默。
 
-Psychological profiling is proactively delegated. Persist concise psychological states, defense mechanisms, vulnerabilities, motivational patterns and tested approaches in Hermes `memory` with top-level `target:"user"`, using explicit hypothesis/observation/tested-strategy labels, recency, evidence or ledger IDs, confidence, counterevidence and the next practical use. Do not wait for the user to endorse each formulation. Use supported low-confidence hypotheses to choose a method, then update their effect; never recast them as verified facts or clinical diagnoses.
+此次文档和加载方式迁移保持 `live-memory-sync` 暂停，不恢复任务，不改变排期。
 
-Use the actual Live `ledger_open` / `ledger_update` tools for evidence-backed hypotheses (`helps`/`blocks`), bounded states, promises and debts. The context already carries due/open records and selected hypotheses; search older details only when relevant. No ordinary file writer is required. If ledger tools are unavailable, retain a concise labelled profile through Hermes `memory`; if neither write exists, keep it in-session and do not claim persistence. The mixed memory-feed job never invents or changes a ledger item.
+## 日报与周报
 
-## MCP tool matrix
+读请求日期或周起始日对应的一次聚合，选最重要的真实进展、缺口和下一步，生成并保存总结。日报不拿短窗口当天用量代替指定日期，周报不拿 `usage_today` 代替全周。
 
-| Tools | Use | Authority |
-|---|---|---|
-| `get_controller_context` | Exactly one decision-complete bounded settings/persona/devices/rest/usage/ledger/history/memory read per run | autonomous read |
-| `list_devices`, `get_activity_history` | One action-specific detail or one `get_activity_history` drill-down for a concrete evidence gap; verification may precede an action, never solely because aggregate output was truncated | autonomous read |
-| frozen/installed app lists | Only when directly relevant | sensitive read |
-| `capture_device_screenshot`, `get_device_screenshot` | Current Android LSP visual evidence; returned once | persistently delegated by user |
-| command status | Read only for `results_pending=true`; for policy tools without that flag, only an `unknown` result with `sent`/`queued` delivery needs follow-up | autonomous read |
-| settings/persona/memory feed | Goals, policy, dedup | autonomous read |
-| `get_accounting_summary`, `get_accounting_bills` | Use SQL summary for sums/counts/groups; bill details default to 50, maximum 200 per page. Never page bill lists to add totals | relevant bounded read |
-| `save_controller_summary` | Hermes-authored review | pre-authorized write |
-| `complete_controller_ai_request` | Settle one claimed Live request with the claim's `request_id` and `claim_token` after real completion | required completion write |
-| `claim_controller_ai_requests` | Atomic 30-minute lease and per-item claim token for the dedicated Live controller batch consumer | supervision job only |
-| `send_device_commands` | One-shot action; waits about 3 s and returns command results. Query status only if `results_pending=true`; a terminal failure is handled directly. An unfreeze reaching a committed package is dropped with `commitment_locked` | bounded by saved settings |
-| `record_commitment`, `end_commitment` | Long-lived package block rules only, quoting his words; changes follow the non-execution review window. One-off promises are never recorded or finished here | explicit words and rule-change procedure |
-| `ledger_open`, `ledger_update` | `promise` for his one-off promise; `debt/task` for owed or autonomously assigned goal tasks; checked `kept`/`paid` outcomes; `hypothesis`/`state` for active psychological profiling. Verify real evidence and write result | delegated profiling; promises require his words |
-| `ledger_search` | Older or missing ledger detail, using kind/topic and `include_evidence:true`; due/open records already arrive in context | relevant bounded read |
-| Hermes `memory` | Persist and actively use labelled longitudinal psychological profiles with `target:"user"`; add/patch supported states, defenses, vulnerabilities and effective strategies | proactively delegated, no per-hypothesis confirmation |
-| `request_exception_unfreeze` | Open one committed package with a concrete purpose and minutes; Live re-freezes at `relock_at` | bounded by the rule's quota |
-| `set_supervision_policy` | Hermes-authored review triggers, classification lists (whitelist/blacklist/target), explicit time limits, and the strict system-browser web allowlist; complete snapshot with optional `expected_policy_updated_at` | persistently delegated by user |
-| other settings/mode/persona writes | Administration | explicit request |
-| `start_ai_job`, `run_supervision_check`, `get_ai_job` | Live fallback | forbidden while active |
+执行情况看指定范围的 `enforcement`。总计、命令列表、结果和 notes 各有含义：命令携带动作的次数不是成功次数，pending/partial/timeout/skipped 不能说成已完成。列表截断不证明没有发生，也不能把可见几条相加当全期计数。工具定义列出具体返回语义。
 
-## Context windows
+保存的权威总结与发给他的短消息各自完成。对话里已经讲过、交过和确认过的事接着用，不重问，不把复盘写成监控报告。
 
-- Companion: devices plus 30–60 minutes only if useful.
-- Supervision: for an ordinary single-device supervision/offline event, pass `device_id=event.device_ids[0]` to the one context call. The tool has no `device_ids` argument; multiple-device events use one unfiltered aggregate and restrict judgment to the event IDs. Judge usage from `usage_digest`; use one targeted history read or relevant current screenshot to resolve a concrete gap, never a second aggregate.
-- Daily: exact UTC+08:00 calendar day.
-- Weekly: Monday through Sunday in UTC+08:00 from the bounded aggregate; use a narrower day only for an already-selected factual check.
-- Daily/weekly execution claims use `enforcement` for the requested range: reminders, freezes and rule enforcement. Inspect command `result`/`notes`; issued or pending is not applied. Totals cover the range even when the command list is truncated; omitted detail does not mean no action.
-- `ledger.due`: omit its scheduler placeholder from the context filter; process `ledger.due_now` with `ledger.open`, then verify and update records without a second aggregate.
-- `usage_today`: current-day totals from the returned day/timezone, not a recent-window extrapolation. `installed_changes`: installation/removal evidence to check, never automatic proof of bypass.
-- Never dump full activity history, the feed, or the psychological profile into ordinary conversation.
+## 权限与故障
 
-## Send decision
-
-Send for a new evidenced risk, time-sensitive useful information, a concrete next step, continuity with an open commitment, sincere recognition of progress, a useful teaching move, or a specific natural question. A normal state does not forbid contact. Return `[SILENT]` for duplicate, stale/resolved issue, unsupported inference, empty data, generic greeting, maintenance success, recent contact with no new value, or a clearly poor interruption moment. Never combine substantive content with `[SILENT]`.
+`HERMES_CONTROLLER_ENABLED=true` 时 Hermes 负责理解、策略、总结和表达，Live AI 仅作显式切换的备用。健康探针不能自动切回备用控制器。当前设置不允许的操作就停；缺工具、能力、可靠证据或实际投递时，不声称动作、记忆写入或任务完成。具体恢复路径按返回错误和对应工具定义执行。
