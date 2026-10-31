@@ -106,6 +106,46 @@ describe("timeline-prompt", () => {
     });
   });
 
+  test("one track across reports that drop the player app reads as one item", () => {
+    const full = { playing: true, app: "网易云音乐", title: "枕边童话", state: "playing" };
+    const bare = { playing: true, title: "枕边童话" };
+    const doc = buildTimelinePromptDocument([0, 1, 2, 3].map((minute) => segment({
+      app_id: "com.xunmeng.pinduoduo",
+      app_name: "拼多多",
+      started_at: `2026-06-08T00:0${minute}:00.000Z`,
+      ended_at: `2026-06-08T00:0${minute + 1}:00.000Z`,
+      extra: { media: minute % 2 ? bare : full },
+    })), { tzOffsetMinutes: 0 });
+
+    const items = doc.devices[0]?.sessions[0]?.items ?? [];
+    expect(items).toHaveLength(1);
+    expect(items[0]?.duration_minutes).toBe(4);
+    expect(items[0]?.background_media).toEqual({ app: "网易云音乐", title: "枕边童话", state: "playing" });
+  });
+
+  test("the music app playing in the foreground is not background media", () => {
+    const doc = buildTimelinePromptDocument([
+      segment({
+        app_id: "com.netease.cloudmusic",
+        app_name: "网易云音乐",
+        display_title: "正在用网易云音乐播放Five Hundred Miles (五百英里)",
+        extra: { media: { playing: true, title: "Five Hundred Miles (五百英里)" } },
+      }),
+      segment({
+        app_id: "com.netease.cloudmusic",
+        app_name: "网易云音乐",
+        display_title: "",
+        started_at: "2026-06-08T00:01:00.000Z",
+        ended_at: "2026-06-08T00:02:00.000Z",
+        extra: { media: { playing: true, app: "网易云音乐", title: "Song B" } },
+      }),
+    ], { tzOffsetMinutes: 0 });
+
+    const items = doc.devices[0]?.sessions[0]?.items ?? [];
+    expect(items.map((item) => item.background_media)).toEqual([undefined, undefined]);
+    expect(items[0]?.title).toBe("正在用网易云音乐播放Five Hundred Miles (五百英里)");
+  });
+
   test("wraps JSON with a stable XML-like delimiter for prompt isolation", () => {
     const block = timelineJsonBlockForPrompt([segment({})], { label: "today" });
     expect(block.startsWith('<timeline_json schema="timeline.v2.device_app_sessions" label="today">')).toBe(true);

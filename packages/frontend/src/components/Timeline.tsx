@@ -359,7 +359,8 @@ function describeAppSession(seg: TimelineSegment) {
 function describeChild(seg: TimelineSegment, nsfwFilterEnabled = true) {
   const title = meaningfulDetailTitle(seg, nsfwFilterEnabled) || describeSegment(seg, nsfwFilterEnabled);
   const media = backgroundMediaTitle(seg);
-  return media ? `${title} · 后台播放「${media}」` : title;
+  // A title that already names the track (the player itself in front) needs no background note.
+  return media && !title.includes(media) ? `${title} · 后台播放「${media}」` : title;
 }
 
 function meaningfulDetailTitle(seg: TimelineSegment, nsfwFilterEnabled = true) {
@@ -456,19 +457,19 @@ function appKey(seg: TimelineSegment) {
 function backgroundMediaTitle(seg: TimelineSegment) {
   const media = seg.extra?.media;
   if (media?.playing === false) return "";
+  // The player app in the foreground is not playing in the background.
+  if ((media?.package_name && media.package_name === seg.app_id) || (media?.app && media.app === seg.app_name)) return "";
   return (media?.title || seg.extra?.music?.title || "").trim();
 }
 
 function backgroundMediaSignature(seg: TimelineSegment) {
   const media = seg.extra?.media;
   const music = seg.extra?.music;
+  // Same track: the player app, package and state come and go between reports.
   return [
     media?.playing === false ? "paused" : "playing",
-    media?.package_name || "",
-    media?.app || music?.app || "",
     media?.title || music?.title || "",
     media?.artist || music?.artist || "",
-    media?.state || "",
   ].join("|");
 }
 

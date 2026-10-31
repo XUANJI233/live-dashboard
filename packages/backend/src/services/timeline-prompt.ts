@@ -193,6 +193,8 @@ function buildSessionItems(segments: TimelineSegment[], tzOffsetMinutes: number)
     if (previous && (previous.title || "") === title && sameMedia(previous.background_media, media)) {
       previous.time = `${previous.time.split(" - ")[0]} - ${itemEnd ? formatLocalDateTime(itemEnd, tzOffsetMinutes) : "现在"}`;
       previous.duration_minutes += secondsToMinutes(segment.duration_seconds);
+      // Reports drop the player app or state now and then; keep what any report named.
+      if (previous.background_media && media) previous.background_media = { ...media, ...previous.background_media };
       continue;
     }
     items.push({
@@ -240,6 +242,9 @@ function backgroundMediaForPrompt(segment: TimelineSegment): TimelinePromptMedia
   const mediaApp = sanitizePromptText(media.app, 80);
   const state = stringField(media, "state", 40);
   if (mediaPackage && foregroundPackage && mediaPackage === foregroundPackage) return null;
+  // The foreground app playing it, or a title that already names it, is not background media.
+  if (mediaApp && mediaApp === sanitizePromptText(segment.app_name, 80)) return null;
+  if (meaningfulTitle(segment).includes(title)) return null;
   return {
     ...(mediaApp ? { app: mediaApp } : {}),
     ...(mediaPackage ? { package_name: mediaPackage } : {}),
@@ -249,14 +254,11 @@ function backgroundMediaForPrompt(segment: TimelineSegment): TimelinePromptMedia
   };
 }
 
+/** Same track: title and artist. The player app, package and state come and go between reports. */
 function sameMedia(a: TimelinePromptMedia | undefined, b: TimelinePromptMedia | null): boolean {
   if (!a && !b) return true;
   if (!a || !b) return false;
-  return (a.app || "") === (b.app || "") &&
-    (a.package_name || "") === (b.package_name || "") &&
-    (a.title || "") === (b.title || "") &&
-    (a.artist || "") === (b.artist || "") &&
-    (a.state || "") === (b.state || "");
+  return (a.title || "") === (b.title || "") && (a.artist || "") === (b.artist || "");
 }
 
 function meaningfulTitle(segment: TimelineSegment): string {
