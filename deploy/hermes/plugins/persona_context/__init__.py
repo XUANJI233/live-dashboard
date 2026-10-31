@@ -11,7 +11,9 @@ import re
 from typing import Any
 
 
-PERSONA_SKILLS = frozenset({"strict-study-girlfriend", "live-mentor"})
+# Skills Weixin used to auto-load: the persona pair, now in SOUL.md, and the sticker manual, now
+# read on demand.
+FOLDED_SKILLS = frozenset({"strict-study-girlfriend", "live-mentor", "sticker-library"})
 AUTO_HEADER = re.compile(
     r'\[IMPORTANT: The "([^"\n]+)" skill is auto-loaded\. '
     r'Follow its instructions for this session\.\]'
@@ -59,7 +61,7 @@ def compact_legacy_text(text: str) -> str:
         if end is None:
             # Unknown/incomplete framing is retained rather than guessing where his text starts.
             break
-        if header[1] in PERSONA_SKILLS:
+        if header[1] in FOLDED_SKILLS:
             spans.append((offset, end))
             if header[1] not in names:
                 names.append(header[1])

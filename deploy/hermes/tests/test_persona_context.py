@@ -68,8 +68,19 @@ def test_four_legacy_turns_fold_once_each_without_changing_human_text_or_stored_
     assert PLUGIN.compact_persona_history(request, platform="weixin") == result
 
 
+def test_the_sticker_manual_folds_with_the_persona():
+    names = ("strict-study-girlfriend", "live-mentor", "sticker-library")
+    text = "\n\n".join(scaffold(name) for name in names) + "\n\n在吗"
+    compact = PLUGIN.compact_legacy_text(text)
+    assert compact.startswith(
+        "[历史技能自动注入已折叠：strict-study-girlfriend, live-mentor, sticker-library；"
+        "人设见系统提示，手册按需读取。]"
+    )
+    assert compact.endswith("\n\n在吗") and "legacy body" not in compact and "Skill directory" not in compact
+
+
 def test_unrelated_skills_quotes_timestamps_and_incomplete_frames_are_retained():
-    other = scaffold("sticker-library")
+    other = scaffold("weather")
     tail = "\n\n他问的是：\n\n别删我的段落"
     text = "[Sat 2026-10-31 09:51:56 CST] " + other + "\n\n" + scaffold("live-mentor") + tail
     compact = PLUGIN.compact_legacy_text(text)
