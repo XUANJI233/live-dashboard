@@ -22,17 +22,19 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-# SOUL.md is always loaded by cron; each mode selects its workflow manual on demand.
-SKILLS: list[str] = []
+# SOUL.md is always loaded by cron. The lanes that act on him also preload the two short manuals: left
+# to read on demand, a lane that should freeze or press him skipped them and stayed silent.
+ENFORCEMENT_SKILLS = ["live-mentor", "strict-study-girlfriend"]
 # MCP servers are layered onto a per-job list by Hermes; cron runs never get cronjob/clarify.
 ISOLATED_TOOLSETS = ["memory", "session_search", "skills", "vision"]
 CONSUMER_SCHEDULE = "every 1m"
 JOBS: dict[str, dict[str, Any]] = {
     "live-supervision-review": {
         "prompt": "supervision.md", "script": "live_event_candidate.py", "consumer": True, "voice": True,
+        "skills": ENFORCEMENT_SKILLS,
     },
-    "teacher-friend-companion": {"prompt": "companion.md", "voice": True},
-    "strict-proactive-followup": {"prompt": "followup.md", "voice": True},
+    "teacher-friend-companion": {"prompt": "companion.md", "voice": True, "skills": ENFORCEMENT_SKILLS},
+    "strict-proactive-followup": {"prompt": "followup.md", "voice": True, "skills": ENFORCEMENT_SKILLS},
     "live-daily-summary": {"prompt": "daily.md", "script": "dialogue_context.py"},
     "live-weekly-summary": {"prompt": "weekly.md", "script": "dialogue_context.py"},
     "live-memory-sync": {"prompt": "memory.md"},
@@ -77,7 +79,7 @@ def configure_jobs(
         updates: dict[str, Any] = {
             "prompt": prompt,
             "context_from": None,
-            "skills": list(SKILLS),
+            "skills": list(spec.get("skills", [])),
             "enabled_toolsets": list(ISOLATED_TOOLSETS),
             # Explicit `platform:chat` targets are mirrored into the chat only on this opt-in.
             "attach_to_session": True,
