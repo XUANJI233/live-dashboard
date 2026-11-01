@@ -136,7 +136,7 @@ export const RecordCommitmentSchema = z.object({
 
 export const EndCommitmentSchema = z.object({
   commitment_id: z.string().regex(/^cmt_[0-9a-f-]{36}$/),
-  reason: z.string().min(1).max(200).describe("Why the rule ends: his words, or your reason for ending a rule you set."),
+  reason: z.string().min(1).max(200).describe("Why you end the rule."),
 });
 
 export const ExceptionUnfreezeSchema = z.object({
