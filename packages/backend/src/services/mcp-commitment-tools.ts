@@ -9,14 +9,14 @@ import { stableToolResult } from "./mcp-tool-result";
 export function registerCommitmentTools(server: McpServer): void {
   server.registerTool("live_dashboard.record_commitment", {
     title: "Record a commitment",
-    description: "Persist a block rule the user explicitly set in his own conversation, quoting his words. It names exact packages (at most 20) on an Android LSP device and an optional daily window; Live keeps them frozen inside the window by itself, re-freezing after the phone's nightly cleanup, and releases them when the window or the rule ends. One-off promises go to live_dashboard.ledger_open instead. Packages the phone does not have yet come back in not_installed and are frozen once installed. Recording the very same rule again returns it with duplicate: true; a rule that differs in any term is recorded alongside and the strictest applies. Errors: device_not_found, device_cannot_freeze, invalid_commitment_package, invalid_commitment_window, invalid_commitment_end. Never record a rule from inference, a passing complaint, or anyone else's words.",
+    description: "Persist a block rule, one he set (quote his words in user_quote) or one you set yourself as his supervisor (state your reason in reason). It names exact packages (at most 20) on an Android LSP device and an optional daily window; Live keeps them frozen inside the window by itself, re-freezing after the phone's nightly cleanup, and releases them when the window or the rule ends. One-off promises go to live_dashboard.ledger_open instead. Packages the phone does not have yet come back in not_installed and are frozen once installed. Recording the very same rule again returns it with duplicate: true; a rule that differs in any term is recorded alongside and the strictest applies. Errors: device_not_found, device_cannot_freeze, invalid_commitment_package, invalid_commitment_window, invalid_commitment_end. A quote is only ever his own words; never attribute your rule to him.",
     inputSchema: RecordCommitmentSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   }, async (args) => stableToolResult(() => ({ ok: true, commitment: recordCommitment(args) })));
 
   server.registerTool("live_dashboard.end_commitment", {
     title: "End a commitment",
-    description: "End a rule only when the user explicitly cancels or replaces it; a block rule's packages are released if no other rule holds them.",
+    description: "End a rule when he cancels or replaces it, or when a rule you set yourself is no longer needed; a block rule's packages are released if no other rule holds them.",
     inputSchema: EndCommitmentSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (args) => stableToolResult(() => ({ ok: true, commitment: endCommitment(args.commitment_id, args.reason) })));

@@ -122,7 +122,8 @@ const ClockSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 
 export const RecordCommitmentSchema = z.object({
   title: z.string().min(1).max(80).describe("Short label, e.g. 闭关期购物封禁."),
-  user_quote: z.string().min(1).max(300).describe("His own words that set the rule. Record only what he explicitly said."),
+  user_quote: z.string().max(300).optional().describe("His own words, when he set the rule."),
+  reason: z.string().max(300).optional().describe("Your reason, when you set the rule yourself as his supervisor."),
   device_id: z.string().min(1).max(160).describe("Android LSP device that keeps the packages frozen."),
   packages: z.array(z.string().min(3).max(160)).min(1).max(20).describe("Exact package names; no patterns."),
   window_start: ClockSchema.optional().describe("Local HH:MM the block starts each day; omit both ends for all day."),
@@ -135,7 +136,7 @@ export const RecordCommitmentSchema = z.object({
 
 export const EndCommitmentSchema = z.object({
   commitment_id: z.string().regex(/^cmt_[0-9a-f-]{36}$/),
-  reason: z.string().min(1).max(200).describe("Why he ended or replaced the rule, in his words."),
+  reason: z.string().min(1).max(200).describe("Why the rule ends: his words, or your reason for ending a rule you set."),
 });
 
 export const ExceptionUnfreezeSchema = z.object({

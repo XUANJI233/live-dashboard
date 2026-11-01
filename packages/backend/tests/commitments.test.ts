@@ -66,6 +66,13 @@ describe("commitments", () => {
     }
   });
 
+  test("the controller may set a block rule on its own, with or without a stated reason", () => {
+    const own = commitments.recordCommitment({ title: "夜间自控", reason: "连续三晚过了零点还在刷", device_id: PHONE, packages: [TAOBAO] });
+    expect(own.user_quote).toBe("AI 判断：连续三晚过了零点还在刷");
+    const bare = commitments.recordCommitment({ title: "购物冷静期", device_id: PHONE, packages: [TAOBAO], window_start: "09:00", window_end: "12:00" });
+    expect(bare.user_quote).toBe("");
+  });
+
   test("a block rule needs a freezing device, exact packages, a full window and an explicit end clock", () => {
     const base = { title: "x", user_quote: "y", device_id: PHONE, packages: [TAOBAO] };
     expect(() => commitments.recordCommitment({ ...base, device_id: "missing-phone" })).toThrow("device_not_found");

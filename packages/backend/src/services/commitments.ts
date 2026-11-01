@@ -16,8 +16,8 @@ import {
 } from "./commitment-store";
 import { deviceSupportsCommand, getDeviceContext, getDeviceInstalledApps } from "./device-context";
 
-// A commitment is a rule he set while calm: exact packages that stay frozen inside their window
-// until he explicitly ends the rule. One-off promises live in the supervision ledger (ledger.ts).
+// A commitment is a block rule, set by him or by the controller as his supervisor: exact packages that
+// stay frozen inside their window until the rule ends. One-off promises live in the supervision ledger (ledger.ts).
 // An exception opens one package on one device for every rule holding it, charged to each rule's
 // own daily quota.
 // Persistence: commitment-store.ts. Time rules: commitment-schedule.ts. Phone sync:
@@ -25,7 +25,9 @@ import { deviceSupportsCommand, getDeviceContext, getDeviceInstalledApps } from 
 
 export interface RecordCommitmentInput {
   title: string;
-  user_quote: string;
+  /** His words when he set the rule; a rule the controller sets itself carries `reason` instead. */
+  user_quote?: string;
+  reason?: string;
   device_id?: string;
   packages?: string[];
   window_start?: string;
@@ -55,8 +57,10 @@ const MIN_PURPOSE_LENGTH = 2;
 
 export function recordCommitment(input: RecordCommitmentInput, now = new Date()): Record<string, unknown> {
   const title = cleanLine(input.title, 80);
-  const quote = cleanLine(input.user_quote, 300);
-  if (!title || !quote) throw new Error("invalid_commitment");
+  // The stored basis, which may be empty: his words, or the controller's own reason marked as its judgment.
+  const reason = cleanLine(input.reason, 280);
+  const quote = cleanLine(input.user_quote, 300) || (reason ? `AI 判断：${reason}` : "");
+  if (!title) throw new Error("invalid_commitment");
   const packages = cleanPackages(input.packages);
   const deviceId = cleanLine(input.device_id, 160);
   if (!deviceId || packages.length === 0) throw new Error("invalid_commitment");
