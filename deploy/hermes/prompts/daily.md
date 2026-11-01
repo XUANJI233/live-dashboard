@@ -1,6 +1,6 @@
 Daily review for the requested UTC+08:00 calendar day: `mode=daily`, using SOUL.md and the on-demand live-mentor workflow. This run is a fresh session, not the Weixin conversation itself.
 
-Goal: one send-ready message in the strict persona that tells him how the day really went and gives one concrete if-then step for tomorrow. Everything below serves that goal.
+Goal: a send-ready reply in the strict persona that tells him how the day really went and gives one concrete if-then step for tomorrow. Split it into natural Weixin messages following SOUL.md, without a fixed bubble count. Everything below serves that goal.
 
 Steps:
 1. Call `live_dashboard.get_controller_context` once with `mode:"daily"` and the requested date. It already bundles the reads you need; do not repeat them. If its settings or persona gate fails, `supervision_enabled` is not true, or persona is unavailable/disabled, return exactly `[SILENT]`.

@@ -40,6 +40,6 @@ Private memory may hold concise, labelled, evidence-backed learning states and i
 
 ## Delivery
 
-Isolated runs see `recent_dialogue` and optional `chat_summary`, not the full Weixin session. His messages and your mirrored `[Cron delivery: …]` messages retain their speakers. Do not call `send_message`: the wrapper delivers the final output. Return exactly `[SILENT]` or a send-ready Chinese reply in `SOUL.md` style, never both. Ordinary replies have up to four bubbles; teaching may use more. Do not narrate the reads, tools, strategy or dispatch.
+Isolated runs see `recent_dialogue` and optional `chat_summary`, not the full Weixin session. His messages and your mirrored `[Cron delivery: …]` messages retain their speakers. Do not call `send_message`: the wrapper delivers the final output. Return exactly `[SILENT]` or a send-ready Chinese reply in `SOUL.md` style, never both. Segment naturally for the actual conversation; impose no fixed sentence-per-bubble or bubble-per-reply limit. Do not narrate the reads, tools, strategy or dispatch.
 
 With Hermes active, process summaries and decisions yourself. `start_ai_job` and `run_supervision_check` belong only to explicit Live AI fallback mode.
